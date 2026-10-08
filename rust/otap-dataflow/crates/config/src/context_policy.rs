@@ -264,6 +264,10 @@ impl JsonSchema for ContextEntryPart {
                 {
                     "rule": "self.name.matches('^[!-9;-~]+$')",
                     "message": "`name` must be a single printable ASCII name without `:`"
+                },
+                {
+                    "rule": "!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')",
+                    "message": "`store_as` must be a single printable ASCII name without `:`"
                 }
             ]
         })
@@ -329,14 +333,16 @@ entries:
         ));
     }
 
-    /// Scenario: composite parts configure qualified source or member names.
-    /// Guarantees: every part name is rejected before semantic layout validation.
+    /// Scenario: composite parts configure qualified source or stored member names.
+    /// Guarantees: every ContextEntryName field is rejected before semantic layout validation.
     #[test]
-    fn rejects_qualified_part_names() {
+    fn rejects_qualified_part_and_stored_member_names() {
         for yaml in [
             "entries: {tenant: [{type: constant, name: 'scope:id', value: value}]}",
             "entries: {tenant: [{type: transport_header, name: 'scope:id'}]}",
+            "entries: {tenant: [{type: transport_header, name: id, store_as: 'scope:id'}]}",
             "entries: {tenant: [{type: authorized_identity, name: 'scope:id'}]}",
+            "entries: {tenant: [{type: authorized_identity, name: id, store_as: 'scope:id'}]}",
             "entries: {tenant: [{type: transport_header_match, name: 'scope:id', value: value}]}",
         ] {
             assert!(
@@ -570,7 +576,7 @@ entries:
         let validations = schema["x-kubernetes-validations"]
             .as_array()
             .expect("variant validation");
-        assert_eq!(validations.len(), 3);
+        assert_eq!(validations.len(), 4);
         assert_eq!(
             validations[0]["rule"],
             "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)"
@@ -580,5 +586,9 @@ entries:
             "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)"
         );
         assert_eq!(validations[2]["rule"], "self.name.matches('^[!-9;-~]+$')");
+        assert_eq!(
+            validations[3]["rule"],
+            "!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')"
+        );
     }
 }

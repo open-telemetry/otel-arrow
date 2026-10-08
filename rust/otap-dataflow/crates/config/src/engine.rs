@@ -3525,6 +3525,7 @@ groups: {}
             "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)"
         ));
         assert!(rendered.contains("self.name.matches('^[!-9;-~]+$')"));
+        assert!(rendered.contains("!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')"));
     }
 
     /// Scenario: the generated CRD includes named context entry selectors.
