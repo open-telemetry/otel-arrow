@@ -2886,10 +2886,7 @@ async fn test_filter_data_points_by_null_comparison_on_parent_attr() {
     let input = MetricsData::new(
         (0..2)
             .map(|r| {
-                let mut attrs = vec![KeyValue::new(
-                    "res",
-                    AnyValue::new_string(format!("r{r}")),
-                )];
+                let mut attrs = vec![KeyValue::new("res", AnyValue::new_string(format!("r{r}")))];
                 if r == 0 {
                     attrs.push(KeyValue::new("tag", AnyValue::new_string("present")));
                 }
@@ -2899,12 +2896,14 @@ async fn test_filter_data_points_by_null_comparison_on_parent_attr() {
                         InstrumentationScope::build()
                             .name(format!("scope{r}"))
                             .finish(),
-                        vec![Metric::build()
-                            .name("gauge")
-                            .data_gauge(Gauge {
-                                data_points: vec![NumberDataPoint::build().finish(); 2],
-                            })
-                            .finish()],
+                        vec![
+                            Metric::build()
+                                .name("gauge")
+                                .data_gauge(Gauge {
+                                    data_points: vec![NumberDataPoint::build().finish(); 2],
+                                })
+                                .finish(),
+                        ],
                     )],
                 )
             })
@@ -3029,4 +3028,61 @@ async fn test_filter_data_points_by_matches_lower_case_parent_attr() {
         );
     });
     assert_eq!(count, 2 * 5 * 2);
+}
+
+fn metrics_with_resource_env(env_on_first_resource: bool) -> MetricsData {
+    let mut metrics = metrics_with_parent_attrs(|_, _| Vec::new());
+    for (r, rm) in metrics.resource_metrics.iter_mut().enumerate() {
+        rm.resource.as_mut().unwrap().attributes = if env_on_first_resource && r == 0 {
+            vec![KeyValue::new("env", AnyValue::new_string("Prod"))]
+        } else {
+            Vec::new()
+        };
+    }
+    metrics
+}
+
+/// Scenario: Filter data points by comparing a resource attribute that is missing from some or
+/// all resources, directly and through a function call.
+/// Guarantees: Data points whose resource lacks the attribute fail `==` and pass `!=`, as
+/// records whose resource lacks the attribute do in signal filters.
+#[tokio::test]
+async fn test_filter_data_points_by_missing_resource_attribute() {
+    for (query, env_on_first_resource, expected) in [
+        (r#"where resource.attributes["env"] != "Prod""#, false, 40),
+        (r#"where resource.attributes["env"] != "Prod""#, true, 20),
+        (r#"where resource.attributes["env"] == "Prod""#, false, 0),
+        (r#"where resource.attributes["env"] == "Prod""#, true, 20),
+        (
+            r#"where lower_case(resource.attributes["env"]) != "prod""#,
+            false,
+            40,
+        ),
+        (
+            r#"where lower_case(resource.attributes["env"]) == "prod""#,
+            true,
+            20,
+        ),
+        (
+            r#"where matches(lower_case(resource.attributes["env"]), "^prod$")"#,
+            false,
+            0,
+        ),
+        (
+            r#"where matches(lower_case(resource.attributes["env"]), "^prod$")"#,
+            true,
+            20,
+        ),
+    ] {
+        let result = exec_metrics_query(
+            &format!("metrics | apply data_points {{ {query} }}"),
+            metrics_with_resource_env(env_on_first_resource),
+        )
+        .await;
+        assert_eq!(
+            for_each_data_point(&result, |_, _, _| {}),
+            expected,
+            "{query} with env on first resource: {env_on_first_resource}"
+        );
+    }
 }
