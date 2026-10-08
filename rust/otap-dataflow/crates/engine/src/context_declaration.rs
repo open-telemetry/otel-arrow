@@ -58,6 +58,31 @@ pub enum ContextEntryTarget {
     },
 }
 
+/// One selected value source after resolving a primitive or composite target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectedSource<'a> {
+    /// Value supplied by a domain-backed primitive field.
+    Field(ContextDomain, &'a ContextEntryName),
+    /// Inline configured value with no source domain or wire name.
+    Constant(&'a ContextEntryName),
+}
+
+impl<'a> SelectedSource<'a> {
+    /// Resolves one value-bearing composite part, excluding conditions.
+    fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
+        match part {
+            ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
+            ContextEntryPart::TransportHeader { name, .. } => {
+                Some(Self::Field(ContextDomain::TransportHeader, name.name()))
+            }
+            ContextEntryPart::AuthorizedIdentity { name, .. } => {
+                Some(Self::Field(ContextDomain::AuthorizedIdentity, name.name()))
+            }
+            ContextEntryPart::TransportHeaderMatch { .. } => None,
+        }
+    }
+}
+
 impl ContextEntryTarget {
     /// Returns the enclosing composite name, or none for a primitive.
     fn composite_name(&self) -> Option<&ContextEntryName> {
@@ -68,50 +93,13 @@ impl ContextEntryTarget {
         }
     }
 
-    /// Visits selected value sources with their domains, excluding condition-only fields.
-    fn visit_sources(
-        &self,
-        composites: &[ConfigContextEntryDeclaration],
-        mut visit: impl FnMut(ContextDomain, &ContextEntryName) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        match self {
-            Self::Primitive { domain, name } => visit(*domain, name),
-            Self::CompositeMember { composite, member } => {
-                let declaration = composite_declaration(composite, composites)?;
-                let part = declaration
-                    .definition
-                    .0
-                    .iter()
-                    .find(|part| part.member_name() == Some(member))
-                    .ok_or_else(|| {
-                        invalid_context(format!("unknown context member `{composite}:{member}`"))
-                    })?;
-                if let (Some(domain), Some(reference)) = (part.domain(), part.reference()) {
-                    visit(domain, reference.name())?;
-                }
-                Ok(())
-            }
-            Self::Composite { name } => {
-                let declaration = composite_declaration(name, composites)?;
-                for part in &declaration.definition.0 {
-                    if part.member_name().is_some()
-                        && let (Some(domain), Some(reference)) = (part.domain(), part.reference())
-                    {
-                        visit(domain, reference.name())?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-
-    /// Returns the first selected constant member name, if any.
-    fn constant_member_name<'a>(
+    /// Resolves selected values, excluding condition-only fields.
+    fn selected_sources<'a>(
         &'a self,
         composites: &'a [ConfigContextEntryDeclaration],
-    ) -> Result<Option<&'a ContextEntryName>, Error> {
+    ) -> Result<Vec<SelectedSource<'a>>, Error> {
         match self {
-            Self::Primitive { .. } => Ok(None),
+            Self::Primitive { domain, name } => Ok(vec![SelectedSource::Field(*domain, name)]),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -122,14 +110,19 @@ impl ContextEntryTarget {
                     .ok_or_else(|| {
                         invalid_context(format!("unknown context member `{composite}:{member}`"))
                     })?;
-                Ok(matches!(part, ContextEntryPart::Constant { .. }).then_some(member))
+                Ok(vec![
+                    SelectedSource::from_part(part)
+                        .expect("selected composite member is value-bearing"),
+                ])
             }
             Self::Composite { name } => {
                 let declaration = composite_declaration(name, composites)?;
-                Ok(declaration.definition.0.iter().find_map(|part| match part {
-                    ContextEntryPart::Constant { name, .. } => Some(name),
-                    _ => None,
-                }))
+                Ok(declaration
+                    .definition
+                    .0
+                    .iter()
+                    .filter_map(SelectedSource::from_part)
+                    .collect())
             }
         }
     }
@@ -243,27 +236,31 @@ impl ContextDeclaration {
                 selector: ContextConsumerSelector::Entries { entries },
             } => {
                 for entry in entries {
-                    if entry.form == ContextEntrySelectorForm::OriginalKeyValue
-                        && let Some(name) = entry.target.constant_member_name(composites)?
-                    {
-                        return Err(invalid_context(format!(
-                            "original wire name requested for constant context entry `{name}`; constants have no original wire names"
-                        )));
+                    let sources = entry.target.selected_sources(composites)?;
+                    if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
+                        continue;
                     }
-                    entry.target.visit_sources(composites, |domain, name| {
-                        if entry.form == ContextEntrySelectorForm::OriginalKeyValue {
-                            if domain != ContextDomain::TransportHeader {
+
+                    for source in sources {
+                        match source {
+                            SelectedSource::Field(ContextDomain::TransportHeader, name) => {
+                                _ = requirements
+                                    .original_name_retention
+                                    .overrides
+                                    .insert(original_name_key(name), true);
+                            }
+                            SelectedSource::Field(domain, name) => {
                                 return Err(invalid_context(format!(
                                     "original wire name requested for {domain:?} context entry `{name}`; only transport headers have original wire names"
                                 )));
                             }
-                            _ = requirements
-                                .original_name_retention
-                                .overrides
-                                .insert(original_name_key(name), true);
+                            SelectedSource::Constant(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for constant context entry `{name}`; constants have no original wire names"
+                                )));
+                            }
                         }
-                        Ok(())
-                    })?;
+                    }
                 }
             }
             Self::Consumes {
@@ -1371,18 +1368,14 @@ groups:
         let whole = ContextEntryTarget::Composite {
             name: context_name("tenant"),
         };
-        let mut sources = Vec::new();
-        whole
-            .visit_sources(&context, |domain, name| {
-                sources.push((domain, name.clone()));
-                Ok(())
-            })
-            .expect("whole composite sources");
+        let source_name = context_name("id");
         assert_eq!(
-            sources,
+            whole
+                .selected_sources(&context)
+                .expect("whole composite sources"),
             [
-                (ContextDomain::TransportHeader, context_name("id")),
-                (ContextDomain::AuthorizedIdentity, context_name("id")),
+                SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
+                SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
             ]
         );
         let prepared = PreparedNodeContextDeclarations::new(
@@ -1423,16 +1416,16 @@ groups:
         let whole = ContextEntryTarget::Composite {
             name: context_name("route"),
         };
-        let mut sources = Vec::new();
-        whole
-            .visit_sources(&context, |domain, name| {
-                sources.push((domain, name.clone()));
-                Ok(())
-            })
-            .expect("whole composite sources");
+        let constant_name = context_name("route_name");
+        let header_name = context_name("workspace");
         assert_eq!(
-            sources,
-            [(ContextDomain::TransportHeader, context_name("workspace"))]
+            whole
+                .selected_sources(&context)
+                .expect("whole composite sources"),
+            [
+                SelectedSource::Constant(&constant_name),
+                SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
+            ]
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
