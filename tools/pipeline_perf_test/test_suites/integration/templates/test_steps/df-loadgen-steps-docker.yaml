@@ -12,17 +12,13 @@ Variables:
   - push_metrics: when true, enable the push wiring (default false).
   - push_metrics_endpoint: OTLP/gRPC endpoint the engines export to. Defaults to
     http://host.docker.internal:14317.
-  - test_name: required when push_metrics is true. Tags pushed metrics via the
-    engine's test.name resource attribute.
+
+Pushed metrics are tagged with the running test's name via the engine's
+test.name resource attribute, which the render_template hook supplies through
+ctx["test.name"]; the suite does not need to pass it.
 -#}
 {%- set push_metrics = push_metrics | default(false) %}
 {%- set push_endpoint = push_metrics_endpoint | default("http://host.docker.internal:14317") %}
-{%- if push_metrics and (test_name is not defined or not test_name) %}
-{#- Fail rendering loudly: push attribution needs a non-empty test_name.
-    Referencing an undefined name raises a Jinja UndefinedError whose message
-    names the identifier, which doubles as the failure explanation. -#}
-{{ test_name_is_required_when_push_metrics_is_true.error }}
-{%- endif %}
 steps:
   - name: Deploy Backend Engine
     action:
@@ -50,7 +46,6 @@ steps:
                 backend_receiver_type: '{{backend_receiver_type}}'
                 {%- if push_metrics %}
                 push_metrics_endpoint: '{{push_endpoint}}'
-                push_test_name: '{{test_name}}'
                 {%- endif %}
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
@@ -76,7 +71,6 @@ steps:
                 backend_hostname: backend-service
                 {%- if push_metrics %}
                 push_metrics_endpoint: '{{push_endpoint}}'
-                push_test_name: '{{test_name}}'
                 {%- endif %}
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
@@ -120,7 +114,6 @@ steps:
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
                 {%- if push_metrics %}
                 push_metrics_endpoint: '{{push_endpoint}}'
-                push_test_name: '{{test_name}}'
                 {%- endif %}
                 data_source: {{data_source | default("semantic_conventions")}}
                 {% if log_body_size_bytes is defined %}log_body_size_bytes: {{log_body_size_bytes}}{% endif %}

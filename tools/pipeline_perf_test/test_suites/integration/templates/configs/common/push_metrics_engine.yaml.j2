@@ -7,14 +7,23 @@ Required variables:
   push_metrics_endpoint  - e.g. "http://host.docker.internal:14317"
   push_service_name      - logical component name, set as service.name
 Optional variables:
-  push_test_name         - test name, set as the test.name resource attribute
+  push_test_name         - overrides the test.name resource attribute; defaults
+                           to the running test's name (ctx["test.name"])
   push_metrics_interval  - export interval (default "1s")
   engine_log_level       - when set, emits engine.telemetry.logs.level
+
+The test.name resource attribute scopes whole-run loss in the push reports, so
+rendering fails if no test name is available from push_test_name or the
+framework context.
 
 Pushed counters use delta temporality and the engine performs a final flush
 after all regular pipelines drain during graceful shutdown, so summing the
 deltas yields exact whole-run totals.
 -#}
+{%- set resolved_test_name = push_test_name | default(ctx["test.name"] if ctx is defined and "test.name" in ctx else "") %}
+{%- if not resolved_test_name %}
+{{ test_name_is_required_for_push_metrics.error }}
+{%- endif %}
 engine:
   telemetry:
     {%- if engine_log_level is defined and engine_log_level %}
@@ -23,9 +32,7 @@ engine:
     {%- endif %}
     resource:
       service.name: "{{ push_service_name }}"
-      {%- if push_test_name is defined and push_test_name %}
-      test.name: "{{ push_test_name }}"
-      {%- endif %}
+      test.name: "{{ resolved_test_name }}"
   observability:
     pipeline:
       nodes:
