@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: OAuth 2.0 JWT-bearer authentication now supports the SymCrypt crypto provider selected for TLS.
+issues: [3002]
+subtext: SymCrypt builds can sign and verify RS256, RS384, and RS512 client assertions without linking a separate Ring backend.

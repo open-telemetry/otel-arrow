@@ -16,13 +16,13 @@
 //! | `crypto-ring`     | `ring`, in [`ring_backend`]                       |
 //! | `crypto-aws-lc`   | `aws-lc-rs`, through `jsonwebtoken`'s own provider |
 //! | `crypto-openssl`  | `openssl`, in [`openssl_backend`]                 |
-//! | `crypto-symcrypt` | none                                              |
+//! | `crypto-symcrypt` | selected Rustls provider, in [`rustls_backend`]    |
 //!
-//! SymCrypt is absent because its Rust bindings import an RSA key only as raw
-//! (modulus, exponent, prime) components, while `jsonwebtoken` hands a provider
-//! a PKCS#1 DER blob. A build with no backend rejects the JWT-bearer grant when
-//! the extension is constructed instead of panicking at the first signature;
-//! the client-credentials grant is unaffected.
+//! The SymCrypt path reuses the process's selected Rustls provider, whose public
+//! extension points load the key, choose the RSA signature scheme, and sign or
+//! verify the unhashed JWT input. A build with no backend rejects the JWT-bearer
+//! grant when the extension is constructed instead of panicking at the first
+//! signature; the client-credentials grant is unaffected.
 //!
 //! The backends cover only the RSA PKCS#1 v1.5 algorithms the JWT-bearer grant
 //! accepts (RS256, RS384, RS512), and do not support JWKs. Nothing else in the
@@ -41,7 +41,12 @@ use std::sync::Once;
 /// to one; `ring` is a dev-dependency for that case.
 #[cfg(any(
     feature = "crypto-ring",
-    all(test, not(feature = "crypto-aws-lc"), not(feature = "crypto-openssl"))
+    all(
+        test,
+        not(feature = "crypto-aws-lc"),
+        not(feature = "crypto-openssl"),
+        not(feature = "crypto-symcrypt")
+    )
 ))]
 #[allow(dead_code, reason = "unselected when another crypto-* feature wins")]
 mod ring_backend;
@@ -51,6 +56,11 @@ mod ring_backend;
 #[allow(dead_code, reason = "unselected when another crypto-* feature wins")]
 mod openssl_backend;
 
+/// Provider-neutral Rustls adapter, initially selected only for SymCrypt.
+#[cfg(feature = "crypto-symcrypt")]
+#[allow(dead_code, reason = "unselected when another crypto-* feature wins")]
+mod rustls_backend;
+
 /// Assertions shared by the backend test modules. Compiled only when at least
 /// one backend exists to exercise.
 #[cfg(all(
@@ -58,6 +68,7 @@ mod openssl_backend;
     any(
         feature = "crypto-ring",
         feature = "crypto-openssl",
+        feature = "crypto-symcrypt",
         not(feature = "crypto-aws-lc")
     )
 ))]
@@ -68,13 +79,14 @@ pub(super) const SIGNING_AVAILABLE: bool = cfg!(any(
     feature = "crypto-ring",
     feature = "crypto-aws-lc",
     feature = "crypto-openssl",
+    feature = "crypto-symcrypt",
     test
 ));
 
 /// Explanation attached to the error raised when the JWT-bearer grant is
 /// configured in a build that has no assertion-signing backend.
 pub(super) const NO_BACKEND_MESSAGE: &str = "this build has no JWT signing backend; the `jwt-bearer` grant requires one of the \
-     `crypto-ring`, `crypto-aws-lc`, or `crypto-openssl` features";
+     `crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt` features";
 
 /// Installs the assertion-signing backend as the process-wide default, at most
 /// once per process.
@@ -95,7 +107,12 @@ pub(super) fn ensure_provider() {
 /// backend at all.
 #[cfg(any(
     feature = "crypto-ring",
-    all(test, not(feature = "crypto-aws-lc"), not(feature = "crypto-openssl"))
+    all(
+        test,
+        not(feature = "crypto-aws-lc"),
+        not(feature = "crypto-openssl"),
+        not(feature = "crypto-symcrypt")
+    )
 ))]
 fn install() {
     // `install_default` reports an error only when a provider is already
@@ -120,12 +137,24 @@ fn install() {
     let _ = openssl_backend::PROVIDER.install_default();
 }
 
+/// The Rustls adapter is selected when SymCrypt is the only backend enabled.
+#[cfg(all(
+    feature = "crypto-symcrypt",
+    not(feature = "crypto-ring"),
+    not(feature = "crypto-aws-lc"),
+    not(feature = "crypto-openssl")
+))]
+fn install() {
+    let _ = rustls_backend::PROVIDER.install_default();
+}
+
 /// No backend is compiled in; the JWT-bearer grant is rejected before any
 /// signature is attempted.
 #[cfg(not(any(
     feature = "crypto-ring",
     feature = "crypto-aws-lc",
     feature = "crypto-openssl",
+    feature = "crypto-symcrypt",
     test
 )))]
 fn install() {}

@@ -41,6 +41,7 @@ openssl = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["form"] }
 ring = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 secrecy = { workspace = true, optional = true }
 kube = { workspace = true, optional = true }
 k8s-openapi = { workspace = true, optional = true }
@@ -73,11 +74,13 @@ oauth2-client-auth = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken
 crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
 crypto-openssl = ["dep:openssl"]
 crypto-ring = ["dep:ring"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "dep:rustls"]
 
 [dev-dependencies]
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
-otel-arrow-dfe-otap = { workspace = true, features = ["crypto-ring"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-test-tls-certs = { workspace = true }
+base64.workspace = true
 rcgen = { workspace = true, features = ["aws_lc_rs"] }
 # Test fallback for the JWT signing backend when no `crypto-*` feature is
 # selected, so the suite runs without committing the library to a backend.

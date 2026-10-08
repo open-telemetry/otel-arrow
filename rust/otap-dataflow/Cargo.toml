@@ -394,7 +394,7 @@ azure = [
 crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-extensions/crypto-aws-lc"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
 crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "otel-arrow-dfe-contrib-extensions/crypto-ring"]
-crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "otel-arrow-dfe-contrib-extensions/crypto-symcrypt"]
 
 # Memory allocators and profiling.
 dhat-heap = [
