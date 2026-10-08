@@ -24,9 +24,19 @@ data.
 
 ## Release builds
 
-The existing `release` build settings are preserved. Opt in to `release-perf`
-for whole-program optimization, `release-balanced` for a compact binary with
-speed-oriented optimization, or `release-size` to prioritize binary size.
+Choose a profile based on binary size, runtime performance, and build time:
+
+- `release`: level `3` optimization with profiling line tables, without
+  cross-crate LTO.
+- `release-perf`: level `3` with fat LTO and one codegen unit to prioritize runtime
+  performance, retaining profiling line tables and symbols.
+- `release-balanced`: level `2` with fat LTO and one codegen unit, no debug
+  information, and stripped symbols to balance binary size and runtime
+  performance.
+- `release-size`: level `z` with fat LTO and one codegen unit, no debug information,
+  and stripped symbols to prioritize binary size, accepting possible throughput
+  loss.
+
 See [release profiles](docs/release-profiles.md) for build commands, feature
 selection, and measurements with and without Transform.
 

@@ -96,9 +96,8 @@ without experimental profile overrides. The performance artifacts were measured
 with the optimized settings under the name `release`, before those settings moved
 to `release-perf`.
 The compact profiles retain the same effective optimization settings. These
-tables reuse those measurements; the raw results preserve the original profile
-names, commands, and source hashes alongside their current profile names.
-The historical `release` baseline is recorded separately in the raw results.
+tables reuse those measurements; the artifacts were not rebuilt when the
+performance profile was renamed.
 MiB means 1,048,576 bytes. ZIPs contain one executable and use DEFLATE level 9
 with matching timestamps and permissions.
 
@@ -108,9 +107,7 @@ its deployment copy was stripped separately for this table. The two compact
 profiles already strip their normal output. Debug and symbol information
 changes package size without implying proportional startup or throughput gains.
 
-[Raw results](experiments/release-profiles-2026-10-07.json) record exact sizes,
-profile settings, commands, source and lockfile hashes, executable hashes, and
-ELF requirements. The custom-profile measurements include the startup fix below;
+The custom-profile measurements include the startup fix below;
 the historical `release` baseline predates it. They are engine binaries, not
 complete Lambda extension layers. Both custom-profile targets declare only libc
 and libm dependencies; compatibility and behavior still need testing on the
