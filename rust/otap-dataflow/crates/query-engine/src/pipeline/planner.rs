@@ -1097,11 +1097,28 @@ impl PipelinePlanner {
             }
 
             // create new assignment argument
+            let dest_column = ColumnAccessor::try_from_value_accessor(
+                dest.get_value_accessor(),
+                &self.record_type,
+            )?;
+
+            // Data point expressions cannot write to parent (resource/scope) attributes.
+            if matches!(self.record_type, RecordType::DataPoint(_))
+                && matches!(
+                    &dest_column,
+                    ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
+                        | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _)
+                )
+            {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "assigning to resource or scope attributes from data points is not supported"
+                            .into(),
+                });
+            }
+
             let assignment = Assignment {
-                dest_column: ColumnAccessor::try_from_value_accessor(
-                    dest.get_value_accessor(),
-                    &self.record_type,
-                )?,
+                dest_column,
                 source: scoped_planner.plan_scalar(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
@@ -1281,22 +1298,27 @@ impl ColumnAccessor {
             });
         };
 
-        if let RecordType::DataPoint(_) = record_type {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "parent struct {struct_column_name} access not yet supported for data points"
-                ),
-            });
-        }
-
         match struct_selector {
             ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
                 match struct_field.get_value() {
-                    ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
-                        AttributesIdentifier::NonRecord(attrs_payload_type),
-                        &selectors[2..],
-                    ),
+                    ATTRIBUTES_FIELD_NAME => {
+                        // Data point expressions can read parent (resource/scope) attributes;
+                        // the join module handles the two-hop alignment lazily.
+                        Self::try_from_attrs_key(
+                            AttributesIdentifier::NonRecord(attrs_payload_type),
+                            &selectors[2..],
+                        )
+                    }
                     struct_field => {
+                        // Struct fields like resource.name or scope.version live on the root
+                        // record batch and are not yet supported for data point expressions.
+                        if let RecordType::DataPoint(_) = record_type {
+                            return Err(Error::NotYetSupportedError {
+                                message: format!(
+                                    "parent struct field {struct_column_name}.{struct_field} access not yet supported for data points"
+                                ),
+                            });
+                        }
                         if let Some(extra_selector) = selectors.get(2) {
                             return Err(Error::InvalidPipelineError {
                                 cause: format!(
