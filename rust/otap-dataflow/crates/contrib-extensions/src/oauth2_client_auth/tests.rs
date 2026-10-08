@@ -6,6 +6,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
@@ -19,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use wiremock::matchers::{body_string_contains, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 use super::auth::Auth;
 use super::config::{Config, GrantType, SignatureAlgorithm};
@@ -102,6 +104,50 @@ pub(super) fn generate_test_rsa_keypair() -> (String, String) {
         rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
             .expect("generate test RSA key pair");
     (key_pair.serialize_pem(), key_pair.public_key_pem())
+}
+
+struct RingVerifiedJwt {
+    public_key_der: Vec<u8>,
+}
+
+impl RingVerifiedJwt {
+    fn new(public_key_pem: &str) -> Self {
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
+            .expect("public key parses");
+        let jsonwebtoken::DecodingKeyKind::SecretOrDer(public_key_der) = key.kind() else {
+            panic!("test key must contain DER");
+        };
+        Self {
+            public_key_der: public_key_der.clone(),
+        }
+    }
+}
+
+impl Match for RingVerifiedJwt {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(body) = std::str::from_utf8(&request.body) else {
+            return false;
+        };
+        let Some(assertion) = body
+            .split('&')
+            .find_map(|field| field.strip_prefix("assertion="))
+        else {
+            return false;
+        };
+        let Some((signing_input, encoded_signature)) = assertion.rsplit_once('.') else {
+            return false;
+        };
+        let Ok(signature) = BASE64_URL_SAFE_NO_PAD.decode(encoded_signature) else {
+            return false;
+        };
+
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            &self.public_key_der,
+        )
+        .verify(signing_input.as_bytes(), &signature)
+        .is_ok()
+    }
 }
 
 /// Builds a token config from the shared valid base plus `extra` top-level keys.
@@ -956,6 +1002,7 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
         .and(path("/token"))
         .and(body_string_contains("grant_type=urn"))
         .and(body_string_contains("assertion="))
+        .and(RingVerifiedJwt::new(&public_key_pem))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "jwt-tok",
             "token_type": "Bearer",
