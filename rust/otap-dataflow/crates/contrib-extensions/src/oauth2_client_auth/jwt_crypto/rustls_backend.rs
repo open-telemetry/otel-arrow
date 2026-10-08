@@ -134,27 +134,27 @@ mod tests {
         )
     }
 
-    // Scenario: The Rustls-backed provider signs an assertion payload under
-    // RS256, RS384 and RS512, verifies each signature, and rejects tampering.
-    // Guarantees: Every selectable Rustls provider supports each JWT RSA
-    // algorithm exposed by the extension through the same adapter.
+    /// Scenario: The Rustls-backed provider signs an assertion payload under
+    /// RS256, RS384 and RS512, verifies each signature, and rejects tampering.
+    /// Guarantees: Every selectable Rustls provider supports each JWT RSA
+    /// algorithm exposed by the extension through the same adapter.
     #[test]
     fn signs_and_verifies_every_supported_algorithm() {
         ensure_test_crypto_provider();
         super::super::test_support::assert_round_trips(&PROVIDER);
     }
 
-    // Scenario: The Rustls-backed provider is asked for an ECDSA algorithm.
-    // Guarantees: Unsupported algorithms surface an error instead of producing
-    // a signature the token endpoint would reject.
+    /// Scenario: The Rustls-backed provider is asked for an ECDSA algorithm.
+    /// Guarantees: Unsupported algorithms surface an error instead of producing
+    /// a signature the token endpoint would reject.
     #[test]
     fn rejects_an_unsupported_algorithm() {
         super::super::test_support::assert_rejects_unsupported_algorithm(&PROVIDER);
     }
 
-    // Scenario: The Rustls key provider receives malformed RSA private-key DER.
-    // Guarantees: Provider key-loading failures retain jsonwebtoken's
-    // InvalidRsaKey error surface rather than becoming a signing failure.
+    /// Scenario: The Rustls key provider receives malformed RSA private-key DER.
+    /// Guarantees: Provider key-loading failures retain jsonwebtoken's
+    /// InvalidRsaKey error surface rather than becoming a signing failure.
     #[test]
     fn maps_private_key_loading_failures_to_invalid_rsa_key() {
         ensure_test_crypto_provider();
@@ -166,9 +166,9 @@ mod tests {
         assert!(matches!(error.kind(), ErrorKind::InvalidRsaKey(_)));
     }
 
-    // Scenario: The Rustls verification algorithm receives malformed RSA
-    // public-key DER.
-    // Guarantees: Invalid public-key encodings cannot verify a signature.
+    /// Scenario: The Rustls verification algorithm receives malformed RSA
+    /// public-key DER.
+    /// Guarantees: Invalid public-key encodings cannot verify a signature.
     #[test]
     fn rejects_malformed_public_key_der() {
         ensure_test_crypto_provider();
@@ -178,10 +178,10 @@ mod tests {
         assert!(verifier.verify(MESSAGE, &vec![0; 256]).is_err());
     }
 
-    // Scenario: Signatures flow in both directions between the Rustls adapter
-    // and Ring for RS256, RS384 and RS512.
-    // Guarantees: The adapter interoperates with an independent implementation
-    // instead of passing only same-provider round trips.
+    /// Scenario: Signatures flow in both directions between the Rustls adapter
+    /// and Ring for RS256, RS384 and RS512.
+    /// Guarantees: The adapter interoperates with an independent implementation
+    /// instead of passing only same-provider round trips.
     #[test]
     fn interoperates_with_independent_ring_vectors() {
         ensure_test_crypto_provider();
