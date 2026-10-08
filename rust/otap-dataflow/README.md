@@ -22,6 +22,13 @@ data.
 > [`src/main.rs`](./src/main.rs) is provided as a means to test and validate
 > OTAP pipelines built using the dataflow engine.
 
+## Release builds
+
+Choose `release` for runtime performance, `release-balanced` for a compact
+binary with speed-oriented optimization, or `release-size` to prioritize
+binary size. See [release profiles](docs/release-profiles.md) for build commands,
+feature selection, and measurements with and without Transform.
+
 ## Architecture
 
 ![OTAP Dataflow Engine architecture](docs/images/architecture-high-level.svg)
