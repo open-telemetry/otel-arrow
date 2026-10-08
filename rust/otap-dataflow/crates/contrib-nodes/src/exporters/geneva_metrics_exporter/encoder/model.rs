@@ -136,7 +136,10 @@ pub struct NumericValues<T> {
 /// Histogram body associated with a metric.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MetricHistogram {
-    /// Legacy unsigned histogram.
+    /// Legacy raw MDM histogram defined by the ME-to-FE protocol.
+    ///
+    /// Retained in the protocol model for completeness, but intentionally
+    /// unsupported by the OTLP exporter.
     Raw(Vec<(u64, u32)>),
     /// Explicit histogram with double boundaries.
     Explicit(Vec<(f64, u32)>),
@@ -223,6 +226,9 @@ pub enum EncodeError {
         /// Normalized sampling type.
         sampling_type: u32,
     },
+    /// A metric carries the legacy raw histogram, which this encoder does not support.
+    #[error("legacy raw histogram is not supported")]
+    UnsupportedRawHistogram,
     /// A fixed-width protocol length cannot represent the encoded body.
     #[error("{field} length {length} exceeds protocol maximum {maximum}")]
     LengthOverflow {

@@ -124,8 +124,11 @@ queries:
             MAX(value) AS final_value
           FROM metrics
           CROSS JOIN metadata_row
-          WHERE metric_name = 'logs_produced'
+          WHERE metric_name = 'items'
+            AND "metric_attributes.otel_scope_name" = 'node.output'
+            AND "metric_attributes.signal" = 'logs'
             AND "metric_attributes.component_name" = 'load-generator'
+            AND "metric_attributes.outcome" = 'success'
             AND timestamp >= CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
           GROUP BY core_id
         )

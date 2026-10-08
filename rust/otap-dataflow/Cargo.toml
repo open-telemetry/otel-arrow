@@ -354,6 +354,7 @@ oracle = [
     "flat-file-user-pass-auth",
 ]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
+windows-perf-counters = ["otel-arrow-dfe-contrib-nodes/windows-perf-counters"]
 
 # Contrib processors.
 condense-attributes = ["otel-arrow-dfe-contrib-nodes/condense-attributes"]
@@ -394,7 +395,7 @@ azure = [
 crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-extensions/crypto-aws-lc"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
 crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "otel-arrow-dfe-contrib-extensions/crypto-ring"]
-crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "otel-arrow-dfe-contrib-extensions/crypto-symcrypt"]
 
 # Memory allocators and profiling.
 dhat-heap = [

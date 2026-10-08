@@ -123,6 +123,7 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
             pipeline_id: pipeline_ctx.pipeline_id(),
             policies: Policies::resolve(pipeline.policies()),
             pipeline,
+            topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             role: ResolvedPipelineRole::Regular,
         }],
     };

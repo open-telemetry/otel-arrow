@@ -110,6 +110,25 @@ impl Writer {
     }
 }
 
+pub(super) fn unsigned_base128_size(mut value: u64) -> usize {
+    let mut size = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        size += 1;
+    }
+    size
+}
+
+pub(super) fn signed_base128_size(value: i64) -> usize {
+    let mut remaining = value.unsigned_abs() >> 6;
+    let mut size = 1;
+    while remaining != 0 {
+        remaining >>= 7;
+        size += 1;
+    }
+    size
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +187,34 @@ mod tests {
             writer.write_signed_base128(value);
             let bytes = writer.finish();
             assert_eq!(read_signed_base128(&bytes), value, "bytes {bytes:02x?}");
+        }
+    }
+
+    /// Scenario: Unsigned and signed values cross each base-128 byte-length boundary, including the integer limits.
+    /// Guarantees: The size helpers used for pre-write length validation report exactly the bytes the writer emits.
+    #[test]
+    fn base128_sizes_match_written_lengths() {
+        for value in [0, 127, 128, 16_383, 16_384, u64::MAX] {
+            let mut writer = Writer::default();
+            writer.write_unsigned_base128(value);
+            assert_eq!(unsigned_base128_size(value), writer.len(), "value {value}");
+        }
+        for value in [
+            i64::MIN,
+            -8_192,
+            -8_191,
+            -64,
+            -63,
+            0,
+            63,
+            64,
+            8_191,
+            8_192,
+            i64::MAX,
+        ] {
+            let mut writer = Writer::default();
+            writer.write_signed_base128(value);
+            assert_eq!(signed_base128_size(value), writer.len(), "value {value}");
         }
     }
 
