@@ -137,7 +137,7 @@ itoa = "1"
 itertools = "0.15.0"
 jsonwebtoken = { version = "11", default-features = false, features = ["use_pem"] }
 k8s-openapi = { version = "0.28.0", features = ["latest"] }
-kube = {version = "4.0.0", features = ["derive"] }
+kube = { version = "4.0.0", default-features = false, features = ["client", "derive", "rustls-tls"] }
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
@@ -354,6 +354,7 @@ oracle = [
     "flat-file-user-pass-auth",
 ]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
+windows-perf-counters = ["otel-arrow-dfe-contrib-nodes/windows-perf-counters"]
 
 # Contrib processors.
 condense-attributes = ["otel-arrow-dfe-contrib-nodes/condense-attributes"]
@@ -394,7 +395,7 @@ azure = [
 crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-extensions/crypto-aws-lc"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
 crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "otel-arrow-dfe-contrib-extensions/crypto-ring"]
-crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "otel-arrow-dfe-contrib-extensions/crypto-symcrypt"]
 
 # Memory allocators and profiling.
 dhat-heap = [
