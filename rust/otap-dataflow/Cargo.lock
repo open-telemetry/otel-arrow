@@ -5877,7 +5877,6 @@ version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
 dependencies = [
- "aws-lc-rs",
  "base64 0.22.1",
  "getrandom 0.2.17",
  "js-sys",
@@ -7374,6 +7373,7 @@ dependencies = [
  "async-trait",
  "azure_core 1.2.0-beta.1",
  "azure_identity 1.1.0-beta.1",
+ "base64 0.23.1",
  "futures",
  "http",
  "humantime-serde",
@@ -7382,7 +7382,6 @@ dependencies = [
  "kube",
  "linkme",
  "oauth2",
- "openssl",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
