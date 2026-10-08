@@ -322,7 +322,7 @@ queries:
           UNION ALL
 
           -- If we run into a scenario where 0 signals make it to the backend
-          -- becuase the SUT is misbehaving, then it's possible for the engine
+          -- because the SUT is misbehaving, then it's possible for the engine
           -- to omit certain metrics that never had a value. In that case
           -- we still want to record a 0 for this metric instead of a null or
           -- the report breaks.
