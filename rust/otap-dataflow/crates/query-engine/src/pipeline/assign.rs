@@ -63,7 +63,7 @@ use otel_arrow_dfe_pdata::schema::consts::metadata;
 use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_record, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec,
@@ -74,7 +74,9 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, MetricDataPointType, nested_struct_field_type,
     root_field_supports_dict_encoding, root_field_type,
 };
-use crate::pipeline::expr::{DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue};
+use crate::pipeline::expr::{
+    ChildRecordKind, DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
+};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
@@ -167,6 +169,7 @@ impl AssignPipelineStage {
                 &assignment.dest_column,
                 assignment.dest_query_location,
                 &assignment.source,
+                record_type,
             )?;
 
             dest_columns.push(assignment.dest_column);
@@ -1384,7 +1387,14 @@ impl PipelineStage for AssignPipelineStage {
                 let mut eval_results = Vec::new();
                 for source in &mut self.sources {
                     let eval_result = source.execute_as_value(&otap_batch, &eval_ctx)?;
-                    eval_results.push(eval_result);
+                    // If the result came from a non-record attribute (resource/scope), align
+                    // it to data-point row order before the attribute upsert. The upsert join
+                    // strategies only handle same-kind parent_id relationships.
+                    eval_results.push(align_non_record_attrs_to_data_point(
+                        eval_result,
+                        metrics_dp_rb,
+                        &otap_batch,
+                    )?);
                 }
 
                 let attrs_payload_type = data_point_type.dp_attrs_payload_type();
@@ -1426,7 +1436,11 @@ impl PipelineStage for AssignPipelineStage {
                 let mut eval_results = Vec::new();
                 for source in &mut self.sources {
                     let eval_result = source.execute_as_value(&otap_batch, &eval_ctx)?;
-                    eval_results.push(eval_result);
+                    eval_results.push(align_non_record_attrs_to_data_point(
+                        eval_result,
+                        metrics_dp_rb,
+                        &otap_batch,
+                    )?);
                 }
 
                 let attrs_payload_type = data_point_type.dp_attrs_payload_type();
@@ -1519,6 +1533,33 @@ impl PipelineStage for AssignPipelineStage {
         _ = exec_state.remove_extension::<NextIdTracker>();
         Ok(())
     }
+}
+
+/// If the eval result has a non-record attribute scope (resource/scope attrs), align it to
+/// data-point row order. The attribute-to-attribute join strategies in `assign_to_attributes`
+/// assume both sides share a direct parent-child ID relationship, which does not hold for the
+/// grandparent relationship between resource/scope attributes and data points.
+fn align_non_record_attrs_to_data_point(
+    eval_result: Option<ScopedValue>,
+    data_points_rb: &RecordBatch,
+    otap_batch: &OtapArrowRecords,
+) -> Result<Option<ScopedValue>> {
+    let Some(sv) = eval_result else {
+        return Ok(None);
+    };
+
+    if let DataScope::Attribute(AttributesIdentifier::NonRecord(_), _, _) = &sv.scope
+        && matches!(sv.values, ColumnarValue::Array(_))
+    {
+        return Ok(Some(align_value_to_record(
+            sv,
+            RecordScope::Child(ChildRecordKind::DataPoint),
+            data_points_rb,
+            otap_batch,
+        )?));
+    }
+
+    Ok(Some(sv))
 }
 
 struct SerializedAttributeUpdate<'a> {
@@ -2024,6 +2065,7 @@ fn validate_assign(
     dest_column: &ColumnAccessor,
     dest_query_location: Option<&QueryLocation>,
     source_plan: &PlannedOp,
+    record_type: &RecordType,
 ) -> Result<()> {
     match dest_column {
         ColumnAccessor::ColumnName(col_name) => {
@@ -2082,6 +2124,17 @@ fn validate_assign(
         }
         ColumnAccessor::Attributes(dest_attrs_id, _)
         | ColumnAccessor::NestedAttribute(dest_attrs_id, _, _) => {
+            // Data point expressions cannot write to parent (resource/scope) attributes.
+            if matches!(record_type, RecordType::DataPoint(_))
+                && matches!(dest_attrs_id, AttributesIdentifier::NonRecord(_))
+            {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "assigning to resource or scope attributes from data points is not supported"
+                            .into(),
+                });
+            }
+
             if !can_assign_type(&ExprLogicalType::AnyValue, &source_plan.expr_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
