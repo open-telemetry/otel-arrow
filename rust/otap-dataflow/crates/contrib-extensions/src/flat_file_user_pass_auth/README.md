@@ -76,12 +76,13 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `username` | string | *required* | Basic authentication username. Must be non-empty. Cannot contain `:` or control characters. |
+| `username` | string | *none* | Inline username. Required unless `username_file` is set. Must be non-empty. Cannot contain `:` or control characters. |
+| `username_file` | path | *none* | File holding the username. Takes precedence over `username`. Contents must be valid UTF-8 and satisfy the same username validation after trailing CR/LF removal. |
 | `password_secret` | string | *none* | Password supplied inline. Required unless `password_secret_file` is set; prefer the file form for secrets. Cannot contain control characters. |
 | `password_secret_file` | path | *none* | File holding the password. Re-read on each acquisition; takes precedence over `password_secret`. File contents must be valid `UTF-8`. Trailing `\r\n` chacters are automatically stripped. |
-| `password_secret_file_refresh` | duration | `1h` | How often to refresh the password file. Must be between `10s` and `365d`, inclusive. |
+| `password_secret_file_refresh` | duration | `1h` | How often to refresh either configured credential file, including username-only file configurations. Must be between `10s` and `365d`, inclusive. |
 
 Duration fields accept human-readable values such as `5m`, `1h`, or `1d`.
 File polling runs at this interval independently of credential expiry. If a
-poll fails, the last successfully read password remains available and the
+poll fails, the last successfully read credential pair remains available and the
 extension retries with bounded backoff.
