@@ -24,6 +24,7 @@ use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy
 #[cfg(test)]
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_engine::capability::auth::SaslCredential;
 use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
     SASL_CREDENTIAL_USABLE_MARGIN, SaslCredentialProvider as SaslCredentialProviderCapability,
 };
@@ -72,6 +73,15 @@ pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
 
 /// Max character limit for kafka group instance id
 const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
+
+/// Maximum time allowed to acquire the initial capability-backed SASL credential.
+const SASL_CREDENTIAL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+enum InitialSaslCredentialOutcome {
+    Credential(SaslCredential),
+    Drain(Instant),
+    Shutdown(Instant),
+}
 
 /// Kafka receiver for OpenTelemetry data.
 ///
@@ -252,42 +262,44 @@ impl KafkaReceiver {
         self
     }
 
-    async fn apply_initial_sasl_credential(
-        &self,
+    fn require_initial_sasl_credential_provider<'a>(
+        provider: Option<&'a dyn SaslCredentialProvider>,
+        receiver: &NodeId,
+    ) -> Result<&'a dyn SaslCredentialProvider, EngineError> {
+        provider.ok_or_else(|| EngineError::ReceiverError {
+            receiver: receiver.clone(),
+            kind: ReceiverErrorKind::Configuration,
+            error: "SASL capability credentials require a bound \
+                        'sasl_credential_provider'"
+                .to_string(),
+            source_detail: String::new(),
+        })
+    }
+
+    async fn acquire_initial_sasl_credential(
+        provider: &dyn SaslCredentialProvider,
+        receiver: &NodeId,
+    ) -> Result<SaslCredential, EngineError> {
+        provider
+            .get_credential()
+            .await
+            .map_err(|error| EngineError::ReceiverError {
+                receiver: receiver.clone(),
+                kind: ReceiverErrorKind::Configuration,
+                error: format!(
+                    "failed to acquire the initial SASL credential from capability '{}' \
+                     on extension '{}'",
+                    error.capability, error.extension
+                ),
+                source_detail: String::new(),
+            })
+    }
+
+    fn apply_sasl_credential(
         client_config: &mut rdkafka::ClientConfig,
+        credential: SaslCredential,
         receiver: &NodeId,
     ) -> Result<(), EngineError> {
-        if !self.config.uses_sasl_credential_provider() {
-            return Ok(());
-        }
-
-        let provider =
-            self.sasl_credential_provider
-                .as_ref()
-                .ok_or_else(|| EngineError::ReceiverError {
-                    receiver: receiver.clone(),
-                    kind: ReceiverErrorKind::Configuration,
-                    error: "SASL capability credentials require a bound \
-                            'sasl_credential_provider'"
-                        .to_string(),
-                    source_detail: String::new(),
-                })?;
-
-        let credential =
-            provider
-                .get_credential()
-                .await
-                .map_err(|error| EngineError::ReceiverError {
-                    receiver: receiver.clone(),
-                    kind: ReceiverErrorKind::Configuration,
-                    error: format!(
-                        "failed to acquire the initial SASL credential from capability '{}' \
-                         on extension '{}'",
-                        error.capability, error.extension
-                    ),
-                    source_detail: String::new(),
-                })?;
-
         if credential.expires_on().is_some_and(|expiry| {
             expiry.saturating_duration_since(Instant::now()) <= SASL_CREDENTIAL_USABLE_MARGIN
         }) {
@@ -305,6 +317,55 @@ impl KafkaReceiver {
         _ = client_config.set("sasl.username", credential.expose_username());
         _ = client_config.set("sasl.password", credential.expose_password());
         Ok(())
+    }
+
+    async fn await_initial_sasl_credential(
+        provider: &dyn SaslCredentialProvider,
+        receiver: &NodeId,
+        ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
+        metrics: &mut KafkaReceiverMetrics,
+    ) -> Result<InitialSaslCredentialOutcome, EngineError> {
+        let credential = Self::acquire_initial_sasl_credential(provider, receiver);
+        tokio::pin!(credential);
+        let timeout = tokio::time::sleep(SASL_CREDENTIAL_LOOKUP_TIMEOUT);
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                biased;
+
+                control = ctrl_msg_recv.recv() => {
+                    match control {
+                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                            return Ok(InitialSaslCredentialOutcome::Drain(deadline));
+                        }
+                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            return Ok(InitialSaslCredentialOutcome::Shutdown(deadline));
+                        }
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            _ = metrics.report(&mut metrics_reporter);
+                        }
+                        Err(error) => return Err(EngineError::ChannelRecvError(error)),
+                        _ => {}
+                    }
+                }
+                result = &mut credential => {
+                    return result.map(InitialSaslCredentialOutcome::Credential);
+                }
+                _ = &mut timeout => {
+                    return Err(EngineError::ReceiverError {
+                        receiver: receiver.clone(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: format!(
+                            "timed out after {} seconds while acquiring the initial SASL \
+                             credential",
+                            SASL_CREDENTIAL_LOOKUP_TIMEOUT.as_secs()
+                        ),
+                        source_detail: String::new(),
+                    });
+                }
+            }
+        }
     }
 
     /// Returns the shared rebalance state for synchronization in component tests.
@@ -1075,13 +1136,42 @@ impl KafkaReceiver {
 impl local::Receiver<OtapPdata> for KafkaReceiver {
     async fn start(
         mut self: Box<Self>,
-        ctrl_msg_recv: local::ControlChannel<OtapPdata>,
+        mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         let mut client_config = self.config.build_client_config();
         let receiver_id = effect_handler.receiver_id();
-        self.apply_initial_sasl_credential(&mut client_config, &receiver_id)
-            .await?;
+        if self.config.uses_sasl_credential_provider() {
+            let provider = Self::require_initial_sasl_credential_provider(
+                self.sasl_credential_provider.as_deref(),
+                &receiver_id,
+            )?;
+            match Self::await_initial_sasl_credential(
+                provider,
+                &receiver_id,
+                &mut ctrl_msg_recv,
+                &mut self.metrics,
+            )
+            .await?
+            {
+                InitialSaslCredentialOutcome::Credential(credential) => {
+                    Self::apply_sasl_credential(&mut client_config, credential, &receiver_id)?;
+                }
+                InitialSaslCredentialOutcome::Drain(deadline) => {
+                    effect_handler.notify_receiver_drained().await?;
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.metrics.terminal_snapshots(),
+                    ));
+                }
+                InitialSaslCredentialOutcome::Shutdown(deadline) => {
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.metrics.terminal_snapshots(),
+                    ));
+                }
+            }
+        }
 
         let map_kafka_client_err = |e: KafkaError| {
             let source_detail = format_error_sources(&e);

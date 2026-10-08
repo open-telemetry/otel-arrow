@@ -554,8 +554,10 @@ the two sources is invalid. Capability-provided credentials are supported only
 for `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 
 The receiver requests one usable credential during startup before creating the
-Kafka consumer. It rejects credentials that expire within 30 seconds. Runtime
-credential rotation and consumer recreation are not currently supported.
+Kafka consumer. The request times out after five seconds and is interrupted by
+receiver drain or shutdown. Credentials that expire within 30 seconds are
+rejected. Runtime credential rotation and consumer recreation are not currently
+supported.
 
 #### AWS MSK IAM
 
