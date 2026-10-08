@@ -37,6 +37,9 @@
   nodes:
 {{ generator_label | indent(4, true)}}:
       type: "urn:otel:receiver:traffic_generator"
+      policies:
+        telemetry:
+          item_counts: true
       config:
         data_source: {{ data_source }}
         traffic_config:
