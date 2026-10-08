@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791497697894,
+  "lastUpdate": 1791499215029,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -57463,6 +57463,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 107.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "dba33161686f9768c3b9ae969dc2b17b58ed7e59",
+          "message": "chore(context): add constant member foundation (#4288)\n\n# Chore Summary\n\nAdd the configuration and logical-layout foundation for constant context\nentry members:\n\n- Parse and validate named UTF-8 constant values.\n- Represent constants as domainless, always-available composite members.\n- Preserve field and `transport_header_match` presence gates in\ncomposites containing constants.\n- Align generated CRD validation for `name` and `store_as` with Serde's\nunqualified `ContextEntryName` rules.\n- Reject original-wire-name and transport-header propagation requests\nfor constants until runtime integration is implemented.\n\nThis is the first part of the work for #4202. It adds no data-plane\nmaterialization or randomness. Runtime constant materialization,\npropagation, API-key migration, and randomness remain follow-up work.\n\n## Related issue\n\nRefs #4202\n\n## Validation\n\n- `cargo check -p otel-arrow-dfe-config` - passed\n- `cargo check -p otel-arrow-dfe-engine` - passed\n- `cargo test -p otel-arrow-dfe-config --lib context_policy` - passed\n- Config CRD-generation tests - passed\n- Engine context declaration, layout, and propagation tests - passed\n- `cargo clippy -p otel-arrow-dfe-config -p otel-arrow-dfe-engine\n--all-targets -- -D warnings` - passed\n- `cargo fmt --all -- --check` - passed\n- Markdown lint and `git diff --check` - passed\n\nFull benchmark compilation is blocked on Windows by the Unix-only\n`rdkafka-sys` build. `cargo xtask check` is also blocked by unrelated\npre-existing component inventory drift for `flat_file_api_key_auth`.",
+          "timestamp": "2026-10-08T21:33:15Z",
+          "tree_id": "0cae88fe823c4b339d67a9520d9e98a605c62806",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dba33161686f9768c3b9ae969dc2b17b58ed7e59"
+        },
+        "date": 1791499198063,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.54,
             "unit": "MB"
           }
         ]
