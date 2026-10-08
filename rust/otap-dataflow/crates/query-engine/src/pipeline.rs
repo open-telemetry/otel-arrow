@@ -150,13 +150,6 @@ pub trait PipelineStage {
     /// IDs.
     fn parent_behavior(&self) -> ParentBehavior;
 
-    /// Returns the shared parent attribute payloads this configured stage may modify.
-    ///
-    /// This is separate from [`Self::parent_behavior`]: a stage can require parent reindexing
-    /// without changing the payload values, while an untouched payload can be restored directly
-    /// from the conditional input when parent identities are preserved.
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations;
-
     /// When pipeline stages execute within the context of a conditional branch, they will only see
     /// the batch that is local to that branch. However, there may be cases where some global state
     /// may need to be maintained across branches. This method provides an opportunity to
@@ -195,44 +188,6 @@ pub enum ParentBehavior {
 impl ParentBehavior {
     const fn requires_reindex(self) -> bool {
         matches!(self, Self::RequiresReindex)
-    }
-}
-
-/// Shared parent attribute payloads a configured pipeline stage may modify.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ParentPayloadMutations(u8);
-
-impl ParentPayloadMutations {
-    const SCOPE_ATTRS: u8 = 1;
-    const RESOURCE_ATTRS: u8 = 2;
-
-    /// No shared parent attribute payloads are modified.
-    #[must_use]
-    pub const fn none() -> Self {
-        Self(0)
-    }
-
-    /// Returns the mutation set for a payload type.
-    #[must_use]
-    pub const fn from_payload_type(payload_type: ArrowPayloadType) -> Self {
-        match payload_type {
-            ArrowPayloadType::ScopeAttrs => Self(Self::SCOPE_ATTRS),
-            ArrowPayloadType::ResourceAttrs => Self(Self::RESOURCE_ATTRS),
-            _ => Self::none(),
-        }
-    }
-
-    /// Combines two mutation sets.
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    /// Returns whether the payload may be modified.
-    #[must_use]
-    pub const fn modifies(self, payload_type: ArrowPayloadType) -> bool {
-        let payload = Self::from_payload_type(payload_type);
-        self.0 & payload.0 != 0
     }
 }
 
@@ -334,10 +289,6 @@ impl PipelineStage for DataFusionPipelineStage {
         } else {
             ParentBehavior::Preserves
         }
-    }
-
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
-        ParentPayloadMutations::from_payload_type(self.payload_type)
     }
 }
 

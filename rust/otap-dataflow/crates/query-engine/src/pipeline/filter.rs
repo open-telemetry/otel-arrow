@@ -10,7 +10,7 @@ use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{ParentBehavior, ParentPayloadMutations, PipelineStage};
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, BooleanBufferBuilder, RecordBatch, UInt16Array, UInt32Array,
@@ -180,10 +180,6 @@ impl PipelineStage for FilterPipelineStage {
     // Filtering removes records but does not change or duplicate their parent identities.
     fn parent_behavior(&self) -> ParentBehavior {
         ParentBehavior::Preserves
-    }
-
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
-        ParentPayloadMutations::none()
     }
 }
 

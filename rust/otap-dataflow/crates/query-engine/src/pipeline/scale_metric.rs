@@ -21,7 +21,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use crate::error::{Error, Result};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{ParentBehavior, ParentPayloadMutations, PipelineStage};
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 pub(crate) struct ScaleMetricPipelineStage {
     multiplier: f64,
@@ -168,10 +168,6 @@ impl PipelineStage for ScaleMetricPipelineStage {
     // Scaling changes metric values and units without changing resource or scope parents.
     fn parent_behavior(&self) -> ParentBehavior {
         ParentBehavior::Preserves
-    }
-
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
-        ParentPayloadMutations::none()
     }
 }
 

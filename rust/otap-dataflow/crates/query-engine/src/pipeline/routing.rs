@@ -20,7 +20,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{ParentBehavior, ParentPayloadMutations, PipelineStage};
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// A trait for routing OTAP (OpenTelemetry Arrow Protocol) batch records to some destination.
 ///
@@ -107,10 +107,6 @@ impl PipelineStage for RouteToPipelineStage {
     // Routing consumes output without changing parent identities returned for branch merging.
     fn parent_behavior(&self) -> ParentBehavior {
         ParentBehavior::Preserves
-    }
-
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
-        ParentPayloadMutations::none()
     }
 }
 

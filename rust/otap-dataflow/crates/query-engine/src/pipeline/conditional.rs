@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{BooleanArray, RecordBatch};
+use arrow::array::{BooleanArray, BooleanBuilder, RecordBatch, UInt16Array};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
 use arrow::datatypes::UInt16Type;
@@ -17,7 +17,7 @@ use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use otel_arrow_dfe_pdata::otap::filter::{
-    ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch,
+    ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool, filter_otap_batch,
 };
 use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -32,7 +32,7 @@ use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{BoxedPipelineStage, ParentBehavior, ParentPayloadMutations, PipelineStage};
+use crate::pipeline::{BoxedPipelineStage, ParentBehavior, PipelineStage};
 
 /// This [`PipelineStage`] implementation will conditionally apply child pipeline stages on rows
 /// which match some condition. This can be used to implement `if/else if/else` type control flow
@@ -104,14 +104,6 @@ fn stages_require_parent_reindex(stages: &[BoxedPipelineStage]) -> bool {
         .any(|stage| stage.parent_behavior().requires_reindex())
 }
 
-fn stage_parent_payload_mutations(stages: &[BoxedPipelineStage]) -> ParentPayloadMutations {
-    stages
-        .iter()
-        .fold(ParentPayloadMutations::none(), |mutations, stage| {
-            mutations.union(stage.parent_payload_mutations())
-        })
-}
-
 fn remove_payload_from_branches(
     branch_results: &mut [OtapArrowRecords],
     payload_type: ArrowPayloadType,
@@ -119,6 +111,27 @@ fn remove_payload_from_branches(
     for branch_result in branch_results {
         _ = branch_result.remove(payload_type);
     }
+}
+
+fn build_parent_selection(
+    parent_ids: &UInt16Array,
+    referenced_ids: &IdBitmap,
+) -> Option<BooleanArray> {
+    let mut selection: Option<BooleanBuilder> = None;
+
+    for (index, parent_id) in parent_ids.iter().enumerate() {
+        let selected = parent_id.is_some_and(|id| referenced_ids.contains(u32::from(id)));
+        if let Some(builder) = selection.as_mut() {
+            builder.append_value(selected);
+        } else if !selected {
+            let mut builder = BooleanBuilder::with_capacity(parent_ids.len());
+            builder.append_n(index, true);
+            builder.append_value(false);
+            selection = Some(builder);
+        }
+    }
+
+    selection.map(|mut builder| builder.finish())
 }
 
 fn restore_original_parent_payload(
@@ -138,82 +151,36 @@ fn restore_original_parent_payload(
     };
 
     let mut referenced_ids = pool.acquire();
-    let selection_result: Result<BooleanArray> = (|| {
+    let selection_result: Result<Option<BooleanArray>> = (|| {
         referenced_ids.populate(id_column.iter().flatten().map(u32::from));
         let parent_ids = attrs_batch
             .column_by_name(consts::PARENT_ID)
             .ok_or_else(|| crate::error::Error::ExecutionError {
                 cause: "attribute batch is missing parent_id".into(),
             })?;
-        Ok(UInt16Type::build_selection_vec(
-            parent_ids,
-            &referenced_ids,
-        )?)
+        let parent_ids = parent_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| crate::error::Error::ExecutionError {
+                cause: format!(
+                    "unexpected type for parent_id column: expected u16, found {}",
+                    parent_ids.data_type()
+                ),
+            })?;
+        Ok(build_parent_selection(parent_ids, &referenced_ids))
     })();
     pool.release(referenced_ids);
     let selection = selection_result?;
 
-    if selection.true_count() == attrs_batch.num_rows() {
+    if let Some(selection) = selection {
+        if selection.true_count() > 0 {
+            result.set(payload_type, filter_record_batch(attrs_batch, &selection)?)?;
+        }
+    } else {
         result.set(payload_type, attrs_batch.clone())?;
-    } else if selection.true_count() > 0 {
-        result.set(payload_type, filter_record_batch(attrs_batch, &selection)?)?;
     }
 
     Ok(())
-}
-
-fn retain_shared_attribute_payload_once(
-    branch_results: &mut [OtapArrowRecords],
-    payload_type: ArrowPayloadType,
-    pool: &mut IdBitmapPool,
-) -> Result<()> {
-    let mut claimed_ids = pool.acquire();
-    let mut branch_ids = pool.acquire();
-
-    let result = (|| {
-        for branch_result in branch_results {
-            let Some(root_batch) = branch_result.root_record_batch() else {
-                _ = branch_result.remove(payload_type);
-                continue;
-            };
-            let Some(id_column) = UInt16Type::get_id_col_from_parent(root_batch, payload_type)?
-            else {
-                _ = branch_result.remove(payload_type);
-                continue;
-            };
-
-            branch_ids.populate(id_column.iter().flatten().map(u32::from));
-            branch_ids.difference_with(&claimed_ids);
-
-            if branch_ids.is_empty() {
-                _ = branch_result.remove(payload_type);
-                continue;
-            }
-
-            if let Some(attrs_batch) = branch_result.get(payload_type) {
-                let parent_ids =
-                    attrs_batch
-                        .column_by_name(consts::PARENT_ID)
-                        .ok_or_else(|| crate::error::Error::ExecutionError {
-                            cause: "attribute batch is missing parent_id".into(),
-                        })?;
-                let selection = UInt16Type::build_selection_vec(parent_ids, &branch_ids)?;
-                if selection.true_count() == 0 {
-                    _ = branch_result.remove(payload_type);
-                } else if selection.true_count() != attrs_batch.num_rows() {
-                    let filtered = filter_record_batch(attrs_batch, &selection)?;
-                    branch_result.set(payload_type, filtered)?;
-                }
-            }
-
-            claimed_ids.union_with(&branch_ids);
-        }
-        Ok(())
-    })();
-
-    pool.release(branch_ids);
-    pool.release(claimed_ids);
-    result
 }
 
 #[async_trait(?Send)]
@@ -255,8 +222,6 @@ impl PipelineStage for ConditionalPipelineStage {
             self.branches.len() + if self.default_branch.is_some() { 1 } else { 0 },
         );
         let mut reindex_branch_results = false;
-        let mut parent_payload_mutations = ParentPayloadMutations::none();
-
         for branch in &mut self.branches {
             if already_selected_vec.true_count() == root_batch.num_rows() {
                 // all rows have been selected by previous branches, so there is no need to continue
@@ -326,8 +291,6 @@ impl PipelineStage for ConditionalPipelineStage {
             }
 
             reindex_branch_results |= stages_require_parent_reindex(&branch.pipeline_stages);
-            parent_payload_mutations = parent_payload_mutations
-                .union(stage_parent_payload_mutations(&branch.pipeline_stages));
             branch_results.push(branch_otap_batch);
         }
 
@@ -353,8 +316,6 @@ impl PipelineStage for ConditionalPipelineStage {
                         .await?;
                 }
                 reindex_branch_results |= stages_require_parent_reindex(default_branch);
-                parent_payload_mutations =
-                    parent_payload_mutations.union(stage_parent_payload_mutations(default_branch));
             }
             branch_results.push(default_branch_batch);
         }
@@ -364,15 +325,7 @@ impl PipelineStage for ConditionalPipelineStage {
                 ArrowPayloadType::ScopeAttrs,
                 ArrowPayloadType::ResourceAttrs,
             ] {
-                if parent_payload_mutations.modifies(payload_type) {
-                    retain_shared_attribute_payload_once(
-                        &mut branch_results,
-                        payload_type,
-                        &mut self.id_bitmap_pool,
-                    )?;
-                } else {
-                    remove_payload_from_branches(&mut branch_results, payload_type);
-                }
+                remove_payload_from_branches(&mut branch_results, payload_type);
             }
         }
 
@@ -406,14 +359,12 @@ impl PipelineStage for ConditionalPipelineStage {
                 ArrowPayloadType::ScopeAttrs,
                 ArrowPayloadType::ResourceAttrs,
             ] {
-                if !parent_payload_mutations.modifies(payload_type) {
-                    restore_original_parent_payload(
-                        &otap_batch,
-                        &mut result,
-                        payload_type,
-                        &mut self.id_bitmap_pool,
-                    )?;
-                }
+                restore_original_parent_payload(
+                    &otap_batch,
+                    &mut result,
+                    payload_type,
+                    &mut self.id_bitmap_pool,
+                )?;
             }
         }
 
@@ -534,16 +485,6 @@ impl PipelineStage for ConditionalPipelineStage {
             ParentBehavior::Preserves
         }
     }
-
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
-        self.branches
-            .iter()
-            .flat_map(|branch| &branch.pipeline_stages)
-            .chain(self.default_branch.iter().flat_map(|stages| stages.iter()))
-            .fold(ParentPayloadMutations::none(), |mutations, stage| {
-                mutations.union(stage.parent_payload_mutations())
-            })
-    }
 }
 
 #[cfg(test)]
@@ -619,6 +560,34 @@ mod test {
                 .iter()
                 .zip(actual.columns())
                 .all(|(expected, actual)| Arc::ptr_eq(expected, actual))
+        );
+    }
+
+    /// Scenario: Every parent attribute row remains referenced after branch merging.
+    /// Guarantees: Parent restoration reuses the original batch without allocating a selection.
+    #[test]
+    fn test_parent_selection_skips_mask_when_all_rows_survive() {
+        let parent_ids = UInt16Array::from(vec![Some(1), Some(2), Some(3)]);
+        let mut referenced_ids = IdBitmap::new();
+        referenced_ids.populate([1, 2, 3].into_iter());
+
+        assert!(build_parent_selection(&parent_ids, &referenced_ids).is_none());
+    }
+
+    /// Scenario: Referenced parent rows follow an excluded row and a null parent ID.
+    /// Guarantees: Lazy selection backfills prior rows and continues excluding null IDs.
+    #[test]
+    fn test_parent_selection_allocates_after_first_excluded_row() {
+        let parent_ids = UInt16Array::from(vec![Some(1), Some(2), None, Some(3), Some(4)]);
+        let mut referenced_ids = IdBitmap::new();
+        referenced_ids.populate([1, 3, 4].into_iter());
+
+        let selection =
+            build_parent_selection(&parent_ids, &referenced_ids).expect("selection is required");
+
+        assert_eq!(
+            selection.iter().collect::<Vec<_>>(),
+            vec![Some(true), Some(false), Some(false), Some(true), Some(true)]
         );
     }
 

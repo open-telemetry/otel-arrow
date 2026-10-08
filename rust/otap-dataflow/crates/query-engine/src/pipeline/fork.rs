@@ -13,10 +13,7 @@ use otel_arrow_dfe_pdata::{
     otap::{Logs, Metrics, Traces},
 };
 
-use crate::pipeline::{
-    BoxedPipelineStage, ParentBehavior, ParentPayloadMutations, PipelineStage,
-    state::ExecutionState,
-};
+use crate::pipeline::{BoxedPipelineStage, ParentBehavior, PipelineStage, state::ExecutionState};
 use crate::{
     error::Result,
     pipeline::concat::{concatenate_logs, concatenate_metrics, concatenate_traces},
@@ -130,15 +127,6 @@ impl PipelineStage for ForkPipelineStage {
         } else {
             ParentBehavior::Preserves
         }
-    }
-
-    fn parent_payload_mutations(&self) -> ParentPayloadMutations {
-        self.branches
-            .iter()
-            .flat_map(|branch| &branch.pipeline_stages)
-            .fold(ParentPayloadMutations::none(), |mutations, stage| {
-                mutations.union(stage.parent_payload_mutations())
-            })
     }
 }
 
