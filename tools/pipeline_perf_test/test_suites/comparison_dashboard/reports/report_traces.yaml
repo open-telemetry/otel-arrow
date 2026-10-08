@@ -321,9 +321,11 @@ queries:
 
           UNION ALL
 
-          -- Always emit a row: an overwhelmed backend that receives zero spans
-          -- produces no 'spans' entry in span_throughput_rates, but a scraped 0
-          -- is a valid result and must be reported (not dropped).
+          -- If we run into a scenario where 0 signals make it to the backend
+          -- becuase the SUT is misbehaving, then it's possible for the engine
+          -- to omit certain metrics that never had a value. In that case
+          -- we still want to record a 0 for this metric instead of a null or
+          -- the report breaks.
           SELECT 'spans_received_rate' AS name, 'spans/sec' AS unit,
                 COALESCE(str.spans_per_second, 0) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Span Throughput' AS extra

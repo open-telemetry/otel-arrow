@@ -235,7 +235,7 @@ queries:
     sql: |
       CREATE TABLE log_loss AS
       SELECT
-          (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) AS logs_lost,
+          (COALESCE(litems_total{otel_scope_pipeline_id="main",otel_scope_core_id="0",otel_scope_deployment_generation="0",otel_scope_name="node.input",otel_scope_node_id="debug",otel_scope_channel_type="mpsc",otel_scope_node_port="input",otel_scope_channel_kind="pdata",otel_scope_node_type="processor",signal="logs",otel_scope_channel_mode="local",otel_scope_numa_node_id="0",otel_scope_channel_id="hyperedge:764c1f6afd54fcfa",outcome="success",otel_scope_channel_impl="internal",otel_scope_node_urn="urn:otel:processor:debug",otel_scope_pipeline_group_id="default"} 1991400 1791484434407ogs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) AS logs_lost,
           CASE
               WHEN (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0)) > 0 THEN
                   (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) * 1.0 /
@@ -322,9 +322,11 @@ queries:
 
           UNION ALL
 
-          -- Always emit a row: an overwhelmed backend that receives zero logs
-          -- produces no 'logs' entry in log_throughput_rates, but a scraped 0
-          -- is a valid result and must be reported (not dropped).
+          -- If we run into a scenario where 0 signals make it to the backend
+          -- becuase the SUT is misbehaving, then it's possible for the engine
+          -- to omit certain metrics that never had a value. In that case
+          -- we still want to record a 0 for this metric instead of a null or
+          -- the report breaks.
           SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit,
                 COALESCE(ltr.logs_per_second, 0) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
@@ -357,10 +359,11 @@ queries:
 
           UNION ALL
 
-          -- Always emit a row: when the backend receives zero logs the ratio
-          -- divides by zero, so report a finite 0 (a scraped 0 is a valid
-          -- result). LEFT JOINs keep the row even if the egress or logs rate
-          -- sources are missing under overwhelm.
+          -- If we run into a scenario where 0 signals make it to the backend
+          -- becuase the SUT is misbehaving, then it's possible for the engine
+          -- to omit certain metrics that never had a value. In that case
+          -- we still want to record a 0 for this metric instead of a null or
+          -- the report breaks.
           SELECT 'egress_bytes_per_log' AS name, 'bytes/log' AS unit,
                 CASE WHEN COALESCE(ltr.logs_per_second, 0) > 0
                   THEN cnr.average_rate / ltr.logs_per_second
