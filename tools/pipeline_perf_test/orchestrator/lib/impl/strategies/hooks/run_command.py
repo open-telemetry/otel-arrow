@@ -18,10 +18,15 @@ Warnings:
     input is not properly sanitized. Use caution when including user-supplied strings.
 """
 
+import subprocess
+
+from pydantic import PositiveFloat
+
 from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
 from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
+from ..common.process import wait_or_terminate_process_tree
 
 
 @hook_registry.register_config("run_command")
@@ -31,9 +36,15 @@ class RunCommandConfig(HookStrategyConfig):
 
     Attributes:
         command (str): The shell command to be executed by the hook.
+        timeout (PositiveFloat): Maximum time in seconds to allow the command to run
+            before it is killed and a TimeoutExpired error is raised. Prevents a hung
+            command from wedging the orchestrator. Must be a positive number; zero,
+            negative, and null values are rejected so the bound cannot be disabled.
+            Default is 30.
     """
 
     command: str
+    timeout: PositiveFloat = 30.0
 
 
 @hook_registry.register_class("run_command")
@@ -72,7 +83,8 @@ tests:
         Initialize the hook with its configuration.
 
         Args:
-            config (RunCommandConfig): Configuration object containing the command to run.
+            config (RunCommandConfig): Configuration object containing the command
+                to run.
         """
         self.config = config
 
@@ -80,16 +92,45 @@ tests:
         """
         Execute the configured shell command using the subprocess module.
 
+        The command runs via a shell (``shell=True``). If it does not finish
+        within the configured timeout, the whole process tree (the shell and any
+        descendants it spawned) is terminated gracefully and then force-killed, so
+        a hung command cannot leave orphaned processes behind. This cleanup works
+        on both POSIX and Windows.
+
         Args:
             ctx (BaseContext): The execution context, providing utilities like logging.
 
         Raises:
             subprocess.CalledProcessError: If the command returns a non-zero exit code.
+            subprocess.TimeoutExpired: If the command runs longer than the
+                configured timeout.
         """
-        import subprocess
-
         logger = ctx.get_logger(__name__)
 
         logger.debug(f"Running: {self.config.command}")
-        # Execute the command with shell=True, and raise an exception if it fails
-        subprocess.run([self.config.command], shell=True, check=True)
+        # Use Popen (rather than subprocess.run) so that on timeout we can kill the
+        # shell AND any descendants it spawned; subprocess.run would only kill the
+        # direct shell child, orphaning the real command.
+        proc = subprocess.Popen([self.config.command], shell=True)
+        try:
+            proc.communicate(timeout=self.config.timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                f"Command timed out after {self.config.timeout}s; terminating "
+                f"process tree: {self.config.command}"
+            )
+            # The command demonstrably did not finish, so skip the normal wait and
+            # go straight to graceful-then-force termination of the whole tree.
+            wait_or_terminate_process_tree(proc.pid, logger, normal_timeout=0)
+            # The helper already reaped the tree; finalize the direct child's
+            # returncode with a bounded wait so we never block here.
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+
+        # Preserve the previous check=True behavior: a non-zero exit fails the step.
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, self.config.command)
