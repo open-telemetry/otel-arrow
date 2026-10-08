@@ -6,7 +6,14 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(any(
+    feature = "flat-file-api-key-auth",
+    feature = "flat-file-user-pass-auth",
+    test
+))]
 use otel_arrow_dfe_otap::tls_utils::read_file_with_limit_async;
+#[cfg(feature = "flat-file-sasl-auth")]
+use otel_arrow_dfe_otap::tls_utils::read_file_with_limit_sync;
 use secrecy::SecretString;
 use secrecy::zeroize::Zeroize;
 
@@ -23,8 +30,24 @@ pub(crate) enum ReadSecretFileError {
 }
 
 /// Reads a size-limited UTF-8 secret and strips trailing line endings.
+#[cfg(any(
+    feature = "flat-file-api-key-auth",
+    feature = "flat-file-user-pass-auth",
+    test
+))]
 pub(crate) async fn read_secret_file(path: &Path) -> Result<SecretString, ReadSecretFileError> {
     let contents = read_file_with_limit_async(path).await?;
+    decode_secret(contents)
+}
+
+/// Blocking counterpart for synchronous startup factories, not runtime calls.
+#[cfg(feature = "flat-file-sasl-auth")]
+pub(crate) fn read_secret_file_sync(path: &Path) -> Result<SecretString, ReadSecretFileError> {
+    let contents = read_file_with_limit_sync(path)?;
+    decode_secret(contents)
+}
+
+fn decode_secret(contents: Vec<u8>) -> Result<SecretString, ReadSecretFileError> {
     let mut contents = String::from_utf8(contents).map_err(|error| {
         error.into_bytes().zeroize();
         ReadSecretFileError::InvalidUtf8
