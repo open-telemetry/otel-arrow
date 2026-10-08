@@ -4,18 +4,50 @@
 //! Build a [`WindowsEvent`] from a bounded XML document.
 //!
 //! This resolves the `Event` root in the Windows event namespace, parses numeric
-//! `System` identifiers, and retains `EventData` and `UserData` payloads. It does
-//! not recognize synthetic markers, derive severity, or map attributes; those are
+//! `System` identifiers, and retains the event's payload section. `EventData` and
+//! `UserData` are structured; any other section is kept verbatim. It does not
+//! recognize synthetic markers, derive severity, or map attributes; those are
 //! receiver concerns. Diagnostics are receiver conversion failures, not errors
 //! reported by the event itself.
 
 use super::super::xml::{Document, Node};
 use super::model::{
-    Attribute, Content, DataEntry, Element, EventData, RenderingInfo, System, WindowsEvent,
+    Attribute, Content, DataEntry, Element, EventData, Payload, RenderingInfo, System, WindowsEvent,
 };
 
 const EVENT_NS: &str = "http://schemas.microsoft.com/win/2004/08/events/event";
 const MAX_USER_DATA_DEPTH: usize = 32;
+
+/// An `Event` child section, classified from its element name in one place.
+enum Section {
+    /// System-rendered metadata.
+    System,
+    /// Publisher rendering information.
+    RenderingInfo,
+    /// Structured `EventData` payload.
+    EventData,
+    /// Namespace-aware `UserData` payload.
+    UserData,
+    /// Any other section, including payload variants not yet structured.
+    Other,
+}
+
+impl Section {
+    /// Resolve the section kind from an element's local name in the event namespace.
+    fn classify(node: Node<'_, '_>) -> Self {
+        if node.has_tag_name((EVENT_NS, "System")) {
+            Section::System
+        } else if node.has_tag_name((EVENT_NS, "RenderingInfo")) {
+            Section::RenderingInfo
+        } else if node.has_tag_name((EVENT_NS, "EventData")) {
+            Section::EventData
+        } else if node.has_tag_name((EVENT_NS, "UserData")) {
+            Section::UserData
+        } else {
+            Section::Other
+        }
+    }
+}
 
 /// Build a [`WindowsEvent`] from a parsed Event document.
 ///
@@ -23,8 +55,8 @@ const MAX_USER_DATA_DEPTH: usize = 32;
 ///
 /// Returns a diagnostic string when the root is not an `Event` in the Windows
 /// event namespace, required `System` fields are missing, numeric fields or the
-/// timestamp are malformed, a scalar field contains nested elements, or `UserData`
-/// nests beyond depth 32.
+/// timestamp are malformed, a scalar field contains nested elements, more than one
+/// payload section is present, or a payload section nests beyond depth 32.
 pub fn from_document(document: &Document<'_>) -> Result<WindowsEvent, String> {
     let root = document.root_element();
     if !root.has_tag_name((EVENT_NS, "Event")) {
@@ -34,16 +66,34 @@ pub fn from_document(document: &Document<'_>) -> Result<WindowsEvent, String> {
     let rendering = child(root, "RenderingInfo")?
         .map(parse_rendering)
         .transpose()?;
-    let event_data = parse_event_data(root)?;
-    let user_data = child(root, "UserData")?
-        .map(|node| parse_element(node, 0))
-        .transpose()?;
+    let payload = parse_payload(root)?;
     Ok(WindowsEvent {
         system,
         rendering,
-        event_data,
-        user_data,
+        payload,
     })
+}
+
+/// Resolve the single payload section, retaining unrecognized sections verbatim.
+///
+/// The schema allows at most one payload section; more than one is rejected.
+fn parse_payload(root: Node<'_, '_>) -> Result<Option<Payload>, String> {
+    let mut payload = None;
+    for section in root.children().filter(Node::is_element) {
+        let next = match Section::classify(section) {
+            Section::System | Section::RenderingInfo => continue,
+            Section::EventData => Payload::EventData(parse_event_data(section)?),
+            Section::UserData => Payload::UserData(parse_element(section, 0)?),
+            // Other defined sections (DebugData, ProcessingErrorData,
+            // BinaryEventData, ...) are preserved here until structured later.
+            Section::Other => Payload::Other(parse_element(section, 0)?),
+        };
+        if payload.is_some() {
+            return Err("multiple event payload sections".into());
+        }
+        payload = Some(next);
+    }
+    Ok(payload)
 }
 
 /// Parse the `System` section, typing numeric identifiers and the timestamp.
@@ -97,14 +147,10 @@ fn parse_rendering(node: Node<'_, '_>) -> Result<RenderingInfo, String> {
     })
 }
 
-/// Collect `EventData/Data` entries in source order, naming unnamed ones `paramN`.
 /// Collect the `EventData` payload, retaining `Data`, `ComplexData`, and `Binary`.
 ///
 /// Unnamed `Data` entries are named `paramN` by their one-based element position.
-fn parse_event_data(root: Node<'_, '_>) -> Result<EventData, String> {
-    let Some(data) = child(root, "EventData")? else {
-        return Ok(EventData::default());
-    };
+fn parse_event_data(data: Node<'_, '_>) -> Result<EventData, String> {
     let mut event_data = EventData::default();
     for (position, item) in data.children().filter(Node::is_element).enumerate() {
         if item.has_tag_name((EVENT_NS, "Data")) {
@@ -208,11 +254,11 @@ fn field(node: Node<'_, '_>, name: &str) -> Result<Option<String>, String> {
 mod tests {
     use super::*;
 
-    /// Scenario: a full event carries System metadata, rendering, EventData, and nested UserData.
-    /// Guarantees: numeric System fields are typed, repeated and unnamed EventData entries are
-    /// retained in order, and the UserData tree preserves names, namespaces, and text.
+    /// Scenario: an event carries full System metadata, an EventData payload, and rendering.
+    /// Guarantees: numeric System fields are typed, and repeated and unnamed EventData entries
+    /// are retained in source order under the `EventData` payload variant.
     #[test]
-    fn builds_full_event() {
+    fn builds_event_data_payload() {
         let xml = concat!(
             "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>",
             "<System>",
@@ -224,7 +270,6 @@ mod tests {
             "<Computer>host</Computer><Security UserID='S-1-5-18'/>",
             "</System>",
             "<EventData><Data Name='a'>one</Data><Data>two</Data><Data Name='a'>three</Data></EventData>",
-            "<UserData><Payload xmlns='urn:p'>text<Inner k='v'/></Payload></UserData>",
             "<RenderingInfo><Message>rendered</Message><Level>Warning</Level></RenderingInfo>",
             "</Event>",
         );
@@ -243,21 +288,40 @@ mod tests {
             event.system.time_created_unix_nano,
             1_790_105_291_000_000_000
         );
-        let names: Vec<_> = event
-            .event_data
+        let Some(Payload::EventData(event_data)) = &event.payload else {
+            panic!("expected EventData payload");
+        };
+        let names: Vec<_> = event_data
             .entries
             .iter()
             .map(|entry| entry.name.as_str())
             .collect();
-        let values: Vec<_> = event
-            .event_data
+        let values: Vec<_> = event_data
             .entries
             .iter()
             .map(|entry| entry.value.as_str())
             .collect();
         assert_eq!(names, ["a", "param2", "a"]);
         assert_eq!(values, ["one", "two", "three"]);
-        let user_data = event.user_data.unwrap();
+        let rendering = event.rendering.unwrap();
+        assert_eq!(rendering.message.as_deref(), Some("rendered"));
+        assert_eq!(rendering.level.as_deref(), Some("Warning"));
+    }
+
+    /// Scenario: an event carries a namespaced UserData payload with nested mixed content.
+    /// Guarantees: the `UserData` payload variant preserves names, namespaces, and text order.
+    #[test]
+    fn builds_user_data_payload() {
+        let xml = concat!(
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>",
+            "<System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/></System>",
+            "<UserData><Payload xmlns='urn:p'>text<Inner k='v'/></Payload></UserData>",
+            "</Event>",
+        );
+        let event = from_document(&Document::parse(xml).unwrap()).unwrap();
+        let Some(Payload::UserData(user_data)) = &event.payload else {
+            panic!("expected UserData payload");
+        };
         assert_eq!(user_data.name, "UserData");
         assert_eq!(user_data.content.len(), 1);
         let Content::Element(payload) = &user_data.content[0] else {
@@ -272,13 +336,10 @@ mod tests {
         };
         assert_eq!(inner.name, "Inner");
         assert_eq!(inner.attributes[0].name, "k");
-        let rendering = event.rendering.unwrap();
-        assert_eq!(rendering.message.as_deref(), Some("rendered"));
-        assert_eq!(rendering.level.as_deref(), Some("Warning"));
     }
 
     /// Scenario: an absent message with no payload yields an empty structured representation.
-    /// Guarantees: absence of RenderingInfo and payload sections is distinguished from empty content.
+    /// Guarantees: absence of RenderingInfo and of any payload section is represented as `None`.
     #[test]
     fn omits_absent_sections() {
         let xml = concat!(
@@ -291,10 +352,29 @@ mod tests {
         assert_eq!(event.system.level, 0);
         assert!(event.system.channel.is_none());
         assert!(event.rendering.is_none());
-        assert!(event.event_data.entries.is_empty());
-        assert!(event.event_data.complex.is_empty());
-        assert!(event.event_data.binary.is_none());
-        assert!(event.user_data.is_none());
+        assert!(event.payload.is_none());
+    }
+
+    /// Scenario: an unrecognized payload section (e.g. ProcessingErrorData) is received.
+    /// Guarantees: the section is retained verbatim as `Payload::Other` rather than dropped.
+    #[test]
+    fn retains_unknown_payload_section() {
+        let xml = concat!(
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>",
+            "<System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/></System>",
+            "<ProcessingErrorData><ErrorCode>15003</ErrorCode></ProcessingErrorData>",
+            "</Event>",
+        );
+        let event = from_document(&Document::parse(xml).unwrap()).unwrap();
+        let Some(Payload::Other(section)) = &event.payload else {
+            panic!("expected Other payload");
+        };
+        assert_eq!(section.name, "ProcessingErrorData");
+        let Content::Element(code) = &section.content[0] else {
+            panic!("expected ErrorCode element");
+        };
+        assert_eq!(code.name, "ErrorCode");
+        assert_eq!(code.content[0], Content::Text("15003".into()));
     }
 
     /// Scenario: EventData carries ComplexData and a Binary payload alongside Data entries.
@@ -312,11 +392,14 @@ mod tests {
             "</Event>",
         );
         let event = from_document(&Document::parse(xml).unwrap()).unwrap();
-        assert_eq!(event.event_data.entries.len(), 1);
-        assert_eq!(event.event_data.entries[0].name, "a");
-        assert_eq!(event.event_data.binary.as_deref(), Some("0102FF"));
-        assert_eq!(event.event_data.complex.len(), 1);
-        let complex = &event.event_data.complex[0];
+        let Some(Payload::EventData(event_data)) = &event.payload else {
+            panic!("expected EventData payload");
+        };
+        assert_eq!(event_data.entries.len(), 1);
+        assert_eq!(event_data.entries[0].name, "a");
+        assert_eq!(event_data.binary.as_deref(), Some("0102FF"));
+        assert_eq!(event_data.complex.len(), 1);
+        let complex = &event_data.complex[0];
         assert_eq!(complex.name, "ComplexData");
         let Content::Element(field) = &complex.content[0] else {
             panic!("expected nested Field element");
@@ -348,6 +431,9 @@ mod tests {
             ),
             format!(
                 "<Event xmlns='{ns}'><System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/><EventRecordID>x</EventRecordID></System></Event>"
+            ),
+            format!(
+                "<Event xmlns='{ns}'><System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/></System><EventData/><UserData/></Event>"
             ),
             deep_user_data,
         ] {

@@ -20,10 +20,26 @@ pub struct WindowsEvent {
     pub system: System,
     /// Publisher-rendered message and level text, when present.
     pub rendering: Option<RenderingInfo>,
-    /// `EventData` payload: `Data` entries, `ComplexData`, and an optional `Binary`.
-    pub event_data: EventData,
-    /// Namespace-aware `UserData` element tree, when present.
-    pub user_data: Option<Element>,
+    /// The event's payload section, when present.
+    pub payload: Option<Payload>,
+}
+
+/// The event's payload section: a schema choice of mutually exclusive variants.
+///
+/// `EventData` and `UserData` are structured. Other defined sections (for example
+/// `DebugData`, `ProcessingErrorData`, `BinaryEventData`) and any unrecognized
+/// section are retained verbatim as [`Payload::Other`] rather than dropped or
+/// rejected; the original section name is preserved in [`Element::name`].
+/// Dedicated variants for those sections may be added later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    /// Structured `EventData` payload.
+    EventData(EventData),
+    /// Namespace-aware `UserData` element tree.
+    UserData(Element),
+    /// Any other payload section, retained as a raw element tree until a dedicated
+    /// variant (e.g. `DebugData`, `ProcessingErrorData`, `BinaryEventData`) is added.
+    Other(Element),
 }
 
 /// System-section fields. Numeric identifiers are parsed; opaque values stay strings.
