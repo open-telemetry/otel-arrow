@@ -119,7 +119,7 @@ fn bench_scale_metric(c: &mut Criterion) {
                         default_parser_options(),
                     )
                     .expect("can parse scale_metric pipeline");
-                    let mut pipeline = Pipeline::new(parser_result.pipeline);
+                    let mut pipeline = Pipeline::try_new(parser_result.pipeline).expect("pipeline");
 
                     rt.block_on(async {
                         _ = pipeline

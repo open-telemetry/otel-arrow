@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Benchmarks transport-header propagation selector costs.
+//! `header_propagation_small` consumes propagated values for 0-5 captured headers,
+//! with at most one condition on an existing member (no extra condition headers).
 //!
 //! Run with:
 //!
@@ -17,7 +19,8 @@ use otel_arrow_dfe_config::context_policy::{
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, HeaderCapturePolicy,
-    HeaderPropagationPolicy as HeaderPropagationConfig,
+    HeaderPropagationPolicy as HeaderPropagationConfig, PropagationDefault, PropagationSelector,
+    PropagationSelectorType,
 };
 use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use std::hint::black_box;
@@ -30,6 +33,7 @@ const DUPLICATE_TOTAL_HEADERS: usize = 32;
 const SHARED_CONDITION_BINDING_COUNTS: [usize; 3] = [4, 5, 32];
 
 pub(super) fn benchmarks(c: &mut Criterion) {
+    small_composite_benchmarks(c);
     let mut group = c.benchmark_group("header_propagation");
 
     for header_count in HEADER_COUNTS {
@@ -123,6 +127,119 @@ pub(super) fn benchmarks(c: &mut Criterion) {
     binding_group.finish();
 }
 
+fn small_composite_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("header_propagation_small");
+    for member_count in 0..=5 {
+        let headers = small_composite_headers(member_count);
+        let unqualified = HeaderPropagationConfig::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
+        let policy = HeaderPropagationPolicy::compile(unqualified, &[]).expect("unqualified");
+        assert_eq!(policy.propagate(&headers).count(), member_count);
+        let _ = group.bench_with_input(
+            BenchmarkId::new("unqualified", format!("{member_count}_members")),
+            &headers,
+            |b, headers| {
+                b.iter(|| {
+                    for header in policy.propagate(black_box(headers)) {
+                        let _ = black_box(header);
+                    }
+                })
+            },
+        );
+        if member_count == 0 {
+            continue;
+        }
+        for (case, condition) in [
+            ("plain", None),
+            ("match", Some(true)),
+            ("miss", Some(false)),
+        ] {
+            let (config, declarations) = small_composite_config(member_count, condition);
+            let policy =
+                HeaderPropagationPolicy::compile(config, &declarations).expect("composite");
+            assert_eq!(
+                policy.propagate(&headers).count(),
+                if condition == Some(false) {
+                    0
+                } else {
+                    member_count
+                }
+            );
+            let _ = group.bench_with_input(
+                BenchmarkId::new(case, format!("{member_count}_members")),
+                &headers,
+                |b, headers| {
+                    b.iter(|| {
+                        for header in policy.propagate(black_box(headers)) {
+                            let _ = black_box(header);
+                        }
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+fn small_composite_headers(member_count: usize) -> TransportHeaders {
+    if member_count == 0 {
+        return TransportHeaders::new();
+    }
+    packed_headers(
+        (0..member_count)
+            .map(|index| (format!("field_{index}"), "value".into()))
+            .collect(),
+    )
+}
+
+fn small_composite_config(
+    member_count: usize,
+    condition: Option<bool>,
+) -> (HeaderPropagationConfig, Vec<ContextEntryDeclaration>) {
+    let policy = HeaderPropagationConfig::new(
+        PropagationDefault {
+            selector: PropagationSelector {
+                selector_type: PropagationSelectorType::Named,
+                named: Some(
+                    (0..member_count)
+                        .map(|index| context_ref(&format!("composite:field_{index}")))
+                        .collect(),
+                ),
+            },
+            ..PropagationDefault::default()
+        },
+        vec![],
+    );
+    let mut parts = (0..member_count)
+        .map(|index| ContextEntryPart::TransportHeader {
+            name: context_name(&format!("field_{index}")),
+            store_as: None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(matches) = condition {
+        parts.push(ContextEntryPart::TransportHeaderMatch {
+            name: context_name("field_0"),
+            value: if matches { "value" } else { "missing" }.into(),
+        });
+    }
+    (
+        policy,
+        vec![ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("composite"),
+            definition: ContextEntryDefinition(parts),
+        }],
+    )
+}
+
 fn headers(header_count: usize) -> TransportHeaders {
     packed_headers(
         (0..header_count)
@@ -178,7 +295,7 @@ fn conditional_declaration(
     let selected_index = header_count - 1;
     let mut parts = Vec::with_capacity(condition_count + 1);
     parts.push(ContextEntryPart::TransportHeader {
-        name: context_ref(&format!("header_{selected_index}")),
+        name: context_name(&format!("header_{selected_index}")),
         store_as: Some(context_name("selected")),
     });
 
@@ -193,7 +310,7 @@ fn conditional_declaration(
             "missing".to_owned()
         };
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref(&format!("{name_variant}_{source_index}")),
+            name: context_name(&format!("{name_variant}_{source_index}")),
             value: expected_value,
         });
     }
@@ -237,12 +354,12 @@ default:
     )
     .expect("valid duplicate-source propagation policy");
     let mut parts = vec![ContextEntryPart::TransportHeader {
-        name: context_ref("selected_source"),
+        name: context_name("selected_source"),
         store_as: Some(context_name("selected")),
     }];
     for index in 0..CONDITION_COUNTS.len() {
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref(&format!("condition_{index}")),
+            name: context_name(&format!("condition_{index}")),
             value: if matches || index + 1 < CONDITION_COUNTS.len() {
                 format!("value_{index}")
             } else {
@@ -289,13 +406,13 @@ default:
     let mut parts = Vec::with_capacity(binding_count + CONDITION_COUNTS.len());
     for index in 0..binding_count {
         parts.push(ContextEntryPart::TransportHeader {
-            name: context_ref(&format!("selected_source_{index}")),
+            name: context_name(&format!("selected_source_{index}")),
             store_as: Some(context_name(&format!("selected_{index}"))),
         });
     }
     for index in 0..CONDITION_COUNTS.len() {
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref(&format!("condition_{index}")),
+            name: context_name(&format!("condition_{index}")),
             value: if matches || index + 1 < CONDITION_COUNTS.len() {
                 format!("value_{index}")
             } else {

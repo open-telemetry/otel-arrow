@@ -13,12 +13,12 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::ChildRecordKind;
 use crate::pipeline::expr::RecordScope;
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
 /// specified by the [`AttributesTransform`]
@@ -92,11 +92,20 @@ impl PipelineStage for AttributeTransformPipelineStage {
 
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
         match record_type {
-            RecordType::Signal => true,
-            RecordType::Child(ChildRecordKind::DataPoint) => {
+            RecordType::Signal(_) => true,
+            RecordType::DataPoint(_) => {
                 matches!(self.attrs_id, AttributesIdentifier::Record(_))
             }
             RecordType::Attributes => false,
+        }
+    }
+
+    // Renaming or deleting non-record attributes changes scope/resource parent metadata.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(self.attrs_id, AttributesIdentifier::NonRecord(_)) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
         }
     }
 }
@@ -436,7 +445,8 @@ mod test {
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(KqlParser::parse(query).unwrap().pipeline);
+            let mut pipeline =
+                Pipeline::try_new(KqlParser::parse(query).unwrap().pipeline).unwrap();
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -456,7 +466,8 @@ mod test {
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(OplParser::parse(query).unwrap().pipeline);
+            let mut pipeline =
+                Pipeline::try_new(OplParser::parse(query).unwrap().pipeline).unwrap();
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -580,7 +591,7 @@ mod test {
             project-away attributes[\"x\"], attributes[\"x2\"]
         ";
         let parser_result = P::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut pipeline = Pipeline::try_new(parser_result.pipeline).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         assert!(
@@ -776,7 +787,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
             let result = pipeline.execute(input).await.unwrap();
             let OtlpProtoMessage::Metrics(md) = otap_to_otlp(&result) else {
@@ -879,7 +890,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let input = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
             let result = pipeline.execute(input).await.unwrap();
 

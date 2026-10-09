@@ -115,6 +115,31 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state_changed: Condvar,
 }
 
+/// Keeps observability alive until controller-owned telemetry has been handed off.
+///
+/// The existing runtime mutex and condition variable synchronize the controller
+/// with the global shutdown coordinator; dropping the guard also releases error paths.
+pub(super) struct ControllerTelemetryGuard<
+    'a,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug,
+> {
+    runtime: &'a ControllerRuntime<PData>,
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
+    for ControllerTelemetryGuard<'_, PData>
+{
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.controller_telemetry_pending = false;
+        self.runtime.state_changed.notify_all();
+    }
+}
+
 /// Thin adapter that exposes `ControllerRuntime` through the admin trait.
 struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     runtime: Arc<ControllerRuntime<PData>>,
@@ -207,50 +232,39 @@ impl<
                 global_shutdown_requested: false,
                 global_shutdown_deadline: None,
                 global_shutdown_coordinators: 0,
+                controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
         }
     }
 
     /// Seeds the runtime registry with a pipeline already committed at startup.
-    pub(super) fn register_committed_pipeline(
-        &self,
-        resolved: ResolvedPipelineConfig,
-        placement: PipelinePlacement,
-        generation: u64,
-    ) {
+    pub(super) fn register_committed_pipeline(&self, deployment: &LogicalPipelineDeployment) {
         let pipeline_key = PipelineKey::new(
-            resolved.pipeline_group_id.clone(),
-            resolved.pipeline_id.clone(),
+            deployment.resolved.pipeline_group_id.clone(),
+            deployment.resolved.pipeline_id.clone(),
         );
         self.observed_state_store.set_pipeline_active_cores(
             pipeline_key.clone(),
-            placement.cores.iter().map(|core| core.core_id.id),
+            deployment
+                .placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id),
         );
         self.observed_state_store
-            .set_pipeline_active_generation(pipeline_key.clone(), generation);
+            .set_pipeline_active_generation(pipeline_key.clone(), deployment.baseline_generation);
 
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let context_bindings = Arc::clone(&state.latest_context_bindings);
-        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
-            &resolved, &placement, 0,
-        ));
         _ = state
             .generation_counters
-            .insert(pipeline_key.clone(), generation + 1);
-        _ = state.logical_pipelines.insert(
-            pipeline_key,
-            LogicalPipelineDeployment::new(
-                resolved,
-                context_bindings,
-                generation,
-                placement,
-                listener_group_snapshot,
-            ),
-        );
+            .insert(pipeline_key.clone(), deployment.baseline_generation + 1);
+        _ = state
+            .logical_pipelines
+            .insert(pipeline_key, deployment.clone());
     }
 
     /// Allocates the next controller-local logical thread identifier.

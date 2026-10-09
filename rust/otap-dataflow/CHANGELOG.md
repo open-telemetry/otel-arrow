@@ -12,6 +12,47 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.61.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Topic node metric names and boundaries now follow the shared receiver and exporter contracts. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530), [#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Count receiver delivery via receiver.received.messages and exporter admission via exporter.attempted.*. Use reason/result attributes for rejections and tracked outcomes. Replace blocked-ms totals with receiver.topic.downstream.blocked.duration, a per-wait seconds distribution.
+
+- `pipeline`: Migrated traffic generator receiver telemetry from flat counters to dimensioned metric populations with enum attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Use `smooth.runs.terminations{outcome}` and `smooth.payload.sends.attempts{attempt, outcome}`. Replace `*_produced` with `node.output.items{signal, outcome}` and `completion.*` with `node.output.messages{signal, outcome}`.
+
+### :bulb: Enhancements :bulb:
+
+- `pdata`: Implement single-pass allocation-free views for calculating num_items() for Logs, Traces and Metrics. ([#2883](https://github.com/open-telemetry/otel-arrow/issues/2883))
+- `pipeline`: Console output is now serialized by one process-wide writer per stream, so concurrent exporters can no longer interleave bytes inside a record. ([#3624](https://github.com/open-telemetry/otel-arrow/issues/3624))
+  Every record_json line now parses independently. The startup banner and engine
+  diagnostics now go to stderr. Queued output is bounded by bytes as well as frames,
+  so a slow console cannot retain unbounded memory. Console export stays
+  best-effort: an ACK does not guarantee a console write.
+
+- `pipeline`: Add typed scalar watermarks to the Oracle receiver and shared database polling, supporting signed and unsigned integers, strings, and timestamps. ([#4193](https://github.com/open-telemetry/otel-arrow/issues/4193))
+- `pipeline`: OAuth 2.0 JWT-bearer authentication now uses the Rustls crypto provider selected for TLS. ([#3002](https://github.com/open-telemetry/otel-arrow/issues/3002))
+  Ring, AWS-LC, OpenSSL, and SymCrypt builds sign and verify RS256, RS384, and RS512 client assertions through one provider-neutral adapter.
+- `query-engine`: Read resource and scope attributes in expressions applied to metric data points, so data point attributes can be set or filtered from them. ([#3722](https://github.com/open-telemetry/otel-arrow/issues/3722))
+  Resource and scope struct fields, and mutation of resource and scope attributes, remain unsupported for data points.
+
+### :toolbox: Bug fixes :toolbox:
+
+- `observability`: Fix silent loss of internal log message bodies when they overflow the encoding buffer. ([#1746](https://github.com/open-telemetry/otel-arrow/issues/1746))
+  A bare &str log message body that overflowed the encoding buffer was
+  silently dropped in full with no truncation marker. It now truncates with
+  a "[...]" suffix, like Debug-formatted bodies and attribute fields already
+  did.
+
+- `pipeline`: OTAP exporter now emits a permanent NACK for a permanently rejected batch (e.g. a gRPC INVALID_ARGUMENT batch status), so a retry processor no longer resends data the server cannot accept ([#1921](https://github.com/open-telemetry/otel-arrow/issues/1921))
+  The OTLP gRPC exporter now reports OUT_OF_RANGE failures as `unavailable` instead of `rejected`, matching its retryable handling.
+- `query-engine`: Prevent conditional pipelines from duplicating shared scope and resource attributes. ([#4277](https://github.com/open-telemetry/otel-arrow/issues/4277))
+  Conditional branches retain unchanged shared metadata once and split parent groups when scope or resource attributes diverge.
+- `query-engine`: Query engine execution now validates the signal type of the batch it receives. ([#4070](https://github.com/open-telemetry/otel-arrow/issues/4070))
+
+<!-- previous-version -->
+
 ## v0.60.0
 
 ### :rocket: New components :rocket:

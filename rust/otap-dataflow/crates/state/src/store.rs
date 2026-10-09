@@ -601,7 +601,7 @@ mod tests {
     use otel_arrow_dfe_telemetry::otel_info;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::self_tracing::{
-        LOG_ARGUMENTS_ENCODE_INLINE, LogContext, LogRecord,
+        LOG_ARGUMENTS_ENCODE_LIMIT, LogContext, LogRecord,
     };
     use std::time::Duration;
     use std::time::SystemTime;
@@ -682,7 +682,7 @@ mod tests {
         };
         let error = format!(
             "Pipeline runtime error: {}",
-            "x".repeat(LOG_ARGUMENTS_ENCODE_INLINE * 2)
+            "x".repeat(LOG_ARGUMENTS_ENCODE_LIMIT * 2)
         );
 
         tracing::dispatcher::with_default(&dispatch, || {
