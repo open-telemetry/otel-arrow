@@ -214,6 +214,9 @@ geneva = [
     "dep:url",
     # Geneva metrics exporter.
     "dep:crc32fast",
+    "dep:humantime-serde",
+    "dep:reqwest",
+    "dep:urlencoding",
 ]
 geneva-certificate-auth = [
     "geneva",

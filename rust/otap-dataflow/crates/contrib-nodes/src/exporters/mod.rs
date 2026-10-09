@@ -5,7 +5,7 @@
 #[cfg(feature = "geneva")]
 pub mod geneva_exporter;
 
-/// Geneva metrics protocol support.
+/// Geneva metrics exporter.
 #[cfg(feature = "geneva")]
 pub mod geneva_metrics_exporter;
 
