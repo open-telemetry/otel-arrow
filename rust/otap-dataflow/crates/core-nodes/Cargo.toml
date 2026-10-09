@@ -196,3 +196,13 @@ required-features = ["bench"]
 name = "filelog_decode"
 harness = false
 path = "benches/filelog_decode/main.rs"
+
+[[bench]]
+name = "filelog_framing"
+harness = false
+path = "benches/filelog_framing/main.rs"
+
+[[bench]]
+name = "filelog_framing_allocations"
+harness = false
+path = "benches/filelog_framing/allocations.rs"

@@ -37,6 +37,7 @@ prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -44,6 +45,7 @@ base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -73,6 +75,7 @@ clickhouse-ext-arrow = { workspace = true, optional = true }
 secrecy = { workspace = true, optional = true }
 serde-transcode = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
 arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 paste = { workspace = true, optional = true }
@@ -90,6 +93,7 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 # which is not a valid Win32 executable (os error 193).
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
+windows-sys = { workspace = true, optional = true, features = ["Win32_System_Performance"] }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -105,12 +109,15 @@ contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windows-perf-counters",
+    "windows-event-forwarding",
 ]
 contrib-processors = [
     "condense-attributes",
     "recordset-kql",
     "resource-validator",
 ]
+
 contrib-exporters = [
     "azure-monitor",
     "clickhouse",
@@ -145,6 +152,12 @@ oracle = [
     "dep:secrecy",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
+# Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
+# receiver's remaining optional dependencies land with the receiver itself.
+windows-event-forwarding = [
+    "dep:quick-xml",
+    "dep:chrono",
+]
 user-events = [
     "dep:base64",
     "dep:chrono",
@@ -152,6 +165,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
+windows-perf-counters = ["dep:humantime", "dep:humantime-serde", "dep:windows-sys"]
 
 # Processors.
 condense-attributes = []
@@ -200,6 +214,8 @@ geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+    # Geneva metrics exporter.
+    "dep:crc32fast",
 ]
 geneva-certificate-auth = [
     "geneva",

@@ -9,13 +9,15 @@ use otel_arrow_dfe_pdata::{
         OtlpProtoMessage,
         opentelemetry::{
             arrow::v1::ArrowPayloadType,
-            common::v1::{AnyValue, KeyValue},
+            common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
             metrics::v1::{
                 Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-                HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
-                SummaryDataPoint, exponential_histogram_data_point::Buckets, metric::Data,
+                HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+                ScopeMetrics, Sum, Summary, SummaryDataPoint,
+                exponential_histogram_data_point::Buckets, metric::Data,
                 summary_data_point::ValueAtQuantile,
             },
+            resource::v1::Resource,
         },
     },
     schema::consts,
@@ -58,7 +60,7 @@ async fn test_simple_data_point_filter() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -374,7 +376,7 @@ async fn test_filter_data_points_by_scalar_true() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -493,7 +495,7 @@ async fn run_all_data_points_dropped_test(query: &'static str) {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let metrics = vec![
         Metric::build()
             .name("gauge_metric")
@@ -665,7 +667,7 @@ async fn test_filter_data_points_null_predicate_result() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let metrics = vec![
         Metric::build()
             .name("gauge_metric")
@@ -842,7 +844,7 @@ async fn run_filter_all_data_point_types_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let mut number_dps = Vec::new();
     let mut hist_dps = Vec::new();
@@ -1221,7 +1223,7 @@ async fn run_scale_metric_test(query: &str, metrics: Vec<Metric>, expected: Vec<
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let result = pipeline
         .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
             metrics,
@@ -1478,7 +1480,7 @@ async fn test_scale_metric_rejects_exponential_histogram() {
     )
     .unwrap()
     .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let result = pipeline
         .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
             vec![metric],
@@ -1502,7 +1504,7 @@ async fn test_scale_metric_rejects_empty_metric() {
     )
     .unwrap()
     .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
     let result = pipeline
         .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(
             vec![Metric::build().name("empty").unit("original").finish()],
@@ -1558,7 +1560,7 @@ async fn test_scale_metric_positive_fraction_without_unit() {
         OplParser::parse_with_options("metrics | scale_metric 0.5", default_parser_options())
             .unwrap()
             .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -1671,7 +1673,7 @@ async fn run_assign_to_all_data_point_type_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -2055,7 +2057,7 @@ async fn test_filter_data_point_by_attribute_with_dict_u16_parent_ids() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     // Create 300 data points, each with unique attribute values. This exceeds the 256
     // distinct value threshold for Dict<UInt8> keys, forcing the encoder to upgrade the
@@ -2142,7 +2144,7 @@ async fn run_nested_attr_assign_to_all_data_point_type_test(
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -2420,7 +2422,7 @@ async fn test_assign_nested_path_from_data_point_field_on_data_points() {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
     let metrics = vec![
         Metric::build()
@@ -2545,11 +2547,6 @@ async fn test_not_supported_queries_return_error() {
     }
 
     let test_cases = [
-        TestCase {
-            query: "metrics | apply data_points {
-                where resource.attributes[\"x\"] > 0
-            }",
-        },
         // filtering by checking the type of metric data point is not yet supported
         TestCase {
             query: "metrics | apply data_points {
@@ -2609,7 +2606,7 @@ async fn test_not_supported_queries_return_error() {
             OplParser::parse_with_options(test_case.query, default_parser_options())
                 .unwrap()
                 .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
         if pipeline.execute(input_batch).await.is_ok() {
             panic!(
@@ -2617,5 +2614,475 @@ async fn test_not_supported_queries_return_error() {
                 test_case.query
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Data-point parent attribute tests (resource/scope attribute reads)
+// ---------------------------------------------------------------------------
+
+/// Builds metrics for two resources with two scopes each. Every scope carries one metric of each
+/// data point type with two data points.
+fn metrics_with_parent_attrs(scope_attrs: impl Fn(usize, usize) -> Vec<KeyValue>) -> MetricsData {
+    let metrics = || {
+        vec![
+            Metric::build()
+                .name("gauge")
+                .data_gauge(Gauge {
+                    data_points: vec![NumberDataPoint::build().finish(); 2],
+                })
+                .finish(),
+            Metric::build()
+                .name("sum")
+                .data_sum(Sum {
+                    data_points: vec![NumberDataPoint::build().finish(); 2],
+                    ..Default::default()
+                })
+                .finish(),
+            Metric::build()
+                .name("histogram")
+                .data_histogram(Histogram {
+                    data_points: vec![HistogramDataPoint::build().finish(); 2],
+                    ..Default::default()
+                })
+                .finish(),
+            Metric::build()
+                .name("exp_histogram")
+                .data_exponential_histogram(ExponentialHistogram {
+                    data_points: vec![
+                        ExponentialHistogramDataPoint::build()
+                            .positive(Buckets::default())
+                            .negative(Buckets::default())
+                            .finish();
+                        2
+                    ],
+                    ..Default::default()
+                })
+                .finish(),
+            Metric::build()
+                .name("summary")
+                .data_summary(Summary {
+                    data_points: vec![SummaryDataPoint::build().finish(); 2],
+                })
+                .finish(),
+        ]
+    };
+
+    MetricsData::new(
+        (0..2)
+            .map(|r| {
+                ResourceMetrics::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new(
+                            "res",
+                            AnyValue::new_string(format!("r{r}")),
+                        )])
+                        .finish(),
+                    (0..2)
+                        .map(|s| {
+                            ScopeMetrics::new(
+                                InstrumentationScope::build()
+                                    .name(format!("scope{r}{s}"))
+                                    .attributes(scope_attrs(r, s))
+                                    .finish(),
+                                metrics(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn data_point_attrs(metric: &Metric) -> Vec<&Vec<KeyValue>> {
+    match metric.data.as_ref().unwrap() {
+        Data::Gauge(g) => g.data_points.iter().map(|dp| &dp.attributes).collect(),
+        Data::Sum(s) => s.data_points.iter().map(|dp| &dp.attributes).collect(),
+        Data::Histogram(h) => h.data_points.iter().map(|dp| &dp.attributes).collect(),
+        Data::ExponentialHistogram(h) => h.data_points.iter().map(|dp| &dp.attributes).collect(),
+        Data::Summary(s) => s.data_points.iter().map(|dp| &dp.attributes).collect(),
+    }
+}
+
+fn find_attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a AnyValue> {
+    attrs
+        .iter()
+        .find(|kv| kv.key == key)
+        .and_then(|kv| kv.value.as_ref())
+}
+
+async fn exec_metrics_query(query: &str, input: MetricsData) -> MetricsData {
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(input)))
+        .await
+        .unwrap();
+    let OtlpProtoMessage::Metrics(metrics) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    metrics
+}
+
+/// Calls `check` with the resource attributes, scope attributes, and attributes of every data
+/// point, and returns how many data points were checked.
+fn for_each_data_point(
+    metrics: &MetricsData,
+    mut check: impl FnMut(&[KeyValue], &[KeyValue], &[KeyValue]),
+) -> usize {
+    let mut count = 0;
+    for rm in &metrics.resource_metrics {
+        let resource_attrs = &rm.resource.as_ref().unwrap().attributes;
+        for sm in &rm.scope_metrics {
+            let scope_attrs = &sm.scope.as_ref().unwrap().attributes;
+            for metric in &sm.metrics {
+                for attrs in data_point_attrs(metric) {
+                    check(resource_attrs, scope_attrs, attrs);
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Scenario: Assign data point attributes from resource and scope attributes across several
+/// resources and scopes, for every data point type.
+/// Guarantees: Each data point receives the values of its own metric's resource and scope.
+#[tokio::test]
+async fn test_assign_data_point_attributes_from_resource_and_scope_attributes() {
+    let input = metrics_with_parent_attrs(|r, s| {
+        vec![KeyValue::new(
+            "comp",
+            AnyValue::new_string(format!("c{r}{s}")),
+        )]
+    });
+    let query = r#"metrics | apply data_points {
+        set attributes["res"] = resource.attributes["res"] |
+        set attributes["comp"] = instrumentation_scope.attributes["comp"]
+    }"#;
+    let result = exec_metrics_query(query, input).await;
+
+    let count = for_each_data_point(&result, |resource_attrs, scope_attrs, attrs| {
+        assert_eq!(find_attr(attrs, "res"), find_attr(resource_attrs, "res"));
+        assert_eq!(find_attr(attrs, "comp"), find_attr(scope_attrs, "comp"));
+        assert!(find_attr(attrs, "res").is_some());
+    });
+    assert_eq!(count, 2 * 2 * 5 * 2);
+}
+
+/// Scenario: Assign a data point attribute from a nested scope attribute, falling back to another
+/// scope attribute when the nested value is missing.
+/// Guarantees: Nested reads and function arguments resolve per data point from its own scope.
+#[tokio::test]
+async fn test_assign_data_point_attribute_from_nested_scope_attribute_with_fallback() {
+    let input = metrics_with_parent_attrs(|r, s| {
+        let mut attrs = vec![KeyValue::new(
+            "flow.id",
+            AnyValue::new_string(format!("flow{r}{s}")),
+        )];
+        if s == 0 {
+            attrs.push(KeyValue::new(
+                "custom",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "componentName",
+                    AnyValue::new_string(format!("custom{r}{s}")),
+                )]),
+            ));
+        }
+        attrs
+    });
+    let query = r#"metrics | apply data_points {
+        set attributes["componentName"] = coalesce(
+            instrumentation_scope.attributes["custom"]["componentName"],
+            instrumentation_scope.attributes["flow.id"]
+        )
+    }"#;
+    let result = exec_metrics_query(query, input).await;
+
+    let count = for_each_data_point(&result, |_, scope_attrs, attrs| {
+        let expected = match find_attr(scope_attrs, "custom") {
+            Some(_) => format!("custom{}", scope_suffix(scope_attrs)),
+            None => format!("flow{}", scope_suffix(scope_attrs)),
+        };
+        assert_eq!(
+            find_attr(attrs, "componentName"),
+            Some(&AnyValue::new_string(expected))
+        );
+    });
+    assert_eq!(count, 2 * 2 * 5 * 2);
+}
+
+fn scope_suffix(scope_attrs: &[KeyValue]) -> String {
+    match find_attr(scope_attrs, "flow.id").and_then(|v| v.value.as_ref()) {
+        Some(any_value::Value::StringValue(flow_id)) => flow_id.trim_start_matches("flow").into(),
+        other => panic!("unexpected flow.id {other:?}"),
+    }
+}
+
+/// Scenario: Assign a data point attribute from a scope attribute that only some scopes have.
+/// Guarantees: Data points under scopes without the attribute receive an empty value.
+#[tokio::test]
+async fn test_assign_data_point_attribute_from_partially_present_scope_attribute() {
+    let input = metrics_with_parent_attrs(|r, s| {
+        if s == 0 {
+            vec![KeyValue::new(
+                "comp",
+                AnyValue::new_string(format!("c{r}{s}")),
+            )]
+        } else {
+            Vec::new()
+        }
+    });
+    let query = r#"metrics | apply data_points {
+        set attributes["comp"] = instrumentation_scope.attributes["comp"]
+    }"#;
+    let result = exec_metrics_query(query, input).await;
+
+    let count = for_each_data_point(&result, |_, scope_attrs, attrs| {
+        let expected = find_attr(scope_attrs, "comp").cloned().unwrap_or_default();
+        assert_eq!(find_attr(attrs, "comp"), Some(&expected));
+    });
+    assert_eq!(count, 2 * 2 * 5 * 2);
+}
+
+/// Scenario: Filter data points by comparing a scope attribute and a resource attribute.
+/// Guarantees: Only data points whose metric's scope and resource match are kept.
+#[tokio::test]
+async fn test_filter_data_points_by_resource_and_scope_attributes() {
+    let input = metrics_with_parent_attrs(|r, s| {
+        vec![KeyValue::new(
+            "comp",
+            AnyValue::new_string(format!("c{r}{s}")),
+        )]
+    });
+    let query = r#"metrics | apply data_points {
+        where resource.attributes["res"] == "r1" and instrumentation_scope.attributes["comp"] == "c10"
+    }"#;
+    let result = exec_metrics_query(query, input).await;
+
+    let count = for_each_data_point(&result, |resource_attrs, scope_attrs, _| {
+        assert_eq!(
+            find_attr(resource_attrs, "res"),
+            Some(&AnyValue::new_string("r1"))
+        );
+        assert_eq!(
+            find_attr(scope_attrs, "comp"),
+            Some(&AnyValue::new_string("c10"))
+        );
+    });
+    assert_eq!(count, 5 * 2);
+}
+
+/// Scenario: Filter data points by checking whether a parent attribute is null.
+/// Guarantees: Data points under resources that lack the attribute pass the null check; those
+/// under resources that have it are dropped.
+#[tokio::test]
+async fn test_filter_data_points_by_null_comparison_on_parent_attr() {
+    // Only resource r0 has a "tag" attribute; r1 does not.
+    let input = MetricsData::new(
+        (0..2)
+            .map(|r| {
+                let mut attrs = vec![KeyValue::new("res", AnyValue::new_string(format!("r{r}")))];
+                if r == 0 {
+                    attrs.push(KeyValue::new("tag", AnyValue::new_string("present")));
+                }
+                ResourceMetrics::new(
+                    Resource::build().attributes(attrs).finish(),
+                    vec![ScopeMetrics::new(
+                        InstrumentationScope::build()
+                            .name(format!("scope{r}"))
+                            .finish(),
+                        vec![
+                            Metric::build()
+                                .name("gauge")
+                                .data_gauge(Gauge {
+                                    data_points: vec![NumberDataPoint::build().finish(); 2],
+                                })
+                                .finish(),
+                        ],
+                    )],
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Keep only data points whose resource does NOT have the "tag" attribute.
+    let query = r#"metrics | apply data_points { where resource.attributes["tag"] == null }"#;
+    let result = exec_metrics_query(query, input).await;
+
+    let count = for_each_data_point(&result, |resource_attrs, _, _| {
+        // Only resource r1 (without "tag") should survive.
+        assert!(find_attr(resource_attrs, "tag").is_none());
+        assert_eq!(
+            find_attr(resource_attrs, "res"),
+            Some(&AnyValue::new_string("r1"))
+        );
+    });
+    // r1 has 1 scope * 1 metric * 2 data points
+    assert_eq!(count, 2);
+}
+
+/// Scenario: Use resource and scope attributes in places data point pipelines still reject.
+/// Guarantees: Struct fields and parent attribute mutations return errors.
+#[tokio::test]
+async fn test_unsupported_resource_and_scope_access_from_data_points_returns_error() {
+    for query in [
+        r#"metrics | apply data_points { set attributes["x"] = instrumentation_scope.name }"#,
+        r#"metrics | apply data_points { set resource.attributes["x"] = attributes["y"] }"#,
+        r#"metrics | apply data_points { remove resource.attributes["x"] }"#,
+    ] {
+        let parsed = OplParser::parse_with_options(query, default_parser_options()).unwrap();
+        let input = metrics_with_parent_attrs(|_, _| Vec::new());
+        let planned = Pipeline::try_new(parsed.pipeline);
+        let failed = match planned {
+            Err(_) => true,
+            Ok(mut pipeline) => pipeline
+                .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(input)))
+                .await
+                .is_err(),
+        };
+        assert!(failed, "expected error for {query}");
+    }
+}
+
+/// Scenario: Filter data points with regex matches and type checks on resource and scope
+/// attributes.
+/// Guarantees: Both operators evaluate per data point against its own metric's resource or scope.
+#[tokio::test]
+async fn test_filter_data_points_by_matches_and_type_of_resource_and_scope_attributes() {
+    let scope_attrs = |r: usize, s: usize| {
+        vec![KeyValue::new(
+            "comp",
+            AnyValue::new_string(format!("c{r}{s}")),
+        )]
+    };
+
+    let query = r#"metrics | apply data_points { where matches(instrumentation_scope.attributes["comp"], "c0.*") }"#;
+    let result = exec_metrics_query(query, metrics_with_parent_attrs(scope_attrs)).await;
+    let count = for_each_data_point(&result, |_, scope_attrs, _| {
+        let comp = find_attr(scope_attrs, "comp").and_then(|v| v.value.as_ref());
+        assert!(
+            matches!(comp, Some(any_value::Value::StringValue(c)) if c.starts_with("c0")),
+            "{comp:?}"
+        );
+    });
+    assert_eq!(count, 2 * 5 * 2);
+}
+
+/// Scenario: Filter data points by type check (is String) on a parent resource attribute.
+/// Guarantees: The type check evaluates per data point and correctly matches all rows.
+#[tokio::test]
+async fn test_filter_data_points_by_type_check_is_string_on_parent_attr() {
+    let scope_attrs = |r: usize, s: usize| {
+        vec![KeyValue::new(
+            "comp",
+            AnyValue::new_string(format!("c{r}{s}")),
+        )]
+    };
+    let query = r#"metrics | apply data_points { where resource.attributes["res"] is String }"#;
+    let result = exec_metrics_query(query, metrics_with_parent_attrs(scope_attrs)).await;
+    assert_eq!(for_each_data_point(&result, |_, _, _| {}), 2 * 2 * 5 * 2);
+}
+
+/// Scenario: Filter data points by type check (is Map) on a parent scope attribute.
+/// Guarantees: The type check evaluates per data point and correctly returns no matches.
+#[tokio::test]
+async fn test_filter_data_points_by_type_check_is_map_on_parent_attr() {
+    let scope_attrs = |r: usize, s: usize| {
+        vec![KeyValue::new(
+            "comp",
+            AnyValue::new_string(format!("c{r}{s}")),
+        )]
+    };
+    let query =
+        r#"metrics | apply data_points { where instrumentation_scope.attributes["comp"] is Map }"#;
+    let result = exec_metrics_query(query, metrics_with_parent_attrs(scope_attrs)).await;
+    assert_eq!(for_each_data_point(&result, |_, _, _| {}), 0);
+}
+
+/// Scenario: Filter data points using lower_case() wrapping a parent attribute read.
+/// Guarantees: Function calls on parent attributes evaluate on the small attribute batch, not
+/// the expanded data-point batch, and produce correct results when aligned back to data points.
+#[tokio::test]
+async fn test_filter_data_points_by_matches_lower_case_parent_attr() {
+    let scope_attrs = |r: usize, s: usize| {
+        vec![KeyValue::new(
+            "comp",
+            AnyValue::new_string(format!("C{r}{s}")),
+        )]
+    };
+
+    let query = r#"metrics | apply data_points {
+        where matches(lower_case(instrumentation_scope.attributes["comp"]), "c0.*")
+    }"#;
+    let result = exec_metrics_query(query, metrics_with_parent_attrs(scope_attrs)).await;
+    let count = for_each_data_point(&result, |_, scope_attrs, _| {
+        let comp = find_attr(scope_attrs, "comp").and_then(|v| v.value.as_ref());
+        assert!(
+            matches!(comp, Some(any_value::Value::StringValue(c)) if c.starts_with("C0")),
+            "{comp:?}"
+        );
+    });
+    assert_eq!(count, 2 * 5 * 2);
+}
+
+fn metrics_with_resource_env(env_on_first_resource: bool) -> MetricsData {
+    let mut metrics = metrics_with_parent_attrs(|_, _| Vec::new());
+    for (r, rm) in metrics.resource_metrics.iter_mut().enumerate() {
+        rm.resource.as_mut().unwrap().attributes = if env_on_first_resource && r == 0 {
+            vec![KeyValue::new("env", AnyValue::new_string("Prod"))]
+        } else {
+            Vec::new()
+        };
+    }
+    metrics
+}
+
+/// Scenario: Filter data points by comparing a resource attribute that is missing from some or
+/// all resources, directly and through a function call.
+/// Guarantees: Data points whose resource lacks the attribute fail `==` and pass `!=`, as
+/// records whose resource lacks the attribute do in signal filters.
+#[tokio::test]
+async fn test_filter_data_points_by_missing_resource_attribute() {
+    for (query, env_on_first_resource, expected) in [
+        (r#"where resource.attributes["env"] != "Prod""#, false, 40),
+        (r#"where resource.attributes["env"] != "Prod""#, true, 20),
+        (r#"where resource.attributes["env"] == "Prod""#, false, 0),
+        (r#"where resource.attributes["env"] == "Prod""#, true, 20),
+        (
+            r#"where lower_case(resource.attributes["env"]) != "prod""#,
+            false,
+            40,
+        ),
+        (
+            r#"where lower_case(resource.attributes["env"]) == "prod""#,
+            true,
+            20,
+        ),
+        (
+            r#"where matches(lower_case(resource.attributes["env"]), "^prod$")"#,
+            false,
+            0,
+        ),
+        (
+            r#"where matches(lower_case(resource.attributes["env"]), "^prod$")"#,
+            true,
+            20,
+        ),
+    ] {
+        let result = exec_metrics_query(
+            &format!("metrics | apply data_points {{ {query} }}"),
+            metrics_with_resource_env(env_on_first_resource),
+        )
+        .await;
+        assert_eq!(
+            for_each_data_point(&result, |_, _, _| {}),
+            expected,
+            "{query} with env on first resource: {env_on_first_resource}"
+        );
     }
 }

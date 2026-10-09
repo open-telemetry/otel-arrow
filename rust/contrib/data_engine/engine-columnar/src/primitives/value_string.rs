@@ -3,6 +3,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::str::CharIndices;
 
 use arrow::buffer::Buffer;
 use otel_arrow_contrib_data_engine_expressions::*;
@@ -65,12 +66,12 @@ impl StringValueOrRef<'_> {
 
     pub fn char_indices(&self) -> CharIndices<'_> {
         match self {
-            StringValueOrRef::Empty => CharIndices::String("".char_indices()),
-            StringValueOrRef::Ref(s) => CharIndices::String(s.char_indices()),
-            StringValueOrRef::Buffer(b) => CharIndices::String(
-                unsafe { std::str::from_utf8_unchecked(&b.buffer) }.char_indices(),
-            ),
-            StringValueOrRef::Owned(s) => CharIndices::String(s.char_indices()),
+            StringValueOrRef::Empty => "".char_indices(),
+            StringValueOrRef::Ref(s) => s.char_indices(),
+            StringValueOrRef::Buffer(b) => {
+                unsafe { std::str::from_utf8_unchecked(&b.buffer) }.char_indices()
+            }
+            StringValueOrRef::Owned(s) => s.char_indices(),
             StringValueOrRef::Slice(s) => s.char_indices(),
         }
     }
@@ -129,7 +130,7 @@ impl From<StringValueOrRef<'_>> for String {
                 Err(o) => (*o).clone(),
             },
             StringValueOrRef::Slice(s) => {
-                let mut v = String::new();
+                let mut v = String::with_capacity(s.len());
                 s.append_to(&mut v);
                 v
             }
@@ -178,19 +179,11 @@ impl StringValueOrRefSlice<'_> {
     }
 
     pub fn char_indices(&self) -> CharIndices<'_> {
-        CharIndices::Slice(StringValueOrRefSliceCharIndices {
-            source: self.value.as_ref().char_indices().into(),
-            position: 0,
-            start_byte_index: self.byte_start_inclusive,
-            end_char_index_exclusive: self.char_len,
-        })
+        self.get_value().char_indices()
     }
 
     pub fn append_to(self, value: &mut String) {
-        value.reserve(self.len());
-        for (_, c) in self.char_indices() {
-            value.push(c);
-        }
+        value.push_str(self.get_value());
     }
 }
 
@@ -202,35 +195,216 @@ impl StringValue for StringValueOrRefSlice<'_> {
     }
 }
 
-pub enum CharIndices<'a> {
-    String(std::str::CharIndices<'a>),
-    Slice(StringValueOrRefSliceCharIndices<'a>),
-}
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::DefaultHasher;
 
-impl Iterator for CharIndices<'_> {
-    type Item = (usize, char);
+    use arrow::buffer::Buffer;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            CharIndices::String(c) => c.next(),
-            CharIndices::Slice(c) => loop {
-                let v = c.source.next()?;
-                if v.0 < c.start_byte_index {
-                    continue;
-                }
-                if c.position >= c.end_char_index_exclusive {
-                    return None;
-                }
-                c.position += 1;
-                return Some((v.0 - c.start_byte_index, v.1));
-            },
+    use super::*;
+
+    fn hash(value: &StringValueOrRef<'_>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Scenario: Equivalent text is stored as an empty, borrowed, Arrow-buffered, or owned value.
+    /// Guarantees: All representations report consistent byte and character lengths and convert to the same text.
+    #[test]
+    fn string_representations_have_consistent_behavior() {
+        let values = [
+            StringValueOrRef::Empty,
+            StringValueOrRef::new_ref(""),
+            StringValueOrRef::new_utf8(Buffer::from("".as_bytes())),
+            StringValueOrRef::new_owned(String::new()),
+        ];
+
+        for value in values {
+            assert!(value.is_empty());
+            assert_eq!(value.len(), 0);
+            assert_eq!(value.char_len(), 0);
+            assert_eq!(String::from(value), "");
+        }
+
+        let text = "h\u{e9}llo";
+        let values = [
+            StringValueOrRef::new_ref(text),
+            StringValueOrRef::new_utf8(Buffer::from(text.as_bytes())),
+            StringValueOrRef::new_owned(text.to_string()),
+        ];
+
+        for value in values {
+            assert_eq!(value.len(), 6);
+            assert_eq!(value.char_len(), 5);
+            assert_eq!(value.char_indices().collect::<Vec<_>>()[1], (1, '\u{e9}'));
+            assert_eq!(String::from(value), text);
         }
     }
-}
 
-pub struct StringValueOrRefSliceCharIndices<'a> {
-    source: Box<CharIndices<'a>>,
-    position: usize,
-    start_byte_index: usize,
-    end_char_index_exclusive: usize,
+    /// Scenario: Identical text uses borrowed, Arrow-buffered, owned, and sliced representations.
+    /// Guarantees: Equality, hashing, string access, appending, and ownership conversion are representation-independent.
+    #[test]
+    fn string_equality_hash_and_conversion_are_representation_independent() {
+        let expected = StringValueOrRef::new_ref("otel");
+        let values = [
+            StringValueOrRef::new_ref("otel"),
+            StringValueOrRef::new_utf8(Buffer::from("otel".as_bytes())),
+            StringValueOrRef::new_owned("otel".to_string()),
+            StringValueOrRef::Slice(StringValueOrRefSlice {
+                value: Box::new(StringValueOrRef::new_ref("xotelz")),
+                byte_start_inclusive: 1,
+                byte_end_exclusive: 5,
+                char_len: 4,
+            }),
+        ];
+
+        for value in values {
+            assert_eq!(value, expected);
+            assert_eq!(hash(&value), hash(&expected));
+            assert_eq!(value.as_ref(), "otel");
+
+            let mut appended = String::from("prefix:");
+            value.clone().append_to(&mut appended);
+            assert_eq!(appended, "prefix:otel");
+            assert_eq!(String::from(value), "otel");
+        }
+    }
+
+    /// Scenario: Owned text is converted while another Rc reference remains, and non-string values are stringified.
+    /// Guarantees: Shared ownership conversion copies safely and ValueOrRef conversion preserves null, string, and integer semantics.
+    #[test]
+    fn string_conversion_handles_shared_ownership_and_value_types() {
+        let owned = StringValueOrRef::new_owned("shared".to_string());
+        let retained = owned.clone();
+
+        assert_eq!(String::from(owned), "shared");
+        assert_eq!(retained.as_ref(), "shared");
+
+        assert!(StringValueOrRef::from(&ValueOrRef::Null).is_empty());
+
+        let borrowed = ValueOrRef::String(StringValueOrRef::new_ref("borrowed"));
+        assert_eq!(StringValueOrRef::from(&borrowed).as_ref(), "borrowed");
+
+        let integer = ValueOrRef::Integer(42);
+        assert_eq!(StringValueOrRef::from(&integer).as_ref(), "42");
+    }
+
+    /// Scenario: A slice spans multiple variable-width UTF-8 characters inside an owned string.
+    /// Guarantees: Slice access, character indexes, and append operations remain relative to the slice.
+    #[test]
+    fn string_slice_handles_variable_width_characters() {
+        let slice = StringValueOrRefSlice {
+            value: Box::new(StringValueOrRef::new_owned("a\u{e9}\u{65e5}z".to_string())),
+            byte_start_inclusive: 1,
+            byte_end_exclusive: 6,
+            char_len: 2,
+        };
+
+        assert!(!slice.is_empty());
+        assert_eq!(slice.len(), 5);
+        assert_eq!(slice.char_len(), 2);
+        assert_eq!(slice.get_value(), "\u{e9}\u{65e5}");
+        assert_eq!(
+            slice.char_indices().collect::<Vec<_>>(),
+            vec![(0, '\u{e9}'), (2, '\u{65e5}')]
+        );
+
+        let mut output = String::from("prefix:");
+        slice.append_to(&mut output);
+        assert_eq!(output, "prefix:\u{e9}\u{65e5}");
+    }
+
+    /// Scenario: Empty slices are taken at the beginning, middle, and end of a UTF-8 string.
+    /// Guarantees: Character iteration is empty and appending preserves the destination at every valid boundary.
+    #[test]
+    fn empty_string_slices_have_no_characters_to_append() {
+        for byte_index in [0, 1, 3, 6] {
+            let slice = StringValueOrRefSlice {
+                value: Box::new(StringValueOrRef::new_ref("a\u{e9}\u{65e5}")),
+                byte_start_inclusive: byte_index,
+                byte_end_exclusive: byte_index,
+                char_len: 0,
+            };
+
+            assert!(slice.is_empty());
+            assert_eq!(slice.char_indices().collect::<Vec<_>>(), vec![]);
+
+            let mut output = String::from("existing");
+            slice.append_to(&mut output);
+            assert_eq!(output, "existing");
+        }
+    }
+
+    /// Scenario: The same interior UTF-8 slice is backed by borrowed, Arrow-buffered, owned, and sliced values.
+    /// Guarantees: Character indexes remain byte-relative to the outer slice and appending produces identical text.
+    #[test]
+    fn string_slice_behavior_is_consistent_across_backing_values() {
+        let text = "a\u{e9}\u{65e5}z";
+        let nested = StringValueOrRefSlice {
+            value: Box::new(StringValueOrRef::new_ref(text)),
+            byte_start_inclusive: 0,
+            byte_end_exclusive: text.len(),
+            char_len: 4,
+        };
+        let values = [
+            StringValueOrRef::new_ref(text),
+            StringValueOrRef::new_utf8(Buffer::from(text.as_bytes())),
+            StringValueOrRef::new_owned(text.to_string()),
+            StringValueOrRef::Slice(nested),
+        ];
+
+        for value in values {
+            let slice = StringValueOrRefSlice {
+                value: Box::new(value),
+                byte_start_inclusive: 1,
+                byte_end_exclusive: 6,
+                char_len: 2,
+            };
+
+            assert_eq!(
+                slice.char_indices().collect::<Vec<_>>(),
+                vec![(0, '\u{e9}'), (2, '\u{65e5}')]
+            );
+
+            let mut output = String::from("prefix:");
+            slice.append_to(&mut output);
+            assert_eq!(output, "prefix:\u{e9}\u{65e5}");
+        }
+    }
+
+    /// Scenario: A slice selects one multibyte character from another non-zero-offset slice.
+    /// Guarantees: Nested character indexes reset to zero and appending excludes both inner-slice neighbors.
+    #[test]
+    fn nested_string_slice_indices_are_relative_to_outer_slice() {
+        let inner = StringValueOrRefSlice {
+            value: Box::new(StringValueOrRef::new_ref("x\u{e9}\u{65e5}y")),
+            byte_start_inclusive: 1,
+            byte_end_exclusive: 6,
+            char_len: 2,
+        };
+        let outer = StringValueOrRefSlice {
+            value: Box::new(StringValueOrRef::Slice(inner)),
+            byte_start_inclusive: 2,
+            byte_end_exclusive: 5,
+            char_len: 1,
+        };
+
+        assert_eq!(
+            outer.char_indices().collect::<Vec<_>>(),
+            vec![(0, '\u{65e5}')]
+        );
+
+        let mut output = String::from("prefix:");
+        outer.append_to(&mut output);
+        assert_eq!(output, "prefix:\u{65e5}");
+    }
+
+    /// Scenario: An Arrow buffer contains bytes that are not valid UTF-8.
+    /// Guarantees: The checked constructor rejects invalid text before it can be exposed as a string.
+    #[test]
+    #[should_panic(expected = "invalid UTF-8")]
+    fn checked_utf8_constructor_rejects_invalid_bytes() {
+        let _ = StringValueOrRef::new_utf8(Buffer::from(vec![0xff]));
+    }
 }

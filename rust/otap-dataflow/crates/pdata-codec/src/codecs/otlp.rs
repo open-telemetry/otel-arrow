@@ -253,82 +253,10 @@ crate::register_pdata_codec!(
     CodecRegistration::new(&OTLP_METADATA)
         .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
-        .with_item_counter(|signal, bytes| Some(count_items(signal, bytes))),
+        .with_item_counter(|signal, bytes| Some(otel_arrow_dfe_pdata::count_otlp_items(
+            signal, bytes
+        ))),
 );
-
-fn count_items(signal: SignalType, bytes: &[u8]) -> usize {
-    match signal {
-        SignalType::Logs => {
-            let view = RawLogsData::new(bytes);
-            use otel_arrow_dfe_pdata_views::views::logs::{
-                LogsDataView, ResourceLogsView, ScopeLogsView,
-            };
-            view.resources()
-                .map(|resource| {
-                    resource
-                        .scopes()
-                        .map(|scope| scope.log_records().count())
-                        .sum::<usize>()
-                })
-                .sum()
-        }
-        SignalType::Traces => {
-            let view = RawTraceData::new(bytes);
-            use otel_arrow_dfe_pdata_views::views::trace::{
-                ResourceSpansView, ScopeSpansView, TracesView,
-            };
-            view.resources()
-                .map(|resource| {
-                    resource
-                        .scopes()
-                        .map(|scope| scope.spans().count())
-                        .sum::<usize>()
-                })
-                .sum()
-        }
-        SignalType::Metrics => {
-            let view = RawMetricsData::new(bytes);
-            use otel_arrow_dfe_pdata_views::views::metrics::{
-                DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
-                MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
-            };
-            view.resources()
-                .map(|resource| {
-                    resource
-                        .scopes()
-                        .map(|scope| {
-                            scope
-                                .metrics()
-                                .map(|metric| {
-                                    metric
-                                        .data()
-                                        .map(|data| {
-                                            if let Some(gauge) = data.as_gauge() {
-                                                gauge.data_points().count()
-                                            } else if let Some(sum) = data.as_sum() {
-                                                sum.data_points().count()
-                                            } else if let Some(histogram) = data.as_histogram() {
-                                                histogram.data_points().count()
-                                            } else if let Some(histogram) =
-                                                data.as_exponential_histogram()
-                                            {
-                                                histogram.data_points().count()
-                                            } else if let Some(summary) = data.as_summary() {
-                                                summary.data_points().count()
-                                            } else {
-                                                0
-                                            }
-                                        })
-                                        .unwrap_or(0)
-                                })
-                                .sum::<usize>()
-                        })
-                        .sum::<usize>()
-                })
-                .sum()
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

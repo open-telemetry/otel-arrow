@@ -277,6 +277,158 @@ jobs:
         run: cargo test --locked -p otel-arrow-dfe-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw -- --ignored
         working-directory: ./rust/otap-dataflow
 
+  oracle_receiver_smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Start Oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          oracle_username="OTAP$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
+          oracle_password="CiA1_$(openssl rand -hex 10)"
+          echo "::add-mask::$oracle_password"
+
+          docker run --detach \
+            --name oracle-receiver-ci \
+            --publish 127.0.0.1:1521:1521 \
+            --env ORACLE_RANDOM_PASSWORD=true \
+            --env APP_USER="$oracle_username" \
+            --env APP_USER_PASSWORD="$oracle_password" \
+            --health-cmd healthcheck.sh \
+            --health-interval 10s \
+            --health-timeout 5s \
+            --health-retries 60 \
+            gvenzl/oracle-free@sha256:0489e0c1f20b2ca632075653c66f284234689ccff62c9a39809d9a5b3e7c1642
+          {
+            echo "ORACLE_CONNECT_STRING=//127.0.0.1:1521/FREEPDB1"
+            echo "ORACLE_USERNAME=$oracle_username"
+            echo "ORACLE_PWD=$oracle_password"
+          } >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: false
+      - name: Install Oracle Instant Client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes libaio1t64 unzip
+
+          libaio_path="$(dpkg-query -L libaio1t64 | grep -E '/libaio\.so\.1t64$' || true)"
+          if [[ ! -f "$libaio_path" ]]; then
+            echo "libaio1t64 did not provide libaio.so.1t64." >&2
+            exit 1
+          fi
+          sudo ln -sf "$libaio_path" "$(dirname "$libaio_path")/libaio.so.1"
+
+          curl --fail --location --silent --show-error \
+            https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
+            --output "$RUNNER_TEMP/instantclient.zip"
+          echo "94a458f43873a420e5be6fdf18e9a85df0393b4a1e2999ed406d8ec50f235e71  $RUNNER_TEMP/instantclient.zip" \
+            | sha256sum --check
+          unzip -q "$RUNNER_TEMP/instantclient.zip" -d "$RUNNER_TEMP"
+
+          client_dir="$RUNNER_TEMP/instantclient_23_26"
+          export LD_LIBRARY_PATH="$client_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ldd "$client_dir/libclntsh.so" | tee "$RUNNER_TEMP/instant-client-ldd.txt"
+          if grep -F 'not found' "$RUNNER_TEMP/instant-client-ldd.txt" > /dev/null; then
+            echo "Oracle Instant Client has unresolved dependencies." >&2
+            exit 1
+          fi
+          echo "ORACLE_INSTANT_CLIENT_DIR=$client_dir" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Create Oracle credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "${ORACLE_PWD:?Oracle password is required}" > "$RUNNER_TEMP/oracle-password"
+          chmod 600 "$RUNNER_TEMP/oracle-password"
+          echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
+      - name: Wait for Oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in {1..60}; do
+            state="$(docker inspect --format '{{.State.Status}}' oracle-receiver-ci)"
+            health="$(docker inspect --format '{{.State.Health.Status}}' oracle-receiver-ci)"
+            if [[ "$health" == "healthy" ]]; then
+              exit 0
+            fi
+            if [[ "$state" != "running" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          docker logs oracle-receiver-ci > oracle-container.log 2>&1 || true
+          echo "Oracle did not become healthy." >&2
+          exit 1
+      - name: Seed Oracle source data
+        shell: bash
+        run: |
+          cargo run --locked \
+            -p otel-arrow-dfe-contrib-nodes \
+            --features oracle \
+            --example oracle_load_generator \
+            -- \
+            --rows 10 \
+            --collision-size 2 \
+            --reset
+        working-directory: ./rust/otap-dataflow
+      - name: Run live Oracle receiver test
+        env:
+          OTAP_ORACLE_RECEIVER_E2E: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/oracle-receiver-test.log"
+          cargo test --locked \
+            -p otel-arrow-dfe-contrib-nodes \
+            --features oracle \
+            --lib \
+            emits_oracle_rows_when_live_test_is_enabled \
+            -- \
+            --nocapture \
+            --test-threads=1 \
+            | tee "$output"
+          grep -Eq \
+            'test result: ok\. 1 passed; 0 failed; 0 ignored;' \
+            "$output"
+        working-directory: ./rust/otap-dataflow
+      - name: Capture Oracle logs
+        if: failure()
+        shell: bash
+        run: |
+          if docker inspect oracle-receiver-ci > /dev/null 2>&1; then
+            docker logs oracle-receiver-ci > oracle-container.log 2>&1
+          fi
+      - name: Upload Oracle diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-receiver-integration-logs
+          path: |
+            oracle-container.log
+            ${{ runner.temp }}/instant-client-ldd.txt
+            ${{ runner.temp }}/oracle-receiver-test.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove Oracle container
+        if: always()
+        shell: bash
+        run: docker rm --force oracle-receiver-ci > /dev/null 2>&1 || true
+
   fmt:
     if: github.event_name == 'pull_request'
     strategy:
@@ -480,6 +632,9 @@ jobs:
       - name: Run cargo xtask for ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Validate component inventory baseline
+        run: cargo xtask component-inventory --check components-baseline.json
+        working-directory: ./rust/${{ matrix.folder }}
       - name: Validate crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: ./rust/${{ matrix.folder }}
@@ -608,6 +763,8 @@ jobs:
           # Keep one stable required-build namespace; platform and Rust hashes
           # still separate incompatible Linux and Windows artifacts.
           shared-key: build_required
+          # Bump in both Windows cache steps when the synchronized feature set changes.
+          key: windows-features-v2
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: false
@@ -627,7 +784,7 @@ jobs:
         # The complete component inventory is validated by the Linux all-feature
         # build; including its dev-dependencies here would pull Kafka and OpenSSL
         # into this reduced-feature SymCrypt build.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -737,6 +894,51 @@ jobs:
             ./rust/otap-dataflow/target/nextest/ci/metadata.json
           retention-days: 30
           if-no-files-found: ignore
+
+  # Required Linux tests exercise Ring, while required Windows tests exercise
+  # SymCrypt. Test the remaining providers with exactly one crypto backend
+  # selected per process; all-features builds would select Ring first.
+  #
+  # Future crates should consume OTAP's process-wide selected provider and rely
+  # on the normal workspace tests; do not add every crypto-using crate here.
+  # The OAuth extension is included because its JWT adapter directly exercises
+  # provider key loading, RSA signing, and signature verification APIs. Add
+  # another package test only when it similarly calls provider APIs directly.
+  # Add a matrix entry only for a new provider, along with any native library
+  # setup its runner requires.
+  crypto_provider_tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: aws-lc
+            feature: crypto-aws-lc
+            os: ubuntu-latest
+          - provider: openssl
+            feature: crypto-openssl
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          shared-key: build_required
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: false
+      - name: Run OTAP tests with ${{ matrix.provider }}
+        run: cargo test --locked -p otel-arrow-dfe-otap --no-default-features --features ${{ matrix.feature }}
+        working-directory: ./rust/otap-dataflow
+      - name: Run OAuth extension tests with ${{ matrix.provider }}
+        run: cargo test --locked -p otel-arrow-dfe-contrib-extensions --no-default-features --features "oauth2-client-auth,${{ matrix.feature }}"
+        working-directory: ./rust/otap-dataflow
 
   # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
   # This compiles from scratch with coverage instrumentation and runs all tests.
@@ -1285,6 +1487,7 @@ jobs:
       - build_required_windows
       - test_required_linux
       - test_required_windows
+      - crypto_provider_tests
       - fmt_required
       - clippy_required
       - deny_required
@@ -1330,6 +1533,10 @@ jobs:
           fi
           if [[ "${{ needs.test_required_windows.result }}" != "success" ]]; then
             echo "test_required_windows failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.crypto_provider_tests.result }}" != "success" ]]; then
+            echo "crypto_provider_tests failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.fmt_required.result }}" != "success" ]]; then

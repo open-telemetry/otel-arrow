@@ -89,7 +89,8 @@ queries:
             SELECT
               * REPLACE (
               CASE
-                WHEN metric_name = 'items' THEN 'metrics'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.input' THEN 'metrics'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'metrics_produced'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -109,6 +110,12 @@ queries:
                 "metric_attributes.otel_scope_name" = 'node.input'
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'metrics'
+                AND "metric_attributes.outcome" = 'success'
+              )
+              OR (
+                "metric_attributes.otel_scope_name" = 'node.output'
+                AND "metric_attributes.signal" = 'metrics'
+                AND "metric_attributes.component_name" = 'load-generator'
                 AND "metric_attributes.outcome" = 'success'
               )
             ) AND timestamp > (
@@ -321,11 +328,16 @@ queries:
 
           UNION ALL
 
-          SELECT 'metrics_received_rate' AS name, 'metrics/sec' AS unit, metrics_per_second AS value,
+          -- If we run into a scenario where 0 signals make it to the backend
+          -- because the SUT is misbehaving, then it's possible for the engine
+          -- to omit certain metrics that never had a value. In that case
+          -- we still want to record a 0 for this metric instead of a null or
+          -- the report breaks.
+          SELECT 'metrics_received_rate' AS name, 'metrics/sec' AS unit,
+                COALESCE(mtr.metrics_per_second, 0) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Metric Throughput' AS extra
-          FROM metric_throughput_rates
-          CROSS JOIN metadata_row
-          WHERE metric_name = 'metrics'
+          FROM metadata_row
+          LEFT JOIN metric_throughput_rates mtr ON mtr.metric_name = 'metrics'
 
           UNION ALL
 

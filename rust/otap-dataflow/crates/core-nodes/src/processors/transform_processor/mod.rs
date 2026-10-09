@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otel_arrow_contrib_data_engine_expressions::Expression;
+
 use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
 use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otel_arrow_dfe_engine::{
@@ -78,7 +78,7 @@ use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_query_engine::{
     parser::default_parser_options,
     pipeline::{
-        Pipeline, PipelineOptions,
+        Pipeline, PipelineOptions, SignalContext, SignalKind,
         routing::RouterExtType,
         state::{ExecutionCounters, ExecutionState},
     },
@@ -109,7 +109,6 @@ pub struct TransformProcessor {
 }
 
 struct Transform {
-    signal_scope: SignalScope,
     pipeline: Pipeline,
 }
 
@@ -122,68 +121,6 @@ struct TransformOperationError {
 impl TransformOperationError {
     const fn new(error_type: TransformErrorType, error: EngineError) -> Self {
         Self { error_type, error }
-    }
-}
-
-/// Identifier for which signal types the transformation pipeline should be applied.
-enum SignalScope {
-    // Apply transformation to all signal types
-    All,
-
-    // Apply transformation to telemetry of one particular signal type
-    Signal(SignalType),
-}
-
-impl SignalScope {
-    fn try_from_kql_query(query: &str) -> Result<Self, ConfigError> {
-        // Current logic looks at the start of the pipeline and expects it to be in a form like
-        // "logs | ..." or "traces | ...", etc.
-        let query = query.trim_start();
-        Ok(if query.starts_with("logs") {
-            Self::Signal(SignalType::Logs)
-        } else if query.starts_with("traces") {
-            Self::Signal(SignalType::Traces)
-        } else if query.starts_with("metrics") {
-            Self::Signal(SignalType::Metrics)
-        } else if query.starts_with("signal") {
-            Self::All
-        } else {
-            return Err(ConfigError::InvalidUserConfig {
-                error: "could not determine signal type from query".into(),
-            });
-        })
-    }
-
-    fn try_from_opl_query(query: &str) -> Result<Self, ConfigError> {
-        // Current logic looks at the start of the pipeline and expects it to be in a form like
-        // "logs | ..." or "traces | ...", etc.
-        //
-        // The OPL Parser will inspect the source during parsing and if it sees the source is the
-        // plural form of some concrete metric type (gauges, sums, histograms, etc.), it creates a
-        // query plan that will select for processing only these batch types and only rows having
-        // the specified metric type. All other batches / rows are treated as passthrough. This is
-        // why for OPL only we allow these identifiers to the query source
-        //
-        let query = query.trim_start();
-        Ok(if query.starts_with("logs") {
-            Self::Signal(SignalType::Logs)
-        } else if query.starts_with("traces") {
-            Self::Signal(SignalType::Traces)
-        } else if query.starts_with("metrics")
-            || query.starts_with("gauges")
-            || query.starts_with("sums")
-            || query.starts_with("histograms")
-            || query.starts_with("exponential_histograms")
-            || query.starts_with("summaries")
-        {
-            Self::Signal(SignalType::Metrics)
-        } else if query.starts_with("signal") {
-            Self::All
-        } else {
-            return Err(ConfigError::InvalidUserConfig {
-                error: "could not determine signal type from query".into(),
-            });
-        })
     }
 }
 
@@ -204,8 +141,10 @@ impl TransformProcessor {
         };
         let parser_options = default_parser_options();
 
-        let pipeline_options = PipelineOptions {
-            filter_attribute_keys_case_sensitive: config.filter_attribute_keys_case_sensitive,
+        let filter_attribute_keys_case_sensitive = config.filter_attribute_keys_case_sensitive;
+
+        let map_pipeline_err = |e| ConfigError::InvalidUserConfig {
+            error: format!("Could not create pipeline: {e}"),
         };
 
         let (transforms, language) = match &config.query {
@@ -213,31 +152,27 @@ impl TransformProcessor {
                 let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let signal_scope = SignalScope::try_from_kql_query(
-                    pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
-                )?;
-                (
-                    vec![Transform {
-                        pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
-                        signal_scope,
-                    }],
-                    TransformLanguage::Kql,
-                )
+                let signal_context =
+                    SignalContext::try_infer(&pipeline_expr).map_err(map_pipeline_err)?;
+                let options = PipelineOptions {
+                    signal_context,
+                    filter_attribute_keys_case_sensitive,
+                };
+                let pipeline = Pipeline::new_with_options(pipeline_expr, options);
+                (vec![Transform { pipeline }], TransformLanguage::Kql)
             }
             Query::OplQuery(query) => {
                 let pipeline_expr = OplParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let signal_scope = SignalScope::try_from_opl_query(
-                    pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
-                )?;
-                (
-                    vec![Transform {
-                        pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
-                        signal_scope,
-                    }],
-                    TransformLanguage::Opl,
-                )
+                let signal_context =
+                    SignalContext::try_infer(&pipeline_expr).map_err(map_pipeline_err)?;
+                let options = PipelineOptions {
+                    signal_context,
+                    filter_attribute_keys_case_sensitive,
+                };
+                let pipeline = Pipeline::new_with_options(pipeline_expr, options);
+                (vec![Transform { pipeline }], TransformLanguage::Opl)
             }
             Query::Ottl(ottl_config) => {
                 let mut transforms = Vec::new();
@@ -248,12 +183,12 @@ impl TransformProcessor {
                                 .map_err(map_parser_err)?
                                 .pipeline;
 
+                        let pipeline_options = PipelineOptions {
+                            filter_attribute_keys_case_sensitive,
+                            signal_context: SignalContext::Single(SignalKind::Logs),
+                        };
                         transforms.push(Transform {
-                            pipeline: Pipeline::new_with_options(
-                                pipeline_expr,
-                                pipeline_options.clone(),
-                            ),
-                            signal_scope: SignalScope::Signal(SignalType::Logs),
+                            pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
                         })
                     }
                 }
@@ -619,15 +554,11 @@ impl Processor<OtapPdata> for TransformProcessor {
             },
             Message::PData(pdata) => {
                 let signal = pdata.signal_type();
-                let applies = |scope: &SignalScope| match scope {
-                    SignalScope::All => true,
-                    SignalScope::Signal(selected) => signal == *selected,
-                };
                 self.execution_state.reset_counters();
                 let Some(first) = self
                     .transforms
                     .iter()
-                    .position(|t| applies(&t.signal_scope))
+                    .position(|t| t.pipeline.accepts_signal_type(signal))
                 else {
                     // Do not snapshot or decode messages that no transform selects.
                     effect_handler.send_message_with_source_node(pdata).await?;
@@ -649,7 +580,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                 let result = async {
                     let mut records = records;
                     for transform in &mut self.transforms[first..] {
-                        if !applies(&transform.signal_scope) {
+                        if !transform.pipeline.accepts_signal_type(signal) {
                             continue;
                         }
                         // Normalization remains explicit at each algorithm boundary.
