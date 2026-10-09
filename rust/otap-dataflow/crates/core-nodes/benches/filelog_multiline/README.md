@@ -123,22 +123,16 @@ Setup:
 A separate DHAT run of the large-program fixture measured the following search
 allocations, including cache creation and one search:
 
-| Measured peak requested heap | Modeled worker heap bound |
+| Measured peak matching memory | Worker memory estimate |
 | ---: | ---: |
 | 9,600,496 bytes | 9,602,136 bytes |
 
-This excludes compiled-program storage and process overhead. It is a check of
-one fixture, not proof that measurements establish the model's bound.
+This test stayed within the worker memory estimate. The numbers exclude the
+compiled pattern and other process memory. One passing case does not cover
+all patterns and inputs.
 
-Source provenance: the measured matcher, memory model, timing harness, and
-fixtures are byte-identical to those in [commit 727113330][measured-source].
-The allocation measurement predates the construction-policy diagnostics added
-to `allocations.rs`; its source SHA-256 was
-`4e0c74ba2c2f213db075ee716a21137caa1ab61f72316e357d8b9116823b5ec6`.
-Timing rows come from `normal-32m.csv`, `large_program_search-meta.csv`,
-`repetition_cap-meta.csv`, and `branching_nonmatch-{meta,pike_prefilter}.csv`;
-the memory row comes from `large_program_search-allocations.csv` in the same
-run. Keep those raw files and cgroup reports with the review artifacts.
+These measurements used the matching code in
+[commit 727113330][measured-source].
 
 [measured-source]: https://github.com/lalitb/otel-arrow/commit/727113330e4110a44d2ee7697d059430c03db887
 
