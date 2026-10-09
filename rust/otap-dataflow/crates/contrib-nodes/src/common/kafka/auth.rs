@@ -56,6 +56,17 @@ impl SaslMechanism {
     }
 }
 
+/// Source of username/password credentials for a SASL mechanism.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaslCredentialSource {
+    /// Read the username and password from this authentication block.
+    #[default]
+    Inline,
+    /// Acquire the username and password from the bound capability.
+    Capability,
+}
+
 /// Configuration for Kafka Auth.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +90,10 @@ pub struct SaslAuth {
     #[serde(default)]
     password: Option<String>,
 
+    /// Source of the username/password credential.
+    #[serde(default)]
+    credential_source: SaslCredentialSource,
+
     /// Optional AWS MSK-specific configuration.
     #[cfg(feature = "aws")]
     #[serde(default)]
@@ -95,6 +110,7 @@ impl SaslAuth {
             mechanism,
             username: None,
             password: None,
+            credential_source: SaslCredentialSource::Inline,
             aws_msk,
         }
     }
@@ -108,6 +124,7 @@ impl SaslAuth {
             mechanism,
             username: None,
             password: None,
+            credential_source: SaslCredentialSource::Inline,
         }
     }
 
@@ -123,6 +140,7 @@ impl SaslAuth {
             mechanism,
             username: Some(username),
             password: Some(password),
+            credential_source: SaslCredentialSource::Inline,
             #[cfg(feature = "aws")]
             aws_msk: None,
         }
@@ -146,6 +164,12 @@ impl SaslAuth {
         self.password.as_deref()
     }
 
+    /// Configured source of the username/password credential.
+    #[must_use]
+    pub fn credential_source(&self) -> SaslCredentialSource {
+        self.credential_source
+    }
+
     /// Optional AWS MSK-specific configuration.
     #[cfg(feature = "aws")]
     #[must_use]
@@ -163,20 +187,33 @@ impl SaslAuth {
     /// # Errors
     ///
     /// Returns a human-readable description if:
-    /// - A username/password mechanism is missing `username` or `password`.
+    /// - Inline credentials are missing `username` or `password`.
+    /// - Capability credentials are combined with inline credential fields.
     /// - A username/password mechanism has an `aws_msk` block (when the `aws`
     ///   feature is enabled).
     /// - `AwsMskIamOauthbearer` is missing the `aws_msk` block or region.
-    /// - `AwsMskIamOauthbearer` has `username` or `password` set.
+    /// - `AwsMskIamOauthbearer` uses a capability or has credential fields set.
     pub fn validate(&self) -> Result<(), String> {
         if self.mechanism.is_username_password() {
-            match (&self.username, &self.password) {
-                (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => {}
-                _ => {
-                    return Err(format!(
-                        "SASL mechanism '{}' requires non-empty 'username' and 'password'",
-                        self.mechanism.as_rdkafka_str()
-                    ));
+            match self.credential_source {
+                SaslCredentialSource::Inline => match (&self.username, &self.password) {
+                    (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => {}
+                    _ => {
+                        return Err(format!(
+                            "SASL mechanism '{}' with inline credentials requires non-empty \
+                             'username' and 'password'",
+                            self.mechanism.as_rdkafka_str()
+                        ));
+                    }
+                },
+                SaslCredentialSource::Capability => {
+                    if self.username.is_some() || self.password.is_some() {
+                        return Err(format!(
+                            "SASL mechanism '{}' with capability credentials does not support \
+                             inline 'username' or 'password'",
+                            self.mechanism.as_rdkafka_str()
+                        ));
+                    }
                 }
             }
 
@@ -192,6 +229,14 @@ impl SaslAuth {
 
         #[cfg(feature = "aws")]
         if self.mechanism == SaslMechanism::AwsMskIamOauthbearer {
+            if self.credential_source == SaslCredentialSource::Capability {
+                return Err(
+                    "SASL mechanism 'AWS_MSK_IAM_OAUTHBEARER' does not support capability \
+                     credentials"
+                        .to_string(),
+                );
+            }
+
             match &self.aws_msk {
                 Some(msk) if !msk.region().is_empty() => {}
                 _ => {
@@ -271,6 +316,16 @@ impl Auth {
             Auth::Sasl(sasl) => sasl.validate(),
         }
     }
+
+    /// Returns `true` when this auth block requires a SASL credential provider.
+    #[must_use]
+    pub fn uses_sasl_credential_provider(&self) -> bool {
+        matches!(
+            self,
+            Auth::Sasl(sasl)
+                if sasl.credential_source() == SaslCredentialSource::Capability
+        )
+    }
 }
 
 #[cfg(test)]
@@ -348,12 +403,47 @@ mod tests {
         assert!(sasl.validate().is_ok());
     }
 
+    /// Scenario: PLAIN and SCRAM select capability-backed credentials without inline secrets.
+    /// Guarantees: Each username/password mechanism accepts the capability credential source.
+    #[test]
+    fn validate_capability_credentials_for_username_password_mechanisms() {
+        for mechanism in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] {
+            let sasl: SaslAuth = serde_json::from_value(serde_json::json!({
+                "mechanism": mechanism,
+                "credential_source": "capability"
+            }))
+            .expect("capability auth should deserialize");
+
+            assert_eq!(sasl.credential_source(), SaslCredentialSource::Capability);
+            assert!(sasl.validate().is_ok(), "{mechanism} should be valid");
+        }
+    }
+
+    /// Scenario: Capability-backed SASL configuration also specifies an inline username.
+    /// Guarantees: Conflicting credential sources are rejected before receiver startup.
+    #[test]
+    fn validate_capability_credentials_rejects_inline_fields() {
+        let sasl: SaslAuth = serde_json::from_value(serde_json::json!({
+            "mechanism": "PLAIN",
+            "credential_source": "capability",
+            "username": "inline-user"
+        }))
+        .expect("auth should deserialize before validation");
+
+        let error = sasl.validate().expect_err("mixed sources must be rejected");
+        assert!(
+            error.contains("does not support inline"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn validate_plain_missing_username_fails() {
         let sasl = SaslAuth {
             mechanism: SaslMechanism::Plain,
             username: None,
             password: Some("pass".to_string()),
+            credential_source: SaslCredentialSource::Inline,
             #[cfg(feature = "aws")]
             aws_msk: None,
         };
@@ -367,6 +457,7 @@ mod tests {
             mechanism: SaslMechanism::Plain,
             username: Some("user".to_string()),
             password: None,
+            credential_source: SaslCredentialSource::Inline,
             #[cfg(feature = "aws")]
             aws_msk: None,
         };
@@ -403,6 +494,7 @@ mod tests {
             mechanism: SaslMechanism::Plain,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
+            credential_source: SaslCredentialSource::Inline,
             aws_msk: Some(AwsMskAuth::new("us-east-1".to_string())),
         };
         let err = sasl.validate().unwrap_err();
@@ -419,6 +511,7 @@ mod tests {
             mechanism: SaslMechanism::ScramSha256,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
+            credential_source: SaslCredentialSource::Inline,
             aws_msk: Some(AwsMskAuth::new("us-east-1".to_string())),
         };
         let err = sasl.validate().unwrap_err();
@@ -435,6 +528,7 @@ mod tests {
             mechanism: SaslMechanism::AwsMskIamOauthbearer,
             username: Some("user".to_string()),
             password: None,
+            credential_source: SaslCredentialSource::Inline,
             aws_msk: Some(AwsMskAuth::new("us-east-1".to_string())),
         };
         let err = sasl.validate().unwrap_err();
@@ -451,6 +545,7 @@ mod tests {
             mechanism: SaslMechanism::AwsMskIamOauthbearer,
             username: None,
             password: Some("pass".to_string()),
+            credential_source: SaslCredentialSource::Inline,
             aws_msk: Some(AwsMskAuth::new("us-east-1".to_string())),
         };
         let err = sasl.validate().unwrap_err();
@@ -467,6 +562,7 @@ mod tests {
             mechanism: SaslMechanism::AwsMskIamOauthbearer,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
+            credential_source: SaslCredentialSource::Inline,
             aws_msk: Some(AwsMskAuth::new("us-east-1".to_string())),
         };
         let err = sasl.validate().unwrap_err();
@@ -484,6 +580,27 @@ mod tests {
             Some(AwsMskAuth::new("us-east-1".to_string())),
         );
         assert!(sasl.validate().is_ok());
+    }
+
+    /// Scenario: AWS MSK IAM authentication selects the username/password capability source.
+    /// Guarantees: The existing OAuth bearer flow cannot be replaced by an incompatible provider.
+    #[cfg(feature = "aws")]
+    #[test]
+    fn validate_aws_msk_rejects_capability_credentials() {
+        let sasl: SaslAuth = serde_json::from_value(serde_json::json!({
+            "mechanism": "AWS_MSK_IAM_OAUTHBEARER",
+            "credential_source": "capability",
+            "aws_msk": {"region": "us-east-1"}
+        }))
+        .expect("auth should deserialize before validation");
+
+        let error = sasl
+            .validate()
+            .expect_err("AWS MSK must reject capability credentials");
+        assert!(
+            error.contains("does not support capability"),
+            "unexpected error: {error}"
+        );
     }
 
     #[cfg(feature = "aws")]
