@@ -63,9 +63,8 @@ fn validate_syslog_encoding_for_metrics_is_invalid() {
     assert!(err.contains("syslog encoding is not supported for metrics"));
 }
 
-/// Scenario (routing and payload correctness): a logs signal selects plaintext
-/// encoding.
-/// Guarantees: validation accepts plaintext for logs so Kafka text records can become
+/// Scenario: A logs signal selects plaintext encoding.
+/// Guarantees: Validation accepts plaintext for logs so Kafka text records can become
 /// OpenTelemetry log bodies.
 #[test]
 fn validate_plaintext_encoding_for_logs_is_valid() {
@@ -75,9 +74,8 @@ fn validate_plaintext_encoding_for_logs_is_valid() {
     assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
 }
 
-/// Scenario (routing and payload correctness): a traces signal selects plaintext
-/// encoding.
-/// Guarantees: validation rejects the logs-only encoding before the receiver starts.
+/// Scenario: A traces signal selects plaintext encoding.
+/// Guarantees: Validation rejects the logs-only encoding before the receiver starts.
 #[test]
 fn validate_plaintext_encoding_for_traces_is_invalid() {
     let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(
@@ -87,9 +85,8 @@ fn validate_plaintext_encoding_for_traces_is_invalid() {
     assert!(err.contains("plaintext encoding is not supported for traces"));
 }
 
-/// Scenario (routing and payload correctness): a metrics signal selects plaintext
-/// encoding.
-/// Guarantees: validation rejects the logs-only encoding before the receiver starts.
+/// Scenario: A metrics signal selects plaintext encoding.
+/// Guarantees: Validation rejects the logs-only encoding before the receiver starts.
 #[test]
 fn validate_plaintext_encoding_for_metrics_is_invalid() {
     let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_metrics(

@@ -85,9 +85,9 @@ async fn test_kafka_receiver_logs() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a Kafka log record carries a UTF-8 JSON
-/// document and a `MessageFormat: plaintext` header that overrides the OTLP default.
-/// Guarantees: the end-to-end receiver emits one OTLP log record whose body is the
+/// Scenario: A Kafka log record carries a UTF-8 JSON document and a
+/// `MessageFormat: plaintext` header that overrides the OTLP default.
+/// Guarantees: The end-to-end receiver emits one OTLP log record whose body is the
 /// complete original document.
 #[tokio::test]
 async fn test_kafka_receiver_plaintext_log_header_override() {

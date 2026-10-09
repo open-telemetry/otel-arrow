@@ -854,9 +854,9 @@ mod tests {
         }
     }
 
-    /// Scenario (routing and payload correctness): a header-derived attribute is
-    /// applied while a plaintext Kafka record is converted directly to Arrow logs.
-    /// Guarantees: the output remains Arrow pdata, the payload remains the log body,
+    /// Scenario: A header-derived attribute is applied while a plaintext Kafka record is
+    /// converted directly to Arrow logs.
+    /// Guarantees: The output remains Arrow pdata, the payload remains the log body,
     /// and the extracted value is added to the generated resource.
     #[test]
     fn apply_plaintext_logs_preserves_body_and_adds_resource_attribute() {

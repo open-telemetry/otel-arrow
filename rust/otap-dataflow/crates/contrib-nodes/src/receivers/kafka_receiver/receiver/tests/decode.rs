@@ -113,9 +113,8 @@ fn decode_logs_payload_otap_proto() {
     );
 }
 
-/// Scenario (routing and payload correctness): a UTF-8 JSON document is received in a
-/// Kafka record configured for plaintext.
-/// Guarantees: the receiver emits Arrow logs directly, with exactly one record whose
+/// Scenario: A UTF-8 JSON document is received in a Kafka record configured for plaintext.
+/// Guarantees: The receiver emits Arrow logs directly, with exactly one record whose
 /// string body preserves the complete payload byte-for-byte.
 #[test]
 fn decode_logs_payload_plaintext_sets_body() {
@@ -143,9 +142,8 @@ fn decode_logs_payload_plaintext_sets_body() {
     assert!(records[0].observed_time_unix_nano > 0);
 }
 
-/// Scenario (routing and payload correctness): a plaintext payload contains invalid
-/// UTF-8.
-/// Guarantees: decoding returns a recoverable per-message error instead of altering
+/// Scenario: A plaintext payload contains invalid UTF-8.
+/// Guarantees: Decoding returns a recoverable per-message error instead of altering
 /// the payload with lossy text conversion.
 #[test]
 fn decode_logs_payload_invalid_utf8_plaintext_returns_error() {
@@ -154,10 +152,9 @@ fn decode_logs_payload_invalid_utf8_plaintext_returns_error() {
     assert!(result.is_err());
 }
 
-/// Scenario (routing and payload correctness): a traces or metrics message-format
-/// header requests plaintext.
-/// Guarantees: runtime header overrides cannot route the logs-only encoding into
-/// non-log signals.
+/// Scenario: A traces or metrics message-format header requests plaintext.
+/// Guarantees: Runtime header overrides cannot route the logs-only encoding into non-log
+/// signals.
 #[test]
 fn decode_non_logs_payload_plaintext_returns_error() {
     assert!(
