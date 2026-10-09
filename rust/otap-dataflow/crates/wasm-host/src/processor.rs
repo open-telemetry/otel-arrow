@@ -15,8 +15,10 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::future::{Either, select};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -68,17 +70,34 @@ pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
 /// properly as part of limits-and-cache follow-on work; revisit this
 /// constant (and consider making it configurable) there.
 const GUEST_FUEL_PER_CALL: u64 = 10_000_000;
+/// Provisional deadline for one guest lifecycle or process call.
+/// Cannot preempt synchronous native host kernels; revisit with resource limits.
+const GUEST_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Error returned when a caller attempts to re-enter a terminal instance.
 const WASM_INSTANCE_POISONED: &str =
     "WASM plugin instance is unavailable after a previous terminal process failure";
 
+async fn with_guest_call_timeout<F: Future>(future: F, timeout: Duration) -> Result<F::Output, ()> {
+    // The synchronous factory blocks the pipeline runtime during initialization.
+    // futures-timer's independent timer driver keeps this deadline advancing
+    // without moving guest execution or store state off the pipeline thread.
+    match select(
+        Box::pin(future),
+        Box::pin(futures_timer::Delay::new(timeout)),
+    )
+    .await
+    {
+        Either::Left((output, _)) => Ok(output),
+        Either::Right(((), _)) => Err(()),
+    }
+}
+
 /// Fold one `drain_counter_add_calls()` result into the processor's telemetry
 /// counters.
 ///
-/// `value` is derived from guest-supplied `counter-add` arguments, so it is
-/// added with saturation: `Counter::add` is a checked `+=` by default, and
-/// letting an unbounded guest total reach it would allow a guest to panic the
-/// host (debug/test) or wrap the reported metric (release).
+/// `value` is guest-supplied, so the cumulative total saturates instead of
+/// overflowing. Observing that total also prevents independent report
+/// intervals from overflowing a downstream delta accumulator.
 fn fold_guest_counter_metrics(
     metrics: &mut WasmProcessorAllMetrics,
     activity: GuestCounterActivity,
@@ -92,11 +111,13 @@ fn fold_guest_counter_metrics(
         .pdata
         .guest_counter_add_rejected_cardinality
         .add(activity.rejected_cardinality);
-    let headroom = u64::MAX - metrics.pdata.guest_counter_add_value.get();
+    metrics.guest_counter_add_value_total = metrics
+        .guest_counter_add_value_total
+        .saturating_add(activity.value);
     metrics
         .pdata
         .guest_counter_add_value
-        .add(activity.value.min(headroom));
+        .observe(metrics.guest_counter_add_value_total);
 }
 
 /// Fold one `drain_host_service_budget_calls()` result into the processor's
@@ -145,6 +166,7 @@ pub struct WasmProcessor {
     // in the hot path.
     _engine: Engine,
     _component: Component,
+    guest_call_timeout: Duration,
     // Terminal after a guest-call or output-cleanup failure, including
     // host-detected violations that do not themselves trap Wasmtime.
     poisoned: bool,
@@ -164,7 +186,23 @@ impl WasmProcessor {
         wasm_path: &PathBuf,
         plugin_config: Option<&serde_json::Value>,
         node_name: String,
+        metrics: WasmProcessorAllMetrics,
+    ) -> Result<Self, ConfigError> {
+        Self::from_path_with_timeout(
+            wasm_path,
+            plugin_config,
+            node_name,
+            metrics,
+            GUEST_CALL_TIMEOUT,
+        )
+    }
+
+    fn from_path_with_timeout(
+        wasm_path: &PathBuf,
+        plugin_config: Option<&serde_json::Value>,
+        node_name: String,
         mut metrics: WasmProcessorAllMetrics,
+        guest_call_timeout: Duration,
     ) -> Result<Self, ConfigError> {
         let mut engine_config = Config::new();
         let _ = engine_config.consume_fuel(true);
@@ -241,12 +279,15 @@ impl WasmProcessor {
         // Call the guest's `initialize` export exactly once, before any
         // `process` call is ever attempted.
         store.data_mut().begin_guest_call();
-        let init_result = futures::executor::block_on(store.run_concurrent(async |accessor| {
-            instance
-                .otel_otap_dataflow_plugin_lifecycle()
-                .call_initialize(accessor)
-                .await
-        }));
+        let init_result = futures::executor::block_on(with_guest_call_timeout(
+            store.run_concurrent(async |accessor| {
+                instance
+                    .otel_otap_dataflow_plugin_lifecycle()
+                    .call_initialize(accessor)
+                    .await
+            }),
+            guest_call_timeout,
+        ));
 
         // Fold whatever host-service activity `initialize` produced into the
         // metric set on every path. On the failure paths this is bookkeeping
@@ -258,6 +299,16 @@ impl WasmProcessor {
         fold_guest_counter_metrics(&mut metrics, drained);
         let budget_drained = store.data_mut().drain_host_service_budget_calls();
         fold_guest_host_service_budget(&mut metrics, budget_drained);
+
+        let init_result = match init_result {
+            Ok(result) => result,
+            Err(()) => {
+                let error =
+                    format!("WASM plugin initialization timed out after {guest_call_timeout:?}");
+                otel_warn!("wasm_processor.initialize_timeout", error = error.as_str());
+                return Err(ConfigError::InvalidUserConfig { error });
+            }
+        };
 
         match init_result {
             Err(error) => {
@@ -296,6 +347,7 @@ impl WasmProcessor {
             metrics,
             _engine: engine,
             _component: component,
+            guest_call_timeout,
             poisoned: false,
         })
     }
@@ -321,23 +373,31 @@ impl WasmProcessor {
         let input = self.store.data_mut().table.push(HostPdata { otap_batch })?;
         let input_rep = input.rep();
 
-        let call_result = self
-            .store
-            .run_concurrent(async |accessor| {
+        let call_result = with_guest_call_timeout(
+            self.store.run_concurrent(async |accessor| {
                 self.instance
                     .otel_otap_dataflow_plugin_processor()
                     .call_process(accessor, input)
                     .await
-            })
-            .await
-            .and_then(|result| result);
+            }),
+            self.guest_call_timeout,
+        )
+        .await
+        .map_err(|()| {
+            wasmtime::Error::msg(format!(
+                "WASM plugin process timed out after {:?}",
+                self.guest_call_timeout
+            ))
+        })
+        .and_then(|result| result)
+        .and_then(|result| result);
 
         let output = match call_result {
             Ok(output) => output,
             Err(err) => {
-                // Any error out of `call_process` is a trap (fuel exhaustion,
-                // a guest panic, or a kernel contract violation), and a trap
-                // makes the whole instance permanently unusable.
+                // Guest traps and host deadline cancellation are both terminal.
+                // A cancelled guest may still have suspended tasks in the store,
+                // so the host must never re-enter this instance.
                 self.poisoned = true;
                 // Best-effort cleanup: the guest may already have consumed or
                 // dropped this handle before trapping.
@@ -509,6 +569,184 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// Scenario: The host deadline races an operation that never completes,
+    /// while initialization is driven without a Tokio runtime.
+    /// Guarantees: The host-owned timer expires under the synchronous factory
+    /// executor instead of relying on Tokio to advance the deadline.
+    #[test]
+    fn guest_call_timeout_expires_without_tokio_runtime() {
+        let result = futures::executor::block_on(with_guest_call_timeout(
+            futures::future::pending::<()>(),
+            Duration::from_millis(10),
+        ));
+        assert!(result.is_err(), "the host deadline must end a pending call");
+    }
+
+    fn empty_waitable_plugin_fixture(wait_in_initialize: bool) -> tempfile::NamedTempFile {
+        use std::io::Write;
+
+        const EMPTY_WAITABLE_SET_COMPONENT: &str = r#"
+            (component
+              (import "otel:otap-dataflow-plugin/otel-kernels@0.1.0"
+                (instance $kernels
+                  (export "pdata" (type (sub resource)))))
+              (alias export $kernels "pdata" (type $pdata))
+              (core module $libc
+                (memory (export "memory") 1))
+              (core instance $libc (instantiate $libc))
+              (core func $new (canon waitable-set.new))
+              (core func $wait
+                (canon waitable-set.wait
+                  (memory (core memory $libc "memory"))))
+              (core module $guest
+                (import "" "waitable-set.new" (func $new (result i32)))
+                (import "" "waitable-set.wait"
+                  (func $wait (param i32 i32) (result i32)))
+                (import "libc" "memory" (memory 1))
+                (func (export "initialize") (result i32)
+                  i32.const 16)
+                (func (export "process") (param i32) (result i32)
+                  (local $set i32)
+                  call $new
+                  local.set $set
+                  local.get $set
+                  i32.const 0
+                  call $wait
+                  drop
+                  unreachable))
+              (core instance $guest
+                (instantiate $guest
+                  (with ""
+                    (instance
+                      (export "waitable-set.new" (func $new))
+                      (export "waitable-set.wait" (func $wait))))
+                  (with "libc" (instance $libc))))
+              (type $init-error (record (field "message" string)))
+              (func $initialize async
+                (result (result (error $init-error)))
+                (canon lift
+                  (core func $guest "initialize")
+                  (memory (core memory $libc "memory"))))
+              (func $process async (param "data" (own $pdata))
+                (result (option (own $pdata)))
+                (canon lift
+                  (core func $guest "process")
+                  (memory (core memory $libc "memory"))))
+              (instance $lifecycle
+                (export "init-error" (type $init-error))
+                (export "initialize" (func $initialize)))
+              (instance $processor
+                (export "pdata" (type $pdata))
+                (export "process" (func $process)))
+              (export "otel:otap-dataflow-plugin/lifecycle@0.1.0"
+                (instance $lifecycle))
+              (export "otel:otap-dataflow-plugin/processor@0.1.0"
+                (instance $processor)))
+        "#;
+
+        let component = if wait_in_initialize {
+            EMPTY_WAITABLE_SET_COMPONENT.replace(
+                "i32.const 16",
+                "call $new\n i32.const 0\n call $wait\n drop\n unreachable",
+            )
+        } else {
+            EMPTY_WAITABLE_SET_COMPONENT.to_string()
+        };
+        let mut fixture = tempfile::NamedTempFile::new().expect("create component fixture file");
+        fixture
+            .write_all(&wat::parse_str(component).expect("valid component WAT"))
+            .expect("write component fixture");
+        fixture
+    }
+
+    /// Scenario: Plugin initialization waits on an empty component-model
+    /// waitable set while the synchronous factory runs without a Tokio runtime.
+    /// Guarantees: The real initialization call ends with a startup timeout
+    /// configuration error, not a guest trap or a successfully constructed node.
+    #[test]
+    fn initialize_empty_waitable_set_returns_startup_timeout() {
+        let fixture = empty_waitable_plugin_fixture(true);
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let result = WasmProcessor::from_path_with_timeout(
+            &fixture.path().to_path_buf(),
+            None,
+            "empty-waitable-initialize-test".to_string(),
+            WasmProcessorAllMetrics::new(&pipeline_ctx),
+            Duration::from_millis(50),
+        );
+        match result {
+            Err(ConfigError::InvalidUserConfig { error }) => assert!(
+                error.contains("WASM plugin initialization timed out"),
+                "expected the host initialization deadline, got: {error}"
+            ),
+            Ok(_) => panic!("an indefinitely waiting initializer must not construct a node"),
+            Err(error) => panic!("expected a startup configuration error, got: {error}"),
+        }
+    }
+
+    /// Scenario: A plugin initializes successfully, then its `process` export
+    /// waits on an empty component-model waitable set without calling a clock.
+    /// Guarantees: `run_guest` reports a process timeout, poisons the instance,
+    /// reclaims the input resource, and rejects subsequent processing calls.
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_empty_waitable_set_times_out_and_poisons_instance() {
+        let fixture = empty_waitable_plugin_fixture(false);
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut processor = WasmProcessor::from_path_with_timeout(
+            &fixture.path().to_path_buf(),
+            None,
+            "empty-waitable-process-test".to_string(),
+            WasmProcessorAllMetrics::new(&pipeline_ctx),
+            Duration::from_millis(50),
+        )
+        .expect("plugin should initialize successfully before processing");
+
+        let error = timeout(
+            Duration::from_secs(5),
+            processor.run_guest(build_logs_batch(&["ERROR"])),
+        )
+        .await
+        .expect("host deadline must resolve processing before the test watchdog")
+        .expect_err("guest process must time out while waiting on an empty set");
+        assert!(
+            error.to_string().contains("WASM plugin process timed out"),
+            "expected a host process timeout rather than a guest trap: {error:#}"
+        );
+        assert!(
+            processor.poisoned,
+            "process timeout must poison the instance"
+        );
+        assert!(
+            processor.store.get_fuel().expect("remaining guest fuel") > 0,
+            "the host deadline must stop the suspended guest before fuel exhaustion"
+        );
+        assert!(
+            processor.store.data().table.is_empty(),
+            "timeout must reclaim the input pdata resource"
+        );
+
+        let retry_error = timeout(
+            Duration::from_secs(5),
+            processor.run_guest(build_logs_batch(&["ERROR"])),
+        )
+        .await
+        .expect("a poisoned instance must reject processing before the test watchdog")
+        .expect_err("a timed-out instance must reject subsequent process calls");
+        assert_eq!(retry_error.to_string(), WASM_INSTANCE_POISONED);
+        assert!(
+            processor.store.data().table.is_empty(),
+            "a rejected retry must not insert another input resource"
+        );
+    }
 
     use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_engine::Interests;
@@ -818,6 +1056,65 @@ mod tests {
             processor.poisoned,
             "a rejected process wait must poison the trapped instance"
         );
+    }
+
+    /// Scenario: The guest reports `u64::MAX`, then adds 1 after reporting;
+    /// both snapshots are aggregated before the registry is drained.
+    /// Guarantees: Reporting preserves a saturated cumulative total and
+    /// registry aggregation neither panics nor wraps across reporting intervals.
+    #[test]
+    fn guest_counter_value_saturates_across_reporting_snapshots() {
+        use otel_arrow_dfe_telemetry::metrics::MetricValue;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = WasmProcessorAllMetrics::new(&pipeline_ctx);
+        let (snapshots, mut reporter) = MetricsReporter::create_new_and_receiver(2);
+
+        fold_guest_counter_metrics(
+            &mut metrics,
+            GuestCounterActivity {
+                value: u64::MAX,
+                ..GuestCounterActivity::default()
+            },
+        );
+        reporter
+            .report(&mut metrics.pdata)
+            .expect("report first interval");
+        fold_guest_counter_metrics(
+            &mut metrics,
+            GuestCounterActivity {
+                value: 1,
+                ..GuestCounterActivity::default()
+            },
+        );
+        reporter
+            .report(&mut metrics.pdata)
+            .expect("report second interval");
+        for _ in 0..2 {
+            let snapshot = snapshots.try_recv().expect("reported snapshot");
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+        let batch = registry.drain_metric_export_batch();
+        let exported = batch
+            .metric_sets
+            .iter()
+            .find(|set| set.descriptor.name == "processor.wasm_processor.pdata")
+            .expect("exported processor metrics");
+        let value_index = exported
+            .descriptor
+            .metrics
+            .iter()
+            .position(|field| field.name == "guest.counter.add.value")
+            .expect("guest counter value field");
+        assert_eq!(exported.values[value_index], MetricValue::U64(u64::MAX));
     }
 
     /// Scenario: A successfully-constructed guest processes several pdata

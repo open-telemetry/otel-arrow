@@ -118,6 +118,12 @@ see "Deferred to later phases" for what a real limits design still owes.
 - **Fuel.** Each `initialize`/`process` call is granted a fixed
   Wasmtime fuel budget, so a runaway guest traps instead of hanging the
   pipeline thread.
+- **Guest-call deadline.** Each `initialize`/`process` call has a provisional
+  30-second host-owned deadline, including time suspended on component-model
+  waitables. Initialization timeout fails pipeline construction; processing
+  timeout is terminal for the instance and fails the node. The timer advances
+  independently of Tokio during synchronous initialization. It cannot preempt
+  synchronous native host kernels and is not a hard bound on processing latency.
 - **Linear memory.** Each instance has a 64 MiB guest-memory cap.
 - **String copies.** Canonical-ABI lifting has a 16 KiB encoded-input budget
   per lift, checked before copying strings into host memory. This covers
@@ -164,7 +170,8 @@ version 2 introduces these limits; plugins checking the ABI must accept
 version 2 and keep control strings and aggregate copy work within the bounds.
 
 Counter values accumulate with saturation, so a guest cannot overflow or wrap
-host telemetry.
+host telemetry. `guest.counter.add.value` is reported as a cumulative total
+for the plugin instance, saturating at `u64::MAX` across reporting intervals.
 
 **Traps are terminal.** Wasmtime marks an instance permanently unusable after
 any trap, and this host does not re-instantiate. A trap during `process`

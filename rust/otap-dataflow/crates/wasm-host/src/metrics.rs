@@ -7,7 +7,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error;
-use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::instrument::{Counter, ObserveCounter};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -49,9 +49,10 @@ pub struct WasmProcessorMetrics {
     /// host allows, and some of its counts are being lost.
     #[metric(unit = "{item}")]
     pub guest_counter_add_rejected_cardinality: Counter<u64>,
-    /// Sum of values accepted through guest `counter-add` calls.
+    /// Cumulative sum of values accepted through guest `counter-add` calls.
+    /// Saturates at `u64::MAX` for the lifetime of the plugin instance.
     #[metric(unit = "{item}")]
-    pub guest_counter_add_value: Counter<u64>,
+    pub guest_counter_add_value: ObserveCounter<u64>,
     /// Number of guest `log`/`counter-add`/`get-config` calls rejected
     /// (silently no-op'd) because the shared token-bucket rate limiter was
     /// empty. The limiter is scoped to the plugin instance's whole lifetime,
@@ -86,6 +87,7 @@ pub struct WasmProcessorAllMetrics {
     pub pdata: MetricSet<WasmProcessorMetrics>,
     /// Signal-partitioned record throughput counters.
     pub records: MeasurementMetricSet<WasmProcessorRecordMetrics>,
+    pub(crate) guest_counter_add_value_total: u64,
 }
 
 impl WasmProcessorAllMetrics {
@@ -95,6 +97,7 @@ impl WasmProcessorAllMetrics {
         Self {
             pdata: WasmProcessorMetrics::register(pipeline_ctx),
             records: WasmProcessorRecordMetrics::register(pipeline_ctx),
+            guest_counter_add_value_total: 0,
         }
     }
 

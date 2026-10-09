@@ -31,6 +31,7 @@ wasmtime = { workspace = true, optional = true }
 wasmtime-wasi = { workspace = true, optional = true }
 async-trait.workspace = true
 futures.workspace = true
+futures-timer.workspace = true
 linkme.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -42,6 +43,8 @@ otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry", "std"] }
+wat = "1"
+tempfile.workspace = true
 
 # The end-to-end integration test drives the wasmtime runtime, so it only
 # builds when the experimental `wasm` feature is enabled.
