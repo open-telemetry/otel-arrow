@@ -159,8 +159,8 @@ mod tests {
         Regex::new(p).unwrap()
     }
 
-    // Scenario: match a case-insensitive pattern against a Utf8 array containing a null.
-    // Guarantees: non-null values report their match result and null inputs stay null.
+    /// Scenario: match a case-insensitive pattern against a Utf8 array containing a null.
+    /// Guarantees: non-null values report their match result and null inputs stay null.
     #[test]
     fn test_utf8_with_nulls() {
         let arr: ArrayRef = Arc::new(StringArray::from(vec![
@@ -175,8 +175,8 @@ mod tests {
         );
     }
 
-    // Scenario: match a pattern against a Utf8View array.
-    // Guarantees: Utf8View haystacks are supported and produce per-element match results.
+    /// Scenario: match a pattern against a Utf8View array.
+    /// Guarantees: Utf8View haystacks are supported and produce per-element match results.
     #[test]
     fn test_utf8_view() {
         let arr: ArrayRef = Arc::new(StringViewArray::from(vec!["a@b.c", "nope"]));
@@ -184,9 +184,9 @@ mod tests {
         assert_eq!(out.as_boolean(), &BooleanArray::from(vec![true, false]));
     }
 
-    // Scenario: match a pattern against a dictionary-encoded array with a null and a repeated key.
-    // Guarantees: the pattern is evaluated per distinct value and expanded through the keys, with
-    // nulls preserved.
+    /// Scenario: match a pattern against a dictionary-encoded array with a null and a repeated key.
+    /// Guarantees: the pattern is evaluated per distinct value and expanded through the keys, with
+    /// nulls preserved.
     #[test]
     fn test_dictionary() {
         let arr: ArrayRef = Arc::new(
@@ -201,8 +201,8 @@ mod tests {
         );
     }
 
-    // Scenario: match a pattern against scalar Utf8 values, including a null scalar.
-    // Guarantees: a non-null scalar yields its boolean match and a null scalar yields a null boolean.
+    /// Scenario: match a pattern against scalar Utf8 values, including a null scalar.
+    /// Guarantees: a non-null scalar yields its boolean match and a null scalar yields a null boolean.
     #[test]
     fn test_scalar() {
         let r = re("^a");
