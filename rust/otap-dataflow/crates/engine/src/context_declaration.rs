@@ -16,7 +16,6 @@ mod propagation;
 
 pub use layout::*;
 pub use propagation::CompiledHeaderPropagationPolicy;
-use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -28,9 +27,8 @@ use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
 use otel_arrow_dfe_config::transport_headers_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy,
-    HeaderPropagationPolicy as HeaderPropagationConfig, NameStrategy, PropagationAction,
-    PropagationSelectorType, TransportHeadersPolicy,
+    CompiledHeaderCapturePolicy, HeaderCapturePolicy, HeaderPropagationPolicy, NameStrategy,
+    PropagationAction, PropagationSelectorType, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -212,7 +210,7 @@ pub enum ContextDeclaration {
     /// Declares the exporter's header propagation policy.
     HeaderPropagation {
         /// Propagation settings resolved after the pipeline layout is compiled.
-        policy: HeaderPropagationConfig,
+        policy: HeaderPropagationPolicy,
     },
     /// Declares the receiver's authorized identity claim projection policy.
     AuthorizedIdentityCapture {
@@ -474,7 +472,7 @@ struct CompiledNodeBindings {
     /// Receiver header capture policy compiled for the engine requirements.
     header_capture: Option<CompiledHeaderCapturePolicy>,
     /// Exporter header propagation policy resolved from node or pipeline config.
-    header_propagation: Option<HeaderPropagationPolicy>,
+    header_propagation: Option<CompiledHeaderPropagationPolicy>,
     /// Receiver authorized identity claim projection policy.
     authorized_identity_capture: Option<AuthorizedIdentityPolicy>,
 }
@@ -742,7 +740,7 @@ impl CompiledNodeBindings {
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
                     header_propagation = Some(
-                        HeaderPropagationPolicy::bind(policy, Arc::clone(layout))
+                        CompiledHeaderPropagationPolicy::bind(policy, Arc::clone(layout))
                             .map_err(invalid_context)?,
                     );
                 }
@@ -839,7 +837,7 @@ impl CompiledContextBindings {
         &self,
         pipeline: &PipelineKey,
         node: &ConfigNodeId,
-    ) -> Option<&HeaderPropagationPolicy> {
+    ) -> Option<&CompiledHeaderPropagationPolicy> {
         self.by_pipeline
             .get(pipeline)?
             .get(node)?
@@ -1109,7 +1107,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy as HeaderPropagationConfig;
     use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
 
     /// Typed component configuration used to exercise declaration validation.
@@ -1868,7 +1865,7 @@ groups:
     /// Guarantees: the profile uses a true default with one case-insensitive exception.
     #[test]
     fn requirements_canonicalize_default_and_overrides() {
-        let propagation: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
+        let propagation: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {"type": "all_captured"},
                 "name": "preserve"
@@ -1991,7 +1988,7 @@ groups:
     /// Guarantees: prepared bindings keep the policy and require only that original name.
     #[test]
     fn header_propagation_policy_is_a_context_declaration() {
-        let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
+        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
                     "type": "named",
@@ -2011,7 +2008,8 @@ groups:
         let requirements = context_runtime_requirements(declarations.clone());
         assert!(requirements.preserves_original_name(&context_name("preserved")));
         assert!(!requirements.preserves_original_name(&context_name("other")));
-        let policy = HeaderPropagationPolicy::compile(policy, &[]).expect("compiled policy");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile(policy, &[]).expect("compiled policy");
         assert_eq!(
             compiled.header_propagation_policy(
                 &pipeline("group", "pipeline"),
@@ -2092,7 +2090,7 @@ groups:
         );
 
         let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
-        let node_propagation = HeaderPropagationConfig::default();
+        let node_propagation = HeaderPropagationPolicy::default();
         exporter.header_propagation = Some(node_propagation.clone());
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
@@ -2169,7 +2167,7 @@ default:
         else {
             panic!("expected header propagation declaration");
         };
-        let policy = HeaderPropagationPolicy::compile(policy.clone(), &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy.clone(), &[declaration])
             .expect("compiled policy");
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
@@ -2381,7 +2379,7 @@ default:
             serde_json::from_value(serde_json::json!({"entry": "changed"}))
                 .expect("valid changed config");
         let propagation_declaration = ContextDeclaration::HeaderPropagation {
-            policy: HeaderPropagationConfig::default(),
+            policy: HeaderPropagationPolicy::default(),
         };
         let declarations = matching
             .context_declarations()
@@ -2430,7 +2428,7 @@ default:
         else {
             unreachable!("test declaration is header propagation");
         };
-        let propagation_policy = HeaderPropagationPolicy::bind(
+        let propagation_policy = CompiledHeaderPropagationPolicy::bind(
             propagation_policy,
             Arc::clone(&bindings.layouts[&pipeline]),
         )
@@ -2636,7 +2634,7 @@ default:
             "{type: named, named: [ID, id, other]}",
         ] {
             for name in ["preserve", "stored_name"] {
-                let policy: HeaderPropagationConfig = serde_yaml::from_str(&format!(
+                let policy: HeaderPropagationPolicy = serde_yaml::from_str(&format!(
                     "default:\n  selector: {selector}\n  name: {name}\noverrides:\n\
                      - match: {{stored_names: [ID]}}\n  name: preserve\n\
                      - match: {{stored_names: [id]}}\n  action: drop\n\
@@ -2649,8 +2647,8 @@ default:
                 let requirements = declaration
                     .context_runtime_requirements(&context)
                     .expect("requirements");
-                let bound =
-                    HeaderPropagationPolicy::compile(policy, &context).expect("bound policy");
+                let bound = CompiledHeaderPropagationPolicy::compile(policy, &context)
+                    .expect("bound policy");
                 for name in ["id", "ID", "other", "unmentioned"] {
                     let name = context_name(name);
                     assert_eq!(
