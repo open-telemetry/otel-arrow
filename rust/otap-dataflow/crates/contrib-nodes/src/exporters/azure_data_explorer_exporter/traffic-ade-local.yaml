@@ -1,0 +1,73 @@
+# Azure Data Explorer Exporter with Local ADX-Compatible Endpoint
+#
+# Uses the built-in traffic generator for local exporter testing. The endpoint
+# must accept gzip-compressed JSON Lines POST requests at:
+#   /v1/rest/ingest/oteldb/OTELLogs?streamFormat=JSON&mappingName=OTELLogsMapping
+#
+# The exporter always requires a bearer-token provider. Sign in with Azure CLI
+# or azd before running; a local test endpoint may ignore the Authorization
+# header.
+#
+# Usage from rust/otap-dataflow:
+#   cargo run --release --features azure-data-explorer -- \
+#     --config crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/traffic-ade-local.yaml \
+#     --num-cores 1
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine:
+  telemetry:
+    logs:
+      level: "info,otel-arrow-dfe-contrib-nodes=debug"
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure-data-explorer-auth:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: development
+              # The local endpoint ignores the token audience.
+              scope: "https://kusto.kusto.windows.net/.default"
+
+        nodes:
+          traffic-generator:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: synthetic
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 10
+                max_signal_count: 100
+                max_batch_size: 10
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+
+          azure-data-explorer-exporter:
+            type: "urn:microsoft:exporter:azure_data_explorer"
+            capabilities:
+              bearer_token_provider: azure-data-explorer-auth
+            config:
+              cluster_uri: "http://localhost:8080"
+              db_name: "oteldb"
+              tables:
+                logs:
+                  name: "OTELLogs"
+                  mapping: "OTELLogsMapping"
+              gzip_compression_level: 6
+              max_row_bytes: 921600
+              max_in_flight: 4
+
+        connections:
+          - from: traffic-generator
+            to: azure-data-explorer-exporter

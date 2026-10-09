@@ -363,6 +363,10 @@ recordset-kql = ["otel-arrow-dfe-contrib-nodes/recordset-kql"]
 resource-validator = ["otel-arrow-dfe-contrib-nodes/resource-validator"]
 
 # Contrib exporters.
+azure-data-explorer = [
+    "otel-arrow-dfe-contrib-nodes/azure-data-explorer",
+    "azure-identity-auth",
+]
 # The Azure Monitor exporter requires the Azure Identity auth extension to
 # authenticate outbound requests, so enabling it pulls in that extension.
 azure-monitor = [

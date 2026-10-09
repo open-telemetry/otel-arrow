@@ -118,6 +118,7 @@ contrib-processors = [
 ]
 
 contrib-exporters = [
+    "azure-data-explorer",
     "azure-monitor",
     "clickhouse",
     "geneva",
@@ -179,6 +180,10 @@ recordset-kql = [
 resource-validator = []
 
 # Exporters.
+azure-data-explorer = [
+    "dep:humantime-serde",
+    "dep:reqwest",
+]
 azure-monitor = [
     "dep:opentelemetry-proto",
     "dep:reqwest",

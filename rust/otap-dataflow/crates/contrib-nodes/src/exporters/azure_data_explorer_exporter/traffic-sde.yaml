@@ -1,0 +1,70 @@
+# Azure Data Explorer Exporter with Traffic Generator
+#
+# Sends synthetic logs to an Azure Data Explorer cluster through the streaming
+# ingestion API. Replace the cluster URI, database, and table before running.
+# The signed-in Azure CLI or azd identity must have Database Ingestor access.
+#
+# Usage from rust/otap-dataflow:
+#   cargo run --release --features azure-data-explorer -- \
+#     --config crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/traffic-sde.yaml \
+#     --num-cores 1
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine:
+  telemetry:
+    logs:
+      level: "info,otel-arrow-dfe-contrib-nodes=debug"
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure-data-explorer-auth:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: development
+              # Replace with the target cluster URI plus /.default.
+              scope: "https://example.kusto.windows.net/.default"
+
+        nodes:
+          traffic-generator:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: synthetic
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 10
+                max_signal_count: 100
+                max_batch_size: 10
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+
+          azure-data-explorer-exporter:
+            type: "urn:microsoft:exporter:azure_data_explorer"
+            capabilities:
+              bearer_token_provider: azure-data-explorer-auth
+            config:
+              # Replace with the Cluster URI, not the Data Ingestion URI.
+              cluster_uri: "https://example.kusto.windows.net"
+              db_name: "oteldb"
+              tables:
+                logs:
+                  name: "OTELLogs"
+                  mapping: "OTELLogsMapping"
+              gzip_compression_level: 6
+              max_row_bytes: 921600
+              max_in_flight: 4
+
+        connections:
+          - from: traffic-generator
+            to: azure-data-explorer-exporter
