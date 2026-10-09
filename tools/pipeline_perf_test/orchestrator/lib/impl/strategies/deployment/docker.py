@@ -155,8 +155,8 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
             apply to the container (docker --ulimit), keyed by limit name (e.g.
             'nofile'). A bare int sets both the soft and hard limit; a
             DockerUlimit object sets them independently. 'nofile' defaults to
-            16384; entries here are merged on top of the defaults, so an explicit
-            value for a key overrides the default for that key.
+            16384, but explicitly configured ulimits are merged on top and can
+            override them.
     """
 
     image: str
@@ -288,8 +288,8 @@ components:
             run_kwargs["cpuset_cpus"] = self.config.cpuset_cpus
         if self.config.extra_hosts:
             run_kwargs["extra_hosts"] = dict(self.config.extra_hosts)
-        # Merge any configured ulimits on top of the defaults so every
-        # container gets the raised nofile limit unless it overrides it.
+
+        # Merge configured ulimits on top of the defaults so every
         run_kwargs["ulimits"] = build_ulimits(
             {**DEFAULT_ULIMITS, **(self.config.ulimits or {})}
         )
