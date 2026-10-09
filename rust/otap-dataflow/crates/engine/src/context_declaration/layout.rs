@@ -366,34 +366,6 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
 }
 
 impl ContextLayout {
-    /// Compiles composites selected by qualified references, leaving unused definitions inert.
-    ///
-    /// Only selected definitions contribute fields. Missing runtime values make
-    /// a composite absent rather than invalidating startup.
-    pub(crate) fn for_references<'a>(
-        declarations: &[ContextEntryDeclaration],
-        references: impl IntoIterator<Item = &'a ContextEntryRef>,
-    ) -> Result<Self, Error> {
-        let requested = references
-            .into_iter()
-            .filter_map(ContextEntryRef::scope)
-            .collect::<BTreeSet<_>>();
-        for name in &requested {
-            if !declarations
-                .iter()
-                .any(|declaration| &declaration.name == *name)
-            {
-                return Err(invalid(format!("unknown composite context entry `{name}`")));
-            }
-        }
-        let selected = declarations
-            .iter()
-            .filter(|declaration| requested.contains(&declaration.name))
-            .cloned()
-            .collect::<Vec<_>>();
-        Self::for_declarations(&selected)
-    }
-
     /// Compiles all supplied composite declarations into one canonical layout.
     pub(crate) fn for_declarations(
         declarations: &[ContextEntryDeclaration],
@@ -763,15 +735,10 @@ impl ContextFieldLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::ContextEntryRef;
     use otel_arrow_dfe_config::context_policy::ContextEntryDefinition;
 
     fn name(value: &str) -> ContextEntryName {
         value.try_into().expect("valid name")
-    }
-
-    fn reference(value: &str) -> ContextEntryRef {
-        value.try_into().expect("valid reference")
     }
 
     fn field(value: &str, domain: ContextDomain) -> ContextFieldLayout {
@@ -1208,28 +1175,6 @@ mod tests {
         );
     }
 
-    /// Scenario: a pipeline consumes one composite while another has unrelated source members.
-    /// Guarantees: only live references activate definitions, and unused source slots remain absent.
-    #[test]
-    fn consumer_selection_leaves_unused_definitions_inert() {
-        let mut unused = entry();
-        unused.name = name("unused");
-        unused.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
-            name: name("other_identity"),
-            store_as: None,
-        };
-        let selected = reference("product_user:workspace");
-        let layout = ContextLayout::for_references(&[entry(), unused], [&selected])
-            .expect("only selected entry compiles");
-        assert_eq!(layout.entries().len(), 1);
-        assert_eq!(layout.fields().len(), 2);
-        let ContextNameId::Composite(entry) = layout.resolve(&selected).expect("member").presence()
-        else {
-            panic!("expected composite");
-        };
-        assert!(!layout.is_present(entry, &TransportHeaders::new()));
-    }
-
     /// Scenario: member and condition spellings differ in case and their declaration order changes.
     /// Guarantees: reserved field names, condition gates, and resulting layouts are deterministic.
     #[test]
@@ -1242,11 +1187,9 @@ mod tests {
                 name: name("WORKSPACE"),
                 value: "production".to_owned(),
             });
-        let selected = reference("product_user:workspace");
-        let first =
-            ContextLayout::for_references(&[declaration.clone()], [&selected]).expect("original");
+        let first = ContextLayout::for_declarations(&[declaration.clone()]).expect("original");
         declaration.definition.0.reverse();
-        let second = ContextLayout::for_references(&[declaration], [&selected]).expect("reordered");
+        let second = ContextLayout::for_declarations(&[declaration]).expect("reordered");
         assert_eq!(first, second);
     }
 

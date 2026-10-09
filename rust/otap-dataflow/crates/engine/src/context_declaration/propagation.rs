@@ -15,7 +15,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
 };
 use otel_arrow_dfe_config::{ContextEntryName, ContextEntryRef};
 use smallvec::SmallVec;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// A propagation policy with every composite selector resolved before runtime.
@@ -65,9 +65,26 @@ impl CompiledHeaderPropagationPolicy {
     ) -> Result<Self, String> {
         policy.validate()?;
         let references = policy.default.selector.named.as_ref();
+        let requested = references
+            .into_iter()
+            .flatten()
+            .filter_map(ContextEntryRef::scope)
+            .collect::<BTreeSet<_>>();
+        for name in &requested {
+            if !declarations
+                .iter()
+                .any(|declaration| &declaration.name == *name)
+            {
+                return Err(format!("unknown composite context entry `{name}`"));
+            }
+        }
+        let selected = declarations
+            .iter()
+            .filter(|declaration| requested.contains(&declaration.name))
+            .cloned()
+            .collect::<Vec<_>>();
         let composite_layout =
-            ContextLayout::for_references(declarations, references.into_iter().flatten())
-                .map_err(|error| error.to_string())?;
+            ContextLayout::for_declarations(&selected).map_err(|error| error.to_string())?;
         let primitive_fields = references
             .into_iter()
             .flatten()
@@ -97,7 +114,7 @@ impl CompiledHeaderPropagationPolicy {
     }
 
     /// Resolves propagation against a layout shared by every node in one pipeline.
-    fn bind_propagation_policy_to_layout(
+    pub(super) fn bind_propagation_policy_to_layout(
         policy: HeaderPropagationPolicy,
         layout: Arc<ContextLayout>,
     ) -> Result<Self, String> {
@@ -207,16 +224,9 @@ impl CompiledHeaderPropagationPolicy {
         })
     }
 
-    /// Rebinds validated propagation settings to a pipeline-shared layout.
-    pub(crate) fn rebind_to_layout(self, layout: Arc<ContextLayout>) -> Result<Self, String> {
-        Self::bind_propagation_policy_to_layout(
-            HeaderPropagationPolicy::new(self.default, self.overrides),
-            layout,
-        )
-    }
-
     /// Returns the layout used to resolve this policy's field and entry IDs.
-    pub(crate) fn layout(&self) -> &Arc<ContextLayout> {
+    #[cfg(test)]
+    pub(super) fn layout(&self) -> &Arc<ContextLayout> {
         &self.layout
     }
 

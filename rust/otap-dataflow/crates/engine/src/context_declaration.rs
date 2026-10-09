@@ -29,7 +29,9 @@ use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
 use otel_arrow_dfe_config::transport_headers_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
+    CompiledHeaderCapturePolicy, HeaderCapturePolicy,
+    HeaderPropagationPolicy as HeaderPropagationConfig, NameStrategy, PropagationAction,
+    PropagationSelectorType, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -138,6 +140,62 @@ fn composite_declaration<'a>(
     Ok(declaration)
 }
 
+/// Resolves one propagation selector to its transport-header source name.
+fn propagation_source_name(
+    reference: &otel_arrow_dfe_config::ContextEntryRef,
+    composites: &[ConfigContextEntryDeclaration],
+) -> Result<ContextEntryName, Error> {
+    let Some(composite) = reference.scope() else {
+        return Ok(reference.name().clone());
+    };
+    let declaration = composite_declaration(composite, composites)?;
+    let part = declaration
+        .definition
+        .0
+        .iter()
+        .find(|part| part.member_name() == Some(reference.name()))
+        .ok_or_else(|| invalid_context(format!("unknown context member `{reference}`")))?;
+    match part
+        .value_source()
+        .expect("selected composite member is value-bearing")
+    {
+        ContextEntryValueSource::Referenced {
+            domain: ContextDomain::TransportHeader,
+            name,
+        } => Ok(name.clone()),
+        ContextEntryValueSource::Referenced {
+            domain: ContextDomain::AuthorizedIdentity,
+            name,
+        } => Err(invalid_context(format!(
+            "context entry reference `{reference}` selects authorized-identity member `{name}`, which cannot be propagated as a transport header"
+        ))),
+        ContextEntryValueSource::Constant { name, .. } => Err(invalid_context(format!(
+            "context entry reference `{reference}` selects constant member `{name}`, which cannot be propagated until constant runtime integration is available"
+        ))),
+    }
+}
+
+/// Returns whether one stored header is propagated using its original wire name.
+fn propagation_preserves_original_name(
+    policy: &HeaderPropagationConfig,
+    name: &ContextEntryName,
+    selected_by_default: bool,
+) -> bool {
+    if let Some(override_policy) = policy.overrides.iter().find(|override_policy| {
+        override_policy
+            .match_rule
+            .stored_names
+            .iter()
+            .any(|stored| stored.as_str().eq_ignore_ascii_case(name.as_str()))
+    }) {
+        return override_policy.action == PropagationAction::Propagate
+            && override_policy.name.unwrap_or(policy.default.name) == NameStrategy::Preserve;
+    }
+    selected_by_default
+        && policy.default.action == PropagationAction::Propagate
+        && policy.default.name == NameStrategy::Preserve
+}
+
 /// Pairs a target with its value representation without weakening composite presence requirements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContextEntrySelector {
@@ -195,8 +253,8 @@ pub enum ContextDeclaration {
     },
     /// Declares the exporter's header propagation policy.
     HeaderPropagation {
-        /// Resolved propagation policy.
-        policy: HeaderPropagationPolicy,
+        /// Validated propagation settings resolved after pipeline layout compilation.
+        policy: HeaderPropagationConfig,
     },
     /// Declares the receiver's authorized identity claim projection policy.
     AuthorizedIdentityCapture {
@@ -256,11 +314,28 @@ impl ContextDeclaration {
             | Self::HeaderCapture { .. }
             | Self::AuthorizedIdentityCapture { .. } => {}
             Self::HeaderPropagation { policy } => {
+                let default_preserve_original = policy.default.selector.selector_type
+                    == PropagationSelectorType::AllCaptured
+                    && policy.default.action == PropagationAction::Propagate
+                    && policy.default.name == NameStrategy::Preserve;
                 requirements
                     .original_name_retention
-                    .default_preserve_original = policy.propagates_original_name_by_default();
-                policy.visit_original_name_requirement_names(|name| {
-                    let preserve_original = policy.propagates_original_name(name);
+                    .default_preserve_original = default_preserve_original;
+
+                let mut names = BTreeMap::<ContextEntryName, bool>::new();
+                for reference in policy.default.selector.named.iter().flatten() {
+                    _ = names.insert(propagation_source_name(reference, composites)?, true);
+                }
+                for name in policy
+                    .overrides
+                    .iter()
+                    .flat_map(|policy| &policy.match_rule.stored_names)
+                {
+                    _ = names.entry(name.clone()).or_insert(false);
+                }
+                for (name, selected_by_default) in names {
+                    let preserve_original =
+                        propagation_preserves_original_name(policy, &name, selected_by_default);
                     if preserve_original
                         != requirements
                             .original_name_retention
@@ -269,9 +344,9 @@ impl ContextDeclaration {
                         _ = requirements
                             .original_name_retention
                             .overrides
-                            .insert(original_name_key(name), preserve_original);
+                            .insert(original_name_key(&name), preserve_original);
                     }
-                });
+                }
             }
         }
         Ok(requirements)
@@ -439,17 +514,32 @@ impl PreparedNodeContextDeclarations {
         declarations: NodeContextDeclarations,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<Self, Error> {
-        let composite_names = declarations
-            .iter()
-            .filter_map(|declaration| match declaration {
+        let mut composite_names = BTreeSet::new();
+        for declaration in declarations.iter() {
+            match declaration {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries { entries },
-                } => Some(entries.iter()),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|entry| entry.target.composite_name())
-            .collect::<BTreeSet<_>>();
+                } => {
+                    composite_names.extend(
+                        entries
+                            .iter()
+                            .filter_map(|entry| entry.target.composite_name()),
+                    );
+                }
+                ContextDeclaration::HeaderPropagation { policy } => {
+                    composite_names.extend(
+                        policy
+                            .default
+                            .selector
+                            .named
+                            .iter()
+                            .flatten()
+                            .filter_map(|reference| reference.scope()),
+                    );
+                }
+                _ => {}
+            }
+        }
         let composites = composite_names
             .into_iter()
             .map(|name| {
@@ -512,25 +602,39 @@ impl PreparedNodeContextDeclarations {
                         domain: ContextDomain::AuthorizedIdentity,
                     }));
                 }
+                ContextDeclaration::HeaderPropagation { policy } => {
+                    primitive_fields.extend(
+                        policy
+                            .default
+                            .selector
+                            .named
+                            .iter()
+                            .flatten()
+                            .filter(|reference| reference.scope().is_none())
+                            .map(|reference| ContextFieldLayout {
+                                name: reference.name().clone(),
+                                domain: ContextDomain::TransportHeader,
+                            }),
+                    );
+                    primitive_fields.extend(
+                        policy
+                            .overrides
+                            .iter()
+                            .flat_map(|policy| &policy.match_rule.stored_names)
+                            .cloned()
+                            .map(|name| ContextFieldLayout {
+                                name,
+                                domain: ContextDomain::TransportHeader,
+                            }),
+                    );
+                }
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::AllStored { .. },
-                }
-                | ContextDeclaration::HeaderPropagation { .. } => {}
+                } => {}
             }
         }
         let primitive_layout = ContextLayout::compile_layout(primitive_fields, &[])?;
-        ContextLayout::merge(
-            [&component_layout, &primitive_layout].into_iter().chain(
-                self.declarations
-                    .iter()
-                    .filter_map(|declaration| match declaration {
-                        ContextDeclaration::HeaderPropagation { policy } => {
-                            Some(policy.layout().as_ref())
-                        }
-                        _ => None,
-                    }),
-            ),
-        )
+        ContextLayout::merge([&component_layout, &primitive_layout])
     }
 }
 
@@ -688,9 +792,11 @@ impl CompiledNodeBindings {
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
                     header_propagation = Some(
-                        policy
-                            .rebind_to_layout(Arc::clone(layout))
-                            .map_err(invalid_context)?,
+                        HeaderPropagationPolicy::bind_propagation_policy_to_layout(
+                            policy,
+                            Arc::clone(layout),
+                        )
+                        .map_err(invalid_context)?,
                     );
                 }
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
@@ -930,7 +1036,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
-                    &pipeline.policies.context,
                 )?;
                 let declarations = component_declarations
                     .into_iter()
@@ -952,7 +1057,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
-        context: &[ConfigContextEntryDeclaration],
     ) -> Result<NodeContextDeclarations, EngineError> {
         let declarations = match node.kind() {
             NodeKind::Receiver => node
@@ -983,8 +1087,9 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 policy
                     .cloned()
                     .map(|policy| {
-                        HeaderPropagationPolicy::compile_propagation_policy(policy, context)
-                            .map(|policy| ContextDeclaration::HeaderPropagation { policy })
+                        policy
+                            .validate()
+                            .map(|()| ContextDeclaration::HeaderPropagation { policy })
                             .map_err(|error| {
                                 EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
                                     error,
@@ -1862,8 +1967,6 @@ groups:
             }]
         }))
         .expect("valid propagation policy");
-        let propagation = HeaderPropagationPolicy::compile_propagation_policy(propagation, &[])
-            .expect("propagation policy compiles");
         let requirements = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
                 policy: propagation,
@@ -1954,17 +2057,13 @@ groups:
         );
         let unsupported_default = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile_propagation_policy(
-                    serde_json::from_value(serde_json::json!({
-                        "default": {
-                            "selector": {"type": "all_captured"},
-                            "name": "preserve"
-                        }
-                    }))
-                    .expect("valid propagation policy"),
-                    &[],
-                )
-                .expect("propagation policy compiles"),
+                policy: serde_json::from_value(serde_json::json!({
+                    "default": {
+                        "selector": {"type": "all_captured"},
+                        "name": "preserve"
+                    }
+                }))
+                .expect("valid propagation policy"),
             }]
             .into_iter()
             .collect(),
@@ -1990,8 +2089,6 @@ groups:
             }
         }))
         .expect("valid propagation policy");
-        let policy = HeaderPropagationPolicy::compile_propagation_policy(policy, &[])
-            .expect("propagation policy compiles");
         let declarations: NodeContextDeclarations = [ContextDeclaration::HeaderPropagation {
             policy: policy.clone(),
         }]
@@ -2002,12 +2099,14 @@ groups:
         let requirements = context_runtime_requirements(declarations.clone());
         assert!(requirements.preserves_original_name(&context_name("preserved")));
         assert!(!requirements.preserves_original_name(&context_name("other")));
+        let expected = HeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+            .expect("propagation policy compiles");
         assert_eq!(
             compiled.header_propagation_policy(
                 &pipeline("group", "pipeline"),
                 &ConfigNodeId::from("node")
             ),
-            Some(&policy),
+            Some(&expected),
         );
     }
 
@@ -2047,7 +2146,6 @@ groups:
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
             )
             .expect("wrapper declarations"),
             [
@@ -2068,7 +2166,6 @@ groups:
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
             )
             .expect("wrapper declarations"),
             [
@@ -2091,12 +2188,10 @@ groups:
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile_propagation_policy(node_propagation, &[])
-                    .expect("node propagation policy compiles"),
+                policy: node_propagation,
             }]
             .into_iter()
             .collect(),
@@ -2108,82 +2203,42 @@ groups:
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
-                &[],
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile_propagation_policy(
-                    pipeline_policy.header_propagation,
-                    &[],
-                )
-                .expect("pipeline propagation policy compiles"),
+                policy: pipeline_policy.header_propagation,
             }]
             .into_iter()
             .collect(),
         );
     }
 
-    /// Scenario: an exporter selects a conditional composite transport-header member.
-    /// Guarantees: wrapper compilation resolves the visible declaration before installing policy.
+    /// Scenario: an exporter config selects a conditional composite transport-header member.
+    /// Guarantees: wrapper declaration collection retains unresolved propagation settings.
     #[test]
-    fn wrapper_compiles_conditional_composite_header_propagation() {
-        let context: otel_arrow_dfe_config::context_policy::ContextPolicy = serde_yaml::from_str(
-            r#"
-entries:
-  tenant:
-    - type: transport_header
-      name: workspace
-      store_as: workspace_id
-    - type: transport_header_match
-      name: environment
-      value: production
-"#,
-        )
-        .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ConfigContextEntryDeclaration {
-            scope: otel_arrow_dfe_config::context_policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+    fn wrapper_retains_conditional_composite_header_propagation() {
         let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
-        exporter.header_propagation = Some(
-            serde_yaml::from_str(
-                r#"
+        let expected: HeaderPropagationConfig = serde_yaml::from_str(
+            r#"
 default:
   selector:
     type: named
     named: [tenant:workspace_id]
   name: stored_name
 "#,
-            )
-            .expect("valid propagation policy"),
-        );
-
-        let declarations = PipelineFactory::<()>::wrapper_context_declarations(
-            &exporter,
-            &None,
-            &None,
-            &[declaration],
         )
-        .expect("wrapper declarations");
+        .expect("valid propagation policy");
+        exporter.header_propagation = Some(expected.clone());
+
+        let declarations =
+            PipelineFactory::<()>::wrapper_context_declarations(&exporter, &None, &None)
+                .expect("wrapper declarations");
         let ContextDeclaration::HeaderPropagation { policy } =
             declarations.iter().next().expect("propagation declaration")
         else {
             panic!("expected header propagation declaration");
         };
-        let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
-        assert_eq!(policy.propagate(&headers).count(), 0);
-        headers.push(TransportHeader::text(
-            context_name("environment"),
-            b"production",
-        ));
-
-        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
-        assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].header_name, "workspace_id");
-        assert_eq!(propagated[0].value, b"acme");
+        assert_eq!(policy, &expected);
     }
 
     /// Scenario: complete YAML changes a composite condition or selected member during a live update.
@@ -2327,7 +2382,7 @@ default:
 
         for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
             let declarations =
-                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy, &[])
+                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy)
                     .expect("wrapper declarations");
             assert!(declarations.is_empty());
 
@@ -2385,8 +2440,8 @@ default:
     }
 
     /// Scenario: a node declares a context read and a propagation policy.
-    /// Guarantees: undeclared reads and nodes fail while propagation is rebound to the shared
-    /// pipeline layout without changing its configured behavior.
+    /// Guarantees: undeclared reads and nodes fail while propagation compiles once against the
+    /// shared pipeline layout without changing its configured behavior.
     #[test]
     fn parsed_config_declarations_are_validated_against_compiled_policy() {
         let pipeline = pipeline("group", "pipeline");
@@ -2398,7 +2453,7 @@ default:
             serde_json::from_value(serde_json::json!({"entry": "changed"}))
                 .expect("valid changed config");
         let propagation_declaration = ContextDeclaration::HeaderPropagation {
-            policy: HeaderPropagationPolicy::default(),
+            policy: HeaderPropagationConfig::default(),
         };
         let declarations = matching
             .context_declarations()
@@ -2451,9 +2506,11 @@ default:
         let layout = bindings
             .pipeline_layout(&pipeline)
             .expect("pipeline layout");
-        let expected_policy = propagation_policy
-            .rebind_to_layout(Arc::clone(layout))
-            .expect("propagation policy rebinds");
+        let expected_policy = HeaderPropagationPolicy::bind_propagation_policy_to_layout(
+            propagation_policy,
+            Arc::clone(layout),
+        )
+        .expect("propagation policy rebinds");
         assert_eq!(
             bindings.header_propagation_policy(&pipeline, &node),
             Some(&expected_policy)
