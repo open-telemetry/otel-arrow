@@ -1,6 +1,3 @@
-# Fluent Bit OTLP/HTTP -> OTLP/HTTP passthrough.
-# Single-threaded (threaded off, no extra workers) so the engine is bound to ~1
-# core, matching the single-core methodology used for OTC (GOMAXPROCS=1).
 service:
   flush: 1
   log_level: info

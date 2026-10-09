@@ -9,60 +9,60 @@
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 72.94611061186916
+    "value": 71.65592750772241
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 74.1192641097599
+    "value": 72.417326269866
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 36.807552083333334
+    "value": 32.756640625
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 37.18359375
+    "value": 33.40234375
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 299862.81602307357
+    "value": 299502.6080536165
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 302856.0133080252
+    "value": 301963.30413699814
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000541
+    "value": 60.000476
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5370661.900665013
+    "value": 5709654.709421507
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 7563821.432781514
+    "value": 8092021.629731309
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Logs)/300k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 17.733383735731486
+    "value": 18.90843897651579
   }
 ]

@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -1.2357884645462036
+    "value": -1.492658257484436
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.01359742675098
+    "value": 100.03042443263726
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.41703611457035
+    "value": 100.31223397635345
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 209.870703125
+    "value": 195.20989583333332
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 224.546875
+    "value": 206.921875
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 103144.40012073451
+    "value": 107051.47743065207
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 103177.78509739973
+    "value": 107369.50965085663
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000556
+    "value": 60.000565
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13365588.720372837
+    "value": 14547647.639666354
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 14621954.275121141
+    "value": 15726615.101737728
   }
 ]

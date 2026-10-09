@@ -3,66 +3,66 @@
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -1.2951017618179321
+    "value": 100.0
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.13510696457766
+    "value": 100.10778702519613
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.31166302652106
+    "value": 100.38722899094033
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 99.59375
+    "value": 3581.5075520833334
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 108.2734375
+    "value": 6574.265625
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 122011.7942229405
+    "value": 185824.95803228376
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 123382.3511246244
+    "value": 0.0
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000486
+    "value": 60.000567
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 45697162.24206389
+    "value": 277103.47860143794
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 44613188.94882123
+    "value": 71147358.68537469
   },
   {
     "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-512 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 370.3703311335566
+    "value": 0.0
   }
 ]

@@ -3,66 +3,66 @@
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 5.0
+    "value": 0.01666666567325592
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 50.38039094429575
+    "value": 50.634793437254665
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 50.85285090455396
+    "value": 51.43870324189527
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 83.051953125
+    "value": 88.33880208333333
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 92.1953125
+    "value": 94.62109375
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 104221.75220528018
+    "value": 100516.95366686098
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 99010.66459501616
+    "value": 100670.46293376987
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 20.000482
+    "value": 60.00049
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2051188.3438902213
+    "value": 2052642.6990679638
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 37522132.32109128
+    "value": 37576519.94240986
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 20.716842496514975
+    "value": 20.389721465951514
   }
 ]
