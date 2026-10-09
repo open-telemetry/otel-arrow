@@ -32,6 +32,9 @@ where
     let bounds = point.explicit_bounds();
     let mut buckets = Vec::with_capacity(bounds.size_hint().0 + 1);
     let mut bound_count = 0_usize;
+    // Geneva's percentile lookup returns a bucket's own bound as the answer, so it must stay
+    // finite; matches the Metrics Extension behavior of treating an absent last bound as 0.0,
+    // giving bound+1 = 1.0.
     let mut overflow_bound = 1.0;
     let mut total = 0_u64;
     for bound in bounds {
@@ -47,9 +50,9 @@ where
         };
         total = running_total;
         buckets.push((bound, clamp_bucket_count(count)));
-        // `bound + 1.0` can round back to `bound` for large bounds; use the next representable value instead.
+        // `next_up` avoids `bound + 1.0` rounding back to `bound` for large bounds.
         let next_bound = bound.next_up();
-        if next_bound <= bound {
+        if next_bound.is_infinite() {
             return ExplicitHistogram::Invalid;
         }
         overflow_bound = next_bound;
@@ -229,8 +232,9 @@ mod tests {
     /// Guarantees: Buckets are sorted and equal boundaries are coalesced using protocol-compatible count addition.
     #[test]
     fn sorts_and_coalesces_explicit_histogram_buckets() {
+        let huge_bound = 1.0e300;
         let histogram = explicit_histogram(&explicit_point(
-            vec![3.0, 1.0, 1.0, f64::MAX],
+            vec![3.0, 1.0, 1.0, huge_bound],
             vec![1, 2, 3, 4, 5],
             15,
         ));
@@ -240,10 +244,19 @@ mod tests {
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, 5),
                 (3.0, 1),
-                (f64::MAX, 4),
-                (f64::INFINITY, 5),
+                (huge_bound, 4),
+                (huge_bound.next_up(), 5),
             ]))
         );
+    }
+
+    /// Scenario: An explicit histogram's last bound is f64::MAX, leaving no finite value for the synthetic overflow bucket.
+    /// Guarantees: The data point is rejected rather than encoding a non-finite bucket bound.
+    #[test]
+    fn rejects_explicit_histogram_with_max_bound() {
+        let histogram = explicit_histogram(&explicit_point(vec![f64::MAX], vec![1, 2], 3));
+
+        assert_eq!(histogram, ExplicitHistogram::Invalid);
     }
 
     /// Scenario: An explicit histogram includes a NaN bound among otherwise valid bounds.
