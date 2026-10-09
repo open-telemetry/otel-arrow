@@ -82,6 +82,12 @@ impl PdataFormat {
     }
 }
 
+/// A one-word cache that distinguishes unknown from a known zero.
+///
+/// On the current 64-bit target, `Option<usize>` occupies 16 bytes instead of 8.
+/// Using a sentinel for both measurement caches keeps `PdataPayload` at 64 bytes
+/// rather than 80, reducing per-message storage in queues. `usize::MAX` is reserved
+/// for unknown and cannot be cached as a measurement; zero remains a valid value.
 #[derive(Clone, Copy, Debug)]
 struct CachedMeasurement(usize);
 
