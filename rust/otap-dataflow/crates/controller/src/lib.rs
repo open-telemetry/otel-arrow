@@ -1413,6 +1413,52 @@ impl<
         }
     }
 
+    fn cleanup_failed_startup<C: ControlPlane + ?Sized>(
+        runtime: &ControllerRuntime<PData>,
+        control_plane: &C,
+        memory_limiter_handle: Option<
+            ThreadLocalTaskHandle<(), otel_arrow_dfe_telemetry::error::Error>,
+        >,
+        engine_metrics_handle: ThreadLocalTaskHandle<
+            (ServiceStats, Duration),
+            otel_arrow_dfe_telemetry::error::Error,
+        >,
+        controller_telemetry_guard: live_control::ControllerTelemetryGuard<'_, PData>,
+        final_console_report: &mut Option<(ServiceStats, Duration)>,
+    ) {
+        if let Some(handle) = memory_limiter_handle
+            && let Err(err) = handle.shutdown_and_join()
+        {
+            otel_warn!(
+                "controller.startup_failure_memory_limiter_shutdown_failed",
+                error = err.to_string()
+            );
+        }
+        match engine_metrics_handle.shutdown_and_join() {
+            Ok(report) => *final_console_report = Some(report),
+            Err(err) => {
+                otel_warn!(
+                    "controller.startup_failure_engine_metrics_shutdown_failed",
+                    error = err.to_string()
+                );
+            }
+        }
+        drop(controller_telemetry_guard);
+        if let Err(error) = control_plane.shutdown_all(10) {
+            otel_warn!(
+                "controller.startup_failure_pipeline_shutdown_failed",
+                error = format!("{error:?}")
+            );
+        }
+        let _ = runtime.wait_for_global_shutdown_completion();
+        if !runtime.wait_until_all_instances_exit_for(Duration::from_secs(12)) {
+            otel_warn!(
+                "controller.startup_failure_pipeline_shutdown_timeout",
+                message = "Timed out waiting for pipelines to stop after controller startup failed"
+            );
+        }
+    }
+
     /// Combines the engine result with an already-observed console outcome.
     fn fold_console_output_result(
         result: Result<(), Error>,
@@ -1840,16 +1886,30 @@ impl<
         }) {
             Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {}
             Ok(status) => {
-                return Err(Error::StartupReconciliationFailed {
-                    message: status
-                        .failure_reason
-                        .unwrap_or_else(|| "pipeline rollout did not succeed".to_owned()),
-                });
+                let message = status
+                    .failure_reason
+                    .unwrap_or_else(|| "pipeline rollout did not succeed".to_owned());
+                Self::cleanup_failed_startup(
+                    &runtime,
+                    control_plane.as_ref(),
+                    memory_limiter_handle,
+                    engine_metrics_handle,
+                    controller_telemetry_guard,
+                    final_console_report,
+                );
+                return Err(Error::StartupReconciliationFailed { message });
             }
             Err(source) => {
-                return Err(Error::StartupReconciliationFailed {
-                    message: source.to_string(),
-                });
+                let message = source.to_string();
+                Self::cleanup_failed_startup(
+                    &runtime,
+                    control_plane.as_ref(),
+                    memory_limiter_handle,
+                    engine_metrics_handle,
+                    controller_telemetry_guard,
+                    final_console_report,
+                );
+                return Err(Error::StartupReconciliationFailed { message });
             }
         }
 
@@ -1871,38 +1931,14 @@ impl<
         ) {
             Ok(handles) => handles,
             Err(err) => {
-                if let Some(handle) = memory_limiter_handle
-                    && let Err(stop_err) = handle.shutdown_and_join()
-                {
-                    otel_warn!(
-                        "controller.extension_startup_memory_limiter_shutdown_failed",
-                        error = stop_err.to_string()
-                    );
-                }
-                match engine_metrics_handle.shutdown_and_join() {
-                    Ok(report) => *final_console_report = Some(report),
-                    Err(stop_err) => {
-                        otel_warn!(
-                            "controller.extension_startup_engine_metrics_shutdown_failed",
-                            error = stop_err.to_string()
-                        );
-                    }
-                }
-                drop(controller_telemetry_guard);
-                if let Err(shutdown_err) = control_plane.shutdown_all(10) {
-                    otel_warn!(
-                        "controller.extension_startup_shutdown_failed",
-                        error = format!("{shutdown_err:?}"),
-                        message = "Failed to shut down launched pipelines after controller extension startup failed"
-                    );
-                }
-                let _ = runtime.wait_for_global_shutdown_completion();
-                if !runtime.all_instances_exited() {
-                    otel_warn!(
-                        "controller.extension_startup_pipeline_shutdown_timeout",
-                        message = "Timed out waiting for pipelines and system observability to stop after controller extension startup failed"
-                    );
-                }
+                Self::cleanup_failed_startup(
+                    &runtime,
+                    control_plane.as_ref(),
+                    memory_limiter_handle,
+                    engine_metrics_handle,
+                    controller_telemetry_guard,
+                    final_console_report,
+                );
                 return Err(err);
             }
         };
@@ -2877,6 +2913,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn run_console_reporting_child(test_name: &str) {
         use std::process::{Command, Stdio};
@@ -3669,7 +3706,19 @@ groups: {}
         )
     }
 
-    struct TestObservabilityReceiver;
+    static TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_REGULAR_RECEIVER_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn test_receiver_shutdown_counts() -> (usize, usize) {
+        (
+            TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS.load(Ordering::Relaxed),
+            TEST_REGULAR_RECEIVER_SHUTDOWNS.load(Ordering::Relaxed),
+        )
+    }
+
+    struct TestObservabilityReceiver {
+        shutdown_counter: &'static AtomicUsize,
+    }
 
     #[async_trait(?Send)]
     impl receiver::Receiver<()> for TestObservabilityReceiver {
@@ -3683,9 +3732,11 @@ groups: {}
                 match msg {
                     NodeControlMsg::DrainIngress { deadline, .. } => {
                         effect_handler.notify_receiver_drained().await?;
+                        _ = self.shutdown_counter.fetch_add(1, Ordering::Relaxed);
                         return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                     }
                     NodeControlMsg::Shutdown { deadline, .. } => {
+                        _ = self.shutdown_counter.fetch_add(1, Ordering::Relaxed);
                         return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                     }
                     _ => {}
@@ -3727,14 +3778,22 @@ groups: {}
     }
 
     fn create_test_observability_receiver(
-        _pipeline_ctx: PipelineContext,
+        pipeline_ctx: PipelineContext,
         node: otel_arrow_dfe_engine::node::NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
         Ok(ReceiverWrapper::local(
-            TestObservabilityReceiver,
+            TestObservabilityReceiver {
+                shutdown_counter: if pipeline_ctx.pipeline_group_id().as_ref()
+                    == SYSTEM_PIPELINE_GROUP_ID
+                {
+                    &TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS
+                } else {
+                    &TEST_REGULAR_RECEIVER_SHUTDOWNS
+                },
+            },
             node,
             node_config,
             receiver_config,
@@ -3877,7 +3936,9 @@ groups: {}
             assert!(opened.is_dir());
             assert_eq!(opened.permissions().mode() & 0o777, 0o700);
             Ok(ReceiverWrapper::local(
-                TestObservabilityReceiver,
+                TestObservabilityReceiver {
+                    shutdown_counter: &TEST_REGULAR_RECEIVER_SHUTDOWNS,
+                },
                 node,
                 node_config,
                 receiver_config,

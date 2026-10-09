@@ -6138,6 +6138,105 @@ fn startup_reconciliation_failure_stops_controller_startup() {
     }
 }
 
+/// Scenario: startup commits one regular pipeline before a later pipeline rollout fails.
+/// Guarantees: startup failure stops both the committed regular pipeline and system observability
+/// before returning the pipeline-specific error.
+#[test]
+fn startup_reconciliation_failure_cleans_up_launched_pipelines() {
+    const UNREACHED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:unreached_cleanup_startup";
+
+    let config = OtelDataflowSpec::from_yaml(&format!(
+        r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  controller:
+    extensions:
+      test_extension:
+        type: "{UNREACHED_CONTROLLER_EXTENSION_URN}"
+groups:
+  g:
+    pipelines:
+      a_succeeds:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      z_fails:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:build-fails"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+    ))
+    .expect("startup cleanup config should parse");
+    let before = crate::tests::test_receiver_shutdown_counts();
+    let mut registry = ControllerExtensionRegistry::empty();
+    registry.register(
+        UNREACHED_CONTROLLER_EXTENSION_URN.into(),
+        |_context| {
+            Ok(Box::new(|_cancellation_token| {
+                Box::pin(async move {
+                    panic!("controller extension must not run after startup reconciliation fails")
+                })
+            }))
+        },
+        otel_arrow_dfe_config::validation::no_config,
+    );
+
+    let err = Controller::new(crate::tests::test_pipeline_factory())
+        .run_till_shutdown_with_options(
+            config,
+            ControllerRunOptions {
+                extensions: registry,
+                ..Default::default()
+            },
+        )
+        .expect_err("failed startup reconciliation should stop controller startup");
+    let after = crate::tests::test_receiver_shutdown_counts();
+
+    match err {
+        Error::StartupReconciliationFailed { message } => {
+            assert!(
+                message.contains("simulated startup pipeline build failure"),
+                "{message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert!(
+        after.0 > before.0,
+        "system observability receiver did not stop"
+    );
+    assert!(
+        after.1 > before.1,
+        "successfully committed regular pipeline receiver did not stop"
+    );
+}
+
 /// Scenario: a desired engine config contains an invalid core assignment after an otherwise valid
 /// pipeline.
 /// Guarantees: reconciliation rejects the complete config before launching any pipeline.
