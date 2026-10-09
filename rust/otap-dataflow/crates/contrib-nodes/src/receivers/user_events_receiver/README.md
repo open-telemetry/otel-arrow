@@ -588,21 +588,28 @@ extra drain/flush; use graceful drain when minimizing buffered data loss matters
 
 ## Metrics
 
-The receiver reports these counters under `receiver.user_events`:
+The receiver reports these metric sets:
 
-| Metric | Meaning |
-| --- | --- |
-| `received_samples` | Perf samples drained from the kernel/perf path. |
-| `forwarded_samples` | Log records successfully forwarded downstream. |
-| `downstream_send_blocked_ns` | Time spent waiting for downstream channel capacity. |
-| `dropped_memory_pressure` | Records or batches dropped because process memory pressure requested ingress shedding. |
-| `dropped_no_subscription` | Samples that did not map to a configured subscription index. This should normally stay zero. |
-| `dropped_pending_overflow` | Samples dropped before allocation because the adapter pending queue reached its configured event or byte cap. |
-| `dropped_send_error` | Records dropped because a downstream send failed. |
-| `lost_perf_samples` | Lost sample count reported by the perf ring. |
-| `late_registration_retries` | Late-registration retry attempts while waiting for tracepoints. |
-| `sessions_started` | Receiver perf sessions successfully opened. |
-| `flushed_batches` | Arrow log batches flushed downstream. |
+### `receiver.user_events.samples`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `samples` | `{item}` | `outcome` (`received`, `forwarded`, `lost`) | Number of perf samples by outcome. |
+
+### `receiver.user_events.dropped`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `dropped` | `{item}` | `reason` (`memory_pressure`, `no_subscription`, `pending_overflow`, `send_error`) | Number of samples or records dropped by reason. |
+
+### `receiver.user_events.other`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `downstream_send_blocked_ns` | `ns` | Total time spent waiting for downstream channel capacity. |
+| `late_registration_retries` | `{event}` | Number of late-registration retries attempted while waiting for tracepoints. |
+| `sessions_started` | `{event}` | Number of receiver sessions successfully started. |
+| `flushed_batches` | `{event}` | Number of Arrow batches flushed downstream. |
 
 TODO: Add metrics for corrupt perf events and corrupt perf buffers once the
 underlying collection layer exposes those counters.
