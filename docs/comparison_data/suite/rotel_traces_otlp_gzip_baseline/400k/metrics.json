@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -1.3079469203948975
+    "value": -0.03000345639884472
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.0596647549575
+    "value": 99.9921329166733
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.45536927391711
+    "value": 100.54507797878978
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 292.766015625
+    "value": 272.62109375
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 315.22265625
+    "value": 319.91796875
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 102704.50253644613
+    "value": 96985.81301718573
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 103330.7578178971
+    "value": 96849.12889789717
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000594
+    "value": 60.000657
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13964289.683646416
+    "value": 13083087.76712883
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 15191244.702509662
+    "value": 14249257.909559773
   }
 ]
