@@ -77,6 +77,7 @@ fn create(
     extension_config: &ExtensionConfig,
 ) -> Result<ExtensionBundle, ConfigError> {
     let config = parse_config(&ext_config.config)?;
+    let startup_timeout = config.startup_timeout;
 
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
     let metric_set = ext_ctx.register_metric_set_for_entity::<FlatFileSaslAuthMetrics>(entity_key);
@@ -98,7 +99,7 @@ fn create(
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
-        .with_readiness_probe()
+        .with_readiness_probe_timeout_override(startup_timeout)
         .shared::<FlatFileSaslAuthExtension>(extension)
         .build()
         .map_err(|error| ConfigError::InvalidUserConfig {

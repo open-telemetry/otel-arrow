@@ -18,4 +18,4 @@ issues: [4310]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Configure username and password_secret_file; password_secret_file_refresh defaults to 1h (10s-365d). Failed refreshes retain the last good credential. Provider refresh does not rotate live Kafka connections; receiver integration is separate (#4276).
+subtext: Configure username and password_secret_file; password_secret_file_refresh defaults to 1h (10s-365d). startup_timeout defaults to 30s for initial retries. Failed refreshes retain last-good credentials. Live Kafka connection rotation remains separate (#4276).

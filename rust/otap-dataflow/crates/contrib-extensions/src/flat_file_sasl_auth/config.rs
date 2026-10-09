@@ -17,6 +17,10 @@ pub(crate) fn default_password_secret_file_refresh() -> Duration {
     DEFAULT_SASL_CREDENTIAL_REFRESH_INTERVAL
 }
 
+fn default_startup_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
 /// Inline username and the file containing its SASL password.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +37,10 @@ pub struct Config {
         default = "default_password_secret_file_refresh"
     )]
     pub password_secret_file_refresh: Duration,
+
+    /// Maximum wait for initial acquisition before pipeline startup fails. Defaults to `30s`.
+    #[serde(with = "humantime_serde", default = "default_startup_timeout")]
+    pub startup_timeout: Duration,
 }
 
 impl Config {
@@ -43,6 +51,9 @@ impl Config {
         }
         if self.password_secret_file.as_os_str().is_empty() {
             return Err("`password_secret_file` cannot be empty".to_string());
+        }
+        if self.startup_timeout.is_zero() {
+            return Err("`startup_timeout` must be greater than zero".to_string());
         }
         BackgroundProviderRefreshPolicy::periodic(self.password_secret_file_refresh)
             .map(|_| ())

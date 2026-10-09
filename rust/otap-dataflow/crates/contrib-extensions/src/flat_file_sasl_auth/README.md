@@ -20,11 +20,13 @@ extensions:
       username: kafka-user
       password_secret_file: /var/run/secrets/kafka/password
       password_secret_file_refresh: 1h
+      startup_timeout: 30s
 ```
 
 `username` and `password_secret_file` are required and must be non-empty.
 `password_secret_file_refresh` defaults to `1h` and accepts human-readable
 durations from `10s` through `365d`, inclusive. Unknown fields are rejected.
+`startup_timeout` defaults to `30s` and accepts nonzero human-readable durations.
 `username` is an inline string, redacted in typed configuration debug output.
 There is no username file or inline password option. SASL usernames are not
 subject to HTTP Basic Auth restrictions; mechanism-specific validation belongs
@@ -45,7 +47,11 @@ access to the collector process.
 The active extension asynchronously reads and validates the password at startup
 and at the configured refresh interval. It becomes ready only after a successful
 acquisition. Initial failures publish no credential; the shared provider retries
-with bounded backoff, subject to the engine's readiness timeout.
+with bounded backoff. The engine waits up to `startup_timeout` for the first
+successful acquisition; if none succeeds, pipeline startup fails. The default
+`30s` leaves time for the first retry, which waits `5s` to `10s` after a failed
+read. A shorter timeout can intentionally fail startup before that retry.
+This timeout does not change the refresh interval or limit retries after startup.
 
 Successful acquisitions pair the latest file password with the configured
 username and publish the credential to the shared cache. Credential requests

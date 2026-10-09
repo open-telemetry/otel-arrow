@@ -18,8 +18,8 @@ use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::SaslCrede
 use otel_arrow_dfe_engine::capability::registry::CapabilityRegistry;
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::control::{ExtensionControlMsg, ShutdownPayload};
-use otel_arrow_dfe_engine::extension::ExtensionBundle;
 use otel_arrow_dfe_engine::extension::wrapper::{ExtensionLifecycle, ExtensionVariant};
+use otel_arrow_dfe_engine::extension::{ExtensionBundle, ExtensionWrapper};
 use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::shared::message::SharedReceiver;
@@ -29,7 +29,7 @@ use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::ExposeSecret;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, LocalSet};
 use tokio_stream::wrappers::WatchStream;
 
 use super::auth::FlatFileSaslAuth;
@@ -57,6 +57,7 @@ fn config_for(path: &Path) -> Config {
         username: TEST_USERNAME.into(),
         password_secret_file: path.to_owned(),
         password_secret_file_refresh: REFRESH_INTERVAL,
+        startup_timeout: Duration::from_secs(30),
     }
 }
 
@@ -161,8 +162,8 @@ impl RunningExtension {
     }
 }
 
-/// Scenario: The required SASL username and password file omit a refresh interval.
-/// Guarantees: Parsing preserves both fields and applies the one-hour periodic default.
+/// Scenario: The required SASL username and password file omit optional durations.
+/// Guarantees: Parsing preserves both fields and defaults refresh to one hour and startup to 30 seconds.
 #[test]
 fn config_defaults_and_explicit_interval() {
     let path = Path::new("sasl-password");
@@ -177,12 +178,42 @@ fn config_defaults_and_explicit_interval() {
         DEFAULT_SASL_CREDENTIAL_REFRESH_INTERVAL,
         Duration::from_secs(3600)
     );
+    assert_eq!(config.startup_timeout, Duration::from_secs(30));
 
     let mut value = config_json(path);
     value["password_secret_file_refresh"] = "23s".into();
     let config = parse_config(&value).expect("explicit interval is valid");
     assert_eq!(config.password_secret_file_refresh, Duration::from_secs(23));
     validate_config(&value).expect("factory validation accepts the same config");
+}
+
+/// Scenario: Startup timeout is explicitly configured, zero, or not a duration.
+/// Guarantees: Human-readable positive timeouts are accepted and zero is rejected with field context.
+#[test]
+fn config_startup_timeout_parses_and_rejects_zero() {
+    let mut value = config_json(Path::new("password"));
+    value["startup_timeout"] = "45s".into();
+    let mut config = parse_config(&value).expect("explicit startup timeout accepted");
+    assert_eq!(config.startup_timeout, Duration::from_secs(45));
+    validate_config(&value).expect("factory validation accepts the override");
+
+    config.startup_timeout = Duration::ZERO;
+    assert!(
+        config
+            .validate()
+            .expect_err("zero is invalid")
+            .contains("startup_timeout")
+    );
+    value["startup_timeout"] = "0s".into();
+    assert!(
+        parse_config(&value)
+            .expect_err("zero startup timeout rejected")
+            .to_string()
+            .contains("startup_timeout")
+    );
+    assert!(validate_config(&value).is_err());
+    value["startup_timeout"] = "not-a-duration".into();
+    assert!(parse_config(&value).is_err());
 }
 
 /// Scenario: Required fields are absent, empty, or have the wrong JSON type.
@@ -290,7 +321,7 @@ fn factory_registers_typed_shared_capability_and_readiness() {
     let shared = bundle.shared().expect("shared variant");
     assert_eq!(shared.variant(), ExtensionVariant::Shared);
     assert!(!shared.is_passive());
-    let otel_arrow_dfe_engine::extension::ExtensionWrapper::Shared {
+    let ExtensionWrapper::Shared {
         lifecycle:
             ExtensionLifecycle::Active {
                 readiness_probe,
@@ -304,7 +335,7 @@ fn factory_registers_typed_shared_capability_and_readiness() {
     };
     assert_eq!(
         readiness_probe.as_ref().expect("readiness probe").timeout(),
-        Duration::from_secs(5)
+        Duration::from_secs(30)
     );
     assert!(
         !readiness_signaller
@@ -336,6 +367,28 @@ fn factory_registers_typed_shared_capability_and_readiness() {
         create_bundle(serde_json::json!({})),
         Err(ConfigError::InvalidUserConfig { .. })
     ));
+}
+
+/// Scenario: A factory configuration overrides the default startup timeout.
+/// Guarantees: The actual shared extension readiness probe uses the configured duration.
+#[test]
+fn factory_honors_startup_timeout_override() {
+    let mut value = config_json(Path::new("password"));
+    value["startup_timeout"] = "45s".into();
+    let bundle = create_bundle(value).expect("valid override");
+    let ExtensionWrapper::Shared {
+        lifecycle: ExtensionLifecycle::Active {
+            readiness_probe, ..
+        },
+        ..
+    } = bundle.shared().expect("shared wrapper")
+    else {
+        panic!("expected active shared lifecycle");
+    };
+    assert_eq!(
+        readiness_probe.as_ref().expect("readiness probe").timeout(),
+        Duration::from_secs(45)
+    );
 }
 
 /// Scenario: File contents have spaces, embedded line endings, and trailing CR/LF characters.
@@ -566,42 +619,149 @@ fn observed_extension(config: Config) -> (ObservedExtension, mpsc::Receiver<()>)
     (extension, receiver)
 }
 
-/// Scenario: The initial real file acquisition fails and the password file is repaired before retry.
-/// Guarantees: Failure publishes nothing, leaves subscriptions open, and the bounded first retry publishes recovery.
+fn observed_readiness_wrapper(
+    config: Config,
+) -> (ExtensionWrapper, ObservedExtension, mpsc::Receiver<()>) {
+    let startup_timeout = config.startup_timeout;
+    let (extension, failures) = observed_extension(config);
+    let consumer = extension.clone();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        FLAT_FILE_SASL_AUTH_URN.into(),
+        serde_json::Value::Null,
+    ));
+    let mut bundle = ExtensionWrapper::builder(
+        "sasl-test".into(),
+        user_config,
+        &ExtensionConfig::new("sasl-test"),
+    )
+    .active()
+    .with_readiness_probe_timeout_override(startup_timeout)
+    .shared(extension)
+    .build()
+    .expect("observed active shared extension");
+    (
+        bundle.take_shared().expect("shared readiness wrapper"),
+        consumer,
+        failures,
+    )
+}
+
+/// Scenario: The initial file acquisition fails and the password file is repaired before the first retry.
+/// Guarantees: No credential or readiness is published on failure; retry succeeds through the engine's 30-second gate.
 #[tokio::test(start_paused = true)]
 async fn initial_failure_has_no_publication_and_retry_recovers() {
-    let directory = test_directory();
-    let path = directory.path().join("missing-password");
-    let (extension, mut failures) = observed_extension(config_for(&path));
-    let mut stream =
-        Box::pin(WatchStream::new(extension.subscribe()).filter_map(|value| async move { value }));
-    let consumer = extension.clone();
-    let running = start_extension(extension);
-    observe(failures.recv())
-        .await
-        .expect("initial fetch failed");
-    assert!(consumer.subscribe().borrow().is_none());
-    assert!(
-        stream.next().now_or_never().is_none(),
-        "stream is open but silent"
-    );
+    let local_tasks = LocalSet::new();
+    local_tasks
+        .run_until(async {
+            let directory = test_directory();
+            let path = directory.path().join("missing-password");
+            let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config_for(&path));
+            let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+            let mut stream = Box::pin(
+                WatchStream::new(consumer.subscribe()).filter_map(|value| async move { value }),
+            );
+            let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
+                wrapper,
+                &local_tasks,
+                &context,
+            );
+            tokio::pin!(ready);
+            observe(async {
+                tokio::select! {
+                    result = &mut ready => panic!("startup completed before recovery: {result:?}"),
+                    failure = failures.recv() => failure.expect("initial fetch failed"),
+                }
+            })
+            .await;
+            assert!(
+                ready.as_mut().now_or_never().is_none(),
+                "arm the readiness deadline before advancing the paused clock"
+            );
+            assert!(consumer.subscribe().borrow().is_none());
+            assert!(
+                stream.next().now_or_never().is_none(),
+                "stream is open but silent"
+            );
+            tokio::time::advance(Duration::from_secs(4)).await;
+            assert!(
+                ready.as_mut().now_or_never().is_none(),
+                "readiness remains pending"
+            );
 
-    std::fs::write(&path, "recovered-password").expect("file repaired");
-    // The framework jitters the first retry within 5..=10 seconds.
-    // Advancing its upper bound and observing the completed I/O avoids random timing assertions.
-    tokio::time::advance(Duration::from_secs(10)).await;
-    let recovered = observe(stream.next()).await.expect("retry publication");
-    assert_eq!(recovered.expose_username(), TEST_USERNAME);
-    assert_eq!(recovered.expose_password(), "recovered-password");
-    assert_eq!(
-        consumer
-            .get_value()
-            .await
-            .expect("recovered cache")
-            .expose_password(),
-        "recovered-password"
-    );
-    let _terminal = running.shutdown().await;
+            std::fs::write(&path, "recovered-password").expect("file repaired");
+            // First retry jitter is 5..=10 seconds; advance to its upper bound.
+            tokio::time::advance(Duration::from_secs(6)).await;
+            observe(ready)
+                .await
+                .expect("retry satisfies the engine readiness gate");
+            let recovered = observe(stream.next()).await.expect("retry publication");
+            assert_eq!(recovered.expose_username(), TEST_USERNAME);
+            assert_eq!(recovered.expose_password(), "recovered-password");
+            assert_eq!(
+                consumer
+                    .get_value()
+                    .await
+                    .expect("recovered cache")
+                    .expose_password(),
+                "recovered-password"
+            );
+        })
+        .await;
+}
+
+/// Scenario: Initial file acquisition keeps failing with an explicit three-second startup timeout.
+/// Guarantees: The engine gate expires at that deadline, not before, without publishing a credential.
+#[tokio::test(start_paused = true)]
+async fn initial_failure_times_out_through_engine_readiness_gate() {
+    let local_tasks = LocalSet::new();
+    local_tasks
+        .run_until(async {
+            let directory = test_directory();
+            let path = directory.path().join("missing-password");
+            let mut config = config_for(&path);
+            config.startup_timeout = Duration::from_secs(3);
+            let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config);
+            let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+            let mut stream =
+                Box::pin(WatchStream::new(consumer.subscribe()).filter_map(|value| async move { value }));
+            let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
+                wrapper,
+                &local_tasks,
+                &context,
+            );
+            tokio::pin!(ready);
+            observe(async {
+                tokio::select! {
+                    result = &mut ready => panic!("startup completed before its deadline: {result:?}"),
+                    failure = failures.recv() => failure.expect("initial fetch failed"),
+                }
+            })
+            .await;
+            assert!(
+                ready.as_mut().now_or_never().is_none(),
+                "arm the readiness deadline before advancing the paused clock"
+            );
+            tokio::time::advance(Duration::from_secs(2)).await;
+            assert!(ready.as_mut().now_or_never().is_none(), "deadline has not elapsed");
+            assert!(consumer.subscribe().borrow().is_none());
+            assert!(stream.next().now_or_never().is_none());
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let error = observe(ready).await.expect_err("startup deadline expires");
+            let otel_arrow_dfe_engine::error::Error::ExtensionReadinessTimeout {
+                extension,
+                variant,
+                timeout,
+            } = error
+            else {
+                panic!("expected readiness timeout, got {error:?}");
+            };
+            assert_eq!(extension, "sasl-test");
+            assert_eq!(variant, "shared");
+            assert_eq!(timeout, Duration::from_secs(3));
+            assert!(consumer.subscribe().borrow().is_none());
+            assert!(stream.next().now_or_never().is_none(), "no usable credential was published");
+        })
+        .await;
 }
 
 /// Scenario: A periodic refresh reads invalid UTF-8 after publishing a good credential, then the file recovers.
