@@ -73,6 +73,7 @@ jobs:
       - name: Run component integration test
         env:
           MANIFEST_PATH: ${{ matrix.manifest }}
+        shell: bash
         run: >
           python3 .github/scripts/run-contrib-integration-test.py
           --manifest "$MANIFEST_PATH"
