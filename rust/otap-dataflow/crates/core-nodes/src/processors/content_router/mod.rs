@@ -386,7 +386,9 @@ pub struct ContentRouter {
     admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteKind>,
     /// Telemetry metrics.
     metrics: Option<ContentRouterMetrics>,
-    /// Read-only representations resolved from the injected runtime service.
+    /// Resolved on first use because processors currently receive codec services
+    /// only while processing messages. A future PR will expose the pipeline registry
+    /// at construction so this plan can be required instead of optional.
     inspection_plan: Option<InspectionPlan>,
 }
 

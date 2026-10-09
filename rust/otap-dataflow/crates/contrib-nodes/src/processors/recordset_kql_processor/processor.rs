@@ -54,6 +54,9 @@ pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
     pipeline: BridgePipeline,
     compute_duration: ComputeDuration,
+    /// Resolved on first use because processors currently receive codec services
+    /// only while processing messages. A future PR will expose the pipeline registry
+    /// at construction so this plan can be required instead of optional.
     encoding_plan: Option<EncodingPlan>,
 }
 
@@ -156,13 +159,15 @@ impl RecordsetKqlProcessor {
 
         // Encode through the pipeline runtime's reusable codec state.
         let (ctx, mut payload) = data.into_parts();
-        if self.encoding_plan.is_none() {
-            self.encoding_plan = Some(
-                effect_handler
-                    .resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?,
-            );
-        }
-        let encoding_plan = self.encoding_plan.expect("encoding plan initialized");
+        let encoding_plan = match self.encoding_plan {
+            Some(plan) => plan,
+            None => {
+                let plan = effect_handler
+                    .resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?;
+                self.encoding_plan = Some(plan);
+                plan
+            }
+        };
         let otlp_bytes = match effect_handler
             .encode_owned(&mut payload, &encoding_plan)
             .await
