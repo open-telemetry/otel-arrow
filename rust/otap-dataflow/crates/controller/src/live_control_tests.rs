@@ -568,6 +568,13 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         validate_config: test_validate_config,
     },
     ReceiverFactory {
+        name: "urn:otel:receiver:topic",
+        create: recovery_test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
         context_declarations: None,
@@ -579,6 +586,13 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
+        create: recovery_test_exporter_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:topic",
         create: recovery_test_exporter_create,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -6397,6 +6411,134 @@ groups:
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(state.logical_pipelines.is_empty());
     assert!(state.runtime_instances.is_empty());
+}
+
+/// Scenario: four pipelines form a three-topic chain whose producer-first IDs oppose dependency
+/// order, including intermediate pipelines that both consume and produce topics.
+/// Guarantees: full-config reconciliation starts the chain from the final consumer back to the
+/// initial producer so every downstream subscription is active before its producer can publish.
+#[test]
+fn reconcile_engine_config_starts_topic_consumers_before_producers() {
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+topics:
+  topic_1: {}
+  topic_2: {}
+  topic_3: {}
+groups:
+  g:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          to_topic:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: topic_1
+        connections:
+          - from: receiver
+            to: to_topic
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          from_topic:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: topic_1
+              subscription:
+                mode: balanced
+                group: workers
+          to_topic:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: topic_2
+        connections:
+          - from: from_topic
+            to: to_topic
+      p3:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          from_topic:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: topic_2
+              subscription:
+                mode: balanced
+                group: workers
+          to_topic:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: topic_3
+        connections:
+          - from: from_topic
+            to: to_topic
+      p4:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          from_topic:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: topic_3
+              subscription:
+                mode: balanced
+                group: workers
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: from_topic
+            to: exporter
+"#,
+    )
+    .expect("producer-first topic config should parse");
+    let runtime = test_runtime_with_factory(&desired, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), true))
+        .expect("topic pipelines should reconcile");
+
+    assert_eq!(
+        status.state,
+        EngineConfigReconcileState::Succeeded,
+        "{status:?}"
+    );
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| change
+                .pipeline_id
+                .as_ref()
+                .expect("change should identify its pipeline")
+                .as_ref())
+            .collect::<Vec<_>>(),
+        vec!["p4", "p3", "p2", "p1"]
+    );
+    runtime
+        .request_shutdown_all(5)
+        .expect("topic pipelines should shut down");
+    assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(5)));
 }
 
 /// Scenario: two all-remaining-core pipelines follow an explicit core reservation.

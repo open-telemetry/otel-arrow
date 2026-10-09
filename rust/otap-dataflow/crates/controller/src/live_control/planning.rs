@@ -412,6 +412,113 @@ impl<
         }
     }
 
+    fn reconcile_topic_start_order(
+        config: &OtelDataflowSpec,
+        preferred_order: &[PipelineKey],
+    ) -> Result<HashMap<PipelineKey, usize>, ControlPlaneError> {
+        let (global_names, group_names) =
+            Controller::<PData>::build_declared_topic_name_maps(config).map_err(|error| {
+                ControlPlaneError::InvalidRequest {
+                    message: error.to_string(),
+                }
+            })?;
+        let preferred_position: HashMap<_, _> = preferred_order
+            .iter()
+            .enumerate()
+            .map(|(position, key)| (key.clone(), position))
+            .collect();
+        let desired_keys: HashSet<_> = preferred_order.iter().cloned().collect();
+
+        let mut dependents = HashMap::<PipelineKey, HashSet<PipelineKey>>::new();
+        let mut dependency_count = HashMap::<PipelineKey, usize>::new();
+        for pipeline_key in preferred_order {
+            let _ = dependents.insert(pipeline_key.clone(), HashSet::new());
+            let _ = dependency_count.insert(pipeline_key.clone(), 0);
+        }
+        let mut producers_by_topic = HashMap::<TopicName, HashSet<PipelineKey>>::new();
+        let mut consumers_by_topic = HashMap::<TopicName, HashSet<PipelineKey>>::new();
+        Controller::<PData>::visit_topic_nodes(
+            config,
+            &global_names,
+            &group_names,
+            |node, node_config, topic| {
+                let pipeline_key = node.pipeline_key();
+                if !desired_keys.contains(&pipeline_key) {
+                    return;
+                }
+                match node_config.kind() {
+                    NodeKind::Exporter => {
+                        let _ = producers_by_topic
+                            .entry(topic)
+                            .or_default()
+                            .insert(pipeline_key);
+                    }
+                    NodeKind::Receiver => {
+                        let _ = consumers_by_topic
+                            .entry(topic)
+                            .or_default()
+                            .insert(pipeline_key);
+                    }
+                    _ => {}
+                }
+            },
+        );
+        for (topic, consumers) in consumers_by_topic {
+            let Some(producers) = producers_by_topic.get(&topic) else {
+                continue;
+            };
+            for consumer in consumers {
+                for producer in producers {
+                    if consumer == *producer {
+                        continue;
+                    }
+                    if dependents
+                        .get_mut(&consumer)
+                        .expect("desired pipeline must have a dependency entry")
+                        .insert(producer.clone())
+                    {
+                        *dependency_count
+                            .get_mut(producer)
+                            .expect("desired pipeline must have a dependency count") += 1;
+                    }
+                }
+            }
+        }
+
+        let mut ready = dependency_count
+            .iter()
+            .filter_map(|(pipeline_key, count)| (*count == 0).then_some(pipeline_key.clone()))
+            .collect::<Vec<_>>();
+        let mut ordered = Vec::with_capacity(preferred_order.len());
+        while !ready.is_empty() {
+            ready.sort_by_key(|pipeline_key| preferred_position[pipeline_key]);
+            let pipeline_key = ready.remove(0);
+            for dependent in dependents
+                .get(&pipeline_key)
+                .expect("desired pipeline must have dependents")
+            {
+                let count = dependency_count
+                    .get_mut(dependent)
+                    .expect("dependent pipeline must have a dependency count");
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(dependent.clone());
+                }
+            }
+            ordered.push(pipeline_key);
+        }
+        if ordered.len() != preferred_order.len() {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "topic pipeline startup dependencies contain a cycle".to_owned(),
+            });
+        }
+        Ok(ordered
+            .into_iter()
+            .enumerate()
+            .map(|(position, pipeline_key)| (pipeline_key, position))
+            .collect())
+    }
+
     /// Reports which active cores still belong to the current committed generation.
     pub(super) fn active_runtime_core_state(
         &self,
@@ -2403,6 +2510,19 @@ impl<
             );
             rollout_plans.push((pipeline_key, action, plan));
         }
+
+        let preferred_order = rollout_plans
+            .iter()
+            .map(|(pipeline_key, _, _)| pipeline_key.clone())
+            .collect::<Vec<_>>();
+        let startup_position_by_key =
+            Self::reconcile_topic_start_order(&candidate_config, &preferred_order)?;
+        rollout_plans.sort_by_key(|(pipeline_key, _, _)| {
+            startup_position_by_key
+                .get(pipeline_key)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
 
         for (pipeline_key, action, plan) in rollout_plans {
             let initial_rollout =

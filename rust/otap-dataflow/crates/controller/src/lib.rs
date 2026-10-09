@@ -484,30 +484,41 @@ struct InferredTopicModeReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PipelineNodeKey {
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+    node_id: otel_arrow_dfe_config::NodeId,
+}
+
+impl PipelineNodeKey {
+    fn pipeline_key(&self) -> PipelineKey {
+        PipelineKey::new(self.pipeline_group_id.clone(), self.pipeline_id.clone())
+    }
+
+    fn wiring_vertex(&self) -> TopicWiringVertex {
+        TopicWiringVertex::PipelineNode(self.clone())
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "pipeline:{}/{}/{}",
+            self.pipeline_group_id.as_ref(),
+            self.pipeline_id.as_ref(),
+            self.node_id.as_ref()
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TopicWiringVertex {
-    PipelineNode {
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        node_id: otel_arrow_dfe_config::NodeId,
-    },
-    Topic {
-        declared_name: TopicName,
-    },
+    PipelineNode(PipelineNodeKey),
+    Topic { declared_name: TopicName },
 }
 
 impl TopicWiringVertex {
     fn label(&self) -> String {
         match self {
-            Self::PipelineNode {
-                pipeline_group_id,
-                pipeline_id,
-                node_id,
-            } => format!(
-                "pipeline:{}/{}/{}",
-                pipeline_group_id.as_ref(),
-                pipeline_id.as_ref(),
-                node_id.as_ref()
-            ),
+            Self::PipelineNode(node) => node.label(),
             Self::Topic { declared_name } => format!("topic:{}", declared_name.as_ref()),
         }
     }
@@ -697,6 +708,35 @@ impl<
         InferredTopicMode::Mixed
     }
 
+    fn visit_pipeline_configs(
+        config: &OtelDataflowSpec,
+        mut visit: impl FnMut(&PipelineKey, &PipelineConfig),
+    ) {
+        let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
+        group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        for group_id in group_ids {
+            let group = &config.groups[&group_id];
+            let mut group_pipelines = group.pipelines.iter().collect::<Vec<_>>();
+            group_pipelines.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+            for (pipeline_id, pipeline) in group_pipelines {
+                let pipeline_key = PipelineKey::new(group_id.clone(), pipeline_id.clone());
+                visit(&pipeline_key, pipeline);
+            }
+        }
+
+        let pipeline_key = PipelineKey::new(
+            SYSTEM_PIPELINE_GROUP_ID.into(),
+            SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+        );
+        let pipeline = config
+            .engine
+            .observability
+            .pipeline
+            .clone()
+            .into_pipeline_config();
+        visit(&pipeline_key, &pipeline);
+    }
+
     fn infer_topic_modes(
         config: &OtelDataflowSpec,
         global_names: &HashMap<TopicName, TopicName>,
@@ -713,20 +753,11 @@ impl<
             _ = usage_by_declared_topic.insert(declared_name.clone(), TopicUsageSummary::default());
         }
 
-        let mut visit_topic_node =
-            |pipeline_group_id: &PipelineGroupId, node_config: &NodeUserConfig| {
-                let topic_name = match Self::parse_topic_name_from_node_config(node_config) {
-                    Some(topic_name) => topic_name,
-                    None => return,
-                };
-                let Some(declared_topic_name) = Self::resolve_declared_topic_name(
-                    pipeline_group_id,
-                    &topic_name,
-                    global_names,
-                    group_names,
-                ) else {
-                    return;
-                };
+        Self::visit_topic_nodes(
+            config,
+            global_names,
+            group_names,
+            |_node, node_config, declared_topic_name| {
                 let Some(summary) = usage_by_declared_topic.get_mut(&declared_topic_name) else {
                     return;
                 };
@@ -751,26 +782,8 @@ impl<
                     }
                     _ => {}
                 }
-            };
-
-        for (group_id, group_cfg) in &config.groups {
-            for pipeline_cfg in group_cfg.pipelines.values() {
-                for (_node_id, node_cfg) in pipeline_cfg.node_iter() {
-                    if node_cfg.r#type.id() != "topic" {
-                        continue;
-                    }
-                    visit_topic_node(group_id, node_cfg.as_ref());
-                }
-            }
-        }
-
-        let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-        for (_node_id, node_cfg) in config.engine.observability.pipeline.nodes.iter() {
-            if node_cfg.r#type.id() != "topic" {
-                continue;
-            }
-            visit_topic_node(&system_group_id, node_cfg.as_ref());
-        }
+            },
+        );
 
         let mut declared_topics: Vec<_> = usage_by_declared_topic.into_iter().collect();
         declared_topics.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
@@ -805,33 +818,39 @@ impl<
         let _ = adjacency.entry(to).or_default();
     }
 
-    fn collect_topic_wiring_edges_for_pipeline(
+    fn collect_pipeline_wiring_edges(
         adjacency: &mut HashMap<TopicWiringVertex, Vec<TopicWiringVertex>>,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
         pipeline: &PipelineConfig,
-        global_names: &HashMap<TopicName, TopicName>,
-        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
     ) {
         for connection in pipeline.connection_iter() {
             let targets = connection.to_nodes();
             for source in connection.from_sources() {
-                let source_vertex = TopicWiringVertex::PipelineNode {
+                let source_vertex = TopicWiringVertex::PipelineNode(PipelineNodeKey {
                     pipeline_group_id: pipeline_group_id.clone(),
                     pipeline_id: pipeline_id.clone(),
                     node_id: source.node_id().clone(),
-                };
+                });
                 for target in &targets {
-                    let target_vertex = TopicWiringVertex::PipelineNode {
+                    let target_vertex = TopicWiringVertex::PipelineNode(PipelineNodeKey {
                         pipeline_group_id: pipeline_group_id.clone(),
                         pipeline_id: pipeline_id.clone(),
                         node_id: target.clone(),
-                    };
+                    });
                     Self::add_topic_wiring_edge(adjacency, source_vertex.clone(), target_vertex);
                 }
             }
         }
+    }
 
+    fn visit_topic_nodes_for_pipeline(
+        pipeline_key: &PipelineKey,
+        pipeline: &PipelineConfig,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+        mut visit: impl FnMut(PipelineNodeKey, &NodeUserConfig, TopicName),
+    ) {
         let mut topic_nodes = pipeline.node_iter().collect::<Vec<_>>();
         topic_nodes.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
         for (node_id, node_config) in topic_nodes {
@@ -842,29 +861,40 @@ impl<
                 continue;
             };
             let Some(declared_name) = Self::resolve_declared_topic_name(
-                pipeline_group_id,
+                pipeline_key.pipeline_group_id(),
                 &topic_name,
                 global_names,
                 group_names,
             ) else {
                 continue;
             };
-            let node_vertex = TopicWiringVertex::PipelineNode {
-                pipeline_group_id: pipeline_group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                node_id: node_id.clone(),
-            };
-            let topic_vertex = TopicWiringVertex::Topic { declared_name };
-            match node_config.kind() {
-                NodeKind::Exporter => {
-                    Self::add_topic_wiring_edge(adjacency, node_vertex, topic_vertex);
-                }
-                NodeKind::Receiver => {
-                    Self::add_topic_wiring_edge(adjacency, topic_vertex, node_vertex);
-                }
-                _ => {}
-            }
+            visit(
+                PipelineNodeKey {
+                    pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
+                    pipeline_id: pipeline_key.pipeline_id().clone(),
+                    node_id: node_id.clone(),
+                },
+                node_config,
+                declared_name,
+            );
         }
+    }
+
+    fn visit_topic_nodes(
+        config: &OtelDataflowSpec,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+        mut visit: impl FnMut(PipelineNodeKey, &NodeUserConfig, TopicName),
+    ) {
+        Self::visit_pipeline_configs(config, |pipeline_key, pipeline| {
+            Self::visit_topic_nodes_for_pipeline(
+                pipeline_key,
+                pipeline,
+                global_names,
+                group_names,
+                &mut visit,
+            );
+        });
     }
 
     fn detect_topic_wiring_cycles(
@@ -931,49 +961,35 @@ impl<
     ) -> Result<(), Error> {
         let mut adjacency = HashMap::<TopicWiringVertex, Vec<TopicWiringVertex>>::new();
 
-        let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
-        group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
-        for group_id in group_ids {
-            let Some(group_cfg) = config.groups.get(&group_id) else {
-                return Err(Error::PipelineRuntimeError {
-                    source: Box::new(EngineError::InternalError {
-                        message: format!(
-                            "group `{}` disappeared while validating topic wiring",
-                            group_id.as_ref()
-                        ),
-                    }),
-                });
-            };
-            let mut pipelines = group_cfg.pipelines.iter().collect::<Vec<_>>();
-            pipelines.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
-            for (pipeline_id, pipeline_cfg) in pipelines {
-                Self::collect_topic_wiring_edges_for_pipeline(
-                    &mut adjacency,
-                    &group_id,
-                    pipeline_id,
-                    pipeline_cfg,
-                    global_names,
-                    group_names,
-                );
-            }
-        }
-
-        let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-        let observability_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-        let pipeline_cfg = config
-            .engine
-            .observability
-            .pipeline
-            .clone()
-            .into_pipeline_config();
-        Self::collect_topic_wiring_edges_for_pipeline(
-            &mut adjacency,
-            &system_group_id,
-            &observability_pipeline_id,
-            &pipeline_cfg,
-            global_names,
-            group_names,
-        );
+        Self::visit_pipeline_configs(config, |pipeline_key, pipeline| {
+            Self::collect_pipeline_wiring_edges(
+                &mut adjacency,
+                pipeline_key.pipeline_group_id(),
+                pipeline_key.pipeline_id(),
+                pipeline,
+            );
+            Self::visit_topic_nodes_for_pipeline(
+                pipeline_key,
+                pipeline,
+                global_names,
+                group_names,
+                |node, node_config, topic| {
+                    let topic_vertex = TopicWiringVertex::Topic {
+                        declared_name: topic,
+                    };
+                    let node_vertex = node.wiring_vertex();
+                    match node_config.kind() {
+                        NodeKind::Exporter => {
+                            Self::add_topic_wiring_edge(&mut adjacency, node_vertex, topic_vertex);
+                        }
+                        NodeKind::Receiver => {
+                            Self::add_topic_wiring_edge(&mut adjacency, topic_vertex, node_vertex);
+                        }
+                        _ => {}
+                    }
+                },
+            );
+        });
 
         if let Some(cycle) = Self::detect_topic_wiring_cycles(&adjacency)
             .into_iter()
