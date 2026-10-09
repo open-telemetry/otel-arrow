@@ -174,7 +174,7 @@ impl ContextLayout {
         fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, Error> {
-        let mut fields = fields
+        let fields = fields
             .into_iter()
             .chain(
                 declarations
@@ -192,10 +192,7 @@ impl ContextLayout {
                     field.name = field.name.to_ascii_lowercase();
                 }
                 field
-            })
-            .collect::<Vec<_>>();
-        fields.sort_unstable();
-        fields.dedup();
+            });
         Self::compile(fields, declarations)
     }
 
