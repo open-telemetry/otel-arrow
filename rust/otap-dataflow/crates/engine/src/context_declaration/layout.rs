@@ -39,58 +39,6 @@ pub struct ContextLayout {
     presence: Box<[EntryPresence]>,
 }
 
-/// A compact lookup for the small sets of configured propagation names.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(super) struct HeaderLookup<T> {
-    /// Bindings in deterministic configured-name order.
-    entries: Box<[HeaderLookupEntry<T>]>,
-}
-
-/// One case-insensitive stored-header-name binding.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct HeaderLookupEntry<T> {
-    /// Configured stored name, matched using ASCII case-insensitive semantics.
-    name: String,
-    /// Value bound to the configured name.
-    value: T,
-}
-
-impl<T> Default for HeaderLookup<T> {
-    fn default() -> Self {
-        Self {
-            entries: Box::new([]),
-        }
-    }
-}
-
-impl<T> HeaderLookup<T> {
-    pub(super) fn new(entries: BTreeMap<String, T>) -> Self {
-        Self {
-            entries: entries
-                .into_iter()
-                .map(|(name, value)| HeaderLookupEntry { name, value })
-                .collect(),
-        }
-    }
-
-    #[inline]
-    pub(super) fn get(&self, name: &str) -> Option<&T> {
-        if let [entry] = self.entries.as_ref() {
-            return entry
-                .name
-                .eq_ignore_ascii_case(name)
-                .then_some(&entry.value);
-        }
-        if self.entries.is_empty() {
-            return None;
-        }
-        self.entries
-            .iter()
-            .find(|entry| entry.name.eq_ignore_ascii_case(name))
-            .map(|entry| &entry.value)
-    }
-}
-
 /// One transport-header member or exact-value condition required for presence.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct HeaderRequirement {

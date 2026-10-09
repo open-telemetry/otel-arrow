@@ -3,7 +3,6 @@
 
 //! Compiled transport-header propagation and composite presence gates.
 
-use super::layout::HeaderLookup;
 use super::{ContextEntryId, ContextLayout, ContextMemberSource, ContextNameId, ContextValues};
 use otel_arrow_dfe_config::context_policy::{ContextDomain, ContextEntryDeclaration};
 use otel_arrow_dfe_config::transport_headers::{
@@ -36,7 +35,7 @@ pub struct CompiledHeaderPropagationPolicy {
     compiled_named: Vec<CompiledNamedPropagation>,
     // Immutable compiled state is shared when bindings are cloned for runtime instances.
     layout: Arc<ContextLayout>,
-    actions: HeaderLookup<CompiledAction>,
+    actions: HeaderLookup,
     single_entry: Option<ContextEntryId>,
 }
 
@@ -45,6 +44,58 @@ struct CompiledAction {
     action: PropagationAction,
     name: NameStrategy,
     binding: Option<usize>,
+}
+
+/// A compact lookup for the small set of compiled propagation actions.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct HeaderLookup {
+    /// Actions in deterministic stored-name order.
+    entries: Box<[HeaderLookupEntry]>,
+}
+
+/// One case-insensitive stored-header-name action.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct HeaderLookupEntry {
+    /// Canonical stored name, matched using ASCII case-insensitive semantics.
+    name: ContextEntryName,
+    /// Action compiled for the stored name.
+    action: CompiledAction,
+}
+
+impl Default for HeaderLookup {
+    fn default() -> Self {
+        Self {
+            entries: Box::new([]),
+        }
+    }
+}
+
+impl HeaderLookup {
+    fn new(entries: BTreeMap<ContextEntryName, CompiledAction>) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|(name, action)| HeaderLookupEntry { name, action })
+                .collect(),
+        }
+    }
+
+    #[inline]
+    fn get(&self, name: &str) -> Option<&CompiledAction> {
+        if let [entry] = self.entries.as_ref() {
+            return entry
+                .name
+                .eq_ignore_ascii_case(name)
+                .then_some(&entry.action);
+        }
+        if self.entries.is_empty() {
+            return None;
+        }
+        self.entries
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+            .map(|entry| &entry.action)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -171,7 +222,7 @@ impl CompiledHeaderPropagationPolicy {
         for override_policy in &policy.overrides {
             for name in &override_policy.match_rule.stored_names {
                 _ = actions
-                    .entry(name.as_str().to_ascii_lowercase())
+                    .entry(name.to_ascii_lowercase())
                     .or_insert(CompiledAction {
                         action: override_policy.action,
                         name: override_policy.name.unwrap_or(policy.default.name),
@@ -185,7 +236,7 @@ impl CompiledHeaderPropagationPolicy {
             .filter(|reference| reference.scope().is_none())
         {
             _ = actions
-                .entry(reference.name().as_str().to_ascii_lowercase())
+                .entry(reference.name().to_ascii_lowercase())
                 .or_insert(CompiledAction {
                     action: policy.default.action,
                     name: policy.default.name,
@@ -194,7 +245,7 @@ impl CompiledHeaderPropagationPolicy {
         }
         for (index, binding) in compiled_named.iter().enumerate() {
             _ = actions
-                .entry(binding.source_name.as_str().to_ascii_lowercase())
+                .entry(binding.source_name.to_ascii_lowercase())
                 .or_insert(CompiledAction {
                     action: policy.default.action,
                     name: policy.default.name,
