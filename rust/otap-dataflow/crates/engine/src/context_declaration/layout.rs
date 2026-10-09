@@ -35,71 +35,68 @@ pub struct ContextLayout {
     field_names: BTreeMap<(ContextDomain, ContextEntryName), ContextFieldId>,
     /// Composite names are independent of primitive source names.
     entry_names: BTreeMap<ContextEntryName, ContextEntryId>,
+    /// Precompiled runtime presence requirements for each composite entry.
     presence: Box<[EntryPresence]>,
 }
 
 /// A compact lookup for the small sets of configured propagation names.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(super) struct HeaderLookup<T>(Box<[HeaderLookupEntry<T>]>);
-
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct HeaderLookupEntry<T> {
-    name_hash: u64,
-    name: String,
-    value: T,
+pub(super) struct HeaderLookup<T> {
+    /// Bindings in deterministic configured-name order.
+    entries: Box<[HeaderLookupEntry<T>]>,
 }
 
-fn header_name_hash(name: &str) -> u64 {
-    // This hash is only a rejection filter; callers still compare the full names.
-    let bytes = name.as_bytes();
-    ((name.len() as u64) << 16)
-        | (u64::from(bytes.first().copied().unwrap_or(0).to_ascii_lowercase()) << 8)
-        | u64::from(bytes.last().copied().unwrap_or(0).to_ascii_lowercase())
+/// One case-insensitive stored-header-name binding.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct HeaderLookupEntry<T> {
+    /// Configured stored name, matched using ASCII case-insensitive semantics.
+    name: String,
+    /// Value bound to the configured name.
+    value: T,
 }
 
 impl<T> Default for HeaderLookup<T> {
     fn default() -> Self {
-        Self(Box::new([]))
+        Self {
+            entries: Box::new([]),
+        }
     }
 }
 
 impl<T> HeaderLookup<T> {
     pub(super) fn new(entries: BTreeMap<String, T>) -> Self {
-        Self(
-            entries
+        Self {
+            entries: entries
                 .into_iter()
-                .map(|(name, value)| HeaderLookupEntry {
-                    name_hash: header_name_hash(&name),
-                    name,
-                    value,
-                })
+                .map(|(name, value)| HeaderLookupEntry { name, value })
                 .collect(),
-        )
+        }
     }
 
     #[inline]
     pub(super) fn get(&self, name: &str) -> Option<&T> {
-        if let [entry] = self.0.as_ref() {
+        if let [entry] = self.entries.as_ref() {
             return entry
                 .name
                 .eq_ignore_ascii_case(name)
                 .then_some(&entry.value);
         }
-        if self.0.is_empty() {
+        if self.entries.is_empty() {
             return None;
         }
-        let name_hash = header_name_hash(name);
-        self.0
+        self.entries
             .iter()
-            .find(|entry| entry.name_hash == name_hash && entry.name.eq_ignore_ascii_case(name))
+            .find(|entry| entry.name.eq_ignore_ascii_case(name))
             .map(|entry| &entry.value)
     }
 }
 
+/// One transport-header member or exact-value condition required for presence.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct HeaderRequirement {
+    /// Canonical stored header name, matched using ASCII case-insensitive semantics.
     name: String,
-    name_hash: u64,
+    /// Required bytes for a condition, or `None` when any value proves presence.
     value: Option<Box<[u8]>>,
 }
 
@@ -114,9 +111,12 @@ impl HeaderRequirement {
     }
 }
 
+/// Runtime requirements that must all hold for one composite entry to be present.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct EntryPresence {
+    /// Required transport-header members and exact-value conditions.
     headers: Box<[HeaderRequirement]>,
+    /// Required authorized-identity member names.
     identities: Box<[ContextEntryName]>,
 }
 
@@ -156,7 +156,6 @@ impl EntryPresence {
             .into_iter()
             .flat_map(|(name, values)| {
                 values.into_iter().map(move |value| HeaderRequirement {
-                    name_hash: header_name_hash(&name),
                     name: name.clone(),
                     value,
                 })
@@ -202,14 +201,14 @@ impl EntryPresence {
                 return false;
             };
             // Decode small packed inputs once rather than once per requirement.
-            let mut captured = [(header_name_hash(first.name.as_str()), first); 5];
+            let mut captured = [first; 5];
             for (slot, header) in captured[1..].iter_mut().zip(iter) {
-                *slot = (header_name_hash(header.name.as_str()), header);
+                *slot = header;
             }
             return self.headers.iter().all(|requirement| {
-                captured[..headers.len()].iter().any(|(name_hash, header)| {
-                    requirement.name_hash == *name_hash && requirement.matches(*header)
-                })
+                captured[..headers.len()]
+                    .iter()
+                    .any(|header| requirement.matches(*header))
             });
         }
         self.headers.iter().all(|requirement| {
