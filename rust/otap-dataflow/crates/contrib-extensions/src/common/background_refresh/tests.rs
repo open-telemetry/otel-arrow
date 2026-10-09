@@ -206,3 +206,115 @@ async fn jitter_refresh_stays_within_bounds() {
         );
     }
 }
+
+/// Scenario: A once-policy cache is populated on demand before the active task starts.
+/// Guarantees: Startup and arbitrarily late consumers reuse that first value without another fetch.
+#[tokio::test(start_paused = true)]
+async fn once_reuses_value_acquired_before_start() {
+    use super::{
+        BackgroundProviderExtension, BackgroundProviderMetrics, BackgroundProviderMetricsTracker,
+        BackgroundProviderSource,
+    };
+    use async_trait::async_trait;
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+    use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
+    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+    use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
+    use otel_arrow_dfe_telemetry_macros::metric_set;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Source(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl BackgroundProviderSource<BearerToken> for Source {
+        type Error = std::io::Error;
+
+        fn expires_on(_value: &BearerToken) -> Option<Instant> {
+            None
+        }
+
+        async fn fetch(&self) -> Result<BearerToken, Self::Error> {
+            let _ = self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(BearerToken::without_expiry("initial"))
+        }
+
+        fn log_refresh_failure(&self, error: &Self::Error) {
+            panic!("unexpected acquisition failure: {error}");
+        }
+    }
+
+    #[metric_set(name = "test.background_once")]
+    #[derive(Debug, Default, Clone)]
+    struct Metrics {
+        /// Successful acquisitions.
+        #[metric(unit = "{acquisition}")]
+        successes: Counter<u64>,
+        /// Failed acquisitions.
+        #[metric(unit = "{acquisition}")]
+        failures: Counter<u64>,
+        /// Publications.
+        #[metric(unit = "{publication}")]
+        publishes: Counter<u64>,
+        /// Acquisition duration.
+        #[metric(unit = "ms")]
+        latency: Mmsc,
+    }
+
+    impl BackgroundProviderMetrics for Metrics {
+        fn successes(&mut self) -> &mut Counter<u64> {
+            &mut self.successes
+        }
+        fn failures(&mut self) -> &mut Counter<u64> {
+            &mut self.failures
+        }
+        fn publishes(&mut self) -> &mut Counter<u64> {
+            &mut self.publishes
+        }
+        fn success_latency(&mut self) -> &mut Mmsc {
+            &mut self.latency
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (tx, _rx) = tokio::sync::watch::channel(None);
+    let registry = TelemetryRegistryHandle::new();
+    let metrics = registry.register_metric_set::<Metrics>(EmptyAttributes());
+    let extension = BackgroundProviderExtension::<_, _, _, BearerTokenProvider>::new(
+        "once-test",
+        Source(Arc::clone(&calls)),
+        BackgroundProviderRefreshPolicy::once(),
+        tx,
+        BackgroundProviderMetricsTracker::new(metrics),
+    );
+    assert_eq!(
+        extension.get_value().await.unwrap().expose_token(),
+        "initial"
+    );
+    let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let ctrl = ControlChannel::new(SharedReceiver::mpsc(ctrl_rx), shutdown_rx);
+    let effects = otel_arrow_dfe_engine::testing::test_extension_effect_handler("once-test".into());
+    let task = tokio::spawn(Box::new(extension.clone()).start(ctrl, effects));
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(10 * 365 * 24 * 60 * 60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        extension.get_value().await.unwrap().expose_token(),
+        "initial"
+    );
+    assert_eq!(
+        extension
+            .subscribe()
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .expose_token(),
+        "initial"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(ctrl_tx);
+    let _ = task.await.expect("join").expect("clean shutdown");
+}
