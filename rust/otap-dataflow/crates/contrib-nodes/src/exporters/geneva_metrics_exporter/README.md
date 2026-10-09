@@ -29,9 +29,9 @@ The `geneva` feature does not include a bearer token provider. To use Azure
 managed identity, also enable the `azure_identity_auth` extension, for example
 `--features geneva,azure-identity-auth`.
 
-The exporter currently supports one monitoring account per OTLP request.
-Requests whose resource or data point attributes select multiple accounts are
-rejected before publication.
+The exporter publishes to the single monitoring account configured for the
+component instance; it does not route metrics to different accounts per
+request.
 
 ## Testing
 

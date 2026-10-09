@@ -45,7 +45,6 @@ const GENEVA_METRICS_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthP
 
 struct InFlightPublication {
     data: OtapPdata,
-    monitoring_account: String,
     auth_generation: u64,
     request: LocalBoxFuture<'static, Result<(), PublishError>>,
 }
@@ -145,7 +144,7 @@ impl GenevaMetricsExporter {
                 cardinality_overflows = prepared.cardinality_overflows,
             );
         }
-        let Some((monitoring_account, packet)) = prepared.publication else {
+        let Some(packet) = prepared.publication else {
             return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
         };
 
@@ -156,14 +155,13 @@ impl GenevaMetricsExporter {
         };
 
         let request = self.publisher.publish(
-            &monitoring_account,
+            &self.mapping_config.monitoring_account,
             packet,
             auth_header_name,
             auth_header_value,
         );
         PublicationStart::InFlight(InFlightPublication {
             data,
-            monitoring_account,
             auth_generation,
             request,
         })
@@ -177,7 +175,6 @@ impl GenevaMetricsExporter {
     ) -> CompletionFuture {
         let InFlightPublication {
             data,
-            monitoring_account,
             auth_generation,
             request: _,
         } = publication;
@@ -188,6 +185,7 @@ impl GenevaMetricsExporter {
                 if error.is_unauthorized() {
                     self.auth.invalidate(auth_generation);
                 }
+                let monitoring_account = &self.mapping_config.monitoring_account;
                 let reason = format!(
                     "failed to publish Geneva metrics for account {monitoring_account}: {error}"
                 );
@@ -381,7 +379,6 @@ mod tests {
     use otel_arrow_dfe_pdata::OtapPayload;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
@@ -472,15 +469,9 @@ mod tests {
         }
     }
 
-    fn metrics_pdata(accounts: &[&str], call_id: usize) -> OtapPdata {
-        let account_attribute = |account: &str| KeyValue {
-            key: "_microsoft_metrics_account".to_string(),
-            value: Some(AnyValue {
-                value: Some(any_value::Value::StringValue(account.to_string())),
-            }),
-        };
-        let point = |account: &str| NumberDataPoint {
-            attributes: vec![account_attribute(account)],
+    fn metrics_pdata(call_id: usize) -> OtapPdata {
+        let point = NumberDataPoint {
+            attributes: Vec::new(),
             start_time_unix_nano: 0,
             time_unix_nano: 1_700_000_000_000_000_000,
             exemplars: Vec::new(),
@@ -498,7 +489,7 @@ mod tests {
                         unit: String::new(),
                         metadata: Vec::new(),
                         data: Some(metric::Data::Gauge(Gauge {
-                            data_points: accounts.iter().map(|account| point(account)).collect(),
+                            data_points: vec![point],
                         })),
                     }],
                     schema_url: String::new(),
@@ -546,7 +537,7 @@ mod tests {
         effect_handler
             .notify_nack(NackMsg::new(
                 "occupy the completion channel",
-                metrics_pdata(&["account-a"], 0),
+                metrics_pdata(0),
             ))
             .await
             .expect("completion channel should accept its first message");
@@ -624,7 +615,7 @@ mod tests {
 
         let driver = async move {
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("pdata should be queued before auth is ready");
             controller.publish("fresh-token");
@@ -712,12 +703,12 @@ mod tests {
         let driver = async move {
             controller.wait_until_observed().await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("first pdata should be queued");
             wait_until_request_received(&server).await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 2))
+                .send_async(metrics_pdata(2))
                 .await
                 .expect("second pdata should be buffered behind the active publication");
 
@@ -780,12 +771,12 @@ mod tests {
         let driver = async move {
             controller.wait_until_observed().await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("first pdata should be queued");
             wait_until_request_received(&server).await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 2))
+                .send_async(metrics_pdata(2))
                 .await
                 .expect("second pdata should be buffered behind the active publication");
 
@@ -838,7 +829,7 @@ mod tests {
 
         let driver = async move {
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("pdata should be buffered while authentication is unavailable");
 
@@ -892,7 +883,7 @@ mod tests {
         let driver = async move {
             controller.wait_until_observed().await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("pdata should be queued");
             wait_until_request_received(&server).await;
@@ -947,7 +938,7 @@ mod tests {
         let driver = async move {
             controller.wait_until_observed().await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("initial pdata should be queued");
             let replay = match completions
@@ -1026,7 +1017,7 @@ mod tests {
         let driver = async move {
             controller.wait_until_observed().await;
             pdata_tx
-                .send_async(metrics_pdata(&["account-a"], 1))
+                .send_async(metrics_pdata(1))
                 .await
                 .expect("initial pdata should be queued");
             let replay = match completions

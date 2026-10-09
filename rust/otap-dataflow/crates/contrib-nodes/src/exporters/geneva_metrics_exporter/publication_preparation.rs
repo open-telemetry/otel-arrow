@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct PublicationPreparation {
-    pub(super) publication: Option<(String, Vec<u8>)>,
+    pub(super) publication: Option<Vec<u8>>,
     pub(super) rejected_data_points: usize,
     pub(super) cardinality_overflows: usize,
 }
@@ -37,8 +37,7 @@ pub(super) fn prepare_publication(
     let publication = if mapped.packet.metrics.is_empty() {
         None
     } else {
-        let bytes = encoder::encode(&mapped.packet)?;
-        Some((config.monitoring_account.clone(), bytes))
+        Some(encoder::encode(&mapped.packet)?)
     };
     Ok(PublicationPreparation {
         publication,
@@ -174,10 +173,9 @@ mod tests {
         let prepared =
             prepare_publication(&data, &mapping_config).expect("publication should prepare");
 
-        let (monitoring_account, packet) = prepared
+        let packet = prepared
             .publication
             .expect("one publication should be prepared");
-        assert_eq!(monitoring_account, "example-account");
         assert!(!packet.is_empty());
         assert_eq!(prepared.rejected_data_points, 0);
         assert_eq!(prepared.cardinality_overflows, 0);
@@ -270,10 +268,9 @@ mod tests {
         let prepared = prepare_publication(&data, &mapping_config())
             .expect("well-formed top-level framing should be accepted");
 
-        let (monitoring_account, packet) = prepared
+        let packet = prepared
             .publication
             .expect("well-formed metrics should be published");
-        assert_eq!(monitoring_account, "example-account");
         assert!(!packet.is_empty());
         assert_eq!(prepared.rejected_data_points, 0);
     }
