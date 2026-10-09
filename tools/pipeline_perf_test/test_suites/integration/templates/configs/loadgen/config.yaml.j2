@@ -8,7 +8,12 @@ policies:
       node: {{ default_node_ctrl_msg_channel_size | default(100) }}
     pdata: {{ default_pdata_channel_size | default(100) }}
 
+{% if push_metrics_endpoint is defined and push_metrics_endpoint -%}
+{%- set push_service_name = "load-generator" %}
+{% include "push_metrics_engine.yaml.j2" %}
+{%- else -%}
 engine: {}
+{%- endif %}
 
 groups:
   default:

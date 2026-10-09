@@ -1,3 +1,13 @@
+# Integration report for logs using engine-pushed metrics.
+#
+# The load generator, engine and backend previously had their metrics scraped,
+# however we're transitioning to push based metrics instead which have different
+# names and temporality and therefore require new reports.
+#
+# Column notes (set by the OTLP receiver, see otlp_metrics_sink.py):
+#   * Resource/scope/signal attributes are all expanded to be top level columns
+#     with a prefix i.e. "resource_attributes.my_attribute"
+#   * scope name is exposed as "scope_attributes.scope_name"
 queries:
   - name: Filter superfluous metadata
     sql: |
@@ -36,6 +46,110 @@ queries:
         metadata_row
         JOIN observation_windows w ON metadata_row."test.name" = w.test_name
 
+  # ---------------------------------------------------------------------
+  # Pushed send / receive counters (delta)
+  # ---------------------------------------------------------------------
+  - name: Pushed send/receive deltas for this test
+    sql: |
+      CREATE TABLE pushed_send_receive AS
+      WITH this_test AS (
+        SELECT * FROM metrics
+        WHERE "resource_attributes.test.name" = (SELECT "test.name" FROM metadata_row LIMIT 1)
+          AND temporality = 'delta'
+      )
+      SELECT
+        'logs_produced' AS metric_name,
+        "resource_attributes.service.name" AS component_name,
+        start_timestamp, timestamp, value
+      FROM this_test
+      WHERE "scope_attributes.scope_name" = 'receiver.traffic_generator'
+        AND metric_name = 'logs.produced'
+
+      UNION ALL
+
+      SELECT
+        'logs_bytes_produced' AS metric_name,
+        "resource_attributes.service.name" AS component_name,
+        start_timestamp, timestamp, value
+      FROM this_test
+      WHERE "scope_attributes.scope_name" = 'receiver.traffic_generator'
+        AND metric_name = 'logs.bytes.produced'
+
+      UNION ALL
+
+      SELECT
+        'logs' AS metric_name,
+        "resource_attributes.service.name" AS component_name,
+        start_timestamp, timestamp, value
+      FROM this_test
+      WHERE "resource_attributes.service.name" = 'backend-service'
+        AND "scope_attributes.scope_name" = 'node.input'
+        AND metric_name = 'items'
+        AND "scope_attributes.node.id" = 'perf'
+        AND "metric_attributes.signal" = 'logs'
+        AND "metric_attributes.outcome" = 'success';
+
+  - name: Whole-run pushed totals
+    sql: |
+      CREATE TABLE pushed_totals AS
+      SELECT
+        metric_name,
+        component_name,
+        SUM(value) AS total,
+        COUNT(*) AS data_points,
+        MIN(start_timestamp) AS first_start,
+        MAX(timestamp) AS last_end
+      FROM pushed_send_receive
+      GROUP BY metric_name, component_name
+      ORDER BY metric_name, component_name;
+
+  - name: Observation window pushed totals
+    sql: |
+      -- Deltas whose engine-assigned interval end lies inside the observation
+      -- window. The covered span is measured per metric from the engine's own
+      -- interval boundaries rather than from orchestrator wall-clock events.
+      CREATE TABLE pushed_window_totals AS
+      SELECT
+        p.metric_name,
+        SUM(p.value) AS total_increase,
+        EXTRACT(EPOCH FROM (MAX(p.timestamp) - MIN(p.start_timestamp))) AS covered_seconds
+      FROM pushed_send_receive p
+      CROSS JOIN observation_window ow
+      WHERE p.timestamp > ow.start_ts AND p.timestamp <= ow.stop_ts
+      GROUP BY p.metric_name;
+
+  - name: Calculate loss
+    sql: |
+      -- Loss uses whole-run totals (not the observation window) so the
+      -- post-drain final flush is included and sent/received cover the same
+      -- set of batches.
+      CREATE TABLE log_loss AS
+      WITH t AS (
+        SELECT
+          COALESCE((SELECT SUM(total) FROM pushed_totals WHERE metric_name = 'logs_produced'), 0) AS produced,
+          COALESCE((SELECT SUM(total) FROM pushed_totals WHERE metric_name = 'logs'), 0) AS received
+      )
+      SELECT
+        produced AS logs_produced,
+        received AS logs_received,
+        produced - received AS logs_lost,
+        CASE WHEN produced > 0 THEN (produced - received) * 1.0 / produced ELSE NULL END AS logs_lost_pct
+      FROM t;
+
+  - name: Calculate log throughput rates
+    sql: |
+      CREATE TABLE log_throughput_rates AS
+      SELECT
+        metric_name,
+        total_increase,
+        covered_seconds,
+        total_increase / NULLIF(covered_seconds, 0) AS logs_per_second
+      FROM pushed_window_totals
+      WHERE metric_name IN ('logs_produced', 'logs');
+
+  # ---------------------------------------------------------------------
+  # Container resource metrics (unchanged; docker monitor)
+  # ---------------------------------------------------------------------
   - name: Container Network Rates
     sql: |
       CREATE TABLE container_network_rates AS WITH
@@ -58,7 +172,6 @@ queries:
                   LAG(timestamp) OVER (PARTITION BY metric_name, component_name ORDER BY timestamp) AS prev_timestamp
             FROM metrics_filtered
         ),
-        -- Calculate deltas and rate
         with_rate AS (
             SELECT *,
                   value - prev_value AS delta,
@@ -68,135 +181,19 @@ queries:
                       ELSE (value - prev_value) / time_delta_seconds
                   END AS rate
             FROM with_lag
-        ),
-        observation_only AS (
-          SELECT *
-          FROM observation_window
         )
-        -- Final Aggregation
         SELECT
           component_name,
           metric_name,
           MAX(value) - MIN(value) AS total_increase,
           AVG(rate) AS average_rate
         FROM
-          observation_only AS ow
+          observation_window AS ow
         JOIN
           with_rate AS wr
           ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         GROUP BY component_name, metric_name
-  - name: Component Metric Rates By Core ID
-    sql: |
-      CREATE TABLE send_receive_rates_by_core AS WITH
-        metrics_filtered AS (
-            SELECT
-              * REPLACE (
-              CASE
-                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.input' THEN 'spans'
-                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'spans_produced'
-                ELSE metric_name
-              END AS metric_name
-            ),
-            "metric_attributes.component_name" AS component_name,
-            COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
-            FROM metrics
-            WHERE metric_name IN (
-              'spans_produced',
-              'failed',
-              'bytes_sent',
-              'sent',
-              'late_batches',
-              'items'
-            ) AND (
-              metric_name <> 'items'
-              OR (
-                "metric_attributes.otel_scope_name" = 'node.input'
-                AND "metric_attributes.otel_scope_node_id" = 'perf'
-                AND "metric_attributes.signal" = 'traces'
-                AND "metric_attributes.outcome" = 'success'
-              )
-              OR (
-                "metric_attributes.otel_scope_name" = 'node.output'
-                AND "metric_attributes.signal" = 'traces'
-                AND "metric_attributes.component_name" = 'load-generator'
-                AND "metric_attributes.outcome" = 'success'
-              )
-            ) AND timestamp > (
-                SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
-                FROM metadata_row
-                LIMIT 1
-              )
-        ),
 
-        -- Add lag for previous value and time
-        with_lag AS (
-            SELECT *,
-                  LAG(value) OVER (PARTITION BY metric_name, component_name, core_id  ORDER BY timestamp) AS prev_value,
-                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name, core_id ORDER BY timestamp) AS prev_timestamp
-            FROM metrics_filtered
-        ),
-
-        -- Calculate deltas and rate
-        with_rate AS (
-            SELECT *,
-                  value - prev_value AS delta,
-                  EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
-                  CASE
-                      WHEN prev_value IS NULL OR time_delta_seconds = 0 THEN NULL
-                      ELSE (value - prev_value) / time_delta_seconds
-                  END AS rate
-            FROM with_lag
-        ),
-
-        -- Join to observation window to trim the time range
-        observation_only AS (
-          SELECT * FROM observation_window
-        ),
-
-        trimmed_rates AS (
-          SELECT wr.*
-          FROM with_rate wr
-          JOIN observation_only ow
-            ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
-        ),
-
-        observation_window_aggregates AS (
-          SELECT
-            wr.component_name,
-            wr.metric_name,
-            wr.core_id,
-            MAX(wr.value) - MIN(wr.value) AS total_increase
-          FROM with_rate wr
-          JOIN observation_only ow
-            ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
-          GROUP BY wr.component_name, wr.metric_name, wr.core_id
-        )
-
-        -- Final Aggregation
-        SELECT
-          t.component_name,
-          t.metric_name,
-          t.core_id,
-          f.total_increase,
-          AVG(t.rate) AS average_rate
-        FROM trimmed_rates t
-        JOIN observation_window_aggregates f
-          ON t.component_name = f.component_name
-          AND t.metric_name = f.metric_name
-          AND t.core_id = f.core_id
-        GROUP BY t.component_name, t.metric_name, t.core_id, f.total_increase
-        ORDER BY t.component_name, t.metric_name, t.core_id;
-
-  - name: Component Metric Rates
-    sql: |
-      CREATE TABLE aggregate_send_receive_rates AS
-      SELECT
-        component_name,
-        metric_name,
-        SUM(total_increase) AS total_increase,
-        SUM(average_rate) AS average_rate
-      FROM send_receive_rates_by_core
-      GROUP BY component_name, metric_name;
   - name: Calculate component core counts
     sql: |
       CREATE TABLE component_core_counts AS
@@ -229,10 +226,6 @@ queries:
           "metric_attributes.component_name" AS component_name,
           FROM metrics
           WHERE metric_name IN ('process.cpu.usage', 'process.memory.usage', 'container.cpu.usage', 'container.memory.usage')
-        ),
-        observation_only AS (
-          SELECT *
-          FROM observation_window
         )
         SELECT
           m.component_name,
@@ -241,7 +234,7 @@ queries:
           AVG(m.value) AS avg_value,
           MAX(m.value) AS max_value
         FROM
-          observation_only AS ow
+          observation_window AS ow
         JOIN
           metrics_filtered AS m
           ON m.timestamp BETWEEN ow.start_ts AND ow.stop_ts
@@ -250,39 +243,12 @@ queries:
         ORDER BY
           m.component_name DESC;
 
-  - name: Calculate loss
-    sql: |
-      CREATE TABLE signal_loss AS
-      SELECT
-          (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(spans_received.total, 0)) AS signals_lost,
-          CASE
-              WHEN (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0)) > 0 THEN
-                  (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(spans_received.total, 0)) * 1.0 /
-                  (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0))
-              ELSE NULL
-          END AS signals_lost_pct
-      FROM
-          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'spans_produced') AS spans_produced,
-          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'failed') AS failed,
-          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'spans') AS spans_received;
-
-  - name: Calculate throughput rates
-    sql: |
-      CREATE TABLE signal_throughput_rates AS
-      SELECT
-        asr.metric_name,
-        asr.total_increase,
-        asr.total_increase / NULLIF(EXTRACT(EPOCH FROM (ow.stop_ts - ow.start_ts)), 0) AS signals_per_second
-      FROM aggregate_send_receive_rates asr
-      CROSS JOIN observation_window ow
-      WHERE asr.metric_name IN ('spans_produced', 'spans');
-
   - name: Create Final Github Actions Format table
     sql: |
       CREATE TABLE gh_actions_benchmark AS
-          SELECT 'dropped_signals_percentage' AS name, '%' AS unit, CAST(signals_lost_pct AS FLOAT) * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Spans %' AS extra
-          FROM signal_loss
+          SELECT 'dropped_logs_percentage' AS name, '%' AS unit, CAST(logs_lost_pct AS FLOAT) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Logs %' AS extra
+          FROM log_loss
           CROSS JOIN metadata_row
 
           UNION ALL
@@ -323,19 +289,19 @@ queries:
 
           UNION ALL
 
-          SELECT 'spans_produced_rate' AS name, 'spans/sec' AS unit, signals_per_second AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Span Throughput' AS extra
-          FROM signal_throughput_rates
+          SELECT 'logs_produced_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
+          FROM log_throughput_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'spans_produced'
+          WHERE metric_name = 'logs_produced'
 
           UNION ALL
 
-          SELECT 'spans_received_rate' AS name, 'spans/sec' AS unit, signals_per_second AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Span Throughput' AS extra
-          FROM signal_throughput_rates
+          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
+          FROM log_throughput_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'spans'
+          WHERE metric_name = 'logs'
 
           UNION ALL
 
@@ -359,34 +325,61 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'df-engine');
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'df-engine')
+
+          UNION ALL
+
+          SELECT 'egress_bytes_per_log' AS name, 'bytes/log' AS unit,
+                CASE WHEN ltr.logs_per_second > 0
+                  THEN cnr.average_rate / ltr.logs_per_second
+                  ELSE NULL
+                END AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Egress Bytes Per Log' AS extra
+          FROM container_network_rates cnr
+          CROSS JOIN log_throughput_rates ltr
+          CROSS JOIN metadata_row
+          WHERE cnr.metric_name = 'container.network.tx'
+            AND cnr.component_name IN ('go-collector', 'df-engine')
+            AND ltr.metric_name = 'logs'
+
+          UNION ALL
+
+          SELECT 'uncompressed_bytes_per_log' AS name, 'bytes/log' AS unit,
+                CASE WHEN logs.total > 0
+                  THEN bytes.total / logs.total
+                  ELSE NULL
+                END AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Uncompressed Bytes Per Log' AS extra
+          FROM pushed_totals bytes
+          JOIN pushed_totals logs ON logs.metric_name = 'logs_produced'
+            AND logs.component_name = bytes.component_name
+          CROSS JOIN metadata_row
+          WHERE bytes.metric_name = 'logs_bytes_produced';
 
 result_tables:
   - name: metadata_filtered
     description: Information about the test suite and report.
-  - name: send_receive_rates_by_core
-    description: Core Specific increase and average rate of various send / receive metrics
-  - name: aggregate_send_receive_rates
-    description: Cumulative increase and average rate of various send / receive metrics
+  - name: pushed_totals
+    description: Whole-run totals of engine-pushed send/receive counters (includes final post-drain flush).
   - name: component_resource_metrics
     description: CPU and Memory metrics for the components in the Test Suite during the test.
-  - name: signal_loss
-    description: Lost spans (failed or sent but not received) total and as a percentage
-  - name: signal_throughput_rates
-    description: Span throughput rates (spans/sec) calculated from total counts and observation window duration
+  - name: log_loss
+    description: Lost logs computed from whole-run pushed totals (produced - received).
+  - name: log_throughput_rates
+    description: Log throughput (logs/sec) from pushed deltas whose interval ends inside the observation window.
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
     finite_columns: [value]
     required_values:
       name:
-        - dropped_signals_percentage
+        - dropped_logs_percentage
         - cpu_percentage_normalized_avg
         - cpu_percentage_normalized_max
         - ram_mib_avg
         - ram_mib_max
-        - spans_produced_rate
-        - spans_received_rate
+        - logs_produced_rate
+        - logs_received_rate
         - test_duration
         - network_tx_bytes_rate_avg
         - network_rx_bytes_rate_avg
-    #display: False
+        - egress_bytes_per_log
