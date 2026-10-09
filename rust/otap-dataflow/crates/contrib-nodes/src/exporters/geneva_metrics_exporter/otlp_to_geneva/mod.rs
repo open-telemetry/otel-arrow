@@ -1218,6 +1218,7 @@ mod tests {
         assert_eq!(mapped.packet.metrics.len(), 1);
         assert_eq!(mapped.packet.metrics[0].name, "valid");
     }
+    /// Scenario: Explicit and exponential histograms report scalar counts above the Geneva `u32` wire limit.
     /// Guarantees: Oversized counts are rejected instead of wrapping while other valid metrics remain publishable.
     #[test]
     fn rejects_large_histogram_scalar_counts() {
