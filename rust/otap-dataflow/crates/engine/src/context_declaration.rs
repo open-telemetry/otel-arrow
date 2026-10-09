@@ -70,14 +70,16 @@ enum SelectedSource<'a> {
 impl<'a> SelectedSource<'a> {
     /// Resolves one value-bearing composite part, excluding conditions.
     fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
-        if let ContextEntryPart::Constant { name, .. } = part {
-            return Some(Self::Constant(name));
+        match part {
+            ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
+            ContextEntryPart::TransportHeader { name, .. } => {
+                Some(Self::Field(ContextDomain::TransportHeader, name))
+            }
+            ContextEntryPart::AuthorizedIdentity { name, .. } => {
+                Some(Self::Field(ContextDomain::AuthorizedIdentity, name))
+            }
+            ContextEntryPart::TransportHeaderMatch { .. } => None,
         }
-        let _member_name = part.member_name()?;
-        let (domain, name) = part
-            .referenced_source()
-            .expect("non-constant value member has a referenced source");
-        Some(Self::Field(domain, name))
     }
 }
 
