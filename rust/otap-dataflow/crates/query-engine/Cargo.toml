@@ -78,5 +78,9 @@ harness = false
 name = "data_point_parent_attrs"
 harness = false
 
+[[bench]]
+name = "regex_match"
+harness = false
+
 [lints]
 workspace = true
