@@ -143,12 +143,6 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
 
         #[allow(unused_macros)]
         macro_rules! otel_event {
-            (logger: $logger:expr, $level:expr, $name:expr $(, $($fields:tt)+)?) => {
-                #telemetry::__otel_logger_event!(
-                    @dispatch target: #target, logger: $logger,
-                    $level, $name $(, $($fields)+)?
-                )
-            };
             ($($tokens:tt)*) => {
                 #telemetry::otel_event!(
                     target: #target,

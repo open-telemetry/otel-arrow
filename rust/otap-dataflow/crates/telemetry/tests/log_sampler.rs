@@ -161,7 +161,7 @@ fn outcome_sampling() {
     });
 }
 
-/// Scenario: Every scoped logging macro uses a sampler.
+/// Scenario: The four scoped, fixed-level logging macros use a sampler.
 /// Guarantees: Samplers are borrowed; levels and field formatting are preserved.
 #[test]
 fn macro_forms() {
@@ -170,29 +170,22 @@ fn macro_forms() {
 
     let (setup, _, receiver) = setup("trace");
     let mut sampler = Keep;
-    let levels = [
-        Level::TRACE,
-        Level::DEBUG,
-        Level::INFO,
-        Level::WARN,
-        Level::ERROR,
-    ];
     setup.with_subscriber(|| {
         otel_debug!(logger: sampler, "test.debug");
         otel_info!(logger: sampler, "test.info", count = 1);
         otel_warn!(logger: sampler, "test.warn", value = %"display");
         otel_error!(logger: &mut sampler, "test.error", value = ?Some(42));
-        for level in levels {
-            otel_event!(logger: sampler, level, "test.dynamic");
-        }
-        otel_event!(logger: sampler, Level::WARN, "test.formatted", "answer {}", 42);
+        otel_warn!(logger: sampler, "test.formatted", "answer {}", 42);
     });
     let emitted = records(&receiver);
-    assert_eq!(emitted.len(), 10);
-    let expected = [Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR]
-        .into_iter()
-        .chain(levels)
-        .chain([Level::WARN]);
+    assert_eq!(emitted.len(), 5);
+    let expected = [
+        Level::DEBUG,
+        Level::INFO,
+        Level::WARN,
+        Level::ERROR,
+        Level::WARN,
+    ];
     for (record, level) in emitted.iter().zip(expected) {
         assert_eq!(*record.callsite().level(), level);
         assert_eq!(record.callsite().target(), "otel.exporter.logger_test");

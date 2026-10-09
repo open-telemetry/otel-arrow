@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Logs sampling policies for the `logger:` macro argument. You
-//! must use `otel_component_scope!` to enable this feature.
+//! Logs sampling policies for `logger:` on `otel_debug!`, `otel_info!`,
+//! `otel_warn!`, and `otel_error!` in an `otel_component_scope!`.
 
 use tracing::{Dispatch, Event, Metadata};
 

@@ -306,35 +306,6 @@ macro_rules! otel_event {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __otel_logger_event {
-    (@dispatch target: $target:expr, logger: $logger:expr, $level:expr, $name:expr $(, $($fields:tt)+)?) => {{
-        match $level {
-            $crate::_private::Level::TRACE => {
-                $crate::__otel_logger_event!(
-                    target: $target, logger: $logger, $crate::_private::Level::TRACE, $name $(, $($fields)+)?
-                );
-            }
-            $crate::_private::Level::DEBUG => {
-                $crate::__otel_logger_event!(
-                    target: $target, logger: $logger, $crate::_private::Level::DEBUG, $name $(, $($fields)+)?
-                );
-            }
-            $crate::_private::Level::INFO => {
-                $crate::__otel_logger_event!(
-                    target: $target, logger: $logger, $crate::_private::Level::INFO, $name $(, $($fields)+)?
-                );
-            }
-            $crate::_private::Level::WARN => {
-                $crate::__otel_logger_event!(
-                    target: $target, logger: $logger, $crate::_private::Level::WARN, $name $(, $($fields)+)?
-                );
-            }
-            $crate::_private::Level::ERROR => {
-                $crate::__otel_logger_event!(
-                    target: $target, logger: $logger, $crate::_private::Level::ERROR, $name $(, $($fields)+)?
-                );
-            }
-        }
-    }};
     (target: $target:expr, logger: $logger:expr, $level:expr, $name:expr $(, $($fields:tt)+)?) => {{
         const _: () = $crate::_private::validate_event_name($name);
         use $crate::_private::Callsite;
