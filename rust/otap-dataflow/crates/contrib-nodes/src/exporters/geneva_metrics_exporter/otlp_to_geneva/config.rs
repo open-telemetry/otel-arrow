@@ -6,7 +6,6 @@
 use serde::Deserialize;
 
 const BANNED_MONITORING_ACCOUNTS: &[&str] = &[
-    "",
     "%MDM_MONITORING_ACCOUNT%",
     "%MONITORING_MDM_ACCOUNT_NAME%",
     "!AZUREDB_METRICS_ACCOUNT!",
@@ -133,9 +132,6 @@ mod tests {
     #[test]
     fn rejects_banned_monitoring_account() {
         for account in BANNED_MONITORING_ACCOUNTS {
-            if account.trim().is_empty() {
-                continue;
-            }
             let config = Config {
                 monitoring_account: (*account).to_string(),
                 metric_namespace: "example-namespace".to_string(),

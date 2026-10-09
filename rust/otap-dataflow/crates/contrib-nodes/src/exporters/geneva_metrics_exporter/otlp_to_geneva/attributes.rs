@@ -990,40 +990,31 @@ mod tests {
         assert_eq!(dimensions.len(), MAX_DIMENSIONS);
     }
 
-    /// Scenario: A point attribute name exceeds the Geneva UTF-16 character limit.
+    /// Scenario: A point attribute name or value exceeds the Geneva UTF-16 character limit.
     /// Guarantees: The invalid dimension causes only that point context to be rejected.
     #[test]
-    fn rejects_oversized_point_dimension_name() {
-        let point = point_context(
-            &[string_attribute(
+    fn rejects_oversized_point_dimensions() {
+        for attributes in [
+            vec![string_attribute(
                 &"n".repeat(MAX_DIMENSION_NAME_UTF16_UNITS + 1),
                 "value",
             )],
-            &resource_with_dimensions(Vec::new()),
-            "scope-namespace",
-            &[],
-            &config(),
-        );
-
-        assert!(point.is_none());
-    }
-
-    /// Scenario: A point attribute value exceeds the Geneva UTF-16 character limit.
-    /// Guarantees: The invalid dimension causes only that point context to be rejected.
-    #[test]
-    fn rejects_oversized_point_dimension_value() {
-        let point = point_context(
-            &[string_attribute(
+            vec![string_attribute(
                 "name",
                 &"v".repeat(MAX_DIMENSION_VALUE_UTF16_UNITS + 1),
             )],
-            &resource_with_dimensions(Vec::new()),
-            "scope-namespace",
-            &[],
-            &config(),
-        );
-
-        assert!(point.is_none());
+        ] {
+            assert!(
+                point_context(
+                    &attributes,
+                    &resource_with_dimensions(Vec::new()),
+                    "scope-namespace",
+                    &[],
+                    &config(),
+                )
+                .is_none()
+            );
+        }
     }
 
     /// Scenario: Dimension names and values fit the scalar-value limit but exceed the Geneva UTF-16 limit.

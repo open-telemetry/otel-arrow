@@ -205,22 +205,6 @@ mod tests {
         );
     }
 
-    /// Scenario: An explicit histogram contains finite bounds and an overflow bucket.
-    /// Guarantees: Bounds and counts map in order and the overflow bucket receives a synthetic final bound.
-    #[test]
-    fn maps_explicit_histogram_with_overflow_bucket() {
-        let histogram = explicit_histogram(&explicit_point(vec![1.0, 2.0], vec![3, 4, 5]));
-
-        assert_eq!(
-            histogram,
-            ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
-                (1.0, 3),
-                (2.0, 4),
-                (3.0, 5),
-            ]))
-        );
-    }
-
     /// Scenario: Explicit histogram bounds are unordered, duplicated, and share a bound with the synthetic overflow bucket.
     /// Guarantees: Buckets are sorted and equal boundaries are coalesced using protocol-compatible count addition.
     #[test]
