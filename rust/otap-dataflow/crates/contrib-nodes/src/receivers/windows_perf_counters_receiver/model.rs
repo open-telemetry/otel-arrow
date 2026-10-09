@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Numeric performance-counter values and decimal scaling.
+//! Numeric performance-counter values, exact-counter samples, and decimal scaling.
 
 use super::config::{MAX_SCALE_POWER10, MIN_SCALE_POWER10};
 
@@ -12,6 +12,36 @@ pub(super) enum Number {
     Integer(i64),
     /// A finite calculated or scaled value, including subnormals and signed zero.
     Double(f64),
+}
+
+/// One configured counter's observation state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum SampleValue {
+    /// A scaled value ready to emit.
+    Value(Number),
+    /// No value to emit, such as during warm-up or an idle calculation.
+    NoObservation,
+}
+
+/// One configured counter's result in a sample.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SamplePoint {
+    /// Index into the configured counters.
+    pub(super) counter_index: usize,
+    /// Ready value or expected omission.
+    pub(super) value: SampleValue,
+}
+
+/// A sample from one collection.
+#[derive(Debug, Clone)]
+pub(super) struct Sample {
+    /// Start of the cumulative sequence, used only by emitted Sum points.
+    /// Collection owns sequence continuity and clock rollback handling.
+    pub(super) start_time_unix_nano: i64,
+    /// Positive observation time in nanoseconds since the Unix epoch.
+    pub(super) timestamp_unix_nano: i64,
+    /// At most one point per configured counter.
+    pub(super) points: Vec<SamplePoint>,
 }
 
 /// A bounded reason why a numeric value cannot be scaled.
