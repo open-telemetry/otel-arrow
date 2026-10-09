@@ -59,6 +59,9 @@ pub enum ContextEntryTarget {
     },
 }
 
+/// One value source selected by a primitive or composite target.
+type SelectedSource<'a> = ContextEntryValueSource<'a>;
+
 impl ContextEntryTarget {
     /// Returns the enclosing composite name, or none for a primitive.
     fn composite_name(&self) -> Option<&ContextEntryName> {
@@ -73,10 +76,10 @@ impl ContextEntryTarget {
     fn visit_sources<'a>(
         &'a self,
         composites: &'a [ConfigContextEntryDeclaration],
-        mut visit: impl FnMut(ContextEntryValueSource<'a>) -> Result<(), Error>,
+        mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => visit(ContextEntryValueSource::Referenced {
+            Self::Primitive { domain, name } => visit(SelectedSource::Referenced {
                 domain: *domain,
                 name,
             }),
@@ -224,7 +227,7 @@ impl ContextDeclaration {
                             return Ok(());
                         }
                         match source {
-                            ContextEntryValueSource::Referenced {
+                            SelectedSource::Referenced {
                                 domain: ContextDomain::TransportHeader,
                                 name,
                             } => {
@@ -234,12 +237,12 @@ impl ContextDeclaration {
                                     .insert(original_name_key(name), true);
                                 Ok(())
                             }
-                            ContextEntryValueSource::Referenced { domain, name } => {
+                            SelectedSource::Referenced { domain, name } => {
                                 Err(invalid_context(format!(
                                     "original wire name requested for {domain:?} context entry `{name}`; only transport headers have original wire names"
                                 )))
                             }
-                            ContextEntryValueSource::Constant { name, .. } => Err(invalid_context(format!(
+                            SelectedSource::Constant { name, .. } => Err(invalid_context(format!(
                                 "original wire name requested for constant context entry `{name}`; constants have no original wire names"
                             ))),
                         }
@@ -1463,11 +1466,11 @@ groups:
         assert_eq!(
             sources,
             [
-                ContextEntryValueSource::Referenced {
+                SelectedSource::Referenced {
                     domain: ContextDomain::TransportHeader,
                     name: &source_name,
                 },
-                ContextEntryValueSource::Referenced {
+                SelectedSource::Referenced {
                     domain: ContextDomain::AuthorizedIdentity,
                     name: &source_name,
                 },
@@ -1523,11 +1526,11 @@ groups:
         assert_eq!(
             sources,
             [
-                ContextEntryValueSource::Constant {
+                SelectedSource::Constant {
                     name: &constant_name,
                     value: "otlp-http-json",
                 },
-                ContextEntryValueSource::Referenced {
+                SelectedSource::Referenced {
                     domain: ContextDomain::TransportHeader,
                     name: &header_name,
                 },
