@@ -295,8 +295,13 @@ fn format_double_dimension(value: f64) -> String {
     }
 
     let mut formatted = format!("{value:.6}");
-    while formatted.len() > 1 && (formatted.ends_with('0') || formatted.ends_with('.')) {
-        let _ = formatted.pop();
+    if let Some(decimal_point) = formatted.find('.') {
+        while formatted.len() > decimal_point + 1 && formatted.ends_with('0') {
+            let _ = formatted.pop();
+        }
+        if formatted.ends_with('.') {
+            let _ = formatted.pop();
+        }
     }
     formatted
 }
@@ -939,7 +944,7 @@ mod tests {
                 dimension("fixed", "12345.6789"),
                 dimension("nan", "nan"),
                 dimension("negative-infinity", "-inf"),
-                dimension("negative-zero", "-"),
+                dimension("negative-zero", "-0"),
                 dimension("positive-infinity", "inf"),
                 dimension("rounded", "1.234568"),
                 dimension("scientific", "1.234568e+15"),
