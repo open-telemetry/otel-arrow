@@ -398,7 +398,14 @@ impl ContextLayout {
             .filter(|declaration| requested.contains(&declaration.name))
             .cloned()
             .collect::<Vec<_>>();
-        let required = selected
+        Self::for_declarations(&selected)
+    }
+
+    /// Compiles all supplied composite declarations into one canonical layout.
+    pub(crate) fn for_declarations(
+        declarations: &[ContextEntryDeclaration],
+    ) -> Result<Self, Error> {
+        let required = declarations
             .iter()
             .flat_map(|declaration| &declaration.definition.0)
             .filter_map(|part| {
@@ -417,7 +424,121 @@ impl ContextLayout {
                 _ = fields.insert(field);
             }
         }
-        Self::compile(fields, &selected)
+        Self::compile(fields, declarations)
+    }
+
+    /// Merges node-local layouts into one canonical pipeline layout.
+    pub(crate) fn merge<'a>(
+        layouts: impl IntoIterator<Item = &'a ContextLayout>,
+    ) -> Result<Self, Error> {
+        let layouts = layouts.into_iter().collect::<Vec<_>>();
+        let candidates = layouts
+            .iter()
+            .flat_map(|layout| layout.fields.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let mut fields = Vec::new();
+        for candidate in candidates {
+            if !fields.iter().any(|field: &ContextFieldLayout| {
+                field.domain == candidate.domain && field.matches_name(&candidate.name)
+            }) {
+                fields.push(candidate);
+            }
+        }
+        let fields = fields.into_boxed_slice();
+        let remap_field =
+            |layout: &ContextLayout, field: ContextFieldId| -> Result<ContextFieldId, Error> {
+                let source = &layout.fields[field.index()];
+                fields
+                    .iter()
+                    .position(|candidate| {
+                        candidate.domain == source.domain && candidate.matches_name(&source.name)
+                    })
+                    .map(ContextFieldId)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "pipeline context layout lost {:?} field `{}` while merging",
+                            source.domain, source.name
+                        ))
+                    })
+            };
+
+        let mut merged_entries = BTreeMap::<ContextEntryName, ContextEntryLayout>::new();
+        for layout in layouts {
+            for entry in &layout.entries {
+                let members = entry
+                    .members
+                    .iter()
+                    .map(|member| {
+                        Ok(ContextMember {
+                            name: member.name.clone(),
+                            source: match &member.source {
+                                ContextMemberSource::Field(field) => {
+                                    ContextMemberSource::Field(remap_field(layout, *field)?)
+                                }
+                                ContextMemberSource::Constant(value) => {
+                                    ContextMemberSource::Constant(value.clone())
+                                }
+                            },
+                        })
+                    })
+                    .collect::<Result<Box<[_]>, Error>>()?;
+                let conditions = entry
+                    .conditions
+                    .iter()
+                    .map(|condition| {
+                        Ok(ContextCondition {
+                            field: remap_field(layout, condition.field)?,
+                            value: condition.value.clone(),
+                        })
+                    })
+                    .collect::<Result<Box<[_]>, Error>>()?;
+                let merged = ContextEntryLayout {
+                    name: entry.name.clone(),
+                    scope: entry.scope.clone(),
+                    members,
+                    conditions,
+                };
+                match merged_entries.entry(entry.name.clone()) {
+                    std::collections::btree_map::Entry::Vacant(vacant) => {
+                        _ = vacant.insert(merged);
+                    }
+                    std::collections::btree_map::Entry::Occupied(occupied)
+                        if occupied.get() == &merged => {}
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        return Err(invalid(format!(
+                            "pipeline context entry `{}` has conflicting layouts",
+                            entry.name
+                        )));
+                    }
+                }
+            }
+        }
+
+        let entries = merged_entries
+            .into_values()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let field_names = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| ((field.domain, field.name.clone()), ContextFieldId(index)))
+            .collect();
+        let entry_names = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.name.clone(), ContextEntryId(index)))
+            .collect();
+        let presence = entries
+            .iter()
+            .map(|entry| EntryPresence::compile(entry, &fields))
+            .collect();
+        Ok(Self {
+            fields,
+            entries,
+            field_names,
+            entry_names,
+            presence,
+        })
     }
 
     /// Compiles a binding's fields and entry declarations into a logical layout.
@@ -1075,6 +1196,32 @@ mod tests {
         let mut sources = fields();
         sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
         assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
+    }
+
+    /// Scenario: node-local layouts arrive in different node iteration orders.
+    /// Guarantees: pipeline merging assigns identical field and entry IDs independent of order.
+    #[test]
+    fn merged_pipeline_layout_is_canonical() {
+        let first = compile(fields(), &[entry()]);
+        let mut other = entry();
+        other.name = name("other");
+        let second = compile(fields(), &[other]);
+
+        let forward = ContextLayout::merge([&first, &second]).expect("forward merge");
+        let reverse = ContextLayout::merge([&second, &first]).expect("reverse merge");
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.entries().len(), 2);
+        assert_ne!(
+            forward
+                .resolve_composite(&name("product_user"))
+                .expect("product user")
+                .presence(),
+            forward
+                .resolve_composite(&name("other"))
+                .expect("other")
+                .presence()
+        );
     }
 
     /// Scenario: a pipeline consumes one composite while another has unrelated source members.

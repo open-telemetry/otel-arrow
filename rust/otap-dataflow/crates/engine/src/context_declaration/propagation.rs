@@ -65,10 +65,44 @@ impl CompiledHeaderPropagationPolicy {
     ) -> Result<Self, String> {
         policy.validate()?;
         let references = policy.default.selector.named.as_ref();
-        let layout = Arc::new(
+        let composite_layout =
             ContextLayout::for_references(declarations, references.into_iter().flatten())
+                .map_err(|error| error.to_string())?;
+        let primitive_fields = references
+            .into_iter()
+            .flatten()
+            .filter(|reference| reference.scope().is_none())
+            .map(|reference| super::ContextFieldLayout {
+                name: reference.name().clone(),
+                domain: ContextDomain::TransportHeader,
+            })
+            .chain(
+                policy
+                    .overrides
+                    .iter()
+                    .flat_map(|policy| &policy.match_rule.stored_names)
+                    .cloned()
+                    .map(|name| super::ContextFieldLayout {
+                        name,
+                        domain: ContextDomain::TransportHeader,
+                    }),
+            );
+        let primitive_layout =
+            ContextLayout::compile(primitive_fields, &[]).map_err(|error| error.to_string())?;
+        let layout = Arc::new(
+            ContextLayout::merge([&composite_layout, &primitive_layout])
                 .map_err(|error| error.to_string())?,
         );
+        Self::compile_with_layout(policy, layout)
+    }
+
+    /// Resolves propagation against a layout shared by every node in one pipeline.
+    pub(crate) fn compile_with_layout(
+        policy: HeaderPropagationPolicy,
+        layout: Arc<ContextLayout>,
+    ) -> Result<Self, String> {
+        policy.validate()?;
+        let references = policy.default.selector.named.as_ref();
         let mut compiled_named = Vec::new();
         let mut selected_sources = HashMap::<Box<str>, ContextEntryRef>::new();
 
@@ -151,11 +185,15 @@ impl CompiledHeaderPropagationPolicy {
                 });
         }
         // A failed gate can end iteration only when every action depends on it.
-        let single_entry = if layout.entries().len() == 1
-            && policy.default.action == PropagationAction::Propagate
+        let selected_entry = compiled_named.first().map(|binding| binding.entry);
+        let single_entry = if policy.default.action == PropagationAction::Propagate
             && actions.values().all(|action| action.binding.is_some())
+            && selected_entry.is_some()
+            && compiled_named
+                .iter()
+                .all(|binding| Some(binding.entry) == selected_entry)
         {
-            compiled_named.first().map(|binding| binding.entry)
+            selected_entry
         } else {
             None
         };
@@ -167,6 +205,19 @@ impl CompiledHeaderPropagationPolicy {
             actions: HeaderLookup::new(actions),
             single_entry,
         })
+    }
+
+    /// Rebinds validated propagation settings to a pipeline-shared layout.
+    pub(crate) fn recompile_with_layout(self, layout: Arc<ContextLayout>) -> Result<Self, String> {
+        Self::compile_with_layout(
+            HeaderPropagationPolicy::new(self.default, self.overrides),
+            layout,
+        )
+    }
+
+    /// Returns the layout used to resolve this policy's field and entry IDs.
+    pub(crate) fn layout(&self) -> &Arc<ContextLayout> {
+        &self.layout
     }
 
     /// Returns whether this entry is propagated with its original name.

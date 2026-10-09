@@ -160,6 +160,19 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
+    /// Visits every stored context name this policy can produce.
+    pub fn visit_stored_names(&self, mut visit: impl FnMut(ContextEntryName)) {
+        for rule in &self.headers {
+            for match_name in &rule.match_names {
+                visit(
+                    rule.store_as
+                        .clone()
+                        .unwrap_or_else(|| match_name.to_ascii_lowercase()),
+                );
+            }
+        }
+    }
+
     /// Indexes capture rules and resolves original-name retention.
     ///
     /// Match names that are not valid HTTP header-name tokens remain available
@@ -686,6 +699,35 @@ mod tests {
         assert_eq!(policy.defaults.max_name_bytes, 128);
         assert_eq!(policy.defaults.max_value_bytes, 4096);
         assert_eq!(policy.defaults.on_error, ErrorAction::Drop);
+    }
+
+    /// Scenario: capture rules use an explicit alias and a default stored name.
+    /// Guarantees: layout compilation sees every produced name with configured casing preserved.
+    #[test]
+    fn capture_policy_visits_stored_names() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![
+                CaptureRule {
+                    match_names: vec![context_name("X-First")],
+                    store_as: Some(context_name("FirstAlias")),
+                    sensitive: false,
+                    value_kind: None,
+                },
+                CaptureRule {
+                    match_names: vec![context_name("X-Second")],
+                    store_as: None,
+                    sensitive: false,
+                    value_kind: None,
+                },
+            ],
+        );
+        let mut names = Vec::new();
+        policy.visit_stored_names(|name| names.push(name));
+        assert_eq!(
+            names,
+            [context_name("FirstAlias"), context_name("x-second")]
+        );
     }
 
     /// Scenario: capture rules repeat a wire name with different casing.

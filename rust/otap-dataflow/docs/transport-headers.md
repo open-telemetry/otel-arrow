@@ -265,14 +265,17 @@ the request and capture the verified `sub` claim as `customer_id`; a transport
 header named `customer_id` cannot substitute for that identity.
 
 During startup and live-update preparation, the engine context compiler resolves
-each exporter's selected composite definitions into a logical layout. Unused
-definitions remain inactive for that exporter. Missing message values make the
-composite absent rather than invalidating startup.
+all explicitly bound primitive fields and selected composite definitions into
+one canonical logical layout per pipeline. Every node binding in that pipeline
+shares the same layout and stable field and composite IDs. Definitions with no
+live binding remain inactive. Missing message values make the composite absent
+rather than invalidating startup.
 
 Configuration remains separate from execution: serialized propagation policies
-contain only settings, while engine bindings hold the resolved layout and
-propagation implementation. Presence is evaluated at export time using existing
-header and identity storage and cached for that propagation call.
+contain only settings, while pipeline bindings hold the shared resolved layout
+and node-specific propagation implementation. Presence is evaluated at export
+time using existing header and identity storage and cached for that propagation
+call.
 
 For values captured by this pipeline, every header member and condition source
 needs a matching `header_capture` rule. In the example, `x-workspace` is stored
