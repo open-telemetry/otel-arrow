@@ -95,7 +95,7 @@ impl<T> HeaderLookup<T> {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct HeaderRequirement {
     /// Canonical stored header name, matched using ASCII case-insensitive semantics.
-    name: String,
+    name: ContextEntryName,
     /// Required bytes for a condition, or `None` when any value proves presence.
     value: Option<Box<[u8]>>,
 }
@@ -122,7 +122,7 @@ struct EntryPresence {
 
 impl EntryPresence {
     fn compile(entry: &ContextEntryLayout, fields: &[ContextFieldLayout]) -> Self {
-        let mut headers = BTreeMap::<String, BTreeSet<Option<Box<[u8]>>>>::new();
+        let mut headers = BTreeMap::<ContextEntryName, BTreeSet<Option<Box<[u8]>>>>::new();
         let mut identities = Vec::new();
         for member in &entry.members {
             let ContextMemberSource::Field(field) = member.source else {
@@ -132,7 +132,7 @@ impl EntryPresence {
             match field.domain {
                 ContextDomain::TransportHeader => {
                     _ = headers
-                        .entry(field.name.as_str().to_ascii_lowercase())
+                        .entry(field.name.to_ascii_lowercase())
                         .or_default()
                         .insert(None);
                 }
@@ -141,12 +141,7 @@ impl EntryPresence {
         }
         for condition in &entry.conditions {
             let values = headers
-                .entry(
-                    fields[condition.field.index()]
-                        .name
-                        .as_str()
-                        .to_ascii_lowercase(),
-                )
+                .entry(fields[condition.field.index()].name.to_ascii_lowercase())
                 .or_default();
             // A matching value also proves that its member exists.
             _ = values.remove(&None);

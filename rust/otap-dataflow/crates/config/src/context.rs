@@ -27,7 +27,7 @@ impl ContextEntryName {
 
     /// Returns an ASCII-lowercase copy.
     #[must_use]
-    pub(crate) fn to_ascii_lowercase(&self) -> Self {
+    pub fn to_ascii_lowercase(&self) -> Self {
         Self(self.0.to_ascii_lowercase().into())
     }
 }
@@ -210,6 +210,17 @@ mod tests {
         assert_ne!(upper, lower);
         assert_eq!(HashSet::from([upper.clone(), lower.clone()]).len(), 2);
         assert_eq!(BTreeSet::from([upper, lower]).len(), 2);
+    }
+
+    /// Scenario: transport semantics require a canonical case-insensitive name.
+    /// Guarantees: lowercasing returns a valid typed name without modifying the source.
+    #[test]
+    fn context_entry_name_ascii_lowercase_preserves_type() {
+        let configured = ContextEntryName::try_from("X-Tenant_ID").expect("valid name");
+        let canonical = configured.to_ascii_lowercase();
+
+        assert_eq!(configured.as_str(), "X-Tenant_ID");
+        assert_eq!(canonical.as_str(), "x-tenant_id");
     }
 
     /// Scenario: a context name is empty, composite, contains whitespace, or is non-ASCII.
