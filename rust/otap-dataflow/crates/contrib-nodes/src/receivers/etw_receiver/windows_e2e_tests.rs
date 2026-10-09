@@ -45,6 +45,10 @@ const DYNAMIC_EVENT_NAME: &str = "E2eDynamicEvent";
 /// the event name to be a compile-time string literal.
 const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 
+/// Scenario: Named TraceLogging providers emit static and dynamic events
+/// through a real Windows ETW session.
+/// Guarantees: Provider names and decoded payload fields survive the complete
+/// ETW-to-OTAP Arrow pipeline.
 #[test]
 #[ignore = "requires Administrator privileges and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_decodes_tracelogging_events_end_to_end() {
@@ -77,20 +81,14 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     // would otherwise have succeeded.
     cleanup_stale_otap_etw_sessions();
 
-    // Canonical TraceLogging GUIDs for both providers -- the same hash
-    // ETW itself uses for manifest-free providers, so the kernel session
-    // and the producers agree on the routing.
-    let dynamic_guid_str = guid_string_from_name(&dynamic_provider_name);
-    let static_guid_str = guid_string_from_name(STATIC_PROVIDER_NAME);
-
     // Subscribe to both providers in a single session.  Use default
     // batching so we exercise the production flush path; a single event
     // flushes via the default timer (~100ms).
     let config_json = serde_json::json!({
         "session_name": session_name,
         "providers": [
-            { "guid": dynamic_guid_str, "level": "verbose" },
-            { "guid": static_guid_str,  "level": "verbose" },
+            { "name": dynamic_provider_name, "kind": "tracelogging", "level": "verbose" },
+            { "name": STATIC_PROVIDER_NAME, "kind": "tracelogging", "level": "verbose" },
         ],
     });
 
@@ -109,8 +107,8 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
 
     test_runtime
         .set_receiver(receiver_wrapper)
-        .run_test(producer_scenario(dynamic_provider_name))
-        .run_validation(producer_validation());
+        .run_test(producer_scenario(dynamic_provider_name.clone()))
+        .run_validation(producer_validation(dynamic_provider_name));
 }
 
 // -- Producer ------------------------------------------------------------
@@ -336,7 +334,9 @@ fn emit_static_event() {
 
 /// Drain downstream pdata until we have batches containing BOTH events,
 /// then run comprehensive assertions on each.
-fn producer_validation() -> impl FnOnce(
+fn producer_validation(
+    dynamic_provider_name: String,
+) -> impl FnOnce(
     otel_arrow_dfe_engine::testing::receiver::NotSendValidateContext<OtapPdata>,
 ) -> Pin<Box<dyn Future<Output = ()>>> {
     move |mut ctx| {
@@ -375,10 +375,20 @@ fn producer_validation() -> impl FnOnce(
             let (dyn_records, dyn_row) = locate_event(&batches, DYNAMIC_EVENT_NAME, our_pid);
             let (stc_records, stc_row) = locate_event(&batches, STATIC_EVENT_NAME, our_pid);
 
-            assert_log_record_common(dyn_records, dyn_row, DYNAMIC_EVENT_NAME);
+            assert_log_record_common(
+                dyn_records,
+                dyn_row,
+                DYNAMIC_EVENT_NAME,
+                &dynamic_provider_name,
+            );
             assert_dynamic_user_attrs(dyn_records, dyn_row);
 
-            assert_log_record_common(stc_records, stc_row, STATIC_EVENT_NAME);
+            assert_log_record_common(
+                stc_records,
+                stc_row,
+                STATIC_EVENT_NAME,
+                STATIC_PROVIDER_NAME,
+            );
             assert_static_user_attrs(stc_records, stc_row);
         })
     }
@@ -441,7 +451,12 @@ fn find_event_row(records: &OtapArrowRecords, expected: &str, expected_pid: u32)
 /// Field-by-field validation of the Logs/Resource/Scope columns and the
 /// receiver-injected `etw.*` attributes -- the parts that are identical
 /// for every event regardless of how it was produced.
-fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: &str) {
+fn assert_log_record_common(
+    records: &OtapArrowRecords,
+    row: usize,
+    event_name: &str,
+    provider_name: &str,
+) {
     let logs_rb = records
         .get(ArrowPayloadType::Logs)
         .expect("Logs payload should be present");
@@ -582,6 +597,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
             .all(|c| c == '-' || c.is_ascii_hexdigit()),
         "etw.provider.id contains non-hex/non-dash characters: {provider_id:?}"
     );
+    assert_attr_str(&attrs, "etw.provider.name", provider_name);
 }
 
 /// Per-attribute assertions for the rich `tracelogging_dynamic` event.
@@ -1175,16 +1191,6 @@ fn struct_field_is_null(s: &arrow::array::StructArray, field: &str, row: usize) 
 }
 
 // -- Diagnostic / privilege helpers --------------------------------------
-
-/// Compute the canonical TraceLogging GUID string for `provider_name`
-/// (the same hash ETW uses for manifest-free providers).
-fn guid_string_from_name(provider_name: &str) -> String {
-    let guid = tld::Guid::from_name(provider_name);
-    let buf = guid.to_utf8_bytes();
-    std::str::from_utf8(&buf)
-        .expect("GUID bytes are valid ASCII")
-        .to_string()
-}
 
 /// True when the current process is running with Administrator
 /// privileges (high integrity level / member of the local

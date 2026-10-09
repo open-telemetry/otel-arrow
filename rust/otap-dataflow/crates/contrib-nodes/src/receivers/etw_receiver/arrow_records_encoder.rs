@@ -240,6 +240,12 @@ impl EtwArrowRecordsBuilder {
             "etw.provider.id",
             AttrValue::Str(Cow::Borrowed(provider_guid)),
         );
+        if let Some(provider_name) = event.provider_name.as_deref() {
+            self.append_attr(
+                "etw.provider.name",
+                AttrValue::Str(Cow::Borrowed(provider_name)),
+            );
+        }
 
         // Activity ID -- only emit when non-zero (provider set a correlation ID)
         if !event.activity_id.is_zero() {
@@ -347,6 +353,7 @@ mod tests {
     fn test_event() -> EtwEventData {
         EtwEventData {
             provider_id: CanonicalGuid([0u8; 16]),
+            provider_name: Some(std::sync::Arc::from("Test.Provider")),
             timestamp: 123456789,
             process_id: 1234,
             thread_id: 5678,
@@ -384,12 +391,77 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        // 8 header attrs (event_id, level, opcode, version, keywords,
-        // process_id, thread_id, provider_id) + 2 decoded fields = 10 rows.
+        // 9 header attrs (event_id, level, opcode, version, keywords,
+        // process_id, thread_id, provider_id, provider_name) + 2 decoded
+        // fields = 11 rows.
         // (event_name is carried in the OTAP `event_name` log-record column,
         // not duplicated as an attribute; activity_id is all zeros so it's
         // omitted.)
-        assert_eq!(attrs_rb.num_rows(), 10);
+        assert_eq!(attrs_rb.num_rows(), 11);
+    }
+
+    /// Scenario: An ETW event carries a provider name resolved at session
+    /// startup.
+    /// Guarantees: The Arrow log attributes include the exact provider name
+    /// under `etw.provider.name`.
+    #[test]
+    fn provider_name_is_emitted_when_available() {
+        use arrow::array::{Array, DictionaryArray, StringArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&test_event());
+        let batch = builder.build().expect("build succeeds");
+        let attrs = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+        let keys = attrs
+            .column_by_name("key")
+            .expect("key column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .expect("key is dictionary-encoded");
+        let key_values = keys
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key values are strings");
+        let strings = attrs
+            .column_by_name("str")
+            .expect("str column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .expect("str is dictionary-encoded");
+        let string_values = strings
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str values are strings");
+
+        let provider_name = (0..attrs.num_rows()).find_map(|row| {
+            let key = key_values.value(keys.key(row)?);
+            (key == "etw.provider.name")
+                .then(|| string_values.value(strings.key(row).expect("provider name value")))
+        });
+        assert_eq!(provider_name, Some("Test.Provider"));
+    }
+
+    /// Scenario: A GUID-only ETW provider has no configured provider name.
+    /// Guarantees: The event still encodes successfully with
+    /// `etw.provider.id` and omits only `etw.provider.name`.
+    #[test]
+    fn provider_name_is_omitted_when_unavailable() {
+        let mut event = test_event();
+        event.provider_name = None;
+        event.decoded_fields.clear();
+
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&event);
+        let batch = builder.build().expect("build succeeds");
+        let attrs = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+        assert_eq!(attrs.num_rows(), 8);
     }
 
     #[test]
@@ -537,10 +609,11 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 8 header attributes (event_id, level, opcode, version, keywords,
-        // process_id, thread_id, provider_id); event_name is carried in the
-        // OTAP `event_name` log-record column; activity_id is zero -> omitted
-        assert_eq!(attrs_rb.num_rows(), 8);
+        // 9 header attributes (event_id, level, opcode, version, keywords,
+        // process_id, thread_id, provider_id, provider_name); event_name is
+        // carried in the OTAP `event_name` log-record column; activity_id is
+        // zero -> omitted.
+        assert_eq!(attrs_rb.num_rows(), 9);
     }
 
     #[test]
@@ -557,8 +630,8 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 8 header attributes; the empty-named field is skipped
-        assert_eq!(attrs_rb.num_rows(), 8);
+        // 9 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 9);
     }
 
     // Scenario: a typed GUID produced at the session boundary via
