@@ -33,7 +33,7 @@
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 796169.0834886971
+    "value": 798396.4165951821
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Log Throughput",
@@ -45,7 +45,7 @@
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000422
+    "value": 60.00053
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Network Utilization",
