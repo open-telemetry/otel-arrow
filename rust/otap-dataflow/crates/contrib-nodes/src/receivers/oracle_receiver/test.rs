@@ -2275,3 +2275,6 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
 
 #[path = "scalar_config_tests.rs"]
 mod scalar_tests;
+
+#[path = "snapshot_config_tests.rs"]
+mod snapshot_tests;

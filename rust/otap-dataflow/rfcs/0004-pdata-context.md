@@ -266,9 +266,16 @@ policies:
   context:
     entries:
       routename:                # Named context entry
-        type: constant
-        value: otlp-http-json
+        - type: constant
+          name: route_name      # Composite member name
+          value: otlp-http-json
 ```
+
+Constant values are UTF-8 strings supplied directly by configuration. They
+have configured member names but no source domain or original wire name.
+Constants are always available, so only referenced fields and conditions
+determine whether a composite entry is present. Configuration values are not
+secret storage and must not contain credentials or other sensitive data.
 
 #### Composite context entry dimensions
 

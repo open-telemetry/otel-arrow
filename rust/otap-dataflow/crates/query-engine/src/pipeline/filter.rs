@@ -204,6 +204,22 @@ impl FilterPipelineStage {
                     // nothing to filter
                     return Ok(());
                 };
+                // AttributesAll from non-record (resource/scope) attrs cannot be joined
+                // directly to data points because the AttributesAllSelectionVecJoin needs
+                // resource/scope ID columns which data-point batches lack. Align to root
+                // first, then from root to data points.
+                if matches!(
+                    predicate_eval_value.scope,
+                    DataScope::AttributesAll(AttributesIdentifier::NonRecord(_))
+                ) && let Some(root_rb) = otap_batch.root_record_batch()
+                {
+                    predicate_eval_value = align_value_to_record(
+                        predicate_eval_value,
+                        RecordScope::Signal,
+                        root_rb,
+                        otap_batch,
+                    )?;
+                }
                 predicate_eval_value = align_value_to_record(
                     predicate_eval_value,
                     RecordScope::Child(ChildRecordKind::DataPoint),

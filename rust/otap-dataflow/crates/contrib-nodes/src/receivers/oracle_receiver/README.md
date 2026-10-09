@@ -17,7 +17,8 @@ releases.
 ## Overview
 
 The Oracle receiver polls an operator-authored, read-only SQL query using a
-typed scalar cursor or a composite timestamp and signed-integer tie-breaker. It maps returned
+snapshot mode, a typed scalar cursor, or a composite timestamp and signed-integer
+tie-breaker. It maps returned
 rows to structured OTLP logs and saves acknowledged progress in filesystem
 checkpoints.
 
@@ -33,9 +34,9 @@ exactly once and does not implement every capability proposed in the
 
 ## Getting Started
 
-1. Prepare a source with stable rows and a unique, commit-ordered scalar or composite
-   cursor. Read [Delivery guarantees](#delivery-guarantees) before choosing a
-   timestamp column.
+1. Choose [snapshot polling](#snapshot-mode) for periodic full results, or prepare
+   stable rows with a unique, commit-ordered scalar or composite cursor. Read
+   [Delivery guarantees](#delivery-guarantees) before choosing a timestamp column.
 2. Install [Oracle Instant Client](#oracle-instant-client-installation) on the
    engine host and provision a least-privileged account with read access to the
    selected data.
@@ -64,8 +65,8 @@ destination routing in the pipeline's connections and exporters.
 composite watermark uses nested `timestamp` and `tie_breaker` objects, each with
 explicit `bind` and `initial` values, under `mode: composite`. Scalar mode
 supports signed integers, unsigned integers, strings, and timestamps. Snapshot
-mode remains unsupported. Supply every field marked required below, including
-`max_batch_bytes` and `nack_backoff`.
+mode requires no cursor columns. Supply every field marked required below,
+including `max_batch_bytes` and `nack_backoff`.
 
 ### Top-Level Fields
 
@@ -74,7 +75,7 @@ mode remains unsupported. Supply every field marked required below, including
 | `source_id` | string | **required** | Non-empty logical source identity, at most 256 UTF-8 bytes. Used in checkpoints and emitted telemetry; do not include credentials or sensitive connection details. |
 | `connection` | object | **required** | Oracle connection string and Instant Client directory. |
 | `query` | object | **required** | One SQL statement and its polling, row, byte, and timeout limits. |
-| `watermark` | object | **required** | Scalar or composite cursor definition and initial position. |
+| `watermark` | object | **required** | Snapshot selection, or a scalar/composite cursor definition and initial position. |
 | `checkpoint` | object | **required** | State directory, NACK policy, replay backoff, and checkpoint-write failure limit. |
 
 These fields belong inside a node's `config:` block, not at the pipeline root.
@@ -184,13 +185,13 @@ The 300-row default, native fetch bounds, and checkpoint fingerprint are unchang
 
 ### Watermark
 
-`watermark.mode` accepts `composite` or `scalar`. In composite mode, the timestamp and tie-breaker
+`watermark.mode` accepts `snapshot`, `composite`, or `scalar`. In composite mode, the timestamp and tie-breaker
 form an exclusive lower bound: the first poll selects rows strictly after the
 configured initial pair; subsequent polls use the last committed pair.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `watermark.mode` | string | **required** | `composite` for the fields below; `scalar` uses the separate schema below. Snapshot is unsupported. |
+| `watermark.mode` | string | **required** | `composite` for the fields below; `scalar` uses the separate schema below. `snapshot` requires only the mode field. |
 | `watermark.timestamp.column` | string | **required** | Unquoted Oracle identifier for the timestamp cursor column. |
 | `watermark.timestamp.bind` | string | **required** | Named parameter without `:`. ASCII letters, digits, and `_` only, starting with a letter or `_`. |
 | `watermark.timestamp.initial` | string | **required** | Oracle timestamp text, such as `"1970-01-01 00:00:00"`, with at most nine digits per numeric component. Fractional precision above nine digits is rejected, not truncated. Used only when no checkpoint exists. |
@@ -335,6 +336,85 @@ representations are preserved. Switching mode or type requires an intentional
 new checkpoint identity or migration, not reinterpreting existing progress.
 Source commit visibility and retention remain requirements for both modes;
 monotonically allocated IDs alone are insufficient.
+
+### Snapshot Mode
+
+Set only `mode: snapshot` in the watermark block. No result column, bind, initial
+value, or `ORDER BY` is needed. Nullable columns and duplicate rows are allowed.
+For example, replace the query and watermark blocks in the full configuration
+with:
+
+```yaml
+query:
+  statement: SELECT STATUS, COUNT(*) AS TOTAL FROM AUDIT_LOGS GROUP BY STATUS
+  interval: 1m
+  timeout: 30s
+  max_rows_per_poll: 1000
+  fetch_size_rows: 100
+  max_batch_bytes: 4MiB
+watermark:
+  mode: snapshot
+```
+
+Snapshot SQL retains the single read-only `SELECT` restriction: no real bind
+parameters, `FOR UPDATE`, `INTO`, comments, subqueries, or set operations.
+All returned columns are mapped to the log body. Event timestamps use observation
+time because snapshot mode selects no timestamp cursor column.
+
+For example, if the query returns this result row:
+
+| STATUS | TOTAL |
+| --- | ---: |
+| `OPEN` | 17 |
+
+the receiver emits an abbreviated OTLP `LogRecord` like:
+
+```yaml
+time_unix_nano: <poll observation time>
+observed_time_unix_nano: <poll observation time>
+severity_text: INFO
+event_name: database.query.row
+body:
+  STATUS: OPEN
+  TOTAL: 17
+attributes:
+  receiver.database.source_id: oracle-audit
+  receiver.database.query.name: oracle-audit
+```
+
+The `TOTAL` alias is an ordinary returned column in snapshot mode; no result
+column is interpreted as checkpoint progress.
+
+Each full nonempty result is one ACK-driven checkpoint unit. The checkpoint
+stores a revision and no source position (`cursor: null`), not the result rows.
+After ACK and a successful write, the next query waits `query.interval`;
+catch-up does not repeatedly execute snapshots within that interval. Empty
+results emit no batch, leave the checkpoint unchanged, and wait the interval.
+
+The complete result must fit `max_rows_per_poll` and both the normalized-memory
+and serialized-byte ceilings from `max_batch_bytes`. An extra-row probe detects
+row truncation; byte truncation also fails before any partial snapshot is sent.
+Exceeding these bounds is a configuration error, not silent row loss.
+The affected source pauses without emitting or checkpointing a partial result;
+other pipeline sources continue. Split the query or increase the bound, then
+restart or reconfigure this source.
+
+NACK and restart re-run the full query against current data. No historical result
+is retained, so transient or deleted rows may not be replayable. Unchanged rows
+are intentionally emitted on every poll; snapshot mode offers neither CDC nor
+deduplication. The keyset source-ordering requirements below apply only to scalar
+and composite modes. Snapshot checkpoints still use source ownership, identity
+validation, and the configured permanent-NACK policy. Changing SQL, database,
+source identity, or mode requires a compatible checkpoint identity; it never
+reinterprets a scalar or composite checkpoint as a snapshot.
+
+The opt-in `live_snapshot_bounds_are_all_or_nothing` test exercises exact row
+limits, an extra-row probe, and normalized-byte overflow using read-only `DUAL`
+queries. Set `ORACLE_SNAPSHOT_TEST_CONFIG` to a full receiver JSON configuration
+with working connection settings, set `ORACLE_USERNAME` and
+`ORACLE_PASSWORD_FILE` for the bound credential provider, then run that test
+with `-- --ignored` under the `oracle` feature. No source-table writes
+are required.
 
 ### Checkpoint
 
@@ -783,7 +863,7 @@ Common engine resource and node context may still accompany them.
 | `database_receiver.page_nacked` | `warn` | Checkpoint retained and replay scheduled. |
 | `database_receiver.retry_scheduled` | `warn` | Transient database recovery scheduled without restarting the pipeline. |
 | `database_receiver.recovered` | `info` | Database polling recovered after transient failures. |
-| `database_receiver.source_paused` | `warn` | Permanent rejection paused the source until repair and restart. |
+| `database_receiver.source_paused` | `warn` | Permanent rejection or snapshot overflow paused the source until repair and restart. |
 | `database_receiver.rejection_retry_scheduled` | `warn` | Permanent-rejection replay scheduled with capped backoff. |
 | `database_receiver.rejection_recovered` | `info` | A previously rejected page was acknowledged and checkpointed. |
 | `database_receiver.checkpoint_committed` | `debug` | Matching progress committed. |
@@ -799,7 +879,7 @@ Common engine resource and node context may still accompany them.
 - One query and one pending page per receiver; one pipeline core. Deploy one
   active collector replica per logical source. Automatic partitioning and
   distributed source discovery are not implemented.
-- Scalar or composite watermark and `on_nack: rewind`; permanent rejection separately supports `pause` or `retry`. No snapshots,
+- Snapshot, scalar, or composite mode and `on_nack: rewind`; permanent rejection separately supports `pause` or `retry`. No
   CDC, delete capture, multiple named queries, or configurable output mapping.
 - No whole-poll deadline, normal-operation ACK deadline, or process-RSS ceiling.
 - Only explicitly classified transient database failures retry. Conversion and
