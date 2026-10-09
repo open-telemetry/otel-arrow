@@ -8,10 +8,10 @@ It excludes decoding, line framing, source I/O, batching, and scheduling.
 From the OTAP workspace:
 
 ```bash
-cargo bench --locked -p otel-arrow-dfe-core-nodes --features bench --bench
-filelog_multiline
-cargo bench --locked -p otel-arrow-dfe-core-nodes --features bench --bench
-filelog_multiline_allocations
+cargo bench --locked -p otel-arrow-dfe-core-nodes --features bench \
+  --bench filelog_multiline
+cargo bench --locked -p otel-arrow-dfe-core-nodes --features bench \
+  --bench filelog_multiline_allocations
 ```
 
 Both targets include the exact source module to exercise qualification controls
@@ -87,13 +87,67 @@ The harness asserts measured search peak requested bytes do not exceed the
 source-derived worker bound. This is regression evidence for the
 model, not a proof from samples alone.
 
+## Linux measurement snapshot (2026-10-09)
+
+These exploratory measurements cover nonmatching inputs. They are not latency
+limits or full-receiver throughput results. `us` means microseconds; cold/warm
+refer to the matcher cache, not the operating system's file cache.
+
+| Fixture | Variant | Body | Samples | Cold | Warm |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Timestamp | `meta` | 128 B | 7 | 0.20 us | 0.037 us |
+| Required literal absent | `meta` | 1 MiB | 7 | 34.3 us | 32.0 us |
+| Plausible literal candidates | `meta` | 1 MiB | 7 | 1.66 ms | 1.61 ms |
+| Cache churn (raw) | `meta` | 1 MiB | 7 | 167 ms | 141 ms |
+| Large program | `meta` | 1 MiB | 1 | 32.7 ms | 31.5 ms |
+| Repetition limit | `meta` | 1 MiB | 1 | 4.72 s | 4.67 s |
+| Branching pattern | `meta` | 1 MiB | 1 | 14.7 ms | 1.79 ms |
+| Branching pattern | `pike_prefilter` | 1 MiB | 1 | 19.09 s | 19.07 s |
+
+Seven-sample rows report medians. Single-sample rows are observations only.
+`meta` uses the default policy, including fallback; the large-program fixture
+runs without lazy acceleration because its minimum cache exceeds the ceiling.
+The last row explicitly disables lazy acceleration while retaining prefilters.
+Its result must not be presented as default-policy performance.
+
+Setup:
+
+- Azure Linux VM, Intel Xeon 6973P-C; one logical CPU (CPU 2), 100% CPU quota.
+- Cgroup memory cap: 32 MiB for the first four rows, 128 MiB for the large
+  fixtures; swap disabled. These runs reported no cgroup OOM events.
+- Rust 1.98.1, regex-automata 0.4.18, regex-syntax 0.8.11. Isolated release
+  build with optimization level 3, fat LTO, and one codegen unit.
+- Samples exclude input preparation, UTF-8 validation, and cache construction,
+  as described above. The small sample counts do not characterize tail latency.
+
+A separate DHAT run of the large-program fixture measured the following search
+allocations, including cache creation and one search:
+
+| Measured peak requested heap | Modeled worker heap bound |
+| ---: | ---: |
+| 9,600,496 bytes | 9,602,136 bytes |
+
+This excludes compiled-program storage and process overhead. It is a check of
+one fixture, not proof that measurements establish the model's bound.
+
+Source provenance: the measured matcher, memory model, timing harness, and
+fixtures are byte-identical to those in [commit 727113330][measured-source].
+The allocation measurement predates the construction-policy diagnostics added
+to `allocations.rs`; its source SHA-256 was
+`4e0c74ba2c2f213db075ee716a21137caa1ab61f72316e357d8b9116823b5ec6`.
+Timing rows come from `normal-32m.csv`, `large_program_search-meta.csv`,
+`repetition_cap-meta.csv`, and `branching_nonmatch-{meta,pike_prefilter}.csv`;
+the memory row comes from `large_program_search-allocations.csv` in the same
+run. Keep those raw files and cgroup reports with the review artifacts.
+
+[measured-source]: https://github.com/lalitb/otel-arrow/commit/727113330e4110a44d2ee7697d059430c03db887
+
 ## Evidence and interpretation
 
 Keep CSVs, source hashes, cgroup reports, and detailed logs as review artifacts.
-Do not retain stale snapshots here when the implementation or timed region
-changes. Record the compiler, dependency lock, CPU, sample count, and exact
-source
-hashes alongside each run.
+Re-run or clearly mark this snapshot as historical when the implementation or
+timed region changes. Record the compiler, dependency lock, CPU, sample count,
+and exact source hashes alongside each run.
 
 On Linux, pin the process to one CPU and enforce memory/swap limits using cgroup
 v2. Compare 16/32 MiB matcher-process runs, smaller eligible lines, and reduced
