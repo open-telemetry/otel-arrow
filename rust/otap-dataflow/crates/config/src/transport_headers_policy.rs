@@ -559,26 +559,6 @@ impl PropagationSelector {
             _ => Ok(()),
         }
     }
-
-    /// Matches a stored transport-header name through `all_captured` or a
-    /// primitive entry in `named`, using ASCII case-insensitive comparison.
-    #[must_use]
-    pub fn selects_primitive_header(&self, header_name: &str) -> bool {
-        match &self.selector_type {
-            PropagationSelectorType::AllCaptured => true,
-            PropagationSelectorType::None => false,
-            PropagationSelectorType::Named => self
-                .named
-                .as_ref()
-                .map(|names| {
-                    names.iter().any(|name| {
-                        name.scope().is_none()
-                            && header_name.eq_ignore_ascii_case(name.name().as_str())
-                    })
-                })
-                .unwrap_or(false),
-        }
-    }
 }
 
 /// Action to take for a header during propagation.
@@ -1074,43 +1054,6 @@ named:
                     .collect()
             )
         );
-    }
-
-    /// Scenario: named selection mixes a primitive header and a composite-member reference.
-    /// Guarantees: primitive matching ignores case but cannot bypass a composite binding.
-    #[test]
-    fn selector_primitive_header_matching_excludes_composite_members() {
-        let selector = PropagationSelector {
-            selector_type: PropagationSelectorType::Named,
-            named: Some(
-                ["request_id", "tenant:workspace"]
-                    .into_iter()
-                    .map(|name| ContextEntryRef::try_from(name).expect("valid reference"))
-                    .collect(),
-            ),
-        };
-        assert!(selector.selects_primitive_header("REQUEST_ID"));
-        for name in ["workspace", "tenant", "tenant:workspace", "other"] {
-            assert!(!selector.selects_primitive_header(name), "{name}");
-        }
-    }
-
-    /// Scenario: primitive header matching uses all-captured or none selection.
-    /// Guarantees: all-captured matches any stored header name while none matches no name.
-    #[test]
-    fn selector_primitive_header_matching_respects_selection_mode() {
-        for (selector_type, expected) in [
-            (PropagationSelectorType::AllCaptured, true),
-            (PropagationSelectorType::None, false),
-        ] {
-            let selector = PropagationSelector {
-                selector_type,
-                named: None,
-            };
-            for name in ["workspace", "REQUEST_ID"] {
-                assert_eq!(selector.selects_primitive_header(name), expected, "{name}");
-            }
-        }
     }
 
     /// Scenario: an `all_captured` selector has no name list.

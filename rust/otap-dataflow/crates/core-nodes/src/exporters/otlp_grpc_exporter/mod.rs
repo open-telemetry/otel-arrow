@@ -1417,7 +1417,7 @@ mod tests {
     use otel_arrow_dfe_engine::testing::create_not_send_channel;
     use otel_arrow_dfe_engine::testing::{
         exporter::{TestContext, TestRuntime},
-        test_node, test_pipeline_ctx_with_interests,
+        test_node, test_pipeline_ctx_with_interests, test_pipeline_header_propagation,
     };
     use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
     use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
@@ -3204,7 +3204,7 @@ mod tests {
             },
             vec![],
         );
-        HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
+        test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles")
     }
 
     fn conditional_workspace_policy() -> HeaderPropagationPolicy {
@@ -3236,7 +3236,7 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        HeaderPropagationPolicy::compile(
+        test_pipeline_header_propagation(
             policy,
             &[ContextEntryDeclaration {
                 scope: ContextScope::Engine,
@@ -3269,7 +3269,7 @@ mod tests {
         )
         .expect("propagation policy");
         let handler = make_effect_handler_with_policy(Some(
-            HeaderPropagationPolicy::compile(policy, &declarations).expect("compiled policy"),
+            test_pipeline_header_propagation(policy, &declarations).expect("compiled policy"),
         ));
         let mut headers = TransportHeaders::new();
         headers.push(text_header("workspace", "X-Workspace", b"acme"));
@@ -3392,7 +3392,7 @@ mod tests {
             }],
         );
         let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+            test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
@@ -3519,7 +3519,7 @@ mod tests {
             vec![],
         );
         let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+            test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();

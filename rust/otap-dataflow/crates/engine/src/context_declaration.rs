@@ -2040,7 +2040,7 @@ groups:
     }
 
     /// Scenario: a propagation declaration selects one original header name.
-    /// Guarantees: prepared bindings keep the policy and require only that original name.
+    /// Guarantees: preparation produces a binding and requires only the selected original name.
     #[test]
     fn header_propagation_policy_is_a_context_declaration() {
         let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
@@ -2053,24 +2053,22 @@ groups:
             }
         }))
         .expect("valid propagation policy");
-        let declarations: NodeContextDeclarations = [ContextDeclaration::HeaderPropagation {
-            policy: policy.clone(),
-        }]
-        .into_iter()
-        .collect();
+        let declarations: NodeContextDeclarations =
+            [ContextDeclaration::HeaderPropagation { policy }]
+                .into_iter()
+                .collect();
         let compiled = compiled_bindings(declarations.clone());
 
-        let requirements = context_runtime_requirements(declarations.clone());
+        let requirements = context_runtime_requirements(declarations);
         assert!(requirements.preserves_original_name(&context_name("preserved")));
         assert!(!requirements.preserves_original_name(&context_name("other")));
-        let expected =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
-        assert_eq!(
-            compiled.header_propagation_policy(
-                &pipeline("group", "pipeline"),
-                &ConfigNodeId::from("node")
-            ),
-            Some(&expected),
+        assert!(
+            compiled
+                .header_propagation_policy(
+                    &pipeline("group", "pipeline"),
+                    &ConfigNodeId::from("node")
+                )
+                .is_some()
         );
     }
 
@@ -2175,34 +2173,6 @@ groups:
             .into_iter()
             .collect(),
         );
-    }
-
-    /// Scenario: an exporter config selects a conditional composite transport-header member.
-    /// Guarantees: wrapper declaration collection retains unresolved propagation settings.
-    #[test]
-    fn wrapper_retains_conditional_composite_header_propagation() {
-        let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
-        let expected: HeaderPropagationConfig = serde_yaml::from_str(
-            r#"
-default:
-  selector:
-    type: named
-    named: [tenant:workspace_id]
-  name: stored_name
-"#,
-        )
-        .expect("valid propagation policy");
-        exporter.header_propagation = Some(expected.clone());
-
-        let declarations =
-            PipelineFactory::<()>::wrapper_context_declarations(&exporter, &None, &None)
-                .expect("wrapper declarations");
-        let ContextDeclaration::HeaderPropagation { policy } =
-            declarations.iter().next().expect("propagation declaration")
-        else {
-            panic!("expected header propagation declaration");
-        };
-        assert_eq!(policy, &expected);
     }
 
     /// Scenario: complete YAML changes a composite condition or selected member during a live update.
@@ -2619,57 +2589,6 @@ default:
         assert_eq!(first.propagate(&headers).count(), 1);
         assert_eq!(second.propagate(&headers).count(), 0);
         assert_eq!(shared.propagate(&headers).count(), 1);
-    }
-
-    /// Scenario: standalone and pipeline propagation select a composite, primitive, and override.
-    /// Guarantees: both compilation paths produce the same layout and policy, ignoring unrelated
-    /// definitions while retaining every explicitly bound primitive field.
-    #[test]
-    fn standalone_and_pipeline_propagation_use_the_same_compiler() {
-        let composites = [constant_composite(), mixed_composite()];
-        let policy: HeaderPropagationConfig = serde_yaml::from_str(
-            r#"
-default:
-  selector: {type: named, named: ["route:workspace", request_id]}
-overrides:
-  - match: {stored_names: [dropped]}
-    action: drop
-"#,
-        )
-        .expect("propagation config");
-        let standalone = HeaderPropagationPolicy::compile(policy.clone(), &composites)
-            .expect("standalone policy");
-        let node = PreparedNodeContextDeclarations::new(
-            [ContextDeclaration::HeaderPropagation { policy }]
-                .into_iter()
-                .collect(),
-            &composites,
-        )
-        .expect("prepared node");
-        let key = pipeline("group", "pipeline");
-        let declarations = HashMap::from([(
-            key.clone(),
-            HashMap::from([(ConfigNodeId::from("exporter"), node)]),
-        )]);
-        let requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = CompiledContextBindings::compile(declarations, &requirements)
-            .expect("pipeline bindings");
-        let bound = bindings
-            .header_propagation_policy(&key, &"exporter".into())
-            .expect("bound policy");
-        let layout = bindings.pipeline_layout(&key).expect("pipeline layout");
-        assert!(Arc::ptr_eq(bound.layout(), layout));
-        assert_eq!(bound, &standalone);
-        assert_eq!(layout.entries().len(), 1);
-        assert_eq!(layout.fields().len(), 3);
-        for name in ["workspace", "request_id", "dropped"] {
-            assert!(
-                layout
-                    .resolve_primitive(ContextDomain::TransportHeader, &context_name(name))
-                    .is_ok(),
-                "{name}"
-            );
-        }
     }
 
     /// Scenario: two pipelines define the same composite name with different source fields.

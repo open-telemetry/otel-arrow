@@ -1616,9 +1616,8 @@ pub mod test_support {
         use crate::common::kafka::test::{run_on_local_set, with_cluster};
 
         // Engine/telemetry helpers used by the header-propagation unit tests.
-        use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
         use otel_arrow_dfe_engine::local::exporter::EffectHandler;
-        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_header_propagation};
         use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
         // rdkafka helpers used across integration tests.
@@ -7025,8 +7024,8 @@ pub mod test_support {
                 },
                 vec![],
             );
-            let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-                .expect("propagation policy compiles");
+            let policy =
+                test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
                 test_node("hdr-test"),
@@ -7106,7 +7105,7 @@ pub mod test_support {
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             handler.set_propagation_policy(Some(
-                CompiledHeaderPropagationPolicy::compile(policy, &declarations).expect("compiled"),
+                test_pipeline_header_propagation(policy, &declarations).expect("compiled"),
             ));
             let mut transport = TransportHeaders::new();
             transport.push(transport_header("workspace", "X-Workspace", b"acme"));

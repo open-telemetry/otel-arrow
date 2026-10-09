@@ -3001,7 +3001,7 @@ mod test {
             ContextEntryDeclaration, ContextPolicy, ContextScope,
         };
         use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
-        use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
+        use otel_arrow_dfe_engine::testing::test_pipeline_header_propagation;
 
         let context_policy: ContextPolicy = serde_json::from_value(serde_json::json!({
             "entries": {"tenant": [
@@ -3023,7 +3023,7 @@ mod test {
             "default": {"selector": {"type": "named", "named": ["tenant:workspace"]}}
         }))
         .expect("propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &entries).expect("compiled");
+        let policy = test_pipeline_header_propagation(policy, &entries).expect("compiled");
         let mut headers = TransportHeaders::new();
         for name in ["workspace", "customer"] {
             headers.push(TransportHeader::text(

@@ -132,6 +132,70 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
     Ok(())
 }
 
+/// Obtains an exporter's propagation policy through normal test-pipeline compilation.
+///
+/// Uses [`crate::PipelineFactory::compile_initial_context`] with the supplied visible
+/// declarations. No runtime nodes are constructed.
+///
+/// # Errors
+///
+/// Returns configuration or declaration errors from pipeline preparation.
+///
+/// # Panics
+///
+/// Panics if the fixed test pipeline is invalid or compilation constructs a runtime node.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn test_pipeline_header_propagation(
+    policy: otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy,
+    declarations: &[otel_arrow_dfe_config::context_policy::ContextEntryDeclaration],
+) -> Result<crate::context_declaration::CompiledHeaderPropagationPolicy, crate::error::Error> {
+    use otel_arrow_dfe_config::PipelineKey;
+    use otel_arrow_dfe_config::pipeline::{PipelineConfigBuilder, PipelineType};
+    use otel_arrow_dfe_config::policy::ResolvedPolicies;
+    use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
+
+    const EXPORTERS: &[crate::ExporterFactory<()>] = &[crate::ExporterFactory {
+        name: "urn:test:exporter:context",
+        create: |_, _, _, _, _| unreachable!("context compilation must not construct a test node"),
+        context_declarations: None,
+        wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::no_config,
+    }];
+    let pipeline = ResolvedPipelineConfig {
+        pipeline_group_id: "test_group".into(),
+        pipeline_id: "test_pipeline".into(),
+        policies: ResolvedPolicies {
+            context: declarations.to_vec(),
+            transport_headers: Some(TransportHeadersPolicy {
+                header_propagation: policy,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        pipeline: PipelineConfigBuilder::new()
+            .add_exporter("exporter", EXPORTERS[0].name, None)
+            .build(PipelineType::Otap, "test_group", "test_pipeline")
+            .expect("valid test pipeline"),
+        topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
+        role: ResolvedPipelineRole::Regular,
+    };
+    let key = PipelineKey::new(
+        pipeline.pipeline_group_id.clone(),
+        pipeline.pipeline_id.clone(),
+    );
+    let resolved = ResolvedOtelDataflowSpec {
+        engine: Default::default(),
+        pipelines: vec![pipeline],
+    };
+    let prepared =
+        crate::PipelineFactory::new(&[], &[], EXPORTERS, &[]).compile_initial_context(&resolved)?;
+    Ok(prepared
+        .bindings
+        .header_propagation_policy(&key, &"exporter".into())
+        .expect("configured test exporter has a propagation binding")
+        .clone())
+}
+
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the
 /// extension subsystem. Returns the context and the underlying registry.
 #[must_use]

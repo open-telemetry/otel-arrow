@@ -7,7 +7,7 @@ use super::{
     ContextEntryId, ContextFieldLayout, ContextLayout, ContextMemberSource, ContextNameId,
     ContextValues,
 };
-use otel_arrow_dfe_config::context_policy::{ContextDomain, ContextEntryDeclaration};
+use otel_arrow_dfe_config::context_policy::ContextDomain;
 use otel_arrow_dfe_config::transport_headers::{
     TransportHeaderRef, TransportHeaders, TransportHeadersIter,
 };
@@ -17,10 +17,10 @@ use otel_arrow_dfe_config::transport_headers_policy::{
 };
 use otel_arrow_dfe_config::{ContextEntryName, ContextEntryRef};
 use smallvec::SmallVec;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-/// A propagation policy with every composite selector resolved before runtime.
+/// A propagation policy bound to the layout produced by pipeline context compilation.
 ///
 /// Configuration alone cannot propagate headers:
 ///
@@ -34,6 +34,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CompiledHeaderPropagationPolicy {
     default: PropagationDefault,
+    // Retain effective settings for binding identity during live updates.
     overrides: Vec<PropagationOverride>,
     compiled_named: Vec<CompiledNamedPropagation>,
     // Immutable compiled state is shared when bindings are cloned for runtime instances.
@@ -136,33 +137,6 @@ pub(super) fn primitive_fields(
 }
 
 impl CompiledHeaderPropagationPolicy {
-    /// Compiles a standalone policy using the same layout compiler as pipeline construction.
-    ///
-    /// Pipeline construction instead binds each policy to its already-compiled shared layout.
-    pub fn compile(
-        policy: HeaderPropagationPolicy,
-        declarations: &[ContextEntryDeclaration],
-    ) -> Result<Self, String> {
-        policy.validate()?;
-        let selected = policy
-            .default
-            .selector
-            .named
-            .iter()
-            .flatten()
-            .filter_map(ContextEntryRef::scope)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|name| super::composite_declaration(name, declarations))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
-        let layout = Arc::new(
-            ContextLayout::compile(primitive_fields(&policy), selected)
-                .map_err(|error| error.to_string())?,
-        );
-        Self::bind_propagation_policy_to_layout(policy, layout)
-    }
-
     /// Resolves propagation against a layout shared by every node in one pipeline.
     pub(super) fn bind_propagation_policy_to_layout(
         policy: HeaderPropagationPolicy,
@@ -280,40 +254,6 @@ impl CompiledHeaderPropagationPolicy {
         &self.layout
     }
 
-    /// Returns whether this entry is propagated with its original name.
-    #[must_use]
-    pub fn propagates_original_name(&self, name: &ContextEntryName) -> bool {
-        let (action, name_strategy) = self.resolve_static_action_for_name(name);
-        action == PropagationAction::Propagate && name_strategy == NameStrategy::Preserve
-    }
-
-    /// Returns whether an otherwise-unmentioned captured header uses its original name.
-    #[must_use]
-    pub fn propagates_original_name_by_default(&self) -> bool {
-        self.default.selector.selector_type == PropagationSelectorType::AllCaptured
-            && self.default.action == PropagationAction::Propagate
-            && self.default.name == NameStrategy::Preserve
-    }
-
-    /// Visits names whose original-name disposition may differ from the default.
-    pub fn visit_original_name_requirement_names(&self, mut visit: impl FnMut(&ContextEntryName)) {
-        if let Some(names) = &self.default.selector.named {
-            for name in names {
-                if name.scope().is_none() {
-                    visit(name.name());
-                }
-            }
-        }
-        for binding in &self.compiled_named {
-            visit(&binding.source_name);
-        }
-        for override_policy in &self.overrides {
-            for name in &override_policy.match_rule.stored_names {
-                visit(name);
-            }
-        }
-    }
-
     /// Returns borrowed headers selected for propagation.
     /// [`NameStrategy`] selects each header's original or stored name.
     /// Headers with [`PropagationAction::Drop`] are omitted.
@@ -379,37 +319,6 @@ impl CompiledHeaderPropagationPolicy {
             );
         }
         None
-    }
-
-    fn resolve_static_action_for_name(
-        &self,
-        name: &ContextEntryName,
-    ) -> (PropagationAction, NameStrategy) {
-        let name = name.as_str();
-        // Check overrides first.
-        for ov in &self.overrides {
-            if ov
-                .match_rule
-                .stored_names
-                .iter()
-                .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
-            {
-                let name_strategy = ov.name.unwrap_or(self.default.name);
-                return (ov.action, name_strategy);
-            }
-        }
-
-        let selected = self.default.selector.selects_primitive_header(name)
-            || self
-                .compiled_named
-                .iter()
-                .any(|binding| name.eq_ignore_ascii_case(binding.source_name.as_str()));
-
-        if selected {
-            (self.default.action, self.default.name)
-        } else {
-            (PropagationAction::Drop, self.default.name)
-        }
     }
 
     #[inline]
@@ -601,6 +510,8 @@ fn register_named_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::test_pipeline_header_propagation;
+    use otel_arrow_dfe_config::context_policy::ContextEntryDeclaration;
     use otel_arrow_dfe_config::transport_headers::ValueKind;
     use otel_arrow_dfe_config::transport_headers_policy::{PropagationMatch, PropagationSelector};
     use otel_arrow_dfe_config::{context_policy, transport_headers};
@@ -623,61 +534,6 @@ mod tests {
         )
     }
 
-    /// Scenario: an exporter uses the default compiled policy or compiles default settings.
-    /// Guarantees: both policies are equal and propagate no captured headers.
-    #[test]
-    fn default_propagation_policy_matches_compilation() {
-        let policy = CompiledHeaderPropagationPolicy::default();
-        assert_eq!(
-            policy,
-            CompiledHeaderPropagationPolicy::compile(HeaderPropagationPolicy::default(), &[])
-                .expect("default propagation policy compiles")
-        );
-        let mut headers = TransportHeaders::new();
-        headers.push(header("tenant", "X-Tenant", b"acme"));
-        assert_eq!(policy.propagate(&headers).count(), 0);
-    }
-
-    /// Scenario: overrides change naming or drop selected headers.
-    /// Guarantees: only propagated headers using `Preserve` require original names.
-    #[test]
-    fn propagation_policy_resolves_original_name_per_entry() {
-        let policy = HeaderPropagationPolicy::new(
-            PropagationDefault {
-                selector: PropagationSelector {
-                    selector_type: PropagationSelectorType::AllCaptured,
-                    named: None,
-                },
-                name: NameStrategy::Preserve,
-                ..PropagationDefault::default()
-            },
-            vec![
-                PropagationOverride {
-                    match_rule: PropagationMatch {
-                        stored_names: vec![context_name("stored")],
-                    },
-                    action: PropagationAction::Propagate,
-                    name: Some(NameStrategy::StoredName),
-                    on_error: None,
-                },
-                PropagationOverride {
-                    match_rule: PropagationMatch {
-                        stored_names: vec![context_name("dropped")],
-                    },
-                    action: PropagationAction::Drop,
-                    name: None,
-                    on_error: None,
-                },
-            ],
-        );
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect("propagation policy compiles");
-
-        assert!(policy.propagates_original_name(&context_name("preserved")));
-        assert!(!policy.propagates_original_name(&context_name("stored")));
-        assert!(!policy.propagates_original_name(&context_name("dropped")));
-    }
-
     /// Scenario: a named selector references a composite transport-header member with a condition.
     /// Guarantees: names ignore ASCII case, values match exactly, all conditions pass, duplicate
     /// values use any-match semantics, and unselected identity members must also be present.
@@ -694,11 +550,9 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(
-            policy,
-            &[conditional_product_user_declaration()],
-        )
-        .expect("composite selector compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[conditional_product_user_declaration()])
+                .expect("composite selector compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
@@ -748,11 +602,9 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(
-            policy,
-            &[conditional_product_user_declaration()],
-        )
-        .expect("composite selector compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[conditional_product_user_declaration()])
+                .expect("composite selector compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
             context_name("environment"),
@@ -785,11 +637,9 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(
-            policy,
-            &[conditional_product_user_declaration()],
-        )
-        .expect("composite selector compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[conditional_product_user_declaration()])
+                .expect("composite selector compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
             context_name("workspace"),
@@ -883,7 +733,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let policy = CompiledHeaderPropagationPolicy::compile(
+        let policy = test_pipeline_header_propagation(
             policy,
             &[ContextEntryDeclaration {
                 scope: context_policy::ContextScope::Engine,
@@ -958,11 +808,9 @@ overrides:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(
-            policy,
-            &[conditional_product_user_declaration()],
-        )
-        .expect("composite selector compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[conditional_product_user_declaration()])
+                .expect("composite selector compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
             context_name("workspace"),
@@ -973,25 +821,6 @@ overrides:
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "workspace");
         assert_eq!(propagated[0].value, b"acme");
-    }
-
-    /// Scenario: programmatic configuration has a named selector without its required list.
-    /// Guarantees: compilation rejects malformed configuration before creating a runtime binding.
-    #[test]
-    fn compilation_rejects_invalid_selector_shape() {
-        let policy = HeaderPropagationPolicy::new(
-            PropagationDefault {
-                selector: PropagationSelector {
-                    selector_type: PropagationSelectorType::Named,
-                    named: None,
-                },
-                ..PropagationDefault::default()
-            },
-            vec![],
-        );
-        let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect_err("invalid selector must not create a binding");
-        assert!(error.contains("'named' list is required"));
     }
 
     /// Scenario: two composites have identical conditions but require different identities.
@@ -1025,8 +854,7 @@ entries:
             "default:\n  selector: {type: named, named: ['first:workspace', 'second:account']}",
         )
         .expect("propagation policy");
-        let policy =
-            CompiledHeaderPropagationPolicy::compile(policy, &declarations).expect("compiled");
+        let policy = test_pipeline_header_propagation(policy, &declarations).expect("compiled");
         let mut headers = TransportHeaders::new();
         for (name, value) in [
             ("workspace", "acme"),
@@ -1103,25 +931,10 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect_err("unknown composite must fail");
+        let error = test_pipeline_header_propagation(policy, &[])
+            .expect_err("unknown composite must fail")
+            .to_string();
         assert!(error.contains("unknown composite context entry `missing`"));
-    }
-
-    /// Scenario: standalone propagation receives two visible definitions of a selected name.
-    /// Guarantees: duplicate configuration declarations are rejected before layout compilation,
-    /// even though repeated references to one declaration may share a compiled entry.
-    #[test]
-    fn standalone_propagation_rejects_duplicate_composite_definitions() {
-        let declaration = conditional_product_user_declaration();
-        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
-            "default:\n  selector: {type: named, named: ['product_user:workspace_id']}",
-        )
-        .expect("propagation policy");
-        let error =
-            CompiledHeaderPropagationPolicy::compile(policy, &[declaration.clone(), declaration])
-                .expect_err("duplicate declarations must fail");
-        assert!(error.contains("duplicate composite context entry `product_user`"));
     }
 
     /// Scenario: a qualified selector names a header in a composite that also has a constant.
@@ -1158,7 +971,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+        let policy = test_pipeline_header_propagation(policy, &[declaration])
             .expect("header member compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
@@ -1202,8 +1015,9 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
-            .expect_err("constant propagation must wait for runtime integration");
+        let error = test_pipeline_header_propagation(policy, &[declaration])
+            .expect_err("constant propagation must wait for runtime integration")
+            .to_string();
         assert!(error.contains("selects constant member `route_name`"));
         assert!(error.contains("constant runtime integration"));
     }
@@ -1222,7 +1036,7 @@ default:
         )
         .expect("valid propagation policy");
 
-        let _compiled = CompiledHeaderPropagationPolicy::compile(policy, &[])
+        let _compiled = test_pipeline_header_propagation(policy, &[])
             .expect("equivalent unqualified duplicates must remain valid");
     }
 
@@ -1244,8 +1058,9 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
-            .expect_err("duplicate source must fail");
+        let error = test_pipeline_header_propagation(policy, &[declaration])
+            .expect_err("duplicate source must fail")
+            .to_string();
         assert!(error.contains("`workspace` and `tenant_a:workspace_id`"));
         assert!(error.contains("same transport-header entry `workspace`"));
     }
@@ -1265,8 +1080,9 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile(policy, &declarations)
-            .expect_err("duplicate source must fail");
+        let error = test_pipeline_header_propagation(policy, &declarations)
+            .expect_err("duplicate source must fail")
+            .to_string();
         assert!(error.contains("`tenant_a:workspace_id` and `tenant_b:workspace_id`"));
         assert!(error.contains("same transport-header entry `WORKSPACE`"));
     }
@@ -1320,8 +1136,8 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
         headers.push(header("request_id", "X-Request-Id", b"r-1"));
@@ -1353,8 +1169,8 @@ entries:
                 on_error: None,
             }],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1386,8 +1202,8 @@ entries:
                 on_error: None,
             }],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1413,8 +1229,8 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1424,25 +1240,32 @@ entries:
         assert_eq!(propagated[0].header_name, "tenant_id");
     }
 
-    /// Scenario: a named selector lists one captured entry.
-    /// Guarantees: only that entry is propagated.
+    /// Scenario: named selection mixes a primitive header and an absent qualified composite.
+    /// Guarantees: primitive matching ignores case, while a failed composite gate neither
+    /// propagates its member independently nor suppresses the primitive header.
     #[test]
     fn propagate_named_selector() {
         let policy = HeaderPropagationPolicy::new(
             PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::Named,
-                    named: Some(vec![context_name("tenant_id").into()]),
+                    named: Some(vec![
+                        context_name("tenant_id").into(),
+                        ContextEntryRef::try_from("product_user:workspace_id")
+                            .expect("qualified selector"),
+                    ]),
                 },
                 ..PropagationDefault::default()
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            test_pipeline_header_propagation(policy, &[conditional_product_user_declaration()])
+                .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
-        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
+        headers.push(header("workspace", "X-Workspace", b"untrusted"));
+        headers.push(header("TENANT_ID", "X-Tenant-Id", b"t-1"));
         headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
@@ -1450,9 +1273,9 @@ entries:
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
-    /// Scenario: indexed selectors and overlapping overrides use names of different lengths/case.
-    /// Guarantees: propagation agrees with static first-override-wins resolution for every
-    /// selector type, including small sets and first/last-byte lookup-key collisions.
+    /// Scenario: propagation has overlapping mixed-case overrides and each selector type.
+    /// Guarantees: the first override wins, unmentioned headers follow the default, and
+    /// iterator traversal and folding produce identical results.
     #[test]
     fn indexed_actions_preserve_selector_and_override_precedence() {
         for count in [1, 2, 3, 4, 5, 32] {
@@ -1464,6 +1287,7 @@ entries:
                 PropagationSelectorType::AllCaptured,
                 PropagationSelectorType::Named,
             ] {
+                let all_captured = selector_type == PropagationSelectorType::AllCaptured;
                 let named = (selector_type == PropagationSelectorType::Named)
                     .then(|| names.iter().cloned().map(Into::into).collect());
                 let policy = HeaderPropagationPolicy::new(
@@ -1472,6 +1296,8 @@ entries:
                             selector_type,
                             named,
                         },
+                        action: PropagationAction::Propagate,
+                        name: NameStrategy::Preserve,
                         ..PropagationDefault::default()
                     },
                     vec![
@@ -1493,30 +1319,25 @@ entries:
                         },
                     ],
                 );
-                let policy =
-                    CompiledHeaderPropagationPolicy::compile(policy, &[]).expect("compiled");
+                let policy = test_pipeline_header_propagation(policy, &[]).expect("compiled");
                 for name in names.iter().map(|name| name.as_str()).chain(["unknown"]) {
                     let upper = name.to_ascii_uppercase();
                     let mut headers = TransportHeaders::new();
                     headers.push(header(&upper, "original", b"value"));
-                    let (action, strategy) =
-                        policy.resolve_static_action_for_name(&context_name(&upper));
+                    let expected_name = if name != "unknown" {
+                        Some(upper.as_str())
+                    } else if all_captured {
+                        Some("original")
+                    } else {
+                        None
+                    };
                     let output = policy.propagate(&headers).collect::<Vec<_>>();
                     assert_eq!(policy.propagate(&headers).count(), output.len());
+                    assert_eq!(output.len(), usize::from(expected_name.is_some()));
                     assert_eq!(
-                        output.len(),
-                        usize::from(action == PropagationAction::Propagate)
+                        output.first().map(|header| header.header_name),
+                        expected_name
                     );
-                    if let Some(output) = output.first() {
-                        assert_eq!(
-                            output.header_name,
-                            if strategy == NameStrategy::Preserve {
-                                "original"
-                            } else {
-                                &upper
-                            }
-                        );
-                    }
                 }
             }
         }

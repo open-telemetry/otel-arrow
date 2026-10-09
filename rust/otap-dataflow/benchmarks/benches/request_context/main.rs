@@ -20,6 +20,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
     PropagationSelector, PropagationSelectorType,
 };
 use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use otel_arrow_dfe_engine::testing::test_pipeline_header_propagation;
 use rdkafka::message::{Header, Headers, OwnedHeaders};
 use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 
@@ -81,7 +82,7 @@ impl ConsumerCase {
             },
             vec![],
         );
-        Some(HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles"))
+        Some(test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles"))
     }
 
     const fn preserves_original_names(self) -> bool {

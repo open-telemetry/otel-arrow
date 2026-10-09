@@ -3,16 +3,9 @@
 
 //! Logical layouts and projections for context declarations.
 //!
-//! A projection identifies selected values and the enclosing composite whose
-//! presence a consumer must establish. This module compiles and resolves that
-//! model and evaluates atomic presence against existing message context.
-//!
-//! Layout-local IDs and whole-composite projections provide a foundation for
-//! subsequent consumers. They are not offsets into message storage. Presence
-//! is evaluated against existing header and identity storage at read time;
-//! ingestion-time materialization and precomputed hashes are separate work.
-//! Presence plans deduplicate header requirements at compilation and check
-//! conditions before unconditional members, without read-time allocation.
+//! A projection identifies the set of values and composite presence that
+//! are logically evaluated at construction. The current implementation
+//! evaluates conditions when contexts are read, instead.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,12 +32,12 @@ pub struct ContextLayout {
     presence: Box<[EntryPresence]>,
 }
 
-/// One transport-header member or exact-value condition required for presence.
+/// One header requirement, either presence of value equality.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct HeaderRequirement {
-    /// Canonical stored header name, matched using ASCII case-insensitive semantics.
+    /// Canonical stored header name.
     name: ContextEntryName,
-    /// Required bytes for a condition, or `None` when any value proves presence.
+    /// Optional condition bytes.
     value: Option<Box<[u8]>>,
 }
 
@@ -69,6 +62,7 @@ struct EntryPresence {
 }
 
 impl EntryPresence {
+    // Compute presence requirements.
     fn compile(entry: &ContextEntryLayout, fields: &[ContextFieldLayout]) -> Self {
         let mut headers = BTreeMap::<ContextEntryName, BTreeSet<Option<Box<[u8]>>>>::new();
         let mut identities = Vec::new();
@@ -113,6 +107,8 @@ impl EntryPresence {
         }
     }
 
+    // Evaluate presence requirements. Note this is currently called during
+    // projection, while we would prefer it to happen at construction.
     fn is_present(&self, context: &impl ContextValues) -> bool {
         if !self
             .identities
@@ -235,28 +231,28 @@ pub struct ContextEntryLayout {
     pub name: ContextEntryName,
     /// Declaring scope.
     pub scope: ContextScope,
-    /// Members in canonical name order; field sources must be present, while constants always are.
+    /// Members in canonical name order.
     pub members: Box<[ContextMember]>,
-    /// Canonically ordered conditions; all must match for this entry to exist.
+    /// Ordered conditions.
     pub conditions: Box<[ContextCondition]>,
 }
 
-/// Selected context values and their atomic presence gate.
+/// Selected context values and conditions.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ContextProjection {
-    /// One independent primitive field.
+    /// One primitive field.
     Primitive(ContextFieldId),
-    /// All or selected members from a composite entry.
+    /// A composite entry.
     Composite {
-        /// Composite whose members and conditions determine presence.
+        /// Composite that determines presence.
         entry: ContextEntryId,
-        /// Members in canonical member-name order.
+        /// Members in canonical member_name order.
         members: Box<[ContextMember]>,
     },
 }
 
 impl ContextProjection {
-    /// Returns the primitive or composite whose presence gates this projection.
+    /// Returns the primitive or composite that must be present.
     #[must_use]
     pub const fn presence(&self) -> ContextNameId {
         match self {
@@ -281,7 +277,9 @@ fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
-/// Read-only presence information from a message's separate authority domains.
+/// Read-only values from specific domains. NOTE: This is a bridge
+/// while we still have separate Arc<_> holding transport headers.
+/// and authorized fields separately.
 pub trait ContextValues {
     /// Captured or produced transport headers.
     fn transport_headers(&self) -> Option<&TransportHeaders>;
@@ -311,10 +309,7 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
 }
 
 impl ContextLayout {
-    /// Compiles explicit primitive fields and selected composites into one canonical layout.
-    ///
-    /// Member and condition source fields are included automatically. Repeated declarations
-    /// share one entry; conflicting definitions of the same name are rejected.
+    /// Compiles explicit primitive fields and selected composites into a layout.
     pub fn compile<'a>(
         primitive_fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: impl IntoIterator<Item = &'a ContextEntryDeclaration>,
@@ -703,19 +698,27 @@ mod tests {
         }
     }
 
-    /// Scenario: field, member, and declaration input order vary independently.
-    /// Guarantees: IDs and member order stay canonical, with names taking precedence over scopes.
+    /// Scenario: repeated fields and mixed-case member/condition references arrive in varied orders.
+    /// Guarantees: IDs, members, and conditions stay canonical, with names preceding scopes.
     #[test]
     fn input_order_does_not_change_layout() {
-        let mut alpha = entry();
+        let mut alpha = conditional_entry();
+        alpha
+            .definition
+            .0
+            .push(ContextEntryPart::TransportHeaderMatch {
+                name: name("WORKSPACE"),
+                value: "production".to_owned(),
+            });
+        let mut zeta = alpha.clone();
         alpha.scope = ContextScope::Group("group".into());
         alpha.name = name("alpha");
-        let mut zeta = entry();
         zeta.name = name("zeta");
         let declarations = [zeta, alpha];
         let expected = compile(fields(), &declarations);
         for permutation in 0..8 {
             let mut sources = fields();
+            sources.extend(fields());
             let mut entries = declarations.clone();
             if permutation & 1 != 0 {
                 sources.reverse();
@@ -736,7 +739,7 @@ mod tests {
                 .iter()
                 .map(|field| field.name.as_str())
                 .collect::<Vec<_>>(),
-            ["customer", "workspace"]
+            ["WORKSPACE", "customer", "environment", "region"]
         );
         assert_eq!(
             expected
@@ -1001,25 +1004,6 @@ mod tests {
         assert_eq!(projection_sources(&identity), projection_sources(&upper));
     }
 
-    /// Scenario: primitive requirements repeat a header with identical and varied ASCII case.
-    /// Guarantees: one field ID is assigned independently of input order and duplicate count.
-    #[test]
-    fn repeated_transport_fields_are_canonical() {
-        let mut sources = fields();
-        sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
-        sources.push(field("workspace", ContextDomain::TransportHeader));
-        let forward = compile(sources.clone(), &[entry()]);
-        sources.reverse();
-        assert_eq!(forward, compile(sources, &[entry()]));
-        assert_eq!(
-            forward.fields(),
-            [
-                field("WORKSPACE", ContextDomain::TransportHeader),
-                field("customer", ContextDomain::AuthorizedIdentity),
-            ]
-        );
-    }
-
     /// Scenario: several nodes select the same composite with reordered members and conditions.
     /// Guarantees: repeated declarations share one entry, field set, and complete presence plan.
     #[test]
@@ -1051,24 +1035,6 @@ mod tests {
                 store_as: Some(name("another_workspace")),
             });
         assert_compile_error([], &[declaration], "repeats `WORKSPACE`");
-    }
-
-    /// Scenario: member and condition spellings differ in case and their declaration order changes.
-    /// Guarantees: reserved field names, condition gates, and resulting layouts are deterministic.
-    #[test]
-    fn inferred_transport_fields_are_canonical() {
-        let mut declaration = entry();
-        declaration
-            .definition
-            .0
-            .push(ContextEntryPart::TransportHeaderMatch {
-                name: name("WORKSPACE"),
-                value: "production".to_owned(),
-            });
-        let first = compile([], &[declaration.clone()]);
-        declaration.definition.0.reverse();
-        let second = compile([], &[declaration]);
-        assert_eq!(first, second);
     }
 
     /// Scenario: small and larger composites require multiple values from the same header.

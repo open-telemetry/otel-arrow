@@ -23,6 +23,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
     PropagationSelectorType,
 };
 use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use otel_arrow_dfe_engine::testing::test_pipeline_header_propagation;
 use std::hint::black_box;
 
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
@@ -141,7 +142,7 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             },
             vec![],
         );
-        let policy = HeaderPropagationPolicy::compile(unqualified, &[]).expect("unqualified");
+        let policy = test_pipeline_header_propagation(unqualified, &[]).expect("unqualified");
         assert_eq!(policy.propagate(&headers).count(), member_count);
         let _ = group.bench_with_input(
             BenchmarkId::new("unqualified", format!("{member_count}_members")),
@@ -164,7 +165,7 @@ fn small_composite_benchmarks(c: &mut Criterion) {
         ] {
             let (config, declarations) = small_composite_config(member_count, condition);
             let policy =
-                HeaderPropagationPolicy::compile(config, &declarations).expect("composite");
+                test_pipeline_header_propagation(config, &declarations).expect("composite");
             assert_eq!(
                 policy.propagate(&headers).count(),
                 if condition == Some(false) {
@@ -189,7 +190,7 @@ fn small_composite_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-pub(super) fn small_composite_headers(member_count: usize) -> TransportHeaders {
+fn small_composite_headers(member_count: usize) -> TransportHeaders {
     if member_count == 0 {
         return TransportHeaders::new();
     }
@@ -200,7 +201,7 @@ pub(super) fn small_composite_headers(member_count: usize) -> TransportHeaders {
     )
 }
 
-pub(super) fn small_composite_config(
+fn small_composite_config(
     member_count: usize,
     condition: Option<bool>,
 ) -> (HeaderPropagationConfig, Vec<ContextEntryDeclaration>) {
@@ -259,7 +260,7 @@ default:
         header_count - 1
     ))
     .expect("valid unqualified propagation policy");
-    HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
+    test_pipeline_header_propagation(policy, &[]).expect("propagation policy compiles")
 }
 
 fn conditional_policy(
@@ -276,7 +277,7 @@ default:
 "#,
     )
     .expect("valid conditional propagation policy");
-    HeaderPropagationPolicy::compile(
+    test_pipeline_header_propagation(
         policy,
         &[conditional_declaration(
             header_count,
@@ -367,7 +368,7 @@ default:
             },
         });
     }
-    HeaderPropagationPolicy::compile(
+    test_pipeline_header_propagation(
         policy,
         &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -420,7 +421,7 @@ default:
             },
         });
     }
-    HeaderPropagationPolicy::compile(
+    test_pipeline_header_propagation(
         policy,
         &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
