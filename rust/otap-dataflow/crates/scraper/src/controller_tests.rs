@@ -3596,3 +3596,6 @@ fn checkpoint_write_and_retry_wait_apply_pressure() {
 
 #[path = "controller_scalar_tests.rs"]
 mod scalar_tests;
+
+#[path = "controller_snapshot_tests.rs"]
+mod snapshot_tests;

@@ -480,6 +480,9 @@ jobs:
       - name: Run cargo xtask for ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Validate component inventory baseline
+        run: cargo xtask component-inventory --check components-baseline.json
+        working-directory: ./rust/${{ matrix.folder }}
       - name: Validate crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: ./rust/${{ matrix.folder }}
@@ -608,6 +611,8 @@ jobs:
           # Keep one stable required-build namespace; platform and Rust hashes
           # still separate incompatible Linux and Windows artifacts.
           shared-key: build_required
+          # Bump in both Windows cache steps when the synchronized feature set changes.
+          key: windows-features-v2
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: false
@@ -627,7 +632,7 @@ jobs:
         # The complete component inventory is validated by the Linux all-feature
         # build; including its dev-dependencies here would pull Kafka and OpenSSL
         # into this reduced-feature SymCrypt build.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -737,6 +742,51 @@ jobs:
             ./rust/otap-dataflow/target/nextest/ci/metadata.json
           retention-days: 30
           if-no-files-found: ignore
+
+  # Required Linux tests exercise Ring, while required Windows tests exercise
+  # SymCrypt. Test the remaining providers with exactly one crypto backend
+  # selected per process; all-features builds would select Ring first.
+  #
+  # Future crates should consume OTAP's process-wide selected provider and rely
+  # on the normal workspace tests; do not add every crypto-using crate here.
+  # The OAuth extension is included because its JWT adapter directly exercises
+  # provider key loading, RSA signing, and signature verification APIs. Add
+  # another package test only when it similarly calls provider APIs directly.
+  # Add a matrix entry only for a new provider, along with any native library
+  # setup its runner requires.
+  crypto_provider_tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: aws-lc
+            feature: crypto-aws-lc
+            os: ubuntu-latest
+          - provider: openssl
+            feature: crypto-openssl
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          shared-key: build_required
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: false
+      - name: Run OTAP tests with ${{ matrix.provider }}
+        run: cargo test --locked -p otel-arrow-dfe-otap --no-default-features --features ${{ matrix.feature }}
+        working-directory: ./rust/otap-dataflow
+      - name: Run OAuth extension tests with ${{ matrix.provider }}
+        run: cargo test --locked -p otel-arrow-dfe-contrib-extensions --no-default-features --features "oauth2-client-auth,${{ matrix.feature }}"
+        working-directory: ./rust/otap-dataflow
 
   # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
   # This compiles from scratch with coverage instrumentation and runs all tests.
@@ -1285,6 +1335,7 @@ jobs:
       - build_required_windows
       - test_required_linux
       - test_required_windows
+      - crypto_provider_tests
       - fmt_required
       - clippy_required
       - deny_required
@@ -1330,6 +1381,10 @@ jobs:
           fi
           if [[ "${{ needs.test_required_windows.result }}" != "success" ]]; then
             echo "test_required_windows failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.crypto_provider_tests.result }}" != "success" ]]; then
+            echo "crypto_provider_tests failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.fmt_required.result }}" != "success" ]]; then

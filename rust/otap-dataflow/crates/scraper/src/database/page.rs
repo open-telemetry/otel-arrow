@@ -3,7 +3,8 @@
 
 //! Database-neutral cursor and bounded page contracts.
 //!
-//! Scalar and composite positions retain their exact values across delivery
+//! Snapshots carry no source position. Scalar and composite positions retain
+//! their exact values across delivery
 //! and restart. Comparison is explicit and rejects incompatible cursor types.
 
 use super::row::{ColumnMetadata, Row};
@@ -57,21 +58,21 @@ impl fmt::Debug for CompositeCursor {
     }
 }
 
-/// One normalized row paired with the cursor it occupies in the ordered result.
+/// One normalized row paired with its source position or snapshot marker.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CursorRow {
     /// Ordered values matching the page's result metadata.
     pub row: Row,
-    /// Position of this row in the query's required ascending ordering.
+    /// Ordered keyset position, or the no-position marker for a snapshot.
     pub cursor: Cursor,
 }
 
-/// One bounded page fetched after a committed cursor.
+/// One bounded keyset page or complete snapshot result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryPage {
     /// Result columns shared by every row.
     pub columns: Vec<ColumnMetadata>,
-    /// Rows returned by this poll in the query's required ascending ordering.
+    /// Returned rows; keyset modes require ascending cursor order.
     pub rows: Vec<CursorRow>,
 }
 
@@ -87,9 +88,13 @@ impl QueryPage {
 ///
 /// The untagged composite representation preserves version-1 checkpoint bytes.
 /// Scalar values have an explicit `type` tag and cannot be read as composites.
+/// Snapshot mode uses JSON null and never participates in cursor ordering.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Cursor {
+    /// No source position. Encoded as JSON null; the checkpoint revision records
+    /// acknowledged snapshots, not a row offset or a resumable database snapshot.
+    Snapshot,
     /// Timestamp and signed tie-breaker position.
     Composite(CompositeCursor),
     /// Single-column, strictly ordered position.
@@ -108,13 +113,14 @@ impl Cursor {
     pub const fn as_composite(&self) -> Option<&CompositeCursor> {
         match self {
             Self::Composite(value) => Some(value),
-            Self::Scalar(_) => None,
+            Self::Scalar(_) | Self::Snapshot => None,
         }
     }
 
     /// Checks that the position is valid without exposing its values in errors.
     pub fn validate(&self) -> Result<(), super::scalar::CursorError> {
         match self {
+            Self::Snapshot => Ok(()),
             Self::Composite(value) => super::otap::parse_utc_timestamp(&value.timestamp)
                 .map(|_| ())
                 .map_err(|_| super::scalar::CursorError::InvalidTimestamp),

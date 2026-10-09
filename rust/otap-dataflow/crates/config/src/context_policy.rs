@@ -3,7 +3,7 @@
 
 //! Declarative context entry policies.
 
-use crate::context::{ContextEntryName, ContextEntryRef};
+use crate::context::ContextEntryName;
 use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
@@ -98,6 +98,7 @@ impl ContextEntryDefinition {
                 | ContextEntryPart::AuthorizedIdentity { .. } => part
                     .member_name()
                     .expect("value-bearing part has a member name"),
+                ContextEntryPart::Constant { name, .. } => name,
                 ContextEntryPart::TransportHeaderMatch { name, value } => {
                     if !conditions.insert((name, value)) {
                         errors.push(format!(
@@ -114,10 +115,11 @@ impl ContextEntryDefinition {
                     "{path_prefix}[{index}] produces duplicate member name `{name}`"
                 ));
             }
-            if !value_references.insert((part.domain(), part.reference())) {
+            if let (Some(domain), Some(source_name)) = (part.domain(), part.source_name())
+                && !value_references.insert((domain, source_name))
+            {
                 errors.push(format!(
-                    "{path_prefix}[{index}] repeats reference `{}`",
-                    part.reference()
+                    "{path_prefix}[{index}] repeats reference `{source_name}`"
                 ));
             }
         }
@@ -135,18 +137,25 @@ impl ContextEntryDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextEntryPart {
+    /// Includes a configured constant value.
+    Constant {
+        /// Member name within the composite entry.
+        name: ContextEntryName,
+        /// Constant UTF-8 value.
+        value: String,
+    },
     /// Includes values from a transport-header entry.
     TransportHeader {
-        /// Exact source context entry reference.
-        name: ContextEntryRef,
+        /// Exact source context entry name.
+        name: ContextEntryName,
         /// Optional member name within the composite entry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         store_as: Option<ContextEntryName>,
     },
     /// Includes values from a verified authorized-identity entry.
     AuthorizedIdentity {
-        /// Exact source context entry reference.
-        name: ContextEntryRef,
+        /// Exact source context entry name.
+        name: ContextEntryName,
         /// Optional member name within the composite entry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         store_as: Option<ContextEntryName>,
@@ -157,8 +166,8 @@ pub enum ContextEntryPart {
     /// Values compare as exact UTF-8 bytes, and any matching duplicate value
     /// satisfies this condition.
     TransportHeaderMatch {
-        /// Exact source context entry reference.
-        name: ContextEntryRef,
+        /// Exact source context entry name.
+        name: ContextEntryName,
         /// Required text value.
         value: String,
     },
@@ -174,24 +183,26 @@ pub enum ContextDomain {
 }
 
 impl ContextEntryPart {
-    /// Returns the authority domain required by this member or condition.
+    /// Returns the authority domain required by a referenced member or condition.
     #[must_use]
-    pub fn domain(&self) -> ContextDomain {
+    pub fn domain(&self) -> Option<ContextDomain> {
         match self {
             Self::TransportHeader { .. } | Self::TransportHeaderMatch { .. } => {
-                ContextDomain::TransportHeader
+                Some(ContextDomain::TransportHeader)
             }
-            Self::AuthorizedIdentity { .. } => ContextDomain::AuthorizedIdentity,
+            Self::AuthorizedIdentity { .. } => Some(ContextDomain::AuthorizedIdentity),
+            Self::Constant { .. } => None,
         }
     }
 
-    /// Returns the reference of a member or condition.
+    /// Returns the external source name of a member or condition.
     #[must_use]
-    pub fn reference(&self) -> &ContextEntryRef {
+    pub fn source_name(&self) -> Option<&ContextEntryName> {
         match self {
             Self::TransportHeader { name, .. }
             | Self::AuthorizedIdentity { name, .. }
-            | Self::TransportHeaderMatch { name, .. } => name,
+            | Self::TransportHeaderMatch { name, .. } => Some(name),
+            Self::Constant { .. } => None,
         }
     }
 
@@ -201,8 +212,9 @@ impl ContextEntryPart {
         match self {
             Self::TransportHeader { name, store_as }
             | Self::AuthorizedIdentity { name, store_as } => {
-                Some(store_as.as_ref().unwrap_or_else(|| name.name()))
+                Some(store_as.as_ref().unwrap_or(name))
             }
+            Self::Constant { name, .. } => Some(name),
             Self::TransportHeaderMatch { .. } => None,
         }
     }
@@ -226,12 +238,13 @@ impl JsonSchema for ContextEntryPart {
                 "type": {
                     "type": "string",
                     "enum": [
+                        "constant",
                         "transport_header",
                         "authorized_identity",
                         "transport_header_match"
                     ]
                 },
-                "name": generator.subschema_for::<ContextEntryRef>(),
+                "name": generator.subschema_for::<ContextEntryName>(),
                 "store_as": generator.subschema_for::<ContextEntryName>(),
                 "value": {
                     "type": "string"
@@ -241,12 +254,20 @@ impl JsonSchema for ContextEntryPart {
             "additionalProperties": false,
             "x-kubernetes-validations": [
                 {
-                    "rule": "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)",
-                    "message": "`value` is required for transport_header_match and forbidden for value-bearing members"
+                    "rule": "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)",
+                    "message": "`value` is required for constant and transport_header_match and forbidden for referenced value-bearing members"
                 },
                 {
-                    "rule": "self.type != 'transport_header_match' || !has(self.store_as)",
-                    "message": "`store_as` is forbidden for transport_header_match"
+                    "rule": "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)",
+                    "message": "`store_as` is allowed only for transport_header and authorized_identity"
+                },
+                {
+                    "rule": "self.name.matches('^[!-9;-~]+$')",
+                    "message": "`name` must be a single printable ASCII name without `:`"
+                },
+                {
+                    "rule": "!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')",
+                    "message": "`store_as` must be a single printable ASCII name without `:`"
                 }
             ]
         })
@@ -280,7 +301,7 @@ mod tests {
     use super::*;
 
     /// Scenario: one composite entry mixes authorized-identity and transport-header members.
-    /// Guarantees: both supported variants, aliases, scoped names, and order are preserved.
+    /// Guarantees: both supported variants, aliases, source names, and order are preserved.
     #[test]
     fn parses_composite_entry_in_order() {
         let policy: ContextPolicy = serde_yaml::from_str(
@@ -291,7 +312,7 @@ entries:
       name: customer
       store_as: customer_id
     - type: transport_header
-      name: captured:workspace
+      name: workspace
 "#,
         )
         .expect("valid context policy");
@@ -308,9 +329,72 @@ entries:
         assert!(matches!(
             &parts[1],
             ContextEntryPart::TransportHeader { name, .. }
-                if name.scope().map(ContextEntryName::as_str) == Some("captured")
-                    && name.name().as_str() == "workspace"
+                if name.as_str() == "workspace"
         ));
+    }
+
+    /// Scenario: composite parts configure qualified source or stored member names.
+    /// Guarantees: every ContextEntryName field is rejected before semantic layout validation.
+    #[test]
+    fn rejects_qualified_part_and_stored_member_names() {
+        for yaml in [
+            "entries: {tenant: [{type: constant, name: 'scope:id', value: value}]}",
+            "entries: {tenant: [{type: transport_header, name: 'scope:id'}]}",
+            "entries: {tenant: [{type: transport_header, name: id, store_as: 'scope:id'}]}",
+            "entries: {tenant: [{type: authorized_identity, name: 'scope:id'}]}",
+            "entries: {tenant: [{type: authorized_identity, name: id, store_as: 'scope:id'}]}",
+            "entries: {tenant: [{type: transport_header_match, name: 'scope:id', value: value}]}",
+        ] {
+            assert!(
+                serde_yaml::from_str::<ContextPolicy>(yaml).is_err(),
+                "{yaml}"
+            );
+        }
+    }
+
+    /// Scenario: a composite entry includes a configured constant member.
+    /// Guarantees: the member name and UTF-8 value are retained without an external reference.
+    #[test]
+    fn parses_constant_member() {
+        let policy: ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  by_apikey:
+    - type: constant
+      name: http.header_scheme
+      value: ApiKey
+    - type: authorized_identity
+      name: x-api-key
+"#,
+        )
+        .expect("valid context policy");
+
+        let name = ContextEntryName::try_from("by_apikey").expect("valid name");
+        let parts = &policy.entries.get(&name).expect("entry is present").0;
+        assert!(matches!(
+            &parts[0],
+            ContextEntryPart::Constant { name, value }
+                if name.as_str() == "http.header_scheme" && value == "ApiKey"
+        ));
+        assert!(parts[0].domain().is_none());
+        assert!(parts[0].source_name().is_none());
+        assert_eq!(
+            parts[0].member_name().map(ContextEntryName::as_str),
+            Some("http.header_scheme")
+        );
+        assert!(policy.validation_errors("context").is_empty());
+    }
+
+    /// Scenario: a constant member has an empty configured value.
+    /// Guarantees: empty UTF-8 constants remain valid value-bearing members.
+    #[test]
+    fn accepts_empty_constant_value() {
+        let policy = serde_yaml::from_str::<ContextPolicy>(
+            "entries: {route: [{type: constant, name: route_name, value: ''}]}",
+        )
+        .expect("valid constant");
+
+        assert!(policy.validation_errors("context").is_empty());
     }
 
     /// Scenario: a composite entry includes an exact transport-header condition.
@@ -335,7 +419,7 @@ entries:
         assert!(matches!(
             &parts[1],
             ContextEntryPart::TransportHeaderMatch { name, value }
-                if name.name().as_str() == "environment" && value == "production"
+                if name.as_str() == "environment" && value == "production"
         ));
         assert!(policy.validation_errors("context").is_empty());
     }
@@ -376,8 +460,9 @@ entries:
     #[test]
     fn rejects_duplicate_output_member_names() {
         for yaml in [
-            "entries: {tenant: [{type: transport_header, name: first:id}, {type: authorized_identity, name: second:id}]}",
+            "entries: {tenant: [{type: transport_header, name: id}, {type: authorized_identity, name: id}]}",
             "entries: {tenant: [{type: transport_header, name: first, store_as: id}, {type: authorized_identity, name: second, store_as: id}]}",
+            "entries: {tenant: [{type: constant, name: id, value: first}, {type: transport_header, name: id}]}",
         ] {
             let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
             assert!(!policy.validation_errors("context").is_empty(), "{yaml}");
@@ -438,6 +523,8 @@ entries:
         for yaml in [
             "entries: {tenant: [{type: transport_header, name: id, value: prod}]}",
             "entries: {tenant: [{type: authorized_identity, name: id, value: prod}]}",
+            "entries: {tenant: [{type: constant, name: id}]}",
+            "entries: {tenant: [{type: constant, name: id, value: value, store_as: other}]}",
             "entries: {tenant: [{type: transport_header, name: id, alias: other}]}",
             "entries: {tenant: [{type: transport_header_match, name: id}]}",
             "entries: {tenant: [{type: transport_header_match, name: id, store_as: other, value: prod}]}",
@@ -472,6 +559,7 @@ entries:
         let rendered = schema.to_string();
 
         for variant in [
+            "constant",
             "transport_header",
             "authorized_identity",
             "transport_header_match",
@@ -488,14 +576,19 @@ entries:
         let validations = schema["x-kubernetes-validations"]
             .as_array()
             .expect("variant validation");
-        assert_eq!(validations.len(), 2);
+        assert_eq!(validations.len(), 4);
         assert_eq!(
             validations[0]["rule"],
-            "self.type == 'transport_header_match' ? has(self.value) : !has(self.value)"
+            "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)"
         );
         assert_eq!(
             validations[1]["rule"],
-            "self.type != 'transport_header_match' || !has(self.store_as)"
+            "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)"
+        );
+        assert_eq!(validations[2]["rule"], "self.name.matches('^[!-9;-~]+$')");
+        assert_eq!(
+            validations[3]["rule"],
+            "!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')"
         );
     }
 }
