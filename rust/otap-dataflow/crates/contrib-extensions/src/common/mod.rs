@@ -7,6 +7,7 @@
     feature = "azure-identity-auth",
     feature = "oauth2-client-auth",
     feature = "flat-file-api-key-auth",
+    feature = "flat-file-sasl-auth",
     feature = "flat-file-user-pass-auth"
 ))]
 pub mod background_refresh;

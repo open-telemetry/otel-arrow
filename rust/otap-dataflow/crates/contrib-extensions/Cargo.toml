@@ -59,8 +59,8 @@ contrib-extensions = [
 azure-identity-auth = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Flat file API key authentication extension (ApiKeyProvider capability).
 flat-file-api-key-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
-# Startup-only flat file SASL authentication extension (SaslCredentialProvider capability).
-flat-file-sasl-auth = ["dep:secrecy"]
+# Flat file SASL authentication extension (SaslCredentialProvider capability).
+flat-file-sasl-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
 flat-file-user-pass-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer

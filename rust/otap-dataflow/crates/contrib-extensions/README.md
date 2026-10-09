@@ -30,6 +30,10 @@ Each extension's README is the authoritative configuration reference for that
 extension. Nodes that bind an extension document only the binding and how they
 use the capability, and link here for the provider's own options.
 
+Flat File SASL Auth refreshes a local password file while keeping its username
+inline in configuration. Provider refresh does not automatically rotate live
+Kafka connections; see its usage reference for acquisition and retry behavior.
+
 Extensions are enabled through individual feature gates or the aggregate
 `contrib-extensions` feature gate. An extension documented as `Experimental`,
 `Alpha`, or `Draft` has no stable compatibility guarantee yet, and its behavior
