@@ -1,9 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared ACK-driven scalar and composite watermark receiver core.
+//! Shared ACK-driven snapshot, scalar, and composite receiver core.
 //!
-//! Delivery is at least once. A page is emitted with a unique batch ID, and the
+//! Keyset delivery is at least once subject to source retention. Snapshots are
+//! periodic full observations; retries query current data, not a stored result.
+//! A page is emitted with a unique batch ID, and the
 //! durable cursor advances only after a matching ACK is followed by a
 //! successful checkpoint write. A retryable NACK replays from the durable cursor
 //! after a fixed backoff; a permanent NACK pauses this source by default or
@@ -288,6 +290,7 @@ struct ReceiverState {
     next_batch_id: u64,
     next_poll: Instant,
     draining: bool,
+    source_paused: bool,
     rejection: Option<RejectionState>,
     catch_up: CatchUpConfig,
     cycle: Option<PollCycle>,
@@ -302,6 +305,10 @@ enum ProgressError {
 }
 
 fn ensure_cursor_advanced(committed: &Cursor, candidate: &Cursor) -> Result<(), ProgressError> {
+    // Snapshots have no row ordering; only matching no-position markers are valid.
+    if matches!((committed, candidate), (Cursor::Snapshot, Cursor::Snapshot)) {
+        return Ok(());
+    }
     if candidate.compare(committed)? != std::cmp::Ordering::Greater {
         return Err(ProgressError::NonAdvancingCursor);
     }
@@ -320,6 +327,13 @@ fn ensure_page_advanced(
     Ok(())
 }
 
+fn should_pause_encoding_error(error: &crate::database::OtlpMappingError) -> bool {
+    matches!(
+        error,
+        crate::database::OtlpMappingError::SnapshotByteLimit { .. }
+    )
+}
+
 impl ReceiverState {
     fn new(checkpoint: CheckpointState, now: Instant, catch_up: CatchUpConfig) -> Self {
         Self {
@@ -329,6 +343,7 @@ impl ReceiverState {
             next_batch_id: 1,
             next_poll: now,
             draining: false,
+            source_paused: false,
             rejection: None,
             catch_up,
             cycle: None,
@@ -340,7 +355,13 @@ impl ReceiverState {
     /// At most one page is in flight per source, so a pending ACK/NACK blocks
     /// the next poll and prevents overlapping database work.
     fn can_poll(&self) -> bool {
-        !self.draining && self.pending.is_none() && !self.rejection_paused()
+        !self.draining && !self.source_paused && self.pending.is_none() && !self.rejection_paused()
+    }
+
+    fn pause_source(&mut self) {
+        self.pending = None;
+        self.cycle = None;
+        self.source_paused = true;
     }
 
     fn rejection_paused(&self) -> bool {
@@ -379,6 +400,11 @@ impl ReceiverState {
     }
 
     fn can_continue_cycle(&self, now: Instant) -> bool {
+        // Re-executing a snapshot immediately would emit the same full result
+        // repeatedly rather than make keyset progress. Always cool down.
+        if matches!(self.committed, Cursor::Snapshot) {
+            return false;
+        }
         self.cycle.as_ref().is_some_and(|cycle| {
             cycle.pages_started < self.catch_up.max_pages
                 && now.saturating_duration_since(cycle.started) < self.catch_up.max_duration
@@ -573,7 +599,7 @@ where
         let mut consecutive_checkpoint_failures = 0_u32;
         let mut deferred_feedback = None;
 
-        loop {
+        'receiver: loop {
             if let Some(metrics) = metrics.as_mut() {
                 metrics.rejection_paused.set(u64::from(state.rejection_paused()));
             }
@@ -799,6 +825,18 @@ where
                                 if let Some(metrics) = metrics.as_mut() {
                                     metrics.query_failures.add(1);
                                 }
+                                if A::should_pause_source(&error) {
+                                    state.pause_source();
+                                    admission.interrupt_cycle();
+                                    encoder.release_scratch();
+                                    otel_warn!(
+                                        "database_receiver.source_paused",
+                                        source_id = source_id.as_str(),
+                                        error = %error,
+                                        message = "Database query exceeded a source-local bound; source paused with checkpoint unchanged. Repair the query or limits and restart this source to resume"
+                                    );
+                                    continue 'receiver;
+                                }
                                 database_retry.failed::<A>(
                                     error, "execute", &source_id, &effect_handler,
                                 )?;
@@ -855,6 +893,18 @@ where
                             continue;
                         }
                         Err(error) => {
+                            if should_pause_encoding_error(&error) {
+                                state.pause_source();
+                                admission.interrupt_cycle();
+                                encoder.release_scratch();
+                                otel_warn!(
+                                    "database_receiver.source_paused",
+                                    source_id = source_id.as_str(),
+                                    error = %error,
+                                    message = "Snapshot encoding exceeded a source-local bound; source paused with checkpoint unchanged. Repair the query or limits and restart this source to resume"
+                                );
+                                continue 'receiver;
+                            }
                             // An oversized first row or an invalid mapping
                             // cannot be skipped without losing data.
                             return Err(receiver_error(

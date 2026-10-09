@@ -10,24 +10,29 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Usage: $0 <version> [--push]"
-    echo "  version: Release version (e.g., 0.40.0)"
+    echo "Usage: $0 <branch-name> <release-summary> [--push]"
+    echo "  branch-name: Release branch under otelbot/release-*"
+    echo "  release-summary: Human-readable target and version summary"
     echo "  --push: Push the branch to origin (optional)"
     exit 1
 }
 
-if [ $# -lt 1 ]; then
+if [ $# -lt 2 ]; then
     usage
 fi
 
-VERSION="$1"
+BRANCH_NAME="$1"
+RELEASE_SUMMARY="$2"
 PUSH_BRANCH=false
 
-if [ $# -eq 2 ] && [ "$2" = "--push" ]; then
-    PUSH_BRANCH=true
+if [[ "$BRANCH_NAME" != otelbot/release-* ]]; then
+    echo -e "${RED}Error: release branch must start with otelbot/release-${NC}"
+    exit 1
 fi
 
-BRANCH_NAME="otelbot/release-v$VERSION"
+if [ $# -eq 3 ] && [ "$3" = "--push" ]; then
+    PUSH_BRANCH=true
+fi
 
 echo -e "${YELLOW}Creating release branch and committing changes...${NC}"
 
@@ -63,12 +68,9 @@ fi
 git add .
 
 # Commit changes
-git commit -m "Prepare release v$VERSION
+git commit -m "chore(release): Prepare ${RELEASE_SUMMARY}
 
-- Render chloggen entries into go/CHANGELOG.md and rust/otap-dataflow/CHANGELOG.md
-- Bump selected Rust workspace crate versions to v$VERSION
-
-This commit prepares the repository for release v$VERSION."
+Prepare the selected component releases from the reviewed release plan."
 
 echo -e "${GREEN}✓ Committed changes to branch $BRANCH_NAME${NC}"
 
