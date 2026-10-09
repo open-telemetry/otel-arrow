@@ -16,7 +16,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     Exemplar as OtlpExemplar, ExponentialHistogramDataPoint, HistogramDataPoint, NumberDataPoint,
     ScopeMetrics, exemplar, metric, number_data_point,
 };
-use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+use otel_arrow_dfe_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExemplarView, ExponentialHistogramDataPointView,
     ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
@@ -45,8 +45,8 @@ use attributes::{
 };
 use exemplars::map_exemplars;
 use histograms::{
-    MAX_EXPONENTIAL_SCALE, MIN_EXPONENTIAL_SCALE, bucket_sum, downscale_if_required,
-    explicit_histogram, sparse_buckets, valid_explicit_histogram,
+    ExplicitHistogram, MAX_EXPONENTIAL_SCALE, MIN_EXPONENTIAL_SCALE, bucket_sum,
+    downscale_if_required, explicit_histogram, sparse_buckets,
 };
 
 pub use config::{Config, ScopeAttributes};
@@ -179,6 +179,11 @@ where
         cardinality_overflows: Vec::new(),
     };
     let mut publication_indexes = HashMap::new();
+    let mut state = PublicationState {
+        outcome: &mut outcome,
+        publication_indexes: &mut publication_indexes,
+        current_time_bucket,
+    };
 
     for resource_metrics in metrics.resources() {
         let mut resource = match resource_metrics.resource() {
@@ -187,27 +192,35 @@ where
         };
 
         for scope_metrics in resource_metrics.scopes() {
-            map_scope(
-                &scope_metrics,
-                &mut resource,
-                config,
-                current_time_bucket,
-                &mut outcome,
-                &mut publication_indexes,
-            )?;
+            map_scope(&scope_metrics, &mut resource, config, &mut state)?;
         }
     }
 
     Ok(outcome)
 }
 
+/// Mutable bookkeeping threaded through a scope's point mapping: the outcome being built, the
+/// per-account publication index, and the time bucket shared by every point in the scope.
+struct PublicationState<'a> {
+    outcome: &'a mut MappingOutcome,
+    publication_indexes: &'a mut HashMap<String, usize>,
+    current_time_bucket: u64,
+}
+
+/// The parts of a scope's mapping context shared by every data point within it, grouped to
+/// keep point-mapping function signatures short.
+struct ScopeContext<'a> {
+    resource: &'a ResourceContext,
+    namespace: &'a str,
+    dimensions: &'a [super::encoder::Dimension],
+    config: &'a Config,
+}
+
 fn map_scope<S>(
     scope_metrics: &S,
     resource: &mut ResourceContext,
     config: &Config,
-    current_time_bucket: u64,
-    outcome: &mut MappingOutcome,
-    publication_indexes: &mut HashMap<String, usize>,
+    state: &mut PublicationState<'_>,
 ) -> Result<(), MappingError>
 where
     S: ScopeMetricsView,
@@ -229,119 +242,85 @@ where
         config.honor_resource_attributes,
         config.honor_scope_attributes,
     );
+    let scope = ScopeContext {
+        resource: &*resource,
+        namespace: &scope_namespace,
+        dimensions: &scope_dimensions,
+        config,
+    };
 
     for otlp_metric in scope_metrics.metrics() {
         let name = str::from_utf8(otlp_metric.name())?;
         let Some(data) = otlp_metric.data() else {
-            outcome.rejected_data_points += 1;
+            state.outcome.rejected_data_points += 1;
             continue;
         };
 
         match data.value_type() {
             DataType::Gauge => {
                 let Some(gauge) = data.as_gauge() else {
-                    outcome.rejected_data_points += 1;
+                    state.outcome.rejected_data_points += 1;
                     continue;
                 };
                 for point in gauge.data_points() {
                     record_mapped_metric(
-                        outcome,
-                        publication_indexes,
-                        current_time_bucket,
-                        map_number_point(
-                            name,
-                            &point,
-                            resource,
-                            &scope_namespace,
-                            &scope_dimensions,
-                            config,
-                            METRIC_TYPE_GAUGE,
-                        )?,
+                        state,
+                        map_number_point(name, &point, &scope, METRIC_TYPE_GAUGE)?,
                     );
                 }
             }
             DataType::Sum => {
                 let Some(sum) = data.as_sum() else {
-                    outcome.rejected_data_points += 1;
+                    state.outcome.rejected_data_points += 1;
                     continue;
                 };
                 let metric_type =
                     sum_metric_type(sum.is_monotonic(), sum.aggregation_temporality());
                 let Some(metric_type) = metric_type else {
-                    outcome.rejected_data_points += sum.data_points().count();
+                    state.outcome.rejected_data_points += sum.data_points().count();
                     continue;
                 };
                 for point in sum.data_points() {
                     record_mapped_metric(
-                        outcome,
-                        publication_indexes,
-                        current_time_bucket,
-                        map_number_point(
-                            name,
-                            &point,
-                            resource,
-                            &scope_namespace,
-                            &scope_dimensions,
-                            config,
-                            metric_type,
-                        )?,
+                        state,
+                        map_number_point(name, &point, &scope, metric_type)?,
                     );
                 }
             }
             DataType::Histogram => {
                 let Some(histogram) = data.as_histogram() else {
-                    outcome.rejected_data_points += 1;
+                    state.outcome.rejected_data_points += 1;
                     continue;
                 };
                 let metric_type =
                     explicit_histogram_metric_type(histogram.aggregation_temporality());
                 for point in histogram.data_points() {
                     record_mapped_metric(
-                        outcome,
-                        publication_indexes,
-                        current_time_bucket,
-                        map_histogram_point(
-                            name,
-                            &point,
-                            resource,
-                            &scope_namespace,
-                            &scope_dimensions,
-                            config,
-                            metric_type,
-                        )?,
+                        state,
+                        map_histogram_point(name, &point, &scope, metric_type)?,
                     );
                 }
             }
             DataType::ExponentialHistogram => {
                 let Some(histogram) = data.as_exponential_histogram() else {
-                    outcome.rejected_data_points += 1;
+                    state.outcome.rejected_data_points += 1;
                     continue;
                 };
                 let metric_type =
                     exponential_histogram_metric_type(histogram.aggregation_temporality());
                 for point in histogram.data_points() {
                     record_mapped_metric(
-                        outcome,
-                        publication_indexes,
-                        current_time_bucket,
-                        map_exponential_histogram_point(
-                            name,
-                            &point,
-                            resource,
-                            &scope_namespace,
-                            &scope_dimensions,
-                            config,
-                            metric_type,
-                        )?,
+                        state,
+                        map_exponential_histogram_point(name, &point, &scope, metric_type)?,
                     );
                 }
             }
             DataType::Summary => {
                 let Some(summary) = data.as_summary() else {
-                    outcome.rejected_data_points += 1;
+                    state.outcome.rejected_data_points += 1;
                     continue;
                 };
-                outcome.rejected_data_points += summary.data_points().count();
+                state.outcome.rejected_data_points += summary.data_points().count();
             }
         }
     }
@@ -351,10 +330,7 @@ where
 fn map_number_point<P>(
     name: &str,
     point: &P,
-    resource: &ResourceContext,
-    scope_namespace: &str,
-    scope_dimensions: &[super::encoder::Dimension],
-    config: &Config,
+    scope: &ScopeContext<'_>,
     metric_type: u32,
 ) -> Result<MapPointResult, MappingError>
 where
@@ -369,25 +345,6 @@ where
     if matches!(value, Value::Integer(value) if value < 0) {
         return Ok(MapPointResult::rejected(None));
     }
-    let valid_name = valid_metric_name(name);
-    let (context, overflow) = point_context(
-        point.attributes(),
-        resource,
-        scope_namespace,
-        scope_dimensions,
-        config,
-        valid_name.then_some(name),
-    )?;
-    let Some(context) = context else {
-        return Ok(MapPointResult::rejected(overflow));
-    };
-    let mut sampling_type = SUM | COUNT | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
-    let exemplars = map_point_exemplars(
-        config,
-        point.exemplars(),
-        point.time_unix_nano(),
-        &mut sampling_type,
-    )?;
     let values = match value {
         Value::Double(value) => MetricValues::Double(NumericValues {
             min: None,
@@ -406,58 +363,21 @@ where
             histogram: None,
         }),
     };
-
-    let Some(time_bucket) = unix_nanos_to_dotnet_seconds_ceil(point.time_unix_nano()) else {
-        return Ok(MapPointResult::rejected(overflow));
-    };
-    Ok(MapPointResult::mapped(
-        context.monitoring_account,
-        Metric {
-            time_bucket: time_bucket as i64,
-            namespace: context.namespace,
-            name: name.to_string(),
-            dimensions: context.dimensions,
-            sampling_type,
-            values,
-            exemplars,
-        },
-        overflow,
-    ))
+    let sampling_type = SUM | COUNT | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
+    map_point(
+        name,
+        point.attributes(),
+        point.exemplars(),
+        point.time_unix_nano(),
+        scope,
+        sampling_type,
+        values,
+    )
 }
 
-fn map_histogram_point<P>(
-    name: &str,
-    point: &P,
-    resource: &ResourceContext,
-    scope_namespace: &str,
-    scope_dimensions: &[super::encoder::Dimension],
-    config: &Config,
-    metric_type: u32,
-) -> Result<MapPointResult, MappingError>
-where
-    P: HistogramDataPointView,
-{
-    if point.flags().no_recorded_value() || !valid_explicit_histogram(point) {
-        return Ok(MapPointResult::rejected(None));
-    }
-    let Some(sum) = point.sum() else {
-        return Ok(MapPointResult::rejected(None));
-    };
-    let min = point.min();
-    let max = point.max();
-    let valid_name = valid_metric_name(name);
-    let (context, overflow) = point_context(
-        point.attributes(),
-        resource,
-        scope_namespace,
-        scope_dimensions,
-        config,
-        valid_name.then_some(name),
-    )?;
-    let Some(context) = context else {
-        return Ok(MapPointResult::rejected(overflow));
-    };
-    let histogram = explicit_histogram(point);
+/// Builds the sampling-type flags shared by explicit and exponential histograms, adding MIN/MAX
+/// when the point reports those optional aggregates.
+fn histogram_sampling_type(metric_type: u32, min: Option<f64>, max: Option<f64>) -> u32 {
     let mut sampling_type = SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
     if min.is_some() {
         sampling_type |= MIN;
@@ -465,45 +385,54 @@ where
     if max.is_some() {
         sampling_type |= MAX;
     }
-    let exemplars = map_point_exemplars(
-        config,
+    sampling_type
+}
+
+fn map_histogram_point<P>(
+    name: &str,
+    point: &P,
+    scope: &ScopeContext<'_>,
+    metric_type: u32,
+) -> Result<MapPointResult, MappingError>
+where
+    P: HistogramDataPointView,
+{
+    if point.flags().no_recorded_value() {
+        return Ok(MapPointResult::rejected(None));
+    }
+    let histogram = match explicit_histogram(point) {
+        ExplicitHistogram::Invalid => return Ok(MapPointResult::rejected(None)),
+        ExplicitHistogram::Empty => None,
+        ExplicitHistogram::Buckets(histogram) => Some(histogram),
+    };
+    let Some(sum) = point.sum() else {
+        return Ok(MapPointResult::rejected(None));
+    };
+    let min = point.min();
+    let max = point.max();
+    let sampling_type = histogram_sampling_type(metric_type, min, max);
+    map_point(
+        name,
+        point.attributes(),
         point.exemplars(),
         point.time_unix_nano(),
-        &mut sampling_type,
-    )?;
-
-    let Some(time_bucket) = unix_nanos_to_dotnet_seconds_ceil(point.time_unix_nano()) else {
-        return Ok(MapPointResult::rejected(overflow));
-    };
-    Ok(MapPointResult::mapped(
-        context.monitoring_account,
-        Metric {
-            time_bucket: time_bucket as i64,
-            namespace: context.namespace,
-            name: name.to_string(),
-            dimensions: context.dimensions,
-            sampling_type,
-            values: MetricValues::Double(NumericValues {
-                min,
-                max,
-                sum: Some(sum),
-                count: Some(point.count()),
-                milliseconds: None,
-                histogram,
-            }),
-            exemplars,
-        },
-        overflow,
-    ))
+        scope,
+        sampling_type,
+        MetricValues::Double(NumericValues {
+            min,
+            max,
+            sum: Some(sum),
+            count: Some(point.count()),
+            milliseconds: None,
+            histogram,
+        }),
+    )
 }
 
 fn map_exponential_histogram_point<P>(
     name: &str,
     point: &P,
-    resource: &ResourceContext,
-    scope_namespace: &str,
-    scope_dimensions: &[super::encoder::Dimension],
-    config: &Config,
+    scope: &ScopeContext<'_>,
     metric_type: u32,
 ) -> Result<MapPointResult, MappingError>
 where
@@ -546,33 +475,58 @@ where
     let Some(scale) = i8::try_from(scale).ok() else {
         return Ok(MapPointResult::rejected(None));
     };
-    let valid_name = valid_metric_name(name);
-    let (context, overflow) = point_context(
+    let sampling_type = histogram_sampling_type(metric_type, min, max);
+    map_point(
+        name,
         point.attributes(),
-        resource,
-        scope_namespace,
-        scope_dimensions,
-        config,
-        valid_name.then_some(name),
-    )?;
+        point.exemplars(),
+        point.time_unix_nano(),
+        scope,
+        sampling_type,
+        MetricValues::Double(NumericValues {
+            min,
+            max,
+            sum: Some(sum),
+            count: Some(point.count()),
+            milliseconds: None,
+            histogram: Some(MetricHistogram::Exponential(
+                super::encoder::ExponentialHistogram {
+                    scale,
+                    zero_count: point.zero_count(),
+                    negative,
+                    positive,
+                },
+            )),
+        }),
+    )
+}
+
+/// Resolves the point's account/namespace/dimension context, exemplars, and Geneva time
+/// bucket, then builds the mapped-point result shared by every data-point kind. Rejects the
+/// point early (still reporting any cardinality-overflow diagnostic) when the context or time
+/// bucket cannot be resolved.
+fn map_point<A, I, E>(
+    name: &str,
+    attributes: impl IntoIterator<Item = A>,
+    exemplars: I,
+    time_unix_nano: u64,
+    scope: &ScopeContext<'_>,
+    mut sampling_type: u32,
+    values: MetricValues,
+) -> Result<MapPointResult, MappingError>
+where
+    A: AttributeView,
+    I: IntoIterator<Item = E>,
+    E: ExemplarView,
+{
+    let valid_name = valid_metric_name(name);
+    let (context, overflow) = point_context(attributes, scope, valid_name.then_some(name))?;
     let Some(context) = context else {
         return Ok(MapPointResult::rejected(overflow));
     };
-    let mut sampling_type = SUM | COUNT | HISTOGRAM | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
-    if min.is_some() {
-        sampling_type |= MIN;
-    }
-    if max.is_some() {
-        sampling_type |= MAX;
-    }
-    let exemplars = map_point_exemplars(
-        config,
-        point.exemplars(),
-        point.time_unix_nano(),
-        &mut sampling_type,
-    )?;
-
-    let Some(time_bucket) = unix_nanos_to_dotnet_seconds_ceil(point.time_unix_nano()) else {
+    let exemplars =
+        map_point_exemplars(scope.config, exemplars, time_unix_nano, &mut sampling_type)?;
+    let Some(time_bucket) = unix_nanos_to_dotnet_seconds_ceil(time_unix_nano) else {
         return Ok(MapPointResult::rejected(overflow));
     };
     Ok(MapPointResult::mapped(
@@ -583,56 +537,29 @@ where
             name: name.to_string(),
             dimensions: context.dimensions,
             sampling_type,
-            values: MetricValues::Double(NumericValues {
-                min,
-                max,
-                sum: Some(sum),
-                count: Some(point.count()),
-                milliseconds: None,
-                histogram: Some(MetricHistogram::Exponential(
-                    super::encoder::ExponentialHistogram {
-                        scale,
-                        zero_count: point.zero_count(),
-                        negative,
-                        positive,
-                    },
-                )),
-            }),
+            values,
             exemplars,
         },
         overflow,
     ))
 }
 
-fn record_mapped_metric(
-    outcome: &mut MappingOutcome,
-    publication_indexes: &mut HashMap<String, usize>,
-    current_time_bucket: u64,
-    result: MapPointResult,
-) {
+fn record_mapped_metric(state: &mut PublicationState<'_>, result: MapPointResult) {
     if let Some(overflow) = result.overflow {
-        outcome.cardinality_overflows.push(overflow);
+        state.outcome.cardinality_overflows.push(overflow);
     }
     let Some((monitoring_account, metric)) = result.metric else {
-        outcome.rejected_data_points += 1;
+        state.outcome.rejected_data_points += 1;
         return;
     };
-    if !add_metric(
-        outcome,
-        publication_indexes,
-        monitoring_account,
-        current_time_bucket,
-        metric,
-    ) {
-        outcome.rejected_data_points += 1;
+    if !add_metric(state, monitoring_account, metric) {
+        state.outcome.rejected_data_points += 1;
     }
 }
 
 fn add_metric(
-    outcome: &mut MappingOutcome,
-    publication_indexes: &mut HashMap<String, usize>,
+    state: &mut PublicationState<'_>,
     monitoring_account: String,
-    current_time_bucket: u64,
     metric: Metric,
 ) -> bool {
     if is_banned_monitoring_account(&monitoring_account)
@@ -640,19 +567,24 @@ fn add_metric(
     {
         return false;
     }
-    if super::encoder::validate_metric(&metric, current_time_bucket).is_err() {
+    if super::encoder::validate_metric(&metric, state.current_time_bucket).is_err() {
         return false;
     }
-    if let Some(&index) = publication_indexes.get(&monitoring_account) {
-        outcome.publications[index].packet.metrics.push(metric);
+    if let Some(&index) = state.publication_indexes.get(&monitoring_account) {
+        state.outcome.publications[index]
+            .packet
+            .metrics
+            .push(metric);
         return true;
     }
-    let index = outcome.publications.len();
-    let _ = publication_indexes.insert(monitoring_account.clone(), index);
-    outcome.publications.push(Publication {
+    let index = state.outcome.publications.len();
+    let _ = state
+        .publication_indexes
+        .insert(monitoring_account.clone(), index);
+    state.outcome.publications.push(Publication {
         monitoring_account,
         packet: Packet {
-            current_time_bucket,
+            current_time_bucket: state.current_time_bucket,
             metrics: vec![metric],
         },
     });
@@ -738,6 +670,7 @@ fn unix_nanos_to_dotnet_ticks(value: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{

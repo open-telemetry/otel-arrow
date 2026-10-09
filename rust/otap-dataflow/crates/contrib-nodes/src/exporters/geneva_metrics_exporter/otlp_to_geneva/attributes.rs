@@ -12,7 +12,7 @@ use otel_arrow_dfe_pdata_views::views::common::{
 use otel_arrow_dfe_pdata_views::views::metrics::ScopeMetricsView;
 
 use super::super::encoder::Dimension;
-use super::{CardinalityOverflow, Config, PointContext, ResourceContext};
+use super::{CardinalityOverflow, Config, PointContext, ResourceContext, ScopeContext};
 
 const MAX_DIMENSIONS: usize = 74;
 pub(super) const MAX_DIMENSION_NAME_UTF16_UNITS: usize = 512;
@@ -58,12 +58,8 @@ where
         }
     }
     Ok(ResourceContext {
-        monitoring_account: monitoring_account
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| config.monitoring_account.clone()),
-        namespace: namespace
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| config.metric_namespace.clone()),
+        monitoring_account: non_empty_or(monitoring_account, &config.monitoring_account),
+        namespace: non_empty_or(namespace, &config.metric_namespace),
         original_dimensions: dimensions.clone(),
         dimensions,
     })
@@ -71,15 +67,13 @@ where
 
 pub(super) fn point_context<A>(
     attributes: impl IntoIterator<Item = A>,
-    resource: &ResourceContext,
-    scope_namespace: &str,
-    scope_dimensions: &[Dimension],
-    config: &Config,
+    scope: &ScopeContext<'_>,
     metric_name: Option<&str>,
 ) -> Result<(Option<PointContext>, Option<CardinalityOverflow>), Utf8Error>
 where
     A: AttributeView,
 {
+    let resource = scope.resource;
     let mut monitoring_account = None;
     let mut namespace = None;
     let mut point_dimensions = Vec::new();
@@ -112,9 +106,9 @@ where
         merge_dimensions(
             point_dimensions,
             &resource.dimensions,
-            scope_dimensions,
-            config.honor_resource_attributes,
-            config.honor_scope_attributes,
+            scope.dimensions,
+            scope.config.honor_resource_attributes,
+            scope.config.honor_scope_attributes,
         )
         .filter(|dimensions| dimensions_within_limits(dimensions))
         .map(|mut dimensions| {
@@ -130,12 +124,10 @@ where
 
     let monitoring_account =
         monitoring_account.unwrap_or_else(|| resource.monitoring_account.clone());
-    let namespace = namespace.unwrap_or_else(|| scope_namespace.to_string());
+    let namespace = namespace.unwrap_or_else(|| scope.namespace.to_string());
     if let Some(dimensions) = dimensions {
-        let overflow = cardinality_overflow.then(|| CardinalityOverflow {
-            monitoring_account: monitoring_account.clone(),
-            namespace: namespace.clone(),
-            metric_name: metric_name.unwrap_or_default().to_string(),
+        let overflow = cardinality_overflow.then(|| {
+            overflow_diagnostic(monitoring_account.clone(), namespace.clone(), metric_name)
         });
         return Ok((
             Some(PointContext {
@@ -148,12 +140,30 @@ where
     }
     Ok((
         None,
-        Some(CardinalityOverflow {
+        Some(overflow_diagnostic(
             monitoring_account,
             namespace,
-            metric_name: metric_name.unwrap_or_default().to_string(),
-        }),
+            metric_name,
+        )),
     ))
+}
+
+fn non_empty_or(value: Option<String>, default: &str) -> String {
+    value
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn overflow_diagnostic(
+    monitoring_account: String,
+    namespace: String,
+    metric_name: Option<&str>,
+) -> CardinalityOverflow {
+    CardinalityOverflow {
+        monitoring_account,
+        namespace,
+        metric_name: metric_name.unwrap_or_default().to_string(),
+    }
 }
 
 fn add_dimension<A>(
@@ -239,28 +249,19 @@ where
         .iter()
         .find(|selection| selection.name == "*");
     let selected_keys = if let Some(selection) = wildcard_selection {
-        selection
-            .keys
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
+        selection.keys.clone()
     } else {
         config
             .scope_attributes
             .iter()
             .filter(|selection| selection.name == scope_name)
-            .flat_map(|selection| selection.keys.iter())
-            .map(String::as_str)
+            .flat_map(|selection| selection.keys.iter().cloned())
             .collect::<Vec<_>>()
     };
     let mut dimensions = Vec::new();
     for attribute in scope.attributes() {
         let key = str::from_utf8(attribute.key())?;
-        if key != NAMESPACE_ATTRIBUTE
-            && selected_keys
-                .iter()
-                .any(|candidate| *candidate == "*" || *candidate == key)
-        {
+        if key != NAMESPACE_ATTRIBUTE && selected_attribute(key, &selected_keys) {
             dimensions.push(attribute_dimension(&attribute, true)?);
         }
     }
@@ -436,16 +437,15 @@ mod tests {
         scope_dimensions: &[Dimension],
         config: &Config,
     ) -> Option<PointContext> {
-        super::point_context(
-            KeyValueIter::new(attributes.iter()),
+        let scope = ScopeContext {
             resource,
-            scope_namespace,
-            scope_dimensions,
+            namespace: scope_namespace,
+            dimensions: scope_dimensions,
             config,
-            Some("metric"),
-        )
-        .expect("test attributes should contain valid UTF-8")
-        .0
+        };
+        super::point_context(KeyValueIter::new(attributes.iter()), &scope, Some("metric"))
+            .expect("test attributes should contain valid UTF-8")
+            .0
     }
 
     fn overflow_diagnostic(
@@ -454,12 +454,16 @@ mod tests {
         scope_namespace: &str,
         metric_name: &str,
     ) -> Option<CardinalityOverflow> {
+        let config = config();
+        let scope = ScopeContext {
+            resource,
+            namespace: scope_namespace,
+            dimensions: &[],
+            config: &config,
+        };
         super::point_context(
             KeyValueIter::new(attributes.iter()),
-            resource,
-            scope_namespace,
-            &[],
-            &config(),
+            &scope,
             Some(metric_name),
         )
         .expect("test attributes should contain valid UTF-8")
