@@ -206,10 +206,11 @@ impl EngineConfig {
     ///   lowercase `headers` key only.
     ///
     /// The remaining strongly-typed engine settings (`telemetry`,
-    /// `observed_state`, `topics`) have no opaque `headers`-bearing config, so
-    /// none are touched. Metric exporter credentials that previously lived
-    /// under `telemetry` now belong to `observability.pipeline.nodes` and are
-    /// covered by that subtree's redaction above.
+    /// `observed_state`, `topics`, and controller startup timeout) have no
+    /// opaque `headers`-bearing config, so none are touched. Metric exporter
+    /// credentials that previously lived under `telemetry` now belong to
+    /// `observability.pipeline.nodes` and are covered by that subtree's
+    /// redaction above.
     /// This masks credential *header* values only; other secret classes that can
     /// appear in raw config (inline TLS keys, proxy URLs with embedded
     /// passwords, component-specific secrets, and credentials hidden under
@@ -244,10 +245,40 @@ impl EngineConfig {
     }
 }
 
+const fn default_startup_step_timeout_secs() -> u64 {
+    30
+}
+
+fn is_default_startup_step_timeout_secs(value: &u64) -> bool {
+    *value == default_startup_step_timeout_secs()
+}
+
+const fn default_startup_failure_drain_timeout_secs() -> u64 {
+    30
+}
+
+fn is_default_startup_failure_drain_timeout_secs(value: &u64) -> bool {
+    *value == default_startup_failure_drain_timeout_secs()
+}
+
 /// Controller-specific configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineControllerConfig {
+    /// Maximum time in seconds for each pipeline rollout step during initial startup.
+    #[serde(
+        default = "default_startup_step_timeout_secs",
+        skip_serializing_if = "is_default_startup_step_timeout_secs"
+    )]
+    pub startup_step_timeout_secs: u64,
+
+    /// Maximum time in seconds to drain pipelines after controller startup fails.
+    #[serde(
+        default = "default_startup_failure_drain_timeout_secs",
+        skip_serializing_if = "is_default_startup_failure_drain_timeout_secs"
+    )]
+    pub startup_failure_drain_timeout_secs: u64,
+
     /// Controller-level extensions started by the embedding application.
     ///
     /// These extensions run with controller handles and are not exposed to
@@ -260,7 +291,21 @@ impl EngineControllerConfig {
     /// Returns true if the controller configuration is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.extensions.is_empty()
+        is_default_startup_step_timeout_secs(&self.startup_step_timeout_secs)
+            && is_default_startup_failure_drain_timeout_secs(
+                &self.startup_failure_drain_timeout_secs,
+            )
+            && self.extensions.is_empty()
+    }
+}
+
+impl Default for EngineControllerConfig {
+    fn default() -> Self {
+        Self {
+            startup_step_timeout_secs: default_startup_step_timeout_secs(),
+            startup_failure_drain_timeout_secs: default_startup_failure_drain_timeout_secs(),
+            extensions: ControllerExtensions::default(),
+        }
     }
 }
 
@@ -873,6 +918,148 @@ groups: {}
         assert_eq!(
             extension.config["endpoint"],
             "https://controller.example.com"
+        );
+    }
+
+    /// Scenario: controller startup timeouts are omitted or explicitly configured.
+    /// Guarantees: readiness and failure-drain timeouts default to 30 seconds and accept positive
+    /// overrides that survive serialization.
+    #[test]
+    fn from_yaml_configures_controller_startup_timeouts() {
+        let default_config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+groups: {}
+"#,
+        )
+        .expect("default startup timeout config should parse");
+        assert_eq!(
+            default_config.engine.controller.startup_step_timeout_secs,
+            30
+        );
+        assert_eq!(
+            default_config
+                .engine
+                .controller
+                .startup_failure_drain_timeout_secs,
+            30
+        );
+
+        let overridden_config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    startup_step_timeout_secs: 75
+    startup_failure_drain_timeout_secs: 45
+groups: {}
+"#,
+        )
+        .expect("overridden startup timeout config should parse");
+        assert_eq!(
+            overridden_config
+                .engine
+                .controller
+                .startup_step_timeout_secs,
+            75
+        );
+        assert_eq!(
+            overridden_config
+                .engine
+                .controller
+                .startup_failure_drain_timeout_secs,
+            45
+        );
+        let json =
+            serde_json::to_string(&overridden_config).expect("overridden config should serialize");
+        let roundtripped: OtelDataflowSpec =
+            serde_json::from_str(&json).expect("overridden config should deserialize");
+        assert_eq!(roundtripped.engine.controller.startup_step_timeout_secs, 75);
+        assert_eq!(
+            roundtripped
+                .engine
+                .controller
+                .startup_failure_drain_timeout_secs,
+            45
+        );
+    }
+
+    /// Scenario: startup step timeout is configured as zero.
+    /// Guarantees: validation rejects a timeout that cannot permit a rollout step to start.
+    #[test]
+    fn from_yaml_rejects_zero_controller_startup_step_timeout() {
+        let error = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    startup_step_timeout_secs: 0
+groups: {}
+"#,
+        )
+        .expect_err("zero startup timeout should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("engine.controller.startup_step_timeout_secs must be greater than zero")
+        );
+    }
+
+    /// Scenario: startup failure drain timeout is configured as zero.
+    /// Guarantees: validation rejects a timeout that cannot allow graceful startup cleanup.
+    #[test]
+    fn from_yaml_rejects_zero_controller_startup_failure_drain_timeout() {
+        let error = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    startup_failure_drain_timeout_secs: 0
+groups: {}
+"#,
+        )
+        .expect_err("zero startup failure drain timeout should be rejected");
+        assert!(error.to_string().contains(
+            "engine.controller.startup_failure_drain_timeout_secs must be greater than zero"
+        ));
+    }
+
+    /// Scenario: startup step timeout exceeds the platform timer range.
+    /// Guarantees: configuration preserves the value so the controller can cap its effective
+    /// timeout without rejecting an operationally equivalent value.
+    #[test]
+    fn from_yaml_accepts_unrepresentable_startup_step_timeout() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    startup_step_timeout_secs: 18446744073709551615
+groups: {}
+"#,
+        )
+        .expect("large startup timeout should be accepted");
+        assert_eq!(config.engine.controller.startup_step_timeout_secs, u64::MAX);
+    }
+
+    /// Scenario: startup failure drain timeout exceeds the platform timer range.
+    /// Guarantees: configuration preserves the value so the controller can cap its effective
+    /// timeout without rejecting an operationally equivalent value.
+    #[test]
+    fn from_yaml_accepts_unrepresentable_startup_failure_drain_timeout() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    startup_failure_drain_timeout_secs: 18446744073709551615
+groups: {}
+"#,
+        )
+        .expect("large startup failure drain timeout should be accepted");
+        assert_eq!(
+            config.engine.controller.startup_failure_drain_timeout_secs,
+            u64::MAX
         );
     }
 

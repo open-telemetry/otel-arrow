@@ -151,6 +151,13 @@ use placement::{CorePlacement, PipelinePlacement, PlacementPlanner};
 
 use otel_arrow_dfe_engine::component_inventory;
 
+/// Maximum duration Rust documents as comfortable for cross-platform `Instant` arithmetic.
+const MAX_PORTABLE_TIMEOUT_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+
+fn cap_timeout_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.min(MAX_PORTABLE_TIMEOUT_SECS)
+}
+
 /// Controller for managing pipelines in a thread-per-core model.
 ///
 /// # Thread Safety
@@ -1438,6 +1445,7 @@ impl<
             otel_arrow_dfe_telemetry::error::Error,
         >,
         controller_telemetry_guard: live_control::ControllerTelemetryGuard<'_, PData>,
+        startup_failure_drain_timeout_secs: u64,
         final_console_report: &mut Option<(ServiceStats, Duration)>,
     ) {
         if let Some(handle) = memory_limiter_handle
@@ -1458,7 +1466,7 @@ impl<
             }
         }
         drop(controller_telemetry_guard);
-        if let Err(error) = control_plane.shutdown_all(10) {
+        if let Err(error) = control_plane.shutdown_all(startup_failure_drain_timeout_secs) {
             otel_warn!(
                 "controller.startup_failure_pipeline_shutdown_failed",
                 error = format!("{error:?}")
@@ -1890,11 +1898,11 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
-        const STARTUP_RECONCILE_TIMEOUT_SECS: u64 = 30;
-        match runtime.reconcile_engine_config_startup(
-            engine_config.clone(),
-            STARTUP_RECONCILE_TIMEOUT_SECS,
-        ) {
+        let config = &engine_config.engine.controller;
+        let step_timeout_secs = cap_timeout_secs(config.startup_step_timeout_secs);
+        let drain_timeout_secs = cap_timeout_secs(config.startup_failure_drain_timeout_secs);
+
+        match runtime.reconcile_engine_config_startup(engine_config.clone(), step_timeout_secs) {
             Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {}
             Ok(status) => {
                 let message = status
@@ -1906,6 +1914,7 @@ impl<
                     memory_limiter_handle,
                     engine_metrics_handle,
                     controller_telemetry_guard,
+                    drain_timeout_secs,
                     final_console_report,
                 );
                 return Err(Error::StartupReconciliationFailed { message });
@@ -1918,6 +1927,7 @@ impl<
                     memory_limiter_handle,
                     engine_metrics_handle,
                     controller_telemetry_guard,
+                    drain_timeout_secs,
                     final_console_report,
                 );
                 return Err(Error::StartupReconciliationFailed { message });
@@ -1948,6 +1958,7 @@ impl<
                     memory_limiter_handle,
                     engine_metrics_handle,
                     controller_telemetry_guard,
+                    drain_timeout_secs,
                     final_console_report,
                 );
                 return Err(err);
@@ -2925,6 +2936,15 @@ mod tests {
     use async_trait::async_trait;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Scenario: a configured timeout exceeds the portable `Instant` arithmetic range.
+    /// Guarantees: controller startup caps the effective timeout at 100 years while preserving
+    /// smaller configured values.
+    #[test]
+    fn startup_timeout_is_capped_at_portable_instant_range() {
+        assert_eq!(cap_timeout_secs(u64::MAX), MAX_PORTABLE_TIMEOUT_SECS);
+        assert_eq!(cap_timeout_secs(30), 30);
+    }
 
     fn run_console_reporting_child(test_name: &str) {
         use std::process::{Command, Stdio};
