@@ -5,6 +5,8 @@ use serde::Deserialize;
 use std::net::IpAddr;
 use std::time::Duration;
 
+use super::error::Error;
+
 /// Conservative safety limit below ADX's 1 MiB dynamic-value limit.
 pub(crate) const MAX_SAFE_ROW_BYTES: usize = 900 * 1024;
 /// ADX streaming ingestion limit for one uncompressed request.
@@ -29,42 +31,9 @@ pub struct Config {
     #[serde(default = "default_db_name")]
     pub db_name: String,
 
-    /// Target table name for logs.
-    #[serde(default = "default_logs_table")]
-    pub logs_table_name: String,
-
-    /// Target table name for metrics.
-    #[serde(default = "default_metrics_table")]
-    pub metrics_table_name: String,
-
-    /// Target table name for traces.
-    #[serde(default = "default_traces_table")]
-    pub traces_table_name: String,
-
-    /// Optional ADX JSON ingestion mapping name for the logs table.
+    /// Signal-specific ADX table and transformation settings.
     #[serde(default)]
-    pub logs_table_json_mapping: Option<String>,
-
-    /// Optional ADX JSON ingestion mapping name for the metrics table.
-    #[serde(default)]
-    pub metrics_table_json_mapping: Option<String>,
-
-    /// Optional ADX JSON ingestion mapping name for the traces table.
-    #[serde(default)]
-    pub traces_table_json_mapping: Option<String>,
-
-    /// Encode log bodies as strings for compatibility with legacy ADX tables.
-    #[serde(default)]
-    pub legacy_logs_body_string: bool,
-
-    /// Include the OTLP log record event name as the top-level `EventName` property.
-    #[serde(default = "default_true")]
-    pub export_event_name: bool,
-
-    /// Add `event.name` to `LogsAttributes` when the log record has an event
-    /// name and the merged attributes do not already contain that key.
-    #[serde(default = "default_true")]
-    pub add_event_name_to_log_attributes: bool,
+    pub tables: TablesConfig,
 
     /// Deadline for one outbound ADX operation, including response handling,
     /// protocol retries, and retry backoff.
@@ -108,90 +77,188 @@ pub struct Config {
 
 impl Config {
     /// Validate the configuration.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), Error> {
         let cluster_uri = reqwest::Url::parse(&self.cluster_uri)
-            .map_err(|error| format!("cluster_uri must be a valid URL: {error}"))?;
+            .map_err(|error| Error::Config(format!("cluster_uri must be a valid URL: {error}")))?;
         let Some(host) = cluster_uri.host_str() else {
-            return Err("cluster_uri must include a host".to_string());
+            return Err(Error::Config("cluster_uri must include a host".to_string()));
         };
         let is_loopback = host.eq_ignore_ascii_case("localhost")
             || host
                 .parse::<IpAddr>()
                 .is_ok_and(|address| address.is_loopback());
         if cluster_uri.scheme() != "https" && !(cluster_uri.scheme() == "http" && is_loopback) {
-            return Err("cluster_uri must use https unless the host is loopback".to_string());
+            return Err(Error::Config(
+                "cluster_uri must use https unless the host is loopback".to_string(),
+            ));
         }
         if !cluster_uri.username().is_empty() || cluster_uri.password().is_some() {
-            return Err("cluster_uri must not include user information".to_string());
+            return Err(Error::Config(
+                "cluster_uri must not include user information".to_string(),
+            ));
         }
         if cluster_uri.query().is_some() || cluster_uri.fragment().is_some() {
-            return Err("cluster_uri must not include a query or fragment".to_string());
+            return Err(Error::Config(
+                "cluster_uri must not include a query or fragment".to_string(),
+            ));
         }
         if cluster_uri.path() != "/" && !cluster_uri.path().is_empty() {
-            return Err("cluster_uri must not include a path".to_string());
+            return Err(Error::Config(
+                "cluster_uri must not include a path".to_string(),
+            ));
         }
         if self.db_name.is_empty() {
-            return Err("db_name must not be empty".to_string());
+            return Err(Error::Config("db_name must not be empty".to_string()));
         }
-        if self.logs_table_name.is_empty()
-            || self.metrics_table_name.is_empty()
-            || self.traces_table_name.is_empty()
+        if self.tables.logs.name.is_empty()
+            || self.tables.metrics.name.is_empty()
+            || self.tables.traces.name.is_empty()
         {
-            return Err("table names must not be empty".to_string());
+            return Err(Error::Config("table names must not be empty".to_string()));
         }
         if self.timeout.is_zero() {
-            return Err("timeout must be greater than zero".to_string());
+            return Err(Error::Config(
+                "timeout must be greater than zero".to_string(),
+            ));
         }
         if self.max_in_flight == 0 || self.max_in_flight > MAX_IN_FLIGHT_REQUESTS {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "max_in_flight must be between 1 and {MAX_IN_FLIGHT_REQUESTS}"
-            ));
+            )));
         }
         if self.network_requests.coalesce && self.network_requests.max_pending_messages == 0 {
-            return Err(
+            return Err(Error::Config(
                 "network_requests.max_pending_messages must be greater than zero".to_string(),
-            );
+            ));
         }
         if self.gzip_compression_level > 9 {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "gzip_compression_level must be 0-9, got {}",
                 self.gzip_compression_level
-            ));
+            )));
         }
         if self.max_row_bytes == 0 || self.max_row_bytes > MAX_SAFE_ROW_BYTES {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "max_row_bytes must be between 1 and {MAX_SAFE_ROW_BYTES}, got {}",
                 self.max_row_bytes
-            ));
+            )));
         }
         if self.network_requests.max_rows == 0
             || self.network_requests.max_rows > MAX_STREAMING_REQUEST_ROWS
         {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "network_requests.max_rows must be between 1 and {MAX_STREAMING_REQUEST_ROWS}"
-            ));
+            )));
         }
         if self.network_requests.max_bytes == 0
             || self.network_requests.max_bytes > MAX_STREAMING_REQUEST_BYTES
         {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "network_requests.max_bytes must be between 1 and {MAX_STREAMING_REQUEST_BYTES}"
-            ));
+            )));
         }
         // Catch the common mistake of using the Data Ingestion URI
         // (ingest-*.kusto.windows.net) instead of the Cluster URI.
-        if let Some(host) = cluster_uri.host_str()
-            && (host.starts_with("ingest-") || host.starts_with("ingest."))
-        {
-            return Err(format!(
+        if host.starts_with("ingest-") || host.starts_with("ingest.") {
+            return Err(Error::Config(format!(
                 "cluster_uri appears to be a Data Ingestion URI ('{}'). \
                  Use the Cluster URI instead (remove the 'ingest-' prefix). \
                  The streaming ingestion API is served by the cluster endpoint, \
                  not the data management service.",
                 self.cluster_uri
-            ));
+            )));
         }
         Ok(())
+    }
+}
+
+/// Signal-specific ADX table settings.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct TablesConfig {
+    /// Log table and transformation settings.
+    pub logs: LogsTableConfig,
+
+    /// Metrics table settings.
+    pub metrics: MetricsTableConfig,
+
+    /// Traces table settings.
+    pub traces: TracesTableConfig,
+}
+
+/// ADX log table and transformation settings.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct LogsTableConfig {
+    /// Target table name.
+    #[serde(default = "default_logs_table")]
+    pub name: String,
+
+    /// Optional ADX JSON ingestion mapping name.
+    pub mapping: Option<String>,
+
+    /// Encode log bodies as strings for compatibility with legacy ADX tables.
+    pub legacy_body_string: bool,
+
+    /// Include the OTLP log record event name as the top-level `EventName` property.
+    pub export_event_name: bool,
+
+    /// Add `event.name` to `LogsAttributes` when the log record has an event
+    /// name and the merged attributes do not already contain that key.
+    pub add_event_name_to_attributes: bool,
+}
+
+impl Default for LogsTableConfig {
+    fn default() -> Self {
+        Self {
+            name: default_logs_table(),
+            mapping: None,
+            legacy_body_string: false,
+            export_event_name: true,
+            add_event_name_to_attributes: true,
+        }
+    }
+}
+
+/// ADX metrics table settings.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsTableConfig {
+    /// Target table name.
+    #[serde(default = "default_metrics_table")]
+    pub name: String,
+
+    /// Optional ADX JSON ingestion mapping name.
+    pub mapping: Option<String>,
+}
+
+impl Default for MetricsTableConfig {
+    fn default() -> Self {
+        Self {
+            name: default_metrics_table(),
+            mapping: None,
+        }
+    }
+}
+
+/// ADX traces table settings.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct TracesTableConfig {
+    /// Target table name.
+    #[serde(default = "default_traces_table")]
+    pub name: String,
+
+    /// Optional ADX JSON ingestion mapping name.
+    pub mapping: Option<String>,
+}
+
+impl Default for TracesTableConfig {
+    fn default() -> Self {
+        Self {
+            name: default_traces_table(),
+            mapping: None,
+        }
     }
 }
 
@@ -255,10 +322,6 @@ fn default_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_gzip_compression_level() -> u32 {
     6
 }
@@ -279,6 +342,16 @@ fn default_max_retries() -> u32 {
 mod tests {
     use super::*;
 
+    fn validation_message(config: &Config) -> String {
+        let Error::Config(message) = config
+            .validate()
+            .expect_err("configuration must be invalid")
+        else {
+            panic!("expected configuration error");
+        };
+        message
+    }
+
     /// Scenario: only the required ADX cluster URI is configured.
     /// Guarantees: all documented defaults deserialize and pass validation.
     #[test]
@@ -287,16 +360,17 @@ mod tests {
             serde_json::from_str(r#"{"cluster_uri": "https://mycluster.kusto.windows.net"}"#)
                 .expect("deserialize");
         assert_eq!(config.db_name, "oteldb");
-        assert_eq!(config.logs_table_name, "OTELLogs");
-        assert_eq!(config.metrics_table_name, "OTELMetrics");
-        assert_eq!(config.traces_table_name, "OTELTraces");
-        assert!(config.logs_table_json_mapping.is_none());
-        assert!(config.metrics_table_json_mapping.is_none());
-        assert!(config.traces_table_json_mapping.is_none());
+        assert_eq!(config.tables.logs.name, "OTELLogs");
+        assert_eq!(config.tables.metrics.name, "OTELMetrics");
+        assert_eq!(config.tables.traces.name, "OTELTraces");
+        assert!(config.tables.logs.mapping.is_none());
+        assert!(config.tables.metrics.mapping.is_none());
+        assert!(config.tables.traces.mapping.is_none());
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.max_row_bytes, MAX_SAFE_ROW_BYTES);
-        assert!(config.export_event_name);
-        assert!(config.add_event_name_to_log_attributes);
+        assert!(!config.tables.logs.legacy_body_string);
+        assert!(config.tables.logs.export_event_name);
+        assert!(config.tables.logs.add_event_name_to_attributes);
         assert!(!config.log_failed_payload);
         assert!(!config.log_response_body);
         assert!(config.validate().is_ok());
@@ -324,14 +398,18 @@ mod tests {
         let config: Config = serde_json::from_str(
             r#"{
                 "cluster_uri": "https://mycluster.kusto.windows.net",
-                "export_event_name": false,
-                "add_event_name_to_log_attributes": false
+                "tables": {
+                    "logs": {
+                        "export_event_name": false,
+                        "add_event_name_to_attributes": false
+                    }
+                }
             }"#,
         )
         .expect("deserialize");
 
-        assert!(!config.export_event_name);
-        assert!(!config.add_event_name_to_log_attributes);
+        assert!(!config.tables.logs.export_event_name);
+        assert!(!config.tables.logs.add_event_name_to_attributes);
     }
 
     /// Scenario: an environment-substituted ADX mapping name is empty.
@@ -341,7 +419,9 @@ mod tests {
         let config: Config = serde_json::from_str(
             r#"{
                 "cluster_uri": "https://mycluster.kusto.windows.net",
-                "logs_table_json_mapping": ""
+                "tables": {
+                    "logs": { "mapping": "" }
+                }
             }"#,
         )
         .expect("deserialize");
@@ -377,8 +457,8 @@ mod tests {
         .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("timeout must be greater than zero".to_string())
+            validation_message(&config),
+            "timeout must be greater than zero"
         );
     }
 
@@ -428,30 +508,47 @@ mod tests {
         assert!(error.to_string().contains("unknown field `auth`"));
     }
 
-    /// Scenario: signal-specific ADX JSON mapping names are configured together.
-    /// Guarantees: each mapping name deserializes into the corresponding signal field.
+    /// Scenario: table names, mappings, and log controls are configured by signal.
+    /// Guarantees: every nested table setting deserializes into its corresponding field.
     #[test]
-    fn test_json_mapping_names_are_deserialized() {
+    fn signal_table_settings_are_deserialized() {
         let config: Config = serde_json::from_str(
             r#"{
                 "cluster_uri": "https://mycluster.kusto.windows.net",
-                "logs_table_json_mapping": "LogsMapping",
-                "metrics_table_json_mapping": "MetricsMapping",
-                "traces_table_json_mapping": "TracesMapping"
+                "tables": {
+                    "logs": {
+                        "name": "Logs",
+                        "mapping": "LogsMapping",
+                        "legacy_body_string": true,
+                        "export_event_name": false,
+                        "add_event_name_to_attributes": false
+                    },
+                    "metrics": {
+                        "name": "Metrics",
+                        "mapping": "MetricsMapping"
+                    },
+                    "traces": {
+                        "name": "Traces",
+                        "mapping": "TracesMapping"
+                    }
+                }
             }"#,
         )
         .expect("deserialize");
 
+        assert_eq!(config.tables.logs.name, "Logs");
+        assert_eq!(config.tables.logs.mapping.as_deref(), Some("LogsMapping"));
+        assert!(config.tables.logs.legacy_body_string);
+        assert!(!config.tables.logs.export_event_name);
+        assert!(!config.tables.logs.add_event_name_to_attributes);
+        assert_eq!(config.tables.metrics.name, "Metrics");
         assert_eq!(
-            config.logs_table_json_mapping.as_deref(),
-            Some("LogsMapping")
-        );
-        assert_eq!(
-            config.metrics_table_json_mapping.as_deref(),
+            config.tables.metrics.mapping.as_deref(),
             Some("MetricsMapping")
         );
+        assert_eq!(config.tables.traces.name, "Traces");
         assert_eq!(
-            config.traces_table_json_mapping.as_deref(),
+            config.tables.traces.mapping.as_deref(),
             Some("TracesMapping")
         );
     }
@@ -524,8 +621,8 @@ mod tests {
         .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("network_requests.max_pending_messages must be greater than zero".to_string())
+            validation_message(&config),
+            "network_requests.max_pending_messages must be greater than zero"
         );
     }
 
@@ -597,8 +694,8 @@ mod tests {
         .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("max_in_flight must be between 1 and 1024".to_string())
+            validation_message(&config),
+            "max_in_flight must be between 1 and 1024"
         );
     }
 
@@ -611,8 +708,8 @@ mod tests {
                 .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("cluster_uri must use https unless the host is loopback".to_string())
+            validation_message(&config),
+            "cluster_uri must use https unless the host is loopback"
         );
     }
 
@@ -639,8 +736,8 @@ mod tests {
                 .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("cluster_uri must not include a path".to_string())
+            validation_message(&config),
+            "cluster_uri must not include a path"
         );
     }
 
@@ -657,8 +754,8 @@ mod tests {
         .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("network_requests.max_bytes must be between 1 and 4194304".to_string())
+            validation_message(&config),
+            "network_requests.max_bytes must be between 1 and 4194304"
         );
     }
 
@@ -675,8 +772,8 @@ mod tests {
         .expect("deserialize");
 
         assert_eq!(
-            config.validate(),
-            Err("network_requests.max_rows must be between 1 and 100000".to_string())
+            validation_message(&config),
+            "network_requests.max_rows must be between 1 and 100000"
         );
     }
 }

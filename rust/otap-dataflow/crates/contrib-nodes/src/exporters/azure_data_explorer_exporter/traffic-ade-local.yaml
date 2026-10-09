@@ -60,8 +60,10 @@ groups:
             config:
               cluster_uri: "http://localhost:8080"
               db_name: "oteldb"
-              logs_table_name: "OTELLogs"
-              logs_table_json_mapping: "OTELLogsMapping"
+              tables:
+                logs:
+                  name: "OTELLogs"
+                  mapping: "OTELLogsMapping"
               gzip_compression_level: 6
               max_row_bytes: 921600
               max_in_flight: 4

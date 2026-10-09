@@ -79,7 +79,9 @@ pub static AZURE_DATA_EXPLORER_EXPORTER: ExporterFactory<OtapPdata> = ExporterFa
         let config = deserialize_typed_config::<Config>(raw)?;
         config
             .validate()
-            .map_err(|error| ConfigError::InvalidUserConfig { error })
+            .map_err(|error| ConfigError::InvalidUserConfig {
+                error: error.to_string(),
+            })
     },
     context_declarations: None,
 };

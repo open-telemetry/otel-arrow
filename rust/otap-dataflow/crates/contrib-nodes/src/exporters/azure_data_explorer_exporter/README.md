@@ -67,15 +67,20 @@ nodes:
       # Target database (default: "oteldb")
       db_name: "oteldb"
 
-      # Target table names per signal
-      logs_table_name: "OTELLogs"           # default
-      metrics_table_name: "OTELMetrics"     # default
-      traces_table_name: "OTELTraces"       # default
-
-      # Optional pre-created ADX JSON ingestion mappings.
-      logs_table_json_mapping: "${env:ADX_LOGS_JSON_MAPPING:-}"
-      metrics_table_json_mapping: "${env:ADX_METRICS_JSON_MAPPING:-}"
-      traces_table_json_mapping: "${env:ADX_TRACES_JSON_MAPPING:-}"
+      # Signal-specific table settings.
+      tables:
+        logs:
+          name: "OTELLogs"           # default
+          mapping: "${env:ADX_LOGS_JSON_MAPPING:-}"
+          legacy_body_string: false
+          export_event_name: true
+          add_event_name_to_attributes: true
+        metrics:
+          name: "OTELMetrics"         # default
+          mapping: "${env:ADX_METRICS_JSON_MAPPING:-}"
+        traces:
+          name: "OTELTraces"          # default
+          mapping: "${env:ADX_TRACES_JSON_MAPPING:-}"
 
       # Debugging export or connection issues only. Logs the complete failed
       # JSON batch and a sample row at debug level. Do not enable in production
@@ -159,7 +164,9 @@ and `max_in_flight` between 1 and 1024.
 
 The transformer applies row and request byte budgets while writing JSON, before
 an oversized row is materialized. Composite OTLP values are limited to 64
-levels of nesting and 65536 visited values per source message.
+levels of nesting and 65536 visited values per source message. Exceeding either
+complexity limit permanently refuses the source message and emits
+`transformation_limit_exceeded` with the observed and allowed values.
 
 Keep `max_pending_messages` small for HTTP receivers, especially when clients
 use HTTP/1.1 or many clients send concurrently. Coalescing delays their
@@ -235,10 +242,11 @@ Raw OTLP protobuf framing is validated before transformation. Malformed logs,
 metrics, or traces are permanently refused rather than treated as empty input.
 
 Log schema compatibility can be controlled independently. Setting
-`legacy_logs_body_string` converts non-string log bodies to their JSON string
-representation. `export_event_name` controls the top-level `EventName` field,
-while `add_event_name_to_log_attributes` adds `event.name` only when neither
-the log record nor its instrumentation scope already provides that attribute.
+`tables.logs.legacy_body_string` converts non-string log bodies to their JSON
+string representation. `tables.logs.export_event_name` controls the top-level
+`EventName` field, while `tables.logs.add_event_name_to_attributes` adds
+`event.name` only when neither the log record nor its instrumentation scope
+already provides that attribute.
 
 Do not enable exporter coalescing merely because durable buffering is present.
 If an upstream system already emits suitably sized requests, leave
@@ -309,17 +317,20 @@ The exporter writes log records extending the
 | `ResourceAttributes` | `dynamic` | JSON object of OTel resource attributes |
 | `LogsAttributes` | `dynamic` | JSON object of log + scope attributes |
 
-With `export_event_name: false`, the `EventName` JSON property is omitted. ADX
-named mappings that include `$.EventName` ingest a null value for that column.
+With `tables.logs.export_event_name: false`, the `EventName` JSON property is
+omitted. ADX named mappings that include `$.EventName` ingest a null value for
+that column.
 
 #### Go exporter column compatibility
 
 To write the Go exporter's original logs column layout, use:
 
 ```yaml
-legacy_logs_body_string: true
-export_event_name: false
-add_event_name_to_log_attributes: false
+tables:
+  logs:
+    legacy_body_string: true
+    export_event_name: false
+    add_event_name_to_attributes: false
 ```
 
 These settings preserve the original string `Body` column and omit the Rust
@@ -365,11 +376,13 @@ byte attributes as lowercase hexadecimal strings.
 Configure the exporter to use the mapping:
 
 ```yaml
-logs_table_name: "OTELLogs"
-logs_table_json_mapping: "OTELLogsMapping"
-legacy_logs_body_string: false
-export_event_name: true
-add_event_name_to_log_attributes: true
+tables:
+  logs:
+    name: "OTELLogs"
+    mapping: "OTELLogsMapping"
+    legacy_body_string: false
+    export_event_name: true
+    add_event_name_to_attributes: true
 ```
 
 #### Legacy logs table, mapping, and streaming policy
@@ -411,14 +424,16 @@ objects; ADX serializes those mapped objects into the string columns.
 Use all three compatibility settings with the legacy table:
 
 ```yaml
-logs_table_name: "OTELLogsLegacy"
-logs_table_json_mapping: "OTELLogsLegacyMapping"
-legacy_logs_body_string: true
-export_event_name: false
-add_event_name_to_log_attributes: false
+tables:
+  logs:
+    name: "OTELLogsLegacy"
+    mapping: "OTELLogsLegacyMapping"
+    legacy_body_string: true
+    export_event_name: false
+    add_event_name_to_attributes: false
 ```
 
-`legacy_logs_body_string` controls `Body` encoding. The string types for
+`tables.logs.legacy_body_string` controls `Body` encoding. The string types for
 `ResourceAttributes` and `LogsAttributes` are defined by the ADX table schema.
 If an existing legacy table uses `dynamic` attribute columns, keep those
 columns as `dynamic`; the mapping paths do not change.
@@ -470,11 +485,13 @@ as the mapping is updated. Roll any remaining instances onto that mapping,
 then upgrade every instance to emit the new payload shape:
 
 ```yaml
-logs_table_name: "OTELLogs"
-logs_table_json_mapping: "OTELLogsMapping"
-legacy_logs_body_string: false
-export_event_name: true
-add_event_name_to_log_attributes: true
+tables:
+  logs:
+    name: "OTELLogs"
+    mapping: "OTELLogsMapping"
+    legacy_body_string: false
+    export_event_name: true
+    add_event_name_to_attributes: true
 ```
 
 Do not start the historical backfill until every instance uses the dual-write
@@ -684,8 +701,7 @@ values, including `"+Inf"` and `"-Inf"`.
 .show table OTELMetrics ingestion json mappings
 ```
 
-Configure `metrics_table_json_mapping: "OTELMetricsMapping"` when using this
-mapping.
+Configure `tables.metrics.mapping: "OTELMetricsMapping"` when using this mapping.
 
 ### Traces table (`OTELTraces`)
 
@@ -747,8 +763,7 @@ Uses the column layout defined by the Go exporter's
 .show table OTELTraces ingestion json mappings
 ```
 
-Configure `traces_table_json_mapping: "OTELTracesMapping"` when using this
-mapping.
+Configure `tables.traces.mapping: "OTELTracesMapping"` when using this mapping.
 
 ### Transformation fidelity and OTLP limitations
 
@@ -894,10 +909,13 @@ engine:
           config:
             cluster_uri: "https://<your-cluster>.kusto.windows.net"
             db_name: "<your-db>"
-            logs_table_name: "OTELInternalLogs"
-            metrics_table_name: "OTELEngineMetrics"
-            logs_table_json_mapping: "OTELInternalLogsMapping"
-            metrics_table_json_mapping: "OTELEngineMetricsMapping"
+            tables:
+              logs:
+                name: "OTELInternalLogs"
+                mapping: "OTELInternalLogsMapping"
+              metrics:
+                name: "OTELEngineMetrics"
+                mapping: "OTELEngineMetricsMapping"
             network_requests:
               coalesce: true
               max_pending_messages: 16

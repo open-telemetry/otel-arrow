@@ -80,6 +80,7 @@ continues to rename its `auth.failures` instrument to
 | `azure_data_explorer_exporter.invalid_metric_data` | `warn` | Invalid numeric or histogram metric data was permanently refused. | `exporter.rs` |
 | `azure_data_explorer_exporter.row_too_large` | `warn` | A serialized row exceeded `max_row_bytes`; records `actual_row_bytes` and `max_row_bytes`. | `exporter.rs` |
 | `azure_data_explorer_exporter.request_too_large` | `warn` | A request exceeded its row or byte budget; records the corresponding actual and maximum fields. | `exporter.rs` |
+| `azure_data_explorer_exporter.transformation_limit_exceeded` | `warn` | OTLP value nesting or traversal work exceeded a transformation limit; records `limit_kind`, `actual`, and `limit`. | `exporter.rs` |
 | `azure_data_explorer_exporter.batch.timer_flush` | `debug` | A partial coalesced request reached its flush interval. | `exporter.rs` |
 | `azure_data_explorer_exporter.client_pool_exhausted` | `error` | The bounded client pool was unexpectedly empty at dispatch. | `exporter.rs` |
 | `azure_data_explorer_exporter.compression_failed` | `error` | Gzip compression failed for a batch. | `exporter.rs` |

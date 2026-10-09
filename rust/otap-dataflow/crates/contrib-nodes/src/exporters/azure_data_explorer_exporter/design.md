@@ -135,15 +135,15 @@ Unknown fields are rejected.
 | --- | --- | --- |
 | `cluster_uri` | required | ADX cluster URI used as the streaming REST base |
 | `db_name` | `oteldb` | Target database |
-| `logs_table_name` | `OTELLogs` | Target logs table |
-| `metrics_table_name` | `OTELMetrics` | Target metrics table |
-| `traces_table_name` | `OTELTraces` | Target traces table |
-| `logs_table_json_mapping` | omitted | Optional pre-created logs JSON mapping name |
-| `metrics_table_json_mapping` | omitted | Optional pre-created metrics JSON mapping name |
-| `traces_table_json_mapping` | omitted | Optional pre-created traces JSON mapping name |
-| `legacy_logs_body_string` | `false` | Encode log bodies as strings for legacy tables |
-| `export_event_name` | `true` | Emit the top-level log `EventName` property |
-| `add_event_name_to_log_attributes` | `true` | Add `event.name` when it is not already present |
+| `tables.logs.name` | `OTELLogs` | Target logs table |
+| `tables.metrics.name` | `OTELMetrics` | Target metrics table |
+| `tables.traces.name` | `OTELTraces` | Target traces table |
+| `tables.logs.mapping` | omitted | Optional pre-created logs JSON mapping name |
+| `tables.metrics.mapping` | omitted | Optional pre-created metrics JSON mapping name |
+| `tables.traces.mapping` | omitted | Optional pre-created traces JSON mapping name |
+| `tables.logs.legacy_body_string` | `false` | Encode log bodies as strings for legacy tables |
+| `tables.logs.export_event_name` | `true` | Emit the top-level log `EventName` property |
+| `tables.logs.add_event_name_to_attributes` | `true` | Add `event.name` when it is not already present |
 | `timeout` | `30s` | Total deadline for one HTTP operation, including retries and backoff |
 | `gzip_compression_level` | `6` | Gzip level from 0 through 9 |
 | `max_row_bytes` | `921600` | Maximum serialized row size including JSON Lines framing |
@@ -216,7 +216,9 @@ and `max_in_flight` to 1 through 1024.
 
 JSON writers enforce the per-row and remaining request byte budgets during
 serialization. Recursive OTLP arrays and key-value lists are limited to 64
-levels and 65536 visited values per source message.
+levels and 65536 visited values per source message. Nesting-depth and
+traversal-work refusals report their own actual and configured limits rather
+than using row-byte errors.
 
 `max_pending_messages` bounds retained source messages across accumulators,
 in-flight requests, and retained authentication retries for one exporter
@@ -306,18 +308,20 @@ One row is emitted per log record. The row includes timestamp, observed
 timestamp, trace and span IDs, severity, body, optional event name, resource
 attributes, and merged log attributes.
 
-With `legacy_logs_body_string: false`, scalar bodies retain their JSON scalar
-type, arrays are recursively encoded as JSON arrays, and key-value lists are
-recursively encoded as JSON objects. Empty bodies encode as `null`. With the
-legacy option enabled, non-string bodies are serialized as JSON and stored as
-strings.
+With `tables.logs.legacy_body_string: false`, scalar bodies retain their JSON
+scalar type, arrays are recursively encoded as JSON arrays, and key-value lists
+are recursively encoded as JSON objects. Empty bodies encode as `null`. With
+the legacy option enabled, non-string bodies are serialized as JSON and stored
+as strings.
 
 Go exporter column compatibility requires all three settings:
 
 ```yaml
-legacy_logs_body_string: true
-export_event_name: false
-add_event_name_to_log_attributes: false
+tables:
+  logs:
+    legacy_body_string: true
+    export_event_name: false
+    add_event_name_to_attributes: false
 ```
 
 This preserves the Go logs column layout but does not claim byte-for-byte
@@ -447,10 +451,13 @@ engine:
           config:
             cluster_uri: "https://<cluster>.<region>.kusto.windows.net"
             db_name: "oteldb"
-            logs_table_name: "OTELInternalLogs"
-            metrics_table_name: "OTELEngineMetrics"
-            logs_table_json_mapping: "OTELInternalLogsMapping"
-            metrics_table_json_mapping: "OTELEngineMetricsMapping"
+            tables:
+              logs:
+                name: "OTELInternalLogs"
+                mapping: "OTELInternalLogsMapping"
+              metrics:
+                name: "OTELEngineMetrics"
+                mapping: "OTELEngineMetricsMapping"
             max_in_flight: 1
             network_requests:
               coalesce: true

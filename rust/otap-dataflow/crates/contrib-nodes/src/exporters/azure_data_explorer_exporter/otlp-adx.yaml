@@ -62,15 +62,18 @@ groups:
               # Target database
               db_name: "oteldb"
 
-              # Target tables (these are the defaults)
-              logs_table_name: "OTELLogs"
-              metrics_table_name: "OTELMetrics"
-              traces_table_name: "OTELTraces"
-
-              # Pre-created JSON mappings used by this ADX example
-              logs_table_json_mapping: "OTELLogsMapping"
-              metrics_table_json_mapping: "OTELMetricsMapping"
-              traces_table_json_mapping: "OTELTracesMapping"
+              # Target tables and pre-created JSON mappings
+              tables:
+                logs:
+                  name: "OTELLogs"
+		  # Pre-created JSON mappings used by this ADX example
+                  mapping: "OTELLogsMapping"
+                metrics:
+                  name: "OTELMetrics"
+                  mapping: "OTELMetricsMapping"
+                traces:
+                  name: "OTELTraces"
+                  mapping: "OTELTracesMapping"
 
               # Compression level (0=none, 9=max, default=6)
               gzip_compression_level: 6
