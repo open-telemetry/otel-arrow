@@ -160,6 +160,19 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
+    /// Visits the stored names produced by the capture rules.
+    pub fn visit_stored_names(&self, mut visit: impl FnMut(ContextEntryName)) {
+        for rule in &self.headers {
+            for name in &rule.match_names {
+                visit(
+                    rule.store_as
+                        .clone()
+                        .unwrap_or_else(|| name.to_ascii_lowercase()),
+                );
+            }
+        }
+    }
+
     /// Indexes capture rules and resolves original-name retention.
     ///
     /// Match names that are not valid HTTP header-name tokens remain available

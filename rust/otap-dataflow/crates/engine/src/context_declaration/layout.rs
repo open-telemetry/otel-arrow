@@ -5,10 +5,10 @@
 //!
 //! A projection identifies selected values and the enclosing composite whose
 //! presence a consumer must establish. This module compiles and resolves that
-//! model; it does not evaluate message values or change header propagation.
+//! model; header propagation reads selected fields and conditions through this layout.
 //!
 //! Layout-local IDs are not offsets into message storage. Runtime presence
-//! evaluation, consumer integration, and precomputed hashes are separate work.
+//! evaluation of whole-composite presence and precomputed hashes are separate work.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -168,6 +168,37 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
 }
 
 impl ContextLayout {
+    /// Gathers explicit primitives and all sources of selected composites before assigning IDs.
+    /// Header source names are canonicalized; identity names retain exact spelling.
+    pub(super) fn compile_selected(
+        fields: impl IntoIterator<Item = ContextFieldLayout>,
+        declarations: &[ContextEntryDeclaration],
+    ) -> Result<Self, Error> {
+        let mut fields = fields
+            .into_iter()
+            .chain(
+                declarations
+                    .iter()
+                    .flat_map(|declaration| &declaration.definition.0)
+                    .filter_map(|part| {
+                        Some(ContextFieldLayout {
+                            domain: part.domain()?,
+                            name: part.source_name()?.clone(),
+                        })
+                    }),
+            )
+            .map(|mut field| {
+                if field.domain == ContextDomain::TransportHeader {
+                    field.name = field.name.to_ascii_lowercase();
+                }
+                field
+            })
+            .collect::<Vec<_>>();
+        fields.sort_unstable();
+        fields.dedup();
+        Self::compile(fields, declarations)
+    }
+
     /// Compiles a binding's fields and entry declarations into a logical layout.
     pub fn compile(
         fields: impl IntoIterator<Item = ContextFieldLayout>,

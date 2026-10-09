@@ -28,7 +28,9 @@ use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
 use otel_arrow_dfe_config::transport_headers_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
+    CompiledHeaderCapturePolicy, HeaderCapturePolicy,
+    HeaderPropagationPolicy as HeaderPropagationConfig, NameStrategy, PropagationAction,
+    PropagationSelectorType, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -209,8 +211,8 @@ pub enum ContextDeclaration {
     },
     /// Declares the exporter's header propagation policy.
     HeaderPropagation {
-        /// Resolved propagation policy.
-        policy: HeaderPropagationPolicy,
+        /// Propagation settings resolved after the pipeline layout is compiled.
+        policy: HeaderPropagationConfig,
     },
     /// Declares the receiver's authorized identity claim projection policy.
     AuthorizedIdentityCapture {
@@ -270,11 +272,63 @@ impl ContextDeclaration {
             | Self::HeaderCapture { .. }
             | Self::AuthorizedIdentityCapture { .. } => {}
             Self::HeaderPropagation { policy } => {
+                let mut selected = BTreeSet::new();
+                for reference in policy.default.selector.named.iter().flatten() {
+                    let target = match reference.scope() {
+                        Some(composite) => ContextEntryTarget::CompositeMember {
+                            composite: composite.clone(),
+                            member: reference.name().clone(),
+                        },
+                        None => ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name: reference.name().clone(),
+                        },
+                    };
+                    for source in target.selected_sources(composites)? {
+                        if let SelectedSource::Field(ContextDomain::TransportHeader, name) = source
+                        {
+                            _ = selected.insert(name.to_ascii_lowercase());
+                        }
+                    }
+                }
+                let all =
+                    policy.default.selector.selector_type == PropagationSelectorType::AllCaptured;
                 requirements
                     .original_name_retention
-                    .default_preserve_original = policy.propagates_original_name_by_default();
-                policy.visit_original_name_requirement_names(|name| {
-                    let preserve_original = policy.propagates_original_name(name);
+                    .default_preserve_original = all
+                    && policy.default.action == PropagationAction::Propagate
+                    && policy.default.name == NameStrategy::Preserve;
+                let names = selected
+                    .iter()
+                    .cloned()
+                    .chain(
+                        policy
+                            .overrides
+                            .iter()
+                            .flat_map(|policy| &policy.match_rule.stored_names)
+                            .map(ContextEntryName::to_ascii_lowercase),
+                    )
+                    .collect::<BTreeSet<_>>();
+                for name in names {
+                    let override_policy = policy.overrides.iter().find(|policy| {
+                        policy
+                            .match_rule
+                            .stored_names
+                            .iter()
+                            .any(|stored| stored.eq_ignore_ascii_case(name.as_str()))
+                    });
+                    let preserve_original = match override_policy {
+                        Some(override_policy) => {
+                            override_policy.action == PropagationAction::Propagate
+                                && override_policy.name.unwrap_or(policy.default.name)
+                                    == NameStrategy::Preserve
+                        }
+                        None => {
+                            (all || selected.contains(&name))
+                                && policy.default.action == PropagationAction::Propagate
+                                && policy.default.name == NameStrategy::Preserve
+                        }
+                    };
                     if preserve_original
                         != requirements
                             .original_name_retention
@@ -283,9 +337,9 @@ impl ContextDeclaration {
                         _ = requirements
                             .original_name_retention
                             .overrides
-                            .insert(original_name_key(name), preserve_original);
+                            .insert(original_name_key(&name), preserve_original);
                     }
-                });
+                }
             }
         }
         Ok(requirements)
@@ -406,6 +460,8 @@ where
 pub struct CompiledContextBindings {
     /// Compiled node bindings indexed first by pipeline, then by node.
     by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
+    /// One immutable logical layout shared by the bindings of each pipeline.
+    layouts: HashMap<PipelineKey, Arc<ContextLayout>>,
 }
 
 /// Stores one node's component declarations, selected composites, and engine context policies.
@@ -444,17 +500,28 @@ impl PreparedNodeContextDeclarations {
         declarations: NodeContextDeclarations,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<Self, Error> {
-        let composite_names = declarations
-            .iter()
-            .filter_map(|declaration| match declaration {
+        let mut composite_names = BTreeSet::new();
+        for declaration in declarations.iter() {
+            match declaration {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries { entries },
-                } => Some(entries.iter()),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|entry| entry.target.composite_name())
-            .collect::<BTreeSet<_>>();
+                } => composite_names.extend(
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.target.composite_name()),
+                ),
+                ContextDeclaration::HeaderPropagation { policy } => composite_names.extend(
+                    policy
+                        .default
+                        .selector
+                        .named
+                        .iter()
+                        .flatten()
+                        .filter_map(|reference| reference.scope()),
+                ),
+                _ => {}
+            }
+        }
         let composites = composite_names
             .into_iter()
             .map(|name| {
@@ -477,6 +544,49 @@ impl PreparedNodeContextDeclarations {
             composites,
             requirements,
         })
+    }
+
+    fn primitive_fields(&self) -> Vec<ContextFieldLayout> {
+        let mut fields = Vec::new();
+        for declaration in self.declarations.iter() {
+            match declaration {
+                ContextDeclaration::Produces { domain, entry } => fields.push(ContextFieldLayout {
+                    domain: *domain,
+                    name: entry.clone(),
+                }),
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries { entries },
+                } => {
+                    for entry in entries {
+                        if let ContextEntryTarget::Primitive { domain, name } = &entry.target {
+                            fields.push(ContextFieldLayout {
+                                domain: *domain,
+                                name: name.clone(),
+                            });
+                        }
+                    }
+                }
+                ContextDeclaration::HeaderCapture { policy } => policy.visit_stored_names(|name| {
+                    fields.push(ContextFieldLayout {
+                        domain: ContextDomain::TransportHeader,
+                        name,
+                    })
+                }),
+                ContextDeclaration::AuthorizedIdentityCapture { policy } => {
+                    fields.extend(policy.iter().map(|entry| ContextFieldLayout {
+                        domain: ContextDomain::AuthorizedIdentity,
+                        name: entry.store_as.clone(),
+                    }))
+                }
+                ContextDeclaration::HeaderPropagation { policy } => {
+                    fields.extend(propagation::primitive_fields(policy))
+                }
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::AllStored { .. },
+                } => {}
+            }
+        }
+        fields
     }
 }
 
@@ -614,7 +724,8 @@ impl CompiledNodeBindings {
     fn compile(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
-    ) -> Self {
+        layout: &Arc<ContextLayout>,
+    ) -> Result<Self, Error> {
         let mut component_declarations = Vec::new();
         let mut header_capture = None;
         let mut header_propagation = None;
@@ -630,7 +741,10 @@ impl CompiledNodeBindings {
                         Some(policy.compile(|name| requirements.preserves_original_name(name)));
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
-                    header_propagation = Some(policy);
+                    header_propagation = Some(
+                        HeaderPropagationPolicy::bind(policy, Arc::clone(layout))
+                            .map_err(invalid_context)?,
+                    );
                 }
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
                     authorized_identity_capture = Some(policy);
@@ -638,13 +752,13 @@ impl CompiledNodeBindings {
             }
         }
 
-        Self {
+        Ok(Self {
             component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
             header_capture,
             header_propagation,
             authorized_identity_capture,
-        }
+        })
     }
 
     /// Returns whether the node has no component declarations or engine context policies.
@@ -662,6 +776,7 @@ impl CompiledContextBindings {
     pub fn empty() -> Self {
         Self {
             by_pipeline: HashMap::new(),
+            layouts: HashMap::new(),
         }
     }
 
@@ -669,24 +784,41 @@ impl CompiledContextBindings {
     fn compile(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        let mut layouts = HashMap::new();
         let by_pipeline = declarations
             .into_iter()
             .map(|(pipeline, nodes)| {
+                let composites = nodes
+                    .values()
+                    .flat_map(|node| node.composites.iter().cloned())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let layout = Arc::new(ContextLayout::compile_selected(
+                    nodes
+                        .values()
+                        .flat_map(PreparedNodeContextDeclarations::primitive_fields),
+                    &composites,
+                )?);
                 let nodes = nodes
                     .into_iter()
                     .map(|(node, declarations)| {
-                        (
+                        Ok((
                             node,
-                            CompiledNodeBindings::compile(declarations, requirements),
-                        )
+                            CompiledNodeBindings::compile(declarations, requirements, &layout)?,
+                        ))
                     })
-                    .collect();
-                (pipeline, nodes)
+                    .collect::<Result<_, Error>>()?;
+                _ = layouts.insert(pipeline.clone(), layout);
+                Ok((pipeline, nodes))
             })
-            .collect();
+            .collect::<Result<_, Error>>()?;
 
-        Self { by_pipeline }
+        Ok(Self {
+            by_pipeline,
+            layouts,
+        })
     }
 
     /// Returns the node's compiled header capture policy.
@@ -731,6 +863,9 @@ impl CompiledContextBindings {
     /// Compares one pipeline's bindings while ignoring nodes without context declarations.
     #[must_use]
     pub fn pipeline_bindings_match(&self, other: &Self, pipeline: &PipelineKey) -> bool {
+        if self.layouts.get(pipeline) != other.layouts.get(pipeline) {
+            return false;
+        }
         let current = self.by_pipeline.get(pipeline);
         let candidate = other.by_pipeline.get(pipeline);
         let current_binding_count = current
@@ -782,7 +917,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
         let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = Self::compile_bindings(declarations, &runtime_requirements);
+        let bindings = Self::compile_bindings(declarations, &runtime_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
             bindings,
@@ -797,7 +932,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
         let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = Self::compile_bindings(declarations, installed_requirements);
+        let bindings = Self::compile_bindings(declarations, installed_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
             bindings,
@@ -808,8 +943,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     fn compile_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
-    ) -> Arc<CompiledContextBindings> {
-        Arc::new(CompiledContextBindings::compile(declarations, requirements))
+    ) -> Result<Arc<CompiledContextBindings>, EngineError> {
+        CompiledContextBindings::compile(declarations, requirements)
+            .map(Arc::new)
+            .map_err(|error| EngineError::ConfigError(Box::new(error)))
     }
 
     /// Collects and validates component and engine declarations for each resolved pipeline node.
@@ -835,7 +972,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
-                    &pipeline.policies.context,
                 )?;
                 let declarations = component_declarations
                     .into_iter()
@@ -857,7 +993,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
-        context: &[ConfigContextEntryDeclaration],
     ) -> Result<NodeContextDeclarations, EngineError> {
         let declarations = match node.kind() {
             NodeKind::Receiver => node
@@ -888,8 +1023,9 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 policy
                     .cloned()
                     .map(|policy| {
-                        HeaderPropagationPolicy::compile(policy, context)
-                            .map(|policy| ContextDeclaration::HeaderPropagation { policy })
+                        policy
+                            .validate()
+                            .map(|()| ContextDeclaration::HeaderPropagation { policy })
                             .map_err(|error| {
                                 EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
                                     error,
@@ -1196,6 +1332,7 @@ groups:
         let declarations = declarations_by_pipeline(effective);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         CompiledContextBindings::compile(declarations, &requirements)
+            .expect("test bindings compile")
     }
 
     /// Derives runtime requirements from one test node's declarations.
@@ -1742,8 +1879,6 @@ groups:
             }]
         }))
         .expect("valid propagation policy");
-        let propagation = HeaderPropagationPolicy::compile(propagation, &[])
-            .expect("propagation policy compiles");
         let requirements = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
                 policy: propagation,
@@ -1834,17 +1969,13 @@ groups:
         );
         let unsupported_default = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(
-                    serde_json::from_value(serde_json::json!({
-                        "default": {
-                            "selector": {"type": "all_captured"},
-                            "name": "preserve"
-                        }
-                    }))
-                    .expect("valid propagation policy"),
-                    &[],
-                )
-                .expect("propagation policy compiles"),
+                policy: serde_json::from_value(serde_json::json!({
+                    "default": {
+                        "selector": {"type": "all_captured"},
+                        "name": "preserve"
+                    }
+                }))
+                .expect("valid propagation policy"),
             }]
             .into_iter()
             .collect(),
@@ -1870,8 +2001,6 @@ groups:
             }
         }))
         .expect("valid propagation policy");
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         let declarations: NodeContextDeclarations = [ContextDeclaration::HeaderPropagation {
             policy: policy.clone(),
         }]
@@ -1882,6 +2011,7 @@ groups:
         let requirements = context_runtime_requirements(declarations.clone());
         assert!(requirements.preserves_original_name(&context_name("preserved")));
         assert!(!requirements.preserves_original_name(&context_name("other")));
+        let policy = HeaderPropagationPolicy::compile(policy, &[]).expect("compiled policy");
         assert_eq!(
             compiled.header_propagation_policy(
                 &pipeline("group", "pipeline"),
@@ -1927,7 +2057,6 @@ groups:
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
             )
             .expect("wrapper declarations"),
             [
@@ -1948,7 +2077,6 @@ groups:
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
             )
             .expect("wrapper declarations"),
             [
@@ -1971,12 +2099,10 @@ groups:
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(node_propagation, &[])
-                    .expect("node propagation policy compiles"),
+                policy: node_propagation,
             }]
             .into_iter()
             .collect(),
@@ -1988,12 +2114,10 @@ groups:
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
-                &[],
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(pipeline_policy.header_propagation, &[])
-                    .expect("pipeline propagation policy compiles"),
+                policy: pipeline_policy.header_propagation,
             }]
             .into_iter()
             .collect(),
@@ -2001,7 +2125,7 @@ groups:
     }
 
     /// Scenario: an exporter selects a conditional composite transport-header member.
-    /// Guarantees: wrapper compilation resolves the visible declaration before installing policy.
+    /// Guarantees: collected wrapper settings resolve against the layout before policy installation.
     #[test]
     fn wrapper_compiles_conditional_composite_header_propagation() {
         let context: otel_arrow_dfe_config::context_policy::ContextPolicy = serde_yaml::from_str(
@@ -2037,18 +2161,16 @@ default:
             .expect("valid propagation policy"),
         );
 
-        let declarations = PipelineFactory::<()>::wrapper_context_declarations(
-            &exporter,
-            &None,
-            &None,
-            &[declaration],
-        )
-        .expect("wrapper declarations");
+        let declarations =
+            PipelineFactory::<()>::wrapper_context_declarations(&exporter, &None, &None)
+                .expect("wrapper declarations");
         let ContextDeclaration::HeaderPropagation { policy } =
             declarations.iter().next().expect("propagation declaration")
         else {
             panic!("expected header propagation declaration");
         };
+        let policy = HeaderPropagationPolicy::compile(policy.clone(), &[declaration])
+            .expect("compiled policy");
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
         assert_eq!(policy.propagate(&headers).count(), 0);
@@ -2161,7 +2283,7 @@ default:
             (
                 "[{type: transport_header, name: workspace, store_as: workspace_id}]",
                 "tenant:missing",
-                "context entry reference `tenant:missing` does not select a transport-header member",
+                "unknown context member `tenant:missing`",
             ),
             (
                 "[{type: authorized_identity, name: customer_id}]",
@@ -2189,7 +2311,7 @@ default:
 
         for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
             let declarations =
-                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy, &[])
+                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy)
                     .expect("wrapper declarations");
             assert!(declarations.is_empty());
 
@@ -2259,7 +2381,7 @@ default:
             serde_json::from_value(serde_json::json!({"entry": "changed"}))
                 .expect("valid changed config");
         let propagation_declaration = ContextDeclaration::HeaderPropagation {
-            policy: HeaderPropagationPolicy::default(),
+            policy: HeaderPropagationConfig::default(),
         };
         let declarations = matching
             .context_declarations()
@@ -2275,7 +2397,8 @@ default:
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = CompiledContextBindings::compile(declarations, &requirements);
+        let bindings = CompiledContextBindings::compile(declarations, &requirements)
+            .expect("compiled bindings");
 
         assert!(
             bindings
@@ -2307,6 +2430,11 @@ default:
         else {
             unreachable!("test declaration is header propagation");
         };
+        let propagation_policy = HeaderPropagationPolicy::bind(
+            propagation_policy,
+            Arc::clone(&bindings.layouts[&pipeline]),
+        )
+        .expect("bound policy");
         assert_eq!(
             bindings.header_propagation_policy(&pipeline, &node),
             Some(&propagation_policy)
@@ -2337,5 +2465,200 @@ default:
                 .validate_node_declarations(&key, &node, &declarations)
                 .is_err()
         );
+    }
+
+    /// Scenario: two exporters select the same composite alongside capture and identity policies.
+    /// Guarantees: one pipeline layout supplies identical IDs to both runtime policies, unused
+    /// definitions remain inactive, and propagation still ignores missing unselected members.
+    #[test]
+    fn exporters_share_pipeline_layout_without_changing_presence() {
+        let yaml = conditional_pipeline_yaml(
+            "[{type: transport_header, name: WORKSPACE, store_as: workspace_id}, \
+              {type: authorized_identity, name: customer}, \
+              {type: transport_header_match, name: environment, value: production}]",
+            "tenant:workspace_id",
+        ).replace("name: stored_name", "name: preserve")
+        .replace("policies:\n", "policies:\n  transport_headers:\n    header_capture:\n      headers:\n        - {match_names: [X-Workspace], store_as: Workspace}\n        - {match_names: [X-Environment], store_as: environment}\n  authorized_identity:\n    - {claim: sub, store_as: customer}\n")
+        .replace("      tenant:", "      unused: [{type: transport_header, name: unused}]\n      tenant:")
+        .replace("        connections:", r#"          second:
+            type: urn:test:exporter:example
+            config: {}
+            header_propagation:
+              default:
+                selector: {type: named, named: ['tenant:workspace_id']}
+                name: stored_name
+        connections:"#)
+        .replace("            to: exporter", "            to: exporter\n          - from: receiver\n            to: second");
+        let resolve = |yaml: &str| {
+            otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(yaml)
+                .expect("config")
+                .resolve()
+        };
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&resolve(&yaml))
+            .expect("compiled");
+        let key = pipeline("default", "main");
+        let first = installed
+            .bindings
+            .header_propagation_policy(&key, &"exporter".into())
+            .expect("first");
+        let second = installed
+            .bindings
+            .header_propagation_policy(&key, &"second".into())
+            .expect("second");
+        let layout = &installed.bindings.layouts[&key];
+        assert!(Arc::ptr_eq(first.layout(), layout));
+        assert!(Arc::ptr_eq(second.layout(), layout));
+        assert_eq!(layout.entries().len(), 1);
+        assert_eq!(layout.fields().len(), 3);
+        let capture = installed
+            .bindings
+            .header_capture_policy(&key, &"receiver".into())
+            .expect("capture");
+        let mut headers = TransportHeaders::new();
+        assert!(
+            capture
+                .capture_from_pairs(
+                    [
+                        ("X-Workspace", b"acme".as_slice()),
+                        ("X-Environment", b"production".as_slice())
+                    ]
+                    .into_iter(),
+                    &mut headers,
+                )
+                .is_none()
+        );
+        let output = first.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].header_name, "X-Workspace");
+        let output = second.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].header_name, "workspace_id");
+        assert_eq!(output[0].value, b"acme");
+
+        let changed = yaml.replace("name: unused}", "name: other_unused}");
+        let candidate = factory
+            .compile_candidate_context(&resolve(&changed), &installed.runtime_requirements)
+            .expect("candidate");
+        assert!(
+            installed
+                .bindings
+                .pipeline_bindings_match(&candidate.bindings, &key)
+        );
+    }
+
+    /// Scenario: two pipelines select differently defined composites with the same name.
+    /// Guarantees: compilation includes explicit primitive declarations and dependencies once,
+    /// while layouts and propagation results remain local to each pipeline.
+    #[test]
+    fn shared_layouts_are_pipeline_local() {
+        let mut pipelines = ContextDeclarationsByPipeline::new();
+        for source in ["first", "second"] {
+            let context: otel_arrow_dfe_config::context_policy::ContextPolicy = serde_yaml::from_str(
+                &format!("entries:\n  tenant:\n    - {{type: transport_header, name: {source}, store_as: id}}"),
+            ).expect("context");
+            let composites = context
+                .entries
+                .into_iter()
+                .map(|(name, definition)| ConfigContextEntryDeclaration {
+                    name,
+                    definition,
+                    scope: otel_arrow_dfe_config::context_policy::ContextScope::Engine,
+                })
+                .collect::<Vec<_>>();
+            let config = serde_yaml::from_str(
+                "default:\n  selector: {type: named, named: ['tenant:id']}\n  name: stored_name",
+            )
+            .expect("config");
+            let declarations = [
+                ContextDeclaration::Produces {
+                    domain: ContextDomain::TransportHeader,
+                    entry: context_name("request_id"),
+                },
+                ContextDeclaration::HeaderPropagation { policy: config },
+            ]
+            .into_iter()
+            .collect();
+            _ = pipelines.insert(
+                pipeline("group", source),
+                HashMap::from([(
+                    ConfigNodeId::from("node"),
+                    PreparedNodeContextDeclarations::new(declarations, &composites)
+                        .expect("declarations"),
+                )]),
+            );
+        }
+        let requirements = ContextRuntimeRequirements::compile(&pipelines);
+        let bindings =
+            CompiledContextBindings::compile(pipelines, &requirements).expect("bindings");
+        let mut headers = TransportHeaders::new();
+        for source in ["first", "second"] {
+            headers.push(TransportHeader::text(
+                context_name(source),
+                source.as_bytes(),
+            ));
+        }
+        for source in ["first", "second"] {
+            let key = pipeline("group", source);
+            let layout = &bindings.layouts[&key];
+            assert_eq!(layout.fields().len(), 2);
+            assert!(
+                layout
+                    .resolve_primitive(ContextDomain::TransportHeader, &context_name("request_id"))
+                    .is_ok()
+            );
+            let policy = bindings
+                .header_propagation_policy(&key, &"node".into())
+                .expect("policy");
+            assert!(Arc::ptr_eq(policy.layout(), layout));
+            let output = policy.propagate(&headers).collect::<Vec<_>>();
+            assert_eq!(output.len(), 1);
+            assert_eq!(output[0].header_name, "id");
+            assert_eq!(output[0].value, source.as_bytes());
+        }
+        assert!(!Arc::ptr_eq(
+            &bindings.layouts[&pipeline("group", "first")],
+            &bindings.layouts[&pipeline("group", "second")]
+        ));
+    }
+
+    /// Scenario: deferred propagation binding uses mixed-case selectors and overlapping overrides.
+    /// Guarantees: pre-layout capture requirements agree with the bound policy's name retention,
+    /// including first-override precedence and case-insensitive qualified source aliases.
+    #[test]
+    fn deferred_retention_matches_bound_policy() {
+        let context = [mixed_composite()];
+        for selector in [
+            "{type: all_captured}",
+            "{type: none}",
+            "{type: named, named: ['tenant:header_id', other]}",
+            "{type: named, named: [ID, id, other]}",
+        ] {
+            for name in ["preserve", "stored_name"] {
+                let policy: HeaderPropagationConfig = serde_yaml::from_str(&format!(
+                    "default:\n  selector: {selector}\n  name: {name}\noverrides:\n\
+                     - match: {{stored_names: [ID]}}\n  name: preserve\n\
+                     - match: {{stored_names: [id]}}\n  action: drop\n\
+                     - match: {{stored_names: [other]}}\n  name: stored_name\n"
+                ))
+                .expect("policy");
+                let declaration = ContextDeclaration::HeaderPropagation {
+                    policy: policy.clone(),
+                };
+                let requirements = declaration
+                    .context_runtime_requirements(&context)
+                    .expect("requirements");
+                let bound =
+                    HeaderPropagationPolicy::compile(policy, &context).expect("bound policy");
+                for name in ["id", "ID", "other", "unmentioned"] {
+                    let name = context_name(name);
+                    assert_eq!(
+                        requirements.preserves_original_name(&name),
+                        bound.propagates_original_name(&name)
+                    );
+                }
+            }
+        }
     }
 }
