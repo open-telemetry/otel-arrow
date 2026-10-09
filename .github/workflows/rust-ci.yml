@@ -573,6 +573,15 @@ jobs:
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: Install nightly wasm guest target
+        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
+      - name: Check the reference WASM guest
+        run: >
+          rustup run nightly cargo build
+          --manifest-path crates/wasm-host/plugins/severity-filter/Cargo.toml
+          --release
+          --target wasm32-wasip3
+        working-directory: ./rust/otap-dataflow
       - name: Install nextest
         uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
@@ -612,7 +621,7 @@ jobs:
           # still separate incompatible Linux and Windows artifacts.
           shared-key: build_required
           # Bump in both Windows cache steps when the synchronized feature set changes.
-          key: windows-features-v2
+          key: windows-features-v3
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: false
@@ -631,8 +640,9 @@ jobs:
         # warmer so PR and merge-queue builds can reuse its target artifacts.
         # The complete component inventory is validated by the Linux all-feature
         # build; including its dev-dependencies here would pull Kafka and OpenSSL
-        # into this reduced-feature SymCrypt build.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
+        # into this reduced-feature SymCrypt build. The wasm feature is included
+        # so Windows runs the WASM host tests as well as the portable test suite.
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -668,8 +678,8 @@ jobs:
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: Build the test collector
         run: make otelarrowcol
-      - name: Install wasm32-wasip2 target
-        run: rustup target add wasm32-wasip2
+      - name: Install nightly wasm guest target
+        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
         working-directory: ./rust/otap-dataflow
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -718,6 +728,9 @@ jobs:
         uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest
+      - name: Install nightly wasm guest target
+        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
+        working-directory: ./rust/otap-dataflow
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -818,8 +831,8 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
         run: make otelarrowcol
-      - name: Install wasm32-wasip2 target
-        run: rustup target add wasm32-wasip2
+      - name: Install nightly wasm guest target
+        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
         working-directory: ./rust/otap-dataflow
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --locked --profile ci --all-features --workspace --lcov --output-path lcov.info

@@ -1,0 +1,6 @@
+change_type: enhancement
+component: pipeline
+note: "WASM processors enforce host-owned deadlines for guest initialization and processing, in addition to fuel and resource limits."
+issues: [2973, 3227]
+subtext: |
+  Experimental wasm uses Wasmtime 49 (Rust 1.96+), the component model, initialization, bounded execution time and resources, host services, inert WASI CLI, and real clock reads. Future clock waits fail.
