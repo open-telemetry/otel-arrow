@@ -279,6 +279,7 @@ flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
 time = ">=0.3.47, <0.3.56"
+windows-sys = "0.61.2"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
