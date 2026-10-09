@@ -77,13 +77,21 @@ fn worker_scratch_stays_within_model() {
 // establish churn outside the allocation interval without inspecting private caches.
 fn verify_churn(body: &[u8]) {
     use regex_automata::{Input, MatchErrorKind, hybrid::dfa, nfa::thompson, util::syntax};
-    let dfa = dfa::Builder::new()
+    // Build the NFA explicitly: DFA::Builder::build would discard captures,
+    // whereas production meta retains the implicit whole-match capture.
+    let nfa = thompson::NFA::compiler()
         .syntax(syntax::Config::new().unicode(false).utf8(false))
-        .thompson(
+        .configure(
             thompson::Config::new()
                 .utf8(false)
+                .shrink(false)
                 .which_captures(thompson::WhichCaptures::Implicit),
         )
+        .build(r"^[ab]*a[ab]{20}[ab]$")
+        .expect("production-equivalent NFA");
+    assert_eq!(nfa.group_info().slot_len(), 2);
+    // These cache controls must match the audited meta engine's defaults.
+    let dfa = dfa::Builder::new()
         .configure(
             dfa::Config::new()
                 .cache_capacity(64 * 1024)
@@ -92,7 +100,7 @@ fn verify_churn(body: &[u8]) {
                 .minimum_cache_clear_count(Some(3))
                 .minimum_bytes_per_state(Some(10)),
         )
-        .build(r"^[ab]*a[ab]{20}[ab]$")
+        .build_from_nfa(nfa)
         .expect("lazy DFA");
     let mut cache = dfa.create_cache();
     let error = dfa
