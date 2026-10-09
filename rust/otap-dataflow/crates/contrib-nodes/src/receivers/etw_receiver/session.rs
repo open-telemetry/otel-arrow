@@ -270,6 +270,18 @@ impl std::fmt::Display for CanonicalGuid {
 pub struct EtwEventData {
     /// Provider GUID that produced the event, in canonical byte order.
     pub provider_id: CanonicalGuid,
+    /// Provider name supplied in configuration.
+    ///
+    /// `None` for GUID-only providers; no reverse lookup is performed.
+    ///
+    /// The ETW callback shares this immutable name with worker cores via `Arc`
+    /// to avoid allocating and copying a string for every event. Each event
+    /// clone and drop updates the atomic reference count, which can contend
+    /// across cores for a high-volume provider. This is an allocation-versus-
+    /// synchronization tradeoff, not a claim of performance neutrality; its
+    /// throughput impact has not been benchmarked. Provider enumeration and
+    /// early stopping remain unchanged.
+    pub provider_name: Option<Arc<str>>,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
     /// Derived from `EVENT_HEADER.TimeStamp` (QPC ticks) using a reference
@@ -1139,7 +1151,7 @@ fn spawn_etw_session(
     } else {
         collect_wanted_providers(&wanted, |visit| for_each_registered_provider(visit))
     };
-    let resolved_providers: Vec<(Guid, u8, Option<u64>, Vec<u16>)> = config
+    let resolved_providers: Vec<(Guid, Option<Arc<str>>, u8, Option<u64>, Vec<u16>)> = config
         .providers
         .iter()
         .enumerate()
@@ -1153,9 +1165,10 @@ fn spawn_etw_session(
                 require_event_ids_registered_manifest(i, resolution)?;
             }
 
+            let provider_name = p.name.as_deref().map(Arc::<str>::from);
             let level = trace_level_to_etw(&p.level);
             let event_ids = p.event_ids.iter().flatten().copied().collect::<Vec<_>>();
-            Ok((guid, level, p.keywords, event_ids))
+            Ok((guid, provider_name, level, p.keywords, event_ids))
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -1168,7 +1181,7 @@ fn spawn_etw_session(
     // intended dual-capture case (the same name under `kind: manifest` vs
     // `kind: tracelogging`) resolves to two different GUIDs and is unaffected.
     let mut seen: HashSet<[u8; 16]> = HashSet::with_capacity(resolved_providers.len());
-    for (guid, _, _, _) in &resolved_providers {
+    for (guid, _, _, _, _) in &resolved_providers {
         if !seen.insert(guid.to_bytes()) {
             return Err(Error::ConfigError(Box::new(
                 otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -1192,7 +1205,7 @@ fn spawn_etw_session(
             let mut session = EtwSession::new();
 
             // Enable each configured provider.
-            for (guid, level, keywords, event_ids) in &resolved_providers {
+            for (guid, _, level, keywords, event_ids) in &resolved_providers {
                 let enabler = session.enable_provider(*guid);
                 enabler.ensure_level(*level);
                 if let Some(kw) = keywords {
@@ -1233,7 +1246,7 @@ fn spawn_etw_session(
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
-            for (guid, level, keywords, _) in &resolved_providers {
+            for (guid, provider_name, level, keywords, _) in &resolved_providers {
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
                 // Mark as a wildcard event so the callback fires for ALL
                 // event IDs from this provider, not just event ID 0.
@@ -1251,6 +1264,7 @@ fn spawn_etw_session(
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
+                let provider_name = provider_name.clone();
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1333,6 +1347,7 @@ fn spawn_etw_session(
                     let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
                         provider_id: CanonicalGuid::from(anc.provider()),
+                        provider_name: provider_name.clone(),
                         timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
@@ -2196,9 +2211,10 @@ mod tests {
         ];
         let wanted: HashSet<String> = ["alpha".to_string()].into_iter().collect();
         let visited = Cell::new(0);
-        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
-        assert_eq!(map.len(), 1);
-        assert!(map.contains_key("alpha"));
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(lookup.len(), 1);
+        assert!(lookup.contains_key("alpha"));
         assert_eq!(
             visited.get(),
             1,
@@ -2223,11 +2239,12 @@ mod tests {
             .into_iter()
             .collect();
         let visited = Cell::new(0);
-        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
-        assert_eq!(map.len(), 2);
-        assert!(map.contains_key("alpha") && map.contains_key("gamma"));
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(lookup.len(), 2);
+        assert!(lookup.contains_key("alpha") && lookup.contains_key("gamma"));
         assert!(
-            !map.contains_key("beta"),
+            !lookup.contains_key("beta"),
             "unwanted names must not be retained"
         );
         assert_eq!(visited.get(), 3, "must scan through the last wanted name");
@@ -2248,9 +2265,49 @@ mod tests {
         ];
         let wanted: HashSet<String> = ["dup".to_string()].into_iter().collect();
         let visited = Cell::new(0);
-        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
-        assert_eq!(map["dup"].guid.to_bytes(), first.to_bytes());
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(lookup["dup"].guid.to_bytes(), first.to_bytes());
         assert_eq!(visited.get(), 1, "first match satisfies the wanted set");
+    }
+
+    /// Scenario: A registered name is configured alongside a GUID-only provider
+    /// whose GUID is absent from the database.
+    /// Guarantees: Enumeration stops after the named provider is found without
+    /// scanning for the GUID-only provider.
+    #[test]
+    fn collect_wanted_providers_ignores_guid_only_providers_when_stopping() {
+        let providers = [
+            name_provider("Registered.Provider", Some(ProviderKind::Manifest)),
+            ProviderConfig {
+                name: None,
+                guid: Some("11112222-3333-4444-5555-666677778888".to_string()),
+                kind: None,
+                level: TraceLevel::default(),
+                keywords: None,
+                event_ids: None,
+            },
+        ];
+        let entries = [
+            (
+                "Registered.Provider",
+                Guid::from_u128(1),
+                ProviderSchemaSource::Manifest,
+            ),
+            (
+                "Unrelated",
+                Guid::from_u128(2),
+                ProviderSchemaSource::Manifest,
+            ),
+        ];
+        let wanted = wanted_lookup_names(&providers);
+        let visited = Cell::new(0);
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+
+        assert_eq!(lookup.len(), 1);
+        assert!(lookup.contains_key("registered.provider"));
+        assert_eq!(visited.get(), 1);
     }
 
     /// Scenario: The enumeration driver itself fails (as a live
