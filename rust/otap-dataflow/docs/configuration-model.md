@@ -444,6 +444,23 @@ Optional observability policies are supported at:
 
 `resources` is intentionally not supported for observability and is rejected.
 
+### Controller Startup
+
+Initial startup reconciliation waits up to 30 seconds for each configured
+pipeline rollout step to become ready. Set
+`engine.controller.startup_step_timeout_secs` to a positive number of seconds
+to raise or lower that limit. If startup fails, the controller gives all
+regular pipelines a shared 30-second global drain window before stopping system
+observability. Set
+`engine.controller.startup_failure_drain_timeout_secs` to change that window:
+
+```yaml
+engine:
+  controller:
+    startup_step_timeout_secs: 90
+    startup_failure_drain_timeout_secs: 60
+```
+
 ### Controller Extensions
 
 Trusted in-process controller extensions can be declared at
