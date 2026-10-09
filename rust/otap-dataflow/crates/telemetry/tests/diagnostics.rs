@@ -7,7 +7,7 @@ use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
 use otel_arrow_dfe_pdata_views::views::logs::LogRecordView;
 use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, DiagnosticTracker};
-use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
+use otel_arrow_dfe_telemetry::self_tracing::{LOG_ARGUMENTS_ENCODE_LIMIT, LogContext, LogRecord};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -102,25 +102,30 @@ fn suppression_precedes_all_subscribers() {
     assert_eq!(formats.get(), 2);
 }
 
-/// Scenario: A diagnostic contains error detail larger than the bounded ITS event buffer.
-/// Guarantees: Priority context and a truncated error body survive real ITS encoding.
+/// Scenario: A diagnostic's retained detail fits the grown bounded ITS event buffer.
+/// Guarantees: Priority context and the complete bounded error body survive real ITS encoding.
 #[test]
 fn priority_detail_survives_bounded_its_encoding() {
     let capture = EncodedCapture::default();
-    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
-        let mut tracker = DiagnosticTracker::default();
-        let report = tracker
-            .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
-                format!("root cause: {}", "x".repeat(2_000))
-            })
-            .expect("first failure must produce a report");
-        otel_arrow_dfe_telemetry::otel_diagnostic_report!(
-            target: "otel.exporter.test", emit: otel_warn,
-            name: "test.export_error", report: &report,
-            signal = "logs", retryable = true,
-            diagnostic_kind = "first_failure", message = %report.detail.as_str()
-        );
-    });
+    let expected_body = tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(capture.clone()),
+        || {
+            let mut tracker = DiagnosticTracker::default();
+            let report = tracker
+                .failure(Instant::now(), DiagnosticErrorKind::Transport, || {
+                    format!("root cause: {}", "x".repeat(LOG_ARGUMENTS_ENCODE_LIMIT * 2))
+                })
+                .expect("first failure must produce a report");
+            let expected_body = report.detail.clone();
+            otel_arrow_dfe_telemetry::otel_diagnostic_report!(
+                target: "otel.exporter.test", emit: otel_warn,
+                name: "test.export_error", report: &report,
+                signal = "logs", retryable = true,
+                diagnostic_kind = "first_failure", message = %report.detail.as_str()
+            );
+            expected_body
+        },
+    );
 
     let events = capture.0.lock().expect("capture lock must not be poisoned");
     assert_eq!(events.len(), 1);
@@ -135,8 +140,7 @@ fn priority_detail_survives_bounded_its_encoding() {
             .expect("diagnostic error body must be a string"),
     )
     .expect("diagnostic error body must be valid UTF-8");
-    assert!(body.starts_with("root cause: "));
-    assert!(body.ends_with("[...]"));
+    assert_eq!(body, expected_body);
 
     let attribute_keys = record
         .attributes()
@@ -148,8 +152,8 @@ fn priority_detail_survives_bounded_its_encoding() {
             "missing priority attribute {required}"
         );
     }
-    assert!(
-        *dropped_attributes > 0,
-        "oversized diagnostics must report lower-priority truncation"
+    assert_eq!(
+        *dropped_attributes, 0,
+        "the grown event buffer must preserve all diagnostic fields"
     );
 }

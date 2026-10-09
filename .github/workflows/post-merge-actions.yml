@@ -78,6 +78,8 @@ jobs:
         with:
           prefix-key: v1-rust
           shared-key: build_required
+          # Bump in both Windows cache steps when the synchronized feature set changes.
+          key: windows-features-v3
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -101,5 +103,5 @@ jobs:
       - name: Warm required build cache
         if: steps.rust-cache.outputs.cache-hit != 'true'
         # Keep the feature set synchronized with rust-ci.yml's required Windows build.
-        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --list-type binaries-only --message-format json
+        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --list-type binaries-only --message-format json
         working-directory: ./rust/otap-dataflow
