@@ -8,6 +8,8 @@
 //! definition supplies each member's value source (a domain-backed field or configured
 //! constant) and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
+//! Each pipeline gathers its selected declarations and primitive fields, compiles
+//! one layout, then binds every node's policies against that shared layout.
 
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
@@ -564,14 +566,12 @@ impl PreparedNodeContextDeclarations {
         })
     }
 
-    /// Returns the node-local layout fragments consumed by pipeline compilation.
-    fn context_layout(&self) -> Result<ContextLayout, Error> {
-        let component_layout = ContextLayout::for_declarations(&self.composites)?;
-        let mut primitive_fields = BTreeSet::new();
+    /// Adds this node's explicit primitive fields to the pipeline's requirements.
+    fn collect_primitive_fields(&self, fields: &mut Vec<ContextFieldLayout>) {
         for declaration in self.declarations.iter() {
             match declaration {
                 ContextDeclaration::Produces { domain, entry } => {
-                    _ = primitive_fields.insert(ContextFieldLayout {
+                    fields.push(ContextFieldLayout {
                         name: entry.clone(),
                         domain: *domain,
                     });
@@ -581,7 +581,7 @@ impl PreparedNodeContextDeclarations {
                 } => {
                     for entry in entries {
                         if let ContextEntryTarget::Primitive { domain, name } = &entry.target {
-                            _ = primitive_fields.insert(ContextFieldLayout {
+                            fields.push(ContextFieldLayout {
                                 name: name.clone(),
                                 domain: *domain,
                             });
@@ -590,51 +590,26 @@ impl PreparedNodeContextDeclarations {
                 }
                 ContextDeclaration::HeaderCapture { policy } => {
                     policy.visit_stored_names(|name| {
-                        _ = primitive_fields.insert(ContextFieldLayout {
+                        fields.push(ContextFieldLayout {
                             name,
                             domain: ContextDomain::TransportHeader,
                         });
                     });
                 }
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
-                    primitive_fields.extend(policy.iter().map(|entry| ContextFieldLayout {
+                    fields.extend(policy.iter().map(|entry| ContextFieldLayout {
                         name: entry.store_as.clone(),
                         domain: ContextDomain::AuthorizedIdentity,
                     }));
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
-                    primitive_fields.extend(
-                        policy
-                            .default
-                            .selector
-                            .named
-                            .iter()
-                            .flatten()
-                            .filter(|reference| reference.scope().is_none())
-                            .map(|reference| ContextFieldLayout {
-                                name: reference.name().clone(),
-                                domain: ContextDomain::TransportHeader,
-                            }),
-                    );
-                    primitive_fields.extend(
-                        policy
-                            .overrides
-                            .iter()
-                            .flat_map(|policy| &policy.match_rule.stored_names)
-                            .cloned()
-                            .map(|name| ContextFieldLayout {
-                                name,
-                                domain: ContextDomain::TransportHeader,
-                            }),
-                    );
+                    fields.extend(propagation::primitive_fields(policy));
                 }
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::AllStored { .. },
                 } => {}
             }
         }
-        let primitive_layout = ContextLayout::compile_layout(primitive_fields, &[])?;
-        ContextLayout::merge([&component_layout, &primitive_layout])
     }
 }
 
@@ -832,7 +807,7 @@ impl CompiledContextBindings {
         }
     }
 
-    /// Compiles every node's bindings using the same engine-wide runtime requirements.
+    /// Compiles one layout per pipeline, then binds its nodes using engine-wide requirements.
     fn compile_context_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
@@ -840,13 +815,12 @@ impl CompiledContextBindings {
         let by_pipeline = declarations
             .into_iter()
             .map(|(pipeline, nodes)| {
-                let layout = Arc::new(ContextLayout::merge(
-                    nodes
-                        .values()
-                        .map(PreparedNodeContextDeclarations::context_layout)
-                        .collect::<Result<Vec<_>, Error>>()?
-                        .iter(),
-                )?);
+                let mut fields = Vec::new();
+                for node in nodes.values() {
+                    node.collect_primitive_fields(&mut fields);
+                }
+                let composites = nodes.values().flat_map(|node| node.composites.iter());
+                let layout = Arc::new(ContextLayout::compile_layout(fields, composites)?);
                 let nodes = nodes
                     .into_iter()
                     .map(|(node, declarations)| {
@@ -2573,8 +2547,8 @@ default:
         );
     }
 
-    /// Scenario: two exporters select independent composites using one name in different domains.
-    /// Guarantees: both policies share one pipeline layout with stable distinct entry IDs while
+    /// Scenario: three exporters select shared and independent composites with overlapping names.
+    /// Guarantees: all policies share one pipeline layout with deduplicated, stable entry IDs while
     /// each binding retains its own selector and presence gate.
     #[test]
     fn full_yaml_compilation_shares_layout_across_exporters() {
@@ -2588,11 +2562,27 @@ default:
         )
         .replace(
             "        connections:",
-            "          other_exporter:\n            type: urn:test:exporter:example\n            config: {}\n            header_propagation:\n              default:\n                selector: {type: named, named: ['other:account']}\n        connections:",
+            r#"          other_exporter:
+            type: urn:test:exporter:example
+            config: {}
+            header_propagation:
+              default:
+                selector: {type: named, named: ['other:account']}
+          same_exporter:
+            type: urn:test:exporter:example
+            config: {}
+            header_propagation:
+              default:
+                selector: {type: named, named: ['tenant:workspace']}
+        connections:"#,
         )
         .replace(
             "            to: exporter",
-            "            to: exporter\n          - from: receiver\n            to: other_exporter",
+            r#"            to: exporter
+          - from: receiver
+            to: other_exporter
+          - from: receiver
+            to: same_exporter"#,
         );
         let resolved = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&yaml)
             .expect("valid pipeline")
@@ -2609,12 +2599,17 @@ default:
             .bindings
             .header_propagation_policy(&key, &"other_exporter".into())
             .expect("second binding");
+        let shared = installed
+            .bindings
+            .header_propagation_policy(&key, &"same_exporter".into())
+            .expect("shared composite binding");
         let layout = installed
             .bindings
             .pipeline_layout(&key)
             .expect("pipeline layout");
         assert!(Arc::ptr_eq(first.layout(), layout));
         assert!(Arc::ptr_eq(second.layout(), layout));
+        assert!(Arc::ptr_eq(shared.layout(), layout));
         assert_eq!(layout.entries().len(), 2);
         assert_ne!(
             layout
@@ -2634,6 +2629,103 @@ default:
         headers.push(TransportHeader::text(context_name("account"), b"selected"));
         assert_eq!(first.propagate(&headers).count(), 1);
         assert_eq!(second.propagate(&headers).count(), 0);
+        assert_eq!(shared.propagate(&headers).count(), 1);
+    }
+
+    /// Scenario: standalone and pipeline propagation select a composite, primitive, and override.
+    /// Guarantees: both compilation paths produce the same layout and policy, ignoring unrelated
+    /// definitions while retaining every explicitly bound primitive field.
+    #[test]
+    fn standalone_and_pipeline_propagation_use_the_same_compiler() {
+        let composites = [constant_composite(), mixed_composite()];
+        let policy: HeaderPropagationConfig = serde_yaml::from_str(
+            r#"
+default:
+  selector: {type: named, named: ["route:workspace", request_id]}
+overrides:
+  - match: {stored_names: [dropped]}
+    action: drop
+"#,
+        )
+        .expect("propagation config");
+        let standalone =
+            HeaderPropagationPolicy::compile_propagation_policy(policy.clone(), &composites)
+                .expect("standalone policy");
+        let node = PreparedNodeContextDeclarations::new(
+            [ContextDeclaration::HeaderPropagation { policy }]
+                .into_iter()
+                .collect(),
+            &composites,
+        )
+        .expect("prepared node");
+        let key = pipeline("group", "pipeline");
+        let declarations = HashMap::from([(
+            key.clone(),
+            HashMap::from([(ConfigNodeId::from("exporter"), node)]),
+        )]);
+        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
+        let bindings =
+            CompiledContextBindings::compile_context_bindings(declarations, &requirements)
+                .expect("pipeline bindings");
+        let bound = bindings
+            .header_propagation_policy(&key, &"exporter".into())
+            .expect("bound policy");
+        let layout = bindings.pipeline_layout(&key).expect("pipeline layout");
+        assert!(Arc::ptr_eq(bound.layout(), layout));
+        assert_eq!(bound, &standalone);
+        assert_eq!(layout.entries().len(), 1);
+        assert_eq!(layout.fields().len(), 3);
+        for name in ["workspace", "request_id", "dropped"] {
+            assert!(
+                layout
+                    .resolve_primitive(ContextDomain::TransportHeader, &context_name(name))
+                    .is_ok(),
+                "{name}"
+            );
+        }
+    }
+
+    /// Scenario: two pipelines define the same composite name with different source fields.
+    /// Guarantees: declaration collection and layout compilation remain pipeline-local.
+    #[test]
+    fn pipeline_layouts_do_not_share_declarations() {
+        use otel_arrow_dfe_config::context_policy::ContextScope;
+
+        let declarations = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                let mut composite = constant_composite();
+                composite.scope = ContextScope::Pipeline("group".into(), name.into());
+                composite.definition.0[1] = ContextEntryPart::TransportHeader {
+                    name: context_name(name),
+                    store_as: Some(context_name("workspace")),
+                };
+                let node = PreparedNodeContextDeclarations::new(
+                    consumer(
+                        member_target("route", "workspace"),
+                        ContextEntrySelectorForm::Value,
+                    ),
+                    &[composite],
+                )
+                .expect("prepared node");
+                (
+                    pipeline("group", name),
+                    HashMap::from([(ConfigNodeId::from("consumer"), node)]),
+                )
+            })
+            .collect();
+        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
+        let bindings =
+            CompiledContextBindings::compile_context_bindings(declarations, &requirements)
+                .expect("independent pipeline layouts");
+        for name in ["first", "second"] {
+            let layout = bindings
+                .pipeline_layout(&pipeline("group", name))
+                .expect("pipeline layout");
+            assert_eq!(layout.entries().len(), 1);
+            assert_eq!(layout.fields().len(), 1);
+            assert_eq!(layout.fields()[0].name.as_str(), name);
+        }
     }
 
     /// Scenario: one pipeline binds capture, identity, and primitive propagation names.

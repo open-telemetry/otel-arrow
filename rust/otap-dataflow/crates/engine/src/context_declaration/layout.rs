@@ -314,11 +314,19 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
 }
 
 impl ContextLayout {
-    /// Compiles all supplied composite declarations into one canonical layout.
-    pub(crate) fn for_declarations(
-        declarations: &[ContextEntryDeclaration],
+    /// Compiles explicit primitive fields and selected composites into one canonical layout.
+    ///
+    /// Member and condition source fields are included automatically. Repeated declarations
+    /// share one entry; conflicting definitions of the same name are rejected.
+    pub fn compile_layout<'a>(
+        primitive_fields: impl IntoIterator<Item = ContextFieldLayout>,
+        declarations: impl IntoIterator<Item = &'a ContextEntryDeclaration>,
     ) -> Result<Self, Error> {
-        let required = declarations
+        let mut declarations = declarations.into_iter().collect::<Vec<_>>();
+        declarations.sort_unstable();
+        declarations.dedup();
+
+        let referenced_fields = declarations
             .iter()
             .flat_map(|declaration| &declaration.definition.0)
             .filter_map(|part| {
@@ -327,27 +335,10 @@ impl ContextLayout {
                         name: name.clone(),
                         domain,
                     })
-            })
-            .collect::<BTreeSet<_>>();
-        let mut fields = BTreeSet::new();
-        for field in required {
-            if !fields.iter().any(|existing: &ContextFieldLayout| {
-                existing.domain == field.domain && existing.matches_name(&field.name)
-            }) {
-                _ = fields.insert(field);
-            }
-        }
-        Self::compile_layout(fields, declarations)
-    }
-
-    /// Merges node-local layouts into one canonical pipeline layout.
-    pub(crate) fn merge<'a>(
-        layouts: impl IntoIterator<Item = &'a ContextLayout>,
-    ) -> Result<Self, Error> {
-        let layouts = layouts.into_iter().collect::<Vec<_>>();
-        let candidates = layouts
-            .iter()
-            .flat_map(|layout| layout.fields.iter().cloned())
+            });
+        let candidates = primitive_fields
+            .into_iter()
+            .chain(referenced_fields)
             .collect::<BTreeSet<_>>();
         let mut fields = Vec::new();
         for candidate in candidates {
@@ -358,136 +349,13 @@ impl ContextLayout {
             }
         }
         let fields = fields.into_boxed_slice();
-        let remap_field =
-            |layout: &ContextLayout, field: ContextFieldId| -> Result<ContextFieldId, Error> {
-                let source = &layout.fields[field.index()];
-                fields
-                    .iter()
-                    .position(|candidate| {
-                        candidate.domain == source.domain && candidate.matches_name(&source.name)
-                    })
-                    .map(ContextFieldId)
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "pipeline context layout lost {:?} field `{}` while merging",
-                            source.domain, source.name
-                        ))
-                    })
-            };
-
-        let mut merged_entries = BTreeMap::<ContextEntryName, ContextEntryLayout>::new();
-        for layout in layouts {
-            for entry in &layout.entries {
-                let members = entry
-                    .members
-                    .iter()
-                    .map(|member| {
-                        Ok(ContextMember {
-                            name: member.name.clone(),
-                            source: match &member.source {
-                                ContextMemberSource::Field(field) => {
-                                    ContextMemberSource::Field(remap_field(layout, *field)?)
-                                }
-                                ContextMemberSource::Constant(value) => {
-                                    ContextMemberSource::Constant(value.clone())
-                                }
-                            },
-                        })
-                    })
-                    .collect::<Result<Box<[_]>, Error>>()?;
-                let conditions = entry
-                    .conditions
-                    .iter()
-                    .map(|condition| {
-                        Ok(ContextCondition {
-                            field: remap_field(layout, condition.field)?,
-                            value: condition.value.clone(),
-                        })
-                    })
-                    .collect::<Result<Box<[_]>, Error>>()?;
-                let merged = ContextEntryLayout {
-                    name: entry.name.clone(),
-                    scope: entry.scope.clone(),
-                    members,
-                    conditions,
-                };
-                match merged_entries.entry(entry.name.clone()) {
-                    std::collections::btree_map::Entry::Vacant(vacant) => {
-                        _ = vacant.insert(merged);
-                    }
-                    std::collections::btree_map::Entry::Occupied(occupied)
-                        if occupied.get() == &merged => {}
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        return Err(invalid(format!(
-                            "pipeline context entry `{}` has conflicting layouts",
-                            entry.name
-                        )));
-                    }
-                }
-            }
-        }
-
-        let entries = merged_entries
-            .into_values()
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
         let field_names = fields
             .iter()
             .enumerate()
             .map(|(index, field)| ((field.domain, field.name.clone()), ContextFieldId(index)))
             .collect();
-        let entry_names = entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (entry.name.clone(), ContextEntryId(index)))
-            .collect();
-        let presence = entries
-            .iter()
-            .map(|entry| EntryPresence::compile_presence_requirements(entry, &fields))
-            .collect();
-        Ok(Self {
-            fields,
-            entries,
-            field_names,
-            entry_names,
-            presence,
-        })
-    }
-
-    /// Compiles a binding's fields and entry declarations into a logical layout.
-    pub fn compile_layout(
-        fields: impl IntoIterator<Item = ContextFieldLayout>,
-        declarations: &[ContextEntryDeclaration],
-    ) -> Result<Self, Error> {
-        let fields: Box<[_]> = fields
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let mut entries = Vec::with_capacity(declarations.len());
-        let field_names = fields
-            .iter()
-            .enumerate()
-            .map(|(index, field)| ((field.domain, field.name.clone()), ContextFieldId(index)))
-            .collect();
-        let mut entry_names = BTreeMap::new();
-
-        let mut ordered = declarations.iter().collect::<Vec<_>>();
-        ordered.sort_by(|left, right| {
-            left.name
-                .cmp(&right.name)
-                .then_with(|| left.scope.cmp(&right.scope))
-        });
-        for declaration in ordered {
-            let vacant_name = match entry_names.entry(declaration.name.clone()) {
-                std::collections::btree_map::Entry::Vacant(entry) => entry,
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    return Err(invalid(format!(
-                        "duplicate composite context entry `{}`",
-                        declaration.name
-                    )));
-                }
-            };
+        let mut entries = BTreeMap::<ContextEntryName, ContextEntryLayout>::new();
+        for declaration in declarations {
             validate_definition(declaration)?;
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
@@ -502,25 +370,11 @@ impl ContextLayout {
                 let (domain, source_name) = part
                     .referenced_source()
                     .expect("non-constant context part has a referenced source");
-                let mut matching = fields
+                let field = fields
                     .iter()
-                    .enumerate()
-                    .filter(|(_, field)| field.domain == domain && field.matches_name(source_name));
-                let field = matching
-                    .next()
-                    .map(|(index, _)| ContextFieldId(index))
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "context entry `{}` requires unavailable {:?} domain `{source_name}`",
-                            declaration.name, domain
-                        ))
-                    })?;
-                if matching.next().is_some() {
-                    return Err(invalid(format!(
-                        "context entry `{}` has ambiguous {:?} reference `{source_name}`",
-                        declaration.name, domain
-                    )));
-                }
+                    .position(|field| field.domain == domain && field.matches_name(source_name))
+                    .map(ContextFieldId)
+                    .expect("all referenced sources were collected before assigning field IDs");
                 if let ContextEntryPart::TransportHeaderMatch { value, .. } = part {
                     let condition = ContextCondition {
                         field,
@@ -549,22 +403,39 @@ impl ContextLayout {
             members.sort_unstable_by(|left, right| left.name.cmp(&right.name));
             conditions.sort_unstable();
             conditions.dedup();
-            let id = ContextEntryId(entries.len());
-            _ = vacant_name.insert(id);
-            entries.push(ContextEntryLayout {
+            let entry = ContextEntryLayout {
                 name: declaration.name.clone(),
                 scope: declaration.scope.clone(),
                 members: members.into_boxed_slice(),
                 conditions: conditions.into_boxed_slice(),
-            });
+            };
+            match entries.entry(declaration.name.clone()) {
+                std::collections::btree_map::Entry::Vacant(vacant) => {
+                    _ = vacant.insert(entry);
+                }
+                std::collections::btree_map::Entry::Occupied(occupied)
+                    if occupied.get() == &entry => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(invalid(format!(
+                        "conflicting definitions for composite context entry `{}`",
+                        declaration.name
+                    )));
+                }
+            }
         }
+        let entries: Box<[_]> = entries.into_values().collect();
+        let entry_names = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.name.clone(), ContextEntryId(index)))
+            .collect();
         let presence = entries
             .iter()
             .map(|entry| EntryPresence::compile_presence_requirements(entry, &fields))
             .collect();
         Ok(Self {
             fields,
-            entries: entries.into_boxed_slice(),
+            entries,
             field_names,
             entry_names,
             presence,
@@ -888,29 +759,63 @@ mod tests {
         );
     }
 
-    /// Scenario: a grouping references a name in the wrong source domain.
-    /// Guarantees: compilation fails rather than interpreting a trusted claim as a header.
+    /// Scenario: a composite requires an identity whose name is also an explicit header field.
+    /// Guarantees: all member and condition fields are collected in their declared domains,
+    /// without allowing the header field to substitute for the identity.
     #[test]
-    fn provenance_mismatch_is_rejected() {
-        assert_compile_error(
+    fn composite_sources_are_collected_in_their_declared_domains() {
+        let layout = compile_layout(
             [field("customer", ContextDomain::TransportHeader)],
-            &[entry()],
-            "requires unavailable AuthorizedIdentity domain `customer`",
+            &[conditional_entry()],
+        );
+        assert_eq!(layout.fields().len(), 5);
+        let header = layout
+            .resolve_primitive(ContextDomain::TransportHeader, &name("customer"))
+            .expect("explicit header");
+        let identity = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("customer"))
+            .expect("inferred identity");
+        let member = layout
+            .resolve_member(&name("product_user"), &name("customer_id"))
+            .expect("identity member");
+        assert_ne!(projection_sources(&header), projection_sources(&identity));
+        assert_eq!(projection_sources(&member), projection_sources(&identity));
+        assert_eq!(
+            layout.entries()[0]
+                .conditions
+                .iter()
+                .map(|condition| layout.fields()[condition.field.index()].name.as_str())
+                .collect::<Vec<_>>(),
+            ["environment", "region"]
         );
     }
 
-    /// Scenario: declarations repeat composite names or have no members.
-    /// Guarantees: the compiler rejects ambiguous namespaces and invokes definition validation.
+    /// Scenario: declarations conflict in scope, members, or conditions, or have no members.
+    /// Guarantees: conflicting definitions are rejected instead of choosing one, and empty
+    /// definitions still fail validation.
     #[test]
     fn invalid_declarations_are_rejected() {
         let mut second = entry();
         second.scope = ContextScope::Group("group".into());
+        let mut changed_member = entry();
+        changed_member.definition.0[1] = ContextEntryPart::TransportHeader {
+            name: name("account"),
+            store_as: Some(name("workspace")),
+        };
         let mut empty = entry();
         empty.definition.0.clear();
         for (declarations, expected) in [
             (
                 vec![entry(), second],
-                "duplicate composite context entry `product_user`",
+                "conflicting definitions for composite context entry `product_user`",
+            ),
+            (
+                vec![entry(), changed_member],
+                "conflicting definitions for composite context entry `product_user`",
+            ),
+            (
+                vec![entry(), conditional_entry()],
+                "conflicting definitions for composite context entry `product_user`",
             ),
             (vec![empty], "must contain at least one member"),
         ] {
@@ -1067,8 +972,8 @@ mod tests {
         );
     }
 
-    /// Scenario: a header reference varies in case while an identity reference does not.
-    /// Guarantees: transport matching preserves stored spelling without folding identity names.
+    /// Scenario: explicit and referenced source names differ in ASCII case in both domains.
+    /// Guarantees: headers use one deterministic stored spelling, while identities stay distinct.
     #[test]
     fn reference_matching_respects_source_domains() {
         let mut declaration = entry();
@@ -1076,51 +981,79 @@ mod tests {
             name: name("WORKSPACE"),
             store_as: None,
         };
-        let layout = compile_layout(fields(), &[declaration.clone()]);
-        let projection = layout
-            .resolve_member(&name("product_user"), &name("WORKSPACE"))
-            .expect("member");
-        assert_eq!(projection_names(&layout, &projection), ["workspace"]);
         declaration.definition.0[0] = ContextEntryPart::AuthorizedIdentity {
             name: name("CUSTOMER"),
             store_as: None,
         };
-        assert_compile_error(fields(), &[declaration], "unavailable AuthorizedIdentity");
+        let layout = compile_layout(fields(), &[declaration]);
+        assert_eq!(layout.fields().len(), 3);
+        let header = layout
+            .resolve_member(&name("product_user"), &name("WORKSPACE"))
+            .expect("header member");
+        assert_eq!(projection_names(&layout, &header), ["WORKSPACE"]);
+        let identity = layout
+            .resolve_member(&name("product_user"), &name("CUSTOMER"))
+            .expect("identity member");
+        let lower = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("customer"))
+            .expect("explicit identity");
+        let upper = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("CUSTOMER"))
+            .expect("inferred identity");
+        assert_ne!(projection_sources(&lower), projection_sources(&upper));
+        assert_eq!(projection_sources(&identity), projection_sources(&upper));
     }
 
-    /// Scenario: distinct stored header names differ only by ASCII case.
-    /// Guarantees: a case-insensitive composite reference reports ambiguity rather than picking one.
+    /// Scenario: primitive requirements repeat a header with identical and varied ASCII case.
+    /// Guarantees: one field ID is assigned independently of input order and duplicate count.
     #[test]
-    fn ambiguous_transport_reference_is_rejected() {
+    fn repeated_transport_fields_are_canonical() {
         let mut sources = fields();
         sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
-        assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
+        sources.push(field("workspace", ContextDomain::TransportHeader));
+        let forward = compile_layout(sources.clone(), &[entry()]);
+        sources.reverse();
+        assert_eq!(forward, compile_layout(sources, &[entry()]));
+        assert_eq!(
+            forward.fields(),
+            [
+                field("WORKSPACE", ContextDomain::TransportHeader),
+                field("customer", ContextDomain::AuthorizedIdentity),
+            ]
+        );
     }
 
-    /// Scenario: node-local layouts arrive in different node iteration orders.
-    /// Guarantees: pipeline merging assigns identical field and entry IDs independent of order.
+    /// Scenario: several nodes select the same composite with reordered members and conditions.
+    /// Guarantees: repeated declarations share one entry, field set, and complete presence plan.
     #[test]
-    fn merged_pipeline_layout_is_canonical() {
-        let first = compile_layout(fields(), &[entry()]);
-        let mut other = entry();
-        other.name = name("other");
-        let second = compile_layout(fields(), &[other]);
-
-        let forward = ContextLayout::merge([&first, &second]).expect("forward merge");
-        let reverse = ContextLayout::merge([&second, &first]).expect("reverse merge");
-
-        assert_eq!(forward, reverse);
-        assert_eq!(forward.entries().len(), 2);
-        assert_ne!(
-            forward
-                .resolve_composite(&name("product_user"))
-                .expect("product user")
-                .presence(),
-            forward
-                .resolve_composite(&name("other"))
-                .expect("other")
-                .presence()
+    fn repeated_declarations_share_one_entry() {
+        let mut declaration = conditional_entry();
+        declaration.definition.0.push(ContextEntryPart::Constant {
+            name: name("scheme"),
+            value: "ApiKey".to_owned(),
+        });
+        let expected = compile_layout([], &[declaration.clone()]);
+        let mut reordered = declaration.clone();
+        reordered.definition.0.reverse();
+        assert_eq!(
+            compile_layout([], &[declaration.clone(), reordered, declaration]),
+            expected
         );
+    }
+
+    /// Scenario: one composite selects the same header twice using different case and aliases.
+    /// Guarantees: field canonicalization does not permit repeated references within a composite.
+    #[test]
+    fn repeated_composite_header_source_is_rejected() {
+        let mut declaration = entry();
+        declaration
+            .definition
+            .0
+            .push(ContextEntryPart::TransportHeader {
+                name: name("WORKSPACE"),
+                store_as: Some(name("another_workspace")),
+            });
+        assert_compile_error([], &[declaration], "repeats `WORKSPACE`");
     }
 
     /// Scenario: member and condition spellings differ in case and their declaration order changes.
@@ -1135,9 +1068,9 @@ mod tests {
                 name: name("WORKSPACE"),
                 value: "production".to_owned(),
             });
-        let first = ContextLayout::for_declarations(&[declaration.clone()]).expect("original");
+        let first = compile_layout([], &[declaration.clone()]);
         declaration.definition.0.reverse();
-        let second = ContextLayout::for_declarations(&[declaration]).expect("reordered");
+        let second = compile_layout([], &[declaration]);
         assert_eq!(first, second);
     }
 
@@ -1280,7 +1213,8 @@ mod tests {
     }
 
     /// Scenario: equivalent mixed composites reorder constant and field members.
-    /// Guarantees: constant values compile canonically while remaining binding-significant.
+    /// Guarantees: constant values compile canonically, remain binding-significant, and conflicting
+    /// values cannot share one composite entry.
     #[test]
     fn constants_are_canonical_and_binding_significant() {
         let mut declaration = entry();
@@ -1302,6 +1236,11 @@ mod tests {
             panic!("last member must be constant");
         };
         *value = "Bearer".to_owned();
+        assert_compile_error(
+            fields(),
+            &[declaration.clone(), changed.clone()],
+            "conflicting definitions for composite context entry `product_user`",
+        );
         assert_ne!(
             compile_layout(fields(), &[declaration]),
             compile_layout(fields(), &[changed])

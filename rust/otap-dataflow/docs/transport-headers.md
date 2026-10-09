@@ -264,12 +264,12 @@ presence requirement. In the example, the receiver must successfully authorize
 the request and capture the verified `sub` claim as `customer_id`; a transport
 header named `customer_id` cannot substitute for that identity.
 
-During startup and live-update preparation, the engine context compiler resolves
-all explicitly bound primitive fields and selected composite definitions into
-one canonical logical layout per pipeline. Every node binding in that pipeline
-shares the same layout and stable field and composite IDs. Definitions with no
-live binding remain inactive. Missing message values make the composite absent
-rather than invalidating startup.
+During startup and live-update preparation, the engine gathers all explicitly
+bound primitive fields and selected composite definitions across each pipeline.
+It compiles them once into a canonical logical layout, then binds each node's
+policies to that shared layout. Field and composite IDs are assigned only in this
+pipeline-wide compilation. Definitions with no live binding remain inactive.
+Missing message values make the composite absent rather than invalidating startup.
 
 Configuration remains separate from execution: serialized propagation policies
 contain only settings, while pipeline bindings hold the shared resolved layout

@@ -3,7 +3,10 @@
 
 //! Compiled transport-header propagation and composite presence gates.
 
-use super::{ContextEntryId, ContextLayout, ContextMemberSource, ContextNameId, ContextValues};
+use super::{
+    ContextEntryId, ContextFieldLayout, ContextLayout, ContextMemberSource, ContextNameId,
+    ContextValues,
+};
 use otel_arrow_dfe_config::context_policy::{ContextDomain, ContextEntryDeclaration};
 use otel_arrow_dfe_config::transport_headers::{
     TransportHeaderRef, TransportHeaders, TransportHeadersIter,
@@ -108,57 +111,53 @@ struct CompiledNamedPropagation {
 
 type ConditionMatchCache = SmallVec<[(ContextEntryId, bool); 4]>;
 
+/// Explicit primitive headers mentioned by a propagation policy.
+pub(super) fn primitive_fields(
+    policy: &HeaderPropagationPolicy,
+) -> impl Iterator<Item = ContextFieldLayout> + '_ {
+    policy
+        .default
+        .selector
+        .named
+        .iter()
+        .flatten()
+        .filter(|reference| reference.scope().is_none())
+        .map(ContextEntryRef::name)
+        .chain(
+            policy
+                .overrides
+                .iter()
+                .flat_map(|policy| &policy.match_rule.stored_names),
+        )
+        .map(|name| ContextFieldLayout {
+            name: name.clone(),
+            domain: ContextDomain::TransportHeader,
+        })
+}
+
 impl CompiledHeaderPropagationPolicy {
-    /// Validates and resolves propagation against the visible composite declarations.
+    /// Compiles a standalone policy using the same layout compiler as pipeline construction.
+    ///
+    /// Pipeline construction instead binds each policy to its already-compiled shared layout.
     pub fn compile_propagation_policy(
         policy: HeaderPropagationPolicy,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, String> {
         policy.validate()?;
-        let references = policy.default.selector.named.as_ref();
-        let requested = references
-            .into_iter()
+        let selected = policy
+            .default
+            .selector
+            .named
+            .iter()
             .flatten()
             .filter_map(ContextEntryRef::scope)
-            .collect::<BTreeSet<_>>();
-        for name in &requested {
-            if !declarations
-                .iter()
-                .any(|declaration| &declaration.name == *name)
-            {
-                return Err(format!("unknown composite context entry `{name}`"));
-            }
-        }
-        let selected = declarations
-            .iter()
-            .filter(|declaration| requested.contains(&declaration.name))
-            .cloned()
-            .collect::<Vec<_>>();
-        let composite_layout =
-            ContextLayout::for_declarations(&selected).map_err(|error| error.to_string())?;
-        let primitive_fields = references
+            .collect::<BTreeSet<_>>()
             .into_iter()
-            .flatten()
-            .filter(|reference| reference.scope().is_none())
-            .map(|reference| super::ContextFieldLayout {
-                name: reference.name().clone(),
-                domain: ContextDomain::TransportHeader,
-            })
-            .chain(
-                policy
-                    .overrides
-                    .iter()
-                    .flat_map(|policy| &policy.match_rule.stored_names)
-                    .cloned()
-                    .map(|name| super::ContextFieldLayout {
-                        name,
-                        domain: ContextDomain::TransportHeader,
-                    }),
-            );
-        let primitive_layout = ContextLayout::compile_layout(primitive_fields, &[])
+            .map(|name| super::composite_declaration(name, declarations))
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         let layout = Arc::new(
-            ContextLayout::merge([&composite_layout, &primitive_layout])
+            ContextLayout::compile_layout(primitive_fields(&policy), selected)
                 .map_err(|error| error.to_string())?,
         );
         Self::bind_propagation_policy_to_layout(policy, layout)
@@ -1111,6 +1110,24 @@ default:
         let error = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
+    }
+
+    /// Scenario: standalone propagation receives two visible definitions of a selected name.
+    /// Guarantees: duplicate configuration declarations are rejected before layout compilation,
+    /// even though repeated references to one declaration may share a compiled entry.
+    #[test]
+    fn standalone_propagation_rejects_duplicate_composite_definitions() {
+        let declaration = conditional_product_user_declaration();
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            "default:\n  selector: {type: named, named: ['product_user:workspace_id']}",
+        )
+        .expect("propagation policy");
+        let error = CompiledHeaderPropagationPolicy::compile_propagation_policy(
+            policy,
+            &[declaration.clone(), declaration],
+        )
+        .expect_err("duplicate declarations must fail");
+        assert!(error.contains("duplicate composite context entry `product_user`"));
     }
 
     /// Scenario: a qualified selector names a header in a composite that also has a constant.
