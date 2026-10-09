@@ -1926,48 +1926,83 @@ source. It never silently falls back to different regex semantics.
 
 ### Regex execution policy
 
-The semantic profile fixes syntax and matching results, independently of the
-chosen execution engine. An implementation may use literal prefilters, a lazy
-DFA, or an equivalent non-backtracking NFA simulation. A bounded backtracker
-that visits each input/state pair at most once is a qualification candidate,
-not a required engine. Unbounded backtracking is prohibited.
+The `re2-v1` profile defines which patterns are supported and what they
+match. Choosing a different execution engine must not change those results.
 
-An accelerator's failure to build or cache churn may select an equivalent
-fallback. Accelerator state growth alone must not reject a pattern when an
-admissible fallback exists. A search must produce the correct boolean answer
-or explicitly fail the source. It must never convert resource exhaustion or
-an engine failure into a nonmatch. Fallback does not change pattern source,
-profile digests, source boundaries, or decoding semantics.
+Implementations may use literal prefilters, a lazy DFA, or equivalent
+non-backtracking NFA matching. A bounded backtracker may be evaluated if
+it visits each input/state pair at most once. Unbounded backtracking is
+prohibited.
 
-Admission is staged:
+#### Fallback and failures
 
-1. Before construction, reserve a conservative compilation working set and
-   bound concurrent compilations. Constructing during configuration does not
-   exempt temporary allocations from the engine's memory budget.
-2. Before activation, check the combined retained program payload against its
-   limit and charge shared capacities/bookkeeping once. A per-NFA builder limit
-   alone does not establish the aggregate limit.
-3. Reserve mutable scratch for each worker and active pattern, including every
-   lazy cache and deferred fallback allocation. Caches are worker-owned, not
-   attached to every pending file. Account for multiplicity with checked
-   arithmetic. Never enlarge a cache silently to make an accelerator fit.
-4. Use engine memory reports to verify the model, not as an allocator-capacity
-   oracle. A freshly created cache may omit scratch allocated on first fallback.
-   A violated reservation is a resource-accounting failure, never a nonmatch.
+If an accelerator cannot be built, or repeatedly fills and clears its
+cache, the implementation may use an equivalent fallback. A pattern must
+not be rejected solely because its accelerator is too large when a
+fallback fits the applicable limits.
 
-The initial limits are qualification ceilings, not a latency guarantee.
-Matching can require O(program size * line length) work. A synchronous search
-cannot yield merely because a source turn has a byte budget. Oversized lines
-remain excluded from matching, but a maximum-sized eligible line can still
-occupy its worker for too long.
+Every search must return the correct match/no-match result or report an
+error that fails the affected source. Resource exhaustion and engine
+errors must never be treated as "no match."
 
-Before production qualification, record a numeric control-latency target and
-reference Linux hardware, then measure maximum-sized nonmatches, cold/warm
-caches, actual fallback paths, prefilter effects, and peak allocations. Full
-receiver tests must measure delay to pending control work as well as throughput.
-If the target is missed, resolve bounds, accepted workload constraints, or
-resumable matching explicitly; selecting a different engine alone does not
-prove the target. Generic chunking must not reset anchors or word-boundary state.
+Switching engines must not change the original pattern, framing-profile
+digest, source boundaries, or decoding behavior.
+
+#### Memory budgeting
+
+The receiver must account for memory before activating a source. These
+are integration requirements; a matcher memory estimate alone does not
+reserve memory.
+
+1. **Compilation:** Before construction, reserve a conservative amount of
+   memory for temporary compilation allocations and limit how many patterns
+   can compile at once. Compilation during configuration is still subject
+   to the memory budget.
+
+2. **Compiled patterns:** Before activation, check the total retained program
+   payload against its limit. Count shared storage, allocated capacity, and
+   bookkeeping once. Limiting each individual NFA does not establish a limit
+   for the complete matcher.
+
+3. **Worker memory:** Reserve working memory for each worker and active
+   pattern. Include all lazy caches and memory that may be allocated when
+   fallback first runs. Workers own their caches; do not create a cache
+   for every pending file. Check arithmetic for overflow when calculating
+   totals. Never silently enlarge a cache to make an accelerator fit.
+
+4. **Verification:** Use engine memory reports to check the accounting
+   model. These reports may omit spare capacity or memory allocated later,
+   so they are not a complete measure of allocated memory. Exceeding the
+   reservation is an accounting failure, never a "no match" result.
+
+#### Matching time and worker responsiveness
+
+The initial limits must be qualified through testing. They do not
+guarantee a maximum matching time.
+
+Matching can require work proportional to program size multiplied by
+line length. A synchronous search cannot pause just because the worker
+has exhausted its turn budget.
+
+Oversized lines are not matched. However, a line within the size limit
+can still take long enough to delay other work on the worker.
+
+Before production qualification:
+
+- Define a numeric maximum acceptable delay to pending control work and record
+  the Linux hardware used for measurement.
+- Test maximum-sized lines that do not match, with both cold and warm
+  caches.
+- Exercise actual fallback paths and test with and without prefilters.
+- Measure peak allocations, throughput, and control-work delay in the
+  integrated receiver.
+
+If the latency target is missed, explicitly revise the bounds or supported
+workload, or implement matching that can pause and resume. Changing engines
+alone does not establish that the target is met.
+
+Any resumable implementation must preserve matching state across chunks,
+including anchors and word boundaries.
 
 ### Physical-line and logical-record bounds
 
