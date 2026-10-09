@@ -155,6 +155,7 @@ etw = ["dep:one_collect", "dep:humantime-serde"]
 windows-event-forwarding = [
     "dep:quick-xml",
     "dep:chrono",
+    "dep:serde_cbor",
 ]
 user-events = [
     "dep:base64",
