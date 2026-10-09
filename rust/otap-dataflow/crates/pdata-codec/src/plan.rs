@@ -69,23 +69,26 @@ impl EncodingPlan {
     }
 }
 
-/// Startup-resolved representations a read-only consumer can inspect directly.
+/// Resolved encodings a read-only consumer accepts for direct borrowed access.
 ///
-/// This is an input policy, not the inspected value itself. [`crate::PdataView`]
-/// is the value returned after applying the plan.
+/// This set does not restrict which input formats may reach the consumer. When
+/// obtaining a [`crate::PdataView`], listed encodings are borrowed without decoding;
+/// other encodings fall back to decoding into native OTAP. Already-native OTAP is
+/// always borrowed. An empty set therefore requires native OTAP access, rather
+/// than rejecting all encoded input. Borrowing encoded bytes does not validate them.
 #[derive(Clone, Debug, Default)]
-pub struct InspectionPlan {
+pub struct AcceptedEncodings {
     accepted: Arc<[ResolvedCodec]>,
 }
 
-impl InspectionPlan {
-    /// Requires native OTAP, decoding encoded input on demand.
+impl AcceptedEncodings {
+    /// Accepts no encodings directly, decoding encoded input to native OTAP on demand.
     #[must_use]
     pub fn native() -> Self {
         Self::default()
     }
 
-    /// Accepts the listed encoded representations without materialization.
+    /// Accepts the listed encodings directly; other encodings fall back to native OTAP.
     #[must_use]
     pub fn accept_encoded(codecs: impl IntoIterator<Item = ResolvedCodec>) -> Self {
         Self {

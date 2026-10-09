@@ -80,7 +80,7 @@ pub enum SignalType {
 /// storage, not the codec that defines the bytes.
 ///
 /// This differs from `PdataView`, the representation-independent inspection API:
-/// when the inspection plan accepts OTLP, both legacy OTLP storage and encoded
+/// when the consumer's accepted encodings include OTLP, both legacy OTLP storage and encoded
 /// OTLP storage yield `PdataView::Encoded` borrowing the original protobuf bytes.
 /// Consumers should use the capability APIs instead of matching storage forms.
 ///

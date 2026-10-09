@@ -25,8 +25,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_pdata_codec::{
-    CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation, EncodePolicy, EncodingPlan,
-    InspectionPlan, PdataEncoding,
+    AcceptedEncodings, CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation,
+    EncodePolicy, EncodingPlan, PdataEncoding,
 };
 
 #[cfg(not(windows))]
@@ -384,7 +384,7 @@ fn direct_codec_paths(c: &mut Criterion) {
         let encoded = codec
             .admit(SignalType::Logs, encoded)
             .expect("OTLP admission");
-        let inspection_plan = InspectionPlan::accept_encoded([codec]);
+        let accepted_encodings = AcceptedEncodings::accept_encoded([codec]);
         let encoding_plan = EncodingPlan::resolve(
             service.registry(),
             &PdataEncoding::OTLP,
@@ -400,7 +400,7 @@ fn direct_codec_paths(c: &mut Criterion) {
             b.iter(|| {
                 black_box(
                     service
-                        .view(&encoded, &inspection_plan)
+                        .view(&encoded, &accepted_encodings)
                         .expect("OTLP codec view"),
                 )
             })

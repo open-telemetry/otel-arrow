@@ -22,7 +22,7 @@ pub use identity::{EncodedPdata, PdataEncoding};
 pub use payload::{
     OtapPayload, PayloadData, PayloadStorage, PdataFormat, PdataPayload, PdataPayloadDecodeError,
 };
-pub use plan::{EncodePolicy, EncodingPlan, InspectionPlan};
+pub use plan::{AcceptedEncodings, EncodePolicy, EncodingPlan};
 pub use registry::{
     CodecMetadata, CodecRegistration, CodecRegistry, ItemCounter, PDATA_CODEC_FACTORIES,
     ResolvedCodec,

@@ -43,7 +43,7 @@ use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, PdataEncoding, PdataView};
 use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, SignalAttributes, SignalOutcomeAttributes,
@@ -113,7 +113,8 @@ impl Exporter<OtapPdata> for FileExporter {
         mut inbox: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        let inspection_plan = effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?;
+        let accepted_encodings =
+            effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
         otel_info!(
             "otelcol.node.file.start",
             format = self.config.format.as_str(),
@@ -145,7 +146,7 @@ impl Exporter<OtapPdata> for FileExporter {
                     return Ok(TerminalState::new(deadline, snapshots));
                 }
                 Message::PData(pdata) => {
-                    self.export_pdata(pdata, &effect_handler, &inspection_plan)
+                    self.export_pdata(pdata, &effect_handler, &accepted_encodings)
                         .await?;
                 }
                 _ => {}
@@ -159,7 +160,7 @@ impl FileExporter {
         &mut self,
         mut pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<(), Error> {
         let signal = pdata.signal_type();
         if pdata.is_empty() {
@@ -168,7 +169,7 @@ impl FileExporter {
             return Ok(());
         }
         let view = match effect_handler
-            .view(pdata.payload_ref(), inspection_plan)
+            .view(pdata.payload_ref(), accepted_encodings)
             .await
         {
             Ok(view) => view,
@@ -593,7 +594,7 @@ mod tests {
         let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
         let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
         let view = payload
-            .view(&service, &InspectionPlan::accept_encoded([codec]))
+            .view(&service, &AcceptedEncodings::accept_encoded([codec]))
             .unwrap();
         let mut frame = b"previous telemetry\n".to_vec();
         assert!(encode_payload(view, &mut frame, 4096).is_err());

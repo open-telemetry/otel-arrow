@@ -97,7 +97,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
@@ -388,8 +388,8 @@ pub struct ContentRouter {
     metrics: Option<ContentRouterMetrics>,
     /// Resolved on first use because processors currently receive codec services
     /// only while processing messages. A future PR will expose the pipeline registry
-    /// at construction so this plan can be required instead of optional.
-    inspection_plan: Option<InspectionPlan>,
+    /// at construction so this set can be required instead of optional.
+    accepted_encodings: Option<AcceptedEncodings>,
 }
 
 impl ContentRouter {
@@ -404,7 +404,7 @@ impl ContentRouter {
             case_sensitive: config.case_sensitive,
             admission: ExclusiveRouteScheduler::new(config.admission_policy),
             metrics: None,
-            inspection_plan: None,
+            accepted_encodings: None,
         }
     }
 
@@ -572,12 +572,12 @@ impl ContentRouter {
         &self,
         effect_handler: &local::EffectHandler<OtapPdata>,
         pdata: &OtapPdata,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> RouteResolution {
         let signal_type = pdata.signal_type();
 
         let view = match effect_handler
-            .view(pdata.payload_ref(), inspection_plan)
+            .view(pdata.payload_ref(), accepted_encodings)
             .await
         {
             Ok(view) => view,
@@ -882,21 +882,21 @@ impl local::Processor<OtapPdata> for ContentRouter {
                 _ => Ok(()),
             },
             Message::PData(data) => {
-                if self.inspection_plan.is_none() {
-                    self.inspection_plan =
-                        Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
+                if self.accepted_encodings.is_none() {
+                    self.accepted_encodings =
+                        Some(effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?);
                 }
-                // SAFETY: If absent, the plan is set to Some above; resolution errors
+                // SAFETY: If absent, the set is stored in Some above; resolution errors
                 // return via `?`. There is no intervening mutation or await.
-                // A future PR will resolve plans at construction and remove this expect.
-                let inspection_plan = self
-                    .inspection_plan
+                // A future PR will resolve this set at construction and remove this expect.
+                let accepted_encodings = self
+                    .accepted_encodings
                     .as_ref()
-                    .expect("view plan initialized");
+                    .expect("accepted encodings initialized");
                 // Resolve routing once up front, then handle route-selection
                 // failures separately from downstream admission failures.
                 let resolution = self
-                    .resolve_route(effect_handler, &data, inspection_plan)
+                    .resolve_route(effect_handler, &data, accepted_encodings)
                     .await;
 
                 match resolution {

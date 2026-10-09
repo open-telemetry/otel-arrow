@@ -26,9 +26,9 @@ it never owns a codec instance.
 - `CodecService` creates mutable implementations lazily and reuses them within
   one pipeline runtime. Payload admission and matching-format forwarding do not
   instantiate a codec.
-- `InspectionPlan` resolves the encoded representations a read-only node can
-  inspect directly. Applying it returns a `PdataView`; other representations
-  are decoded to native OTAP.
+- `AcceptedEncodings` identifies the resolved encodings a read-only node can
+  inspect directly. Obtaining a `PdataView` borrows these bytes or existing
+  native records; other encodings are decoded to native OTAP.
 - Native OTAP remains the mutable processing representation and the fallback
   intermediate for conversion between different encodings.
 
@@ -58,7 +58,7 @@ Receivers, processors, and exporters in one pipeline receive clones of the same
 runtime-services handle. The registry is immutable after validation, while the
 service creates only the mutable codec state that the pipeline actually uses.
 
-### Direct borrowing and inspection plans
+### Direct borrowing and accepted encodings
 
 `PdataPayload::encoded_view()` borrows the existing encoding identity, signal,
 and bytes together, or returns `None` for native OTAP. It performs no registry
@@ -67,11 +67,20 @@ The consumer must check the encoding and signal before interpreting the bytes.
 An `EncodedView` guarantees that bytes are available, not that their content is
 valid or that the consumer accepts them.
 
-Use an `InspectionPlan` when a consumer supports selected encodings directly
-but also needs native fallback. Applying the plan returns a borrowed encoded
-view for an accepted encoding, borrows already-native records, or decodes an
-unsupported encoding to owned native OTAP. Accepting an encoded view through a
-plan does not validate its content either.
+Use `AcceptedEncodings` when a consumer supports selected encodings directly
+but also needs native fallback. It selects encodings for direct access, not an
+input whitelist: encodings absent from the set are decoded to owned native OTAP,
+rather than rejected. Already-native records are always borrowed. An empty set
+requires native OTAP access for every input. Borrowed encoded views do not
+validate their content.
+
+Resolve and reuse the set through the effect handler:
+
+```rust,ignore
+let accepted_encodings =
+    effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
+let view = effect_handler.view(payload, &accepted_encodings).await?;
+```
 
 ## Implement a codec
 

@@ -20,7 +20,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, PdataEncoding, PdataView};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -446,7 +446,7 @@ impl AzureMonitorExporter {
     async fn handle_message(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
         auth: &mut impl HttpClientAuthProvider,
@@ -462,7 +462,7 @@ impl AzureMonitorExporter {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
 
-                let view = match effect_handler.view(&payload, inspection_plan).await {
+                let view = match effect_handler.view(&payload, accepted_encodings).await {
                     Ok(view) => view,
                     Err(error) => {
                         effect_handler
@@ -543,7 +543,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        let inspection_plan = effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?;
+        let accepted_encodings =
+            effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
         otel_info!(
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
@@ -679,7 +680,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             ));
                         }
                         other => {
-                            self.handle_message(&effect_handler, &inspection_plan, other, &mut msg_id, &mut auth).await?;
+                            self.handle_message(&effect_handler, &accepted_encodings, other, &mut msg_id, &mut auth).await?;
                         }
                     }
                 }
@@ -1233,14 +1234,14 @@ mod tests {
         assert!(!auth.not_ready_reason().is_empty());
 
         let effect_handler = test_effect_handler();
-        let inspection_plan = effect_handler
-            .resolve_inspection_plan(&[PdataEncoding::OTLP])
+        let accepted_encodings = effect_handler
+            .resolve_accepted_encodings(&[PdataEncoding::OTLP])
             .unwrap();
         let mut msg_id = 0;
         exporter
             .handle_message(
                 &effect_handler,
-                &inspection_plan,
+                &accepted_encodings,
                 Ok(Message::PData(OtapPdata::new(
                     Context::default(),
                     OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
@@ -1264,8 +1265,8 @@ mod tests {
         let mut auth = auth_with_cached_token().await;
         let (effect_handler, mut completion_rx) = completion_harness();
 
-        let inspection_plan = effect_handler
-            .resolve_inspection_plan(&[PdataEncoding::OTLP])
+        let accepted_encodings = effect_handler
+            .resolve_accepted_encodings(&[PdataEncoding::OTLP])
             .unwrap();
         let codecs = effect_handler.codec_service();
         let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
@@ -1278,7 +1279,7 @@ mod tests {
             exporter
                 .handle_message(
                     &effect_handler,
-                    &inspection_plan,
+                    &accepted_encodings,
                     Ok(Message::PData(
                         OtapPdata::new(Context::default(), payload).test_subscribe_to(
                             Interests::NACKS,

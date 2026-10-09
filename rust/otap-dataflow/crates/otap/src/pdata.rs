@@ -40,7 +40,7 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_pdata_codec::{
-    CodecError, CodecService, EncodePolicy, EncodingPlan, InspectionPlan, OtapPayload,
+    AcceptedEncodings, CodecError, CodecService, EncodePolicy, EncodingPlan, OtapPayload,
     PdataEncoding, PdataPayloadDecodeError, PdataView,
 };
 
@@ -1483,16 +1483,19 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
         EncodingPlan::resolve(self.codec_service().registry(), encoding, policy)
     }
 
-    /// Resolves accepted encoded identities once while starting a read-only node.
-    fn resolve_inspection_plan(
+    /// Resolves the encodings a read-only node accepts for direct borrowed access.
+    ///
+    /// Other encodings fall back to native OTAP when obtaining a view. Resolve
+    /// this set once during startup, or on first use when startup access is unavailable.
+    fn resolve_accepted_encodings(
         &self,
         encodings: &[PdataEncoding],
-    ) -> Result<InspectionPlan, CodecError> {
+    ) -> Result<AcceptedEncodings, CodecError> {
         let codecs = encodings
             .iter()
             .map(|encoding| self.codec_service().registry().resolve(encoding))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(InspectionPlan::accept_encoded(codecs))
+        Ok(AcceptedEncodings::accept_encoded(codecs))
     }
 
     /// Moves native records or decodes encoded pdata with recoverable failure.
@@ -1549,11 +1552,15 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
         }
     }
 
-    /// Borrows a read-only view through runtime-owned codec state.
+    /// Obtains a read-only view using the consumer's accepted encodings.
+    ///
+    /// Accepted encoded bytes and existing native records are borrowed. Other
+    /// encodings are decoded through runtime-owned codec state into temporary
+    /// native OTAP records, leaving the original payload unchanged.
     async fn view<'a>(
         &self,
         payload: &'a OtapPayload,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError>;
 
     /// Encodes inside a scope that cannot cross an await point.
@@ -1660,9 +1667,9 @@ macro_rules! impl_pdata_effect_handler_ext {
             async fn view<'a>(
                 &self,
                 payload: &'a OtapPayload,
-                plan: &InspectionPlan,
+                accepted_encodings: &AcceptedEncodings,
             ) -> Result<PdataView<'a>, CodecError> {
-                payload.view(self.codec_service(), plan)
+                payload.view(self.codec_service(), accepted_encodings)
             }
 
             async fn with_encoded<R>(

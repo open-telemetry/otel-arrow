@@ -8,7 +8,7 @@
 //! no registry lookup, allocation, codec construction, validation, or decoding.
 //! The caller checks whether it supports the encoding and signal.
 //!
-//! Alternatively, a consumer resolves an [`crate::InspectionPlan`] once and
+//! Alternatively, a consumer resolves [`crate::AcceptedEncodings`] once and
 //! receives either an [`EncodedView`] when it explicitly accepts the current
 //! encoding, or a [`PdataView::Native`] value after native OTAP fallback. Native
 //! views use [`Cow`]: already-native records can be borrowed, while fallback
@@ -28,7 +28,7 @@ use crate::PdataEncoding;
 ///
 /// A view guarantees byte availability, not valid content or acceptance by a
 /// consumer. Direct borrowing through [`crate::PdataPayload::encoded_view`]
-/// requires the caller to check the encoding and signal. An [`crate::InspectionPlan`]
+/// requires the caller to check the encoding and signal. [`crate::AcceptedEncodings`]
 /// selects accepted encodings for the consumer but likewise does not validate
 /// the borrowed content.
 #[derive(Clone, Copy, Debug)]
@@ -68,7 +68,7 @@ impl<'a> EncodedView<'a> {
 
 /// Representation-neutral read-only pdata view.
 pub enum PdataView<'a> {
-    /// Encoded bytes explicitly accepted by the consumer's inspection plan.
+    /// Encoded bytes explicitly listed in the consumer's [`crate::AcceptedEncodings`].
     Encoded(EncodedView<'a>),
     /// Native records, borrowed when already native or owned after fallback decode.
     Native(Cow<'a, OtapArrowRecords>),

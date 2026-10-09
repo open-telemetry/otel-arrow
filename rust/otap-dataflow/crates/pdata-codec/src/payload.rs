@@ -12,8 +12,8 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes}
 use prost::Message;
 
 use crate::{
-    CodecError, CodecRegistry, CodecService, EncodeOutput, EncodedPdata, EncodedView, EncodingPlan,
-    InspectionPlan, PdataEncoding, PdataView, ResolvedCodec,
+    AcceptedEncodings, CodecError, CodecRegistry, CodecService, EncodeOutput, EncodedPdata,
+    EncodedView, EncodingPlan, PdataEncoding, PdataView, ResolvedCodec,
 };
 
 /// Concrete inline storage used during the transition from specialized OTLP bytes.
@@ -234,7 +234,7 @@ impl PdataPayload {
     ///
     /// This does not consult the registry, create a codec, validate or decode the
     /// content, clone the buffer, or allocate. The caller must check the identity
-    /// and signal before interpreting the bytes. Use an [`InspectionPlan`] when
+    /// and signal before interpreting the bytes. Use [`AcceptedEncodings`] when
     /// unsupported encodings should instead fall back to native OTAP decoding.
     #[must_use]
     pub fn encoded_view(&self) -> Option<EncodedView<'_>> {
@@ -441,16 +441,16 @@ impl PdataPayload {
     pub fn view<'a>(
         &'a self,
         codecs: &CodecService,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
         match &self.storage {
             PayloadStorage::OtlpBytes(bytes) => codecs.view_parts(
                 otlp_codec(bytes.signal_type()),
                 bytes.signal_type(),
                 bytes.bytes(),
-                plan,
+                accepted_encodings,
             ),
-            PayloadStorage::Encoded(encoded) => codecs.view(encoded, plan),
+            PayloadStorage::Encoded(encoded) => codecs.view(encoded, accepted_encodings),
             PayloadStorage::OtapArrowRecords(records) => {
                 Ok(PdataView::Native(Cow::Borrowed(records)))
             }

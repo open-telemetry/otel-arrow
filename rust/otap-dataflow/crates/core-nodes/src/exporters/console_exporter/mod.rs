@@ -33,7 +33,7 @@ use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata_codec::{InspectionPlan, OtapPayload, PdataEncoding, PdataView};
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, OtapPayload, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
@@ -263,7 +263,8 @@ impl Exporter<OtapPdata> for ConsoleExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        let inspection_plan = effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?;
+        let accepted_encodings =
+            effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -282,7 +283,7 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                         .attempt(signal)
                         .run(async |attempt| {
                             attempt.set_item_count_with(|| data.num_items() as u64);
-                            self.export(data.payload_ref(), &effect_handler, &inspection_plan)
+                            self.export(data.payload_ref(), &effect_handler, &accepted_encodings)
                                 .await
                                 .map_err(|error| attempt.failed(error))
                         })
@@ -306,16 +307,16 @@ impl ConsoleExporter {
         &self,
         payload: &OtapPayload,
         effect_handler: &EffectHandler<OtapPdata>,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<(), ConsoleExportErrorType> {
         match payload.signal_type() {
             SignalType::Logs => {
-                self.export_logs(payload, effect_handler, inspection_plan)
+                self.export_logs(payload, effect_handler, accepted_encodings)
                     .await
             }
             SignalType::Traces => self.unsupported_signal("traces"),
             SignalType::Metrics => {
-                self.export_metrics(payload, effect_handler, inspection_plan)
+                self.export_metrics(payload, effect_handler, accepted_encodings)
                     .await
             }
         }
@@ -325,10 +326,10 @@ impl ConsoleExporter {
         &self,
         payload: &OtapPayload,
         effect_handler: &EffectHandler<OtapPdata>,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<(), ConsoleExportErrorType> {
         match effect_handler
-            .view(payload, inspection_plan)
+            .view(payload, accepted_encodings)
             .await
             .map_err(|error| {
                 otel_error!("console.pdata.decode_failed", error = %error);
@@ -355,14 +356,14 @@ impl ConsoleExporter {
         &self,
         payload: &OtapPayload,
         effect_handler: &EffectHandler<OtapPdata>,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<(), ConsoleExportErrorType> {
         if !self.formatter.supports_metrics() {
             return self.unsupported_signal("metrics");
         }
 
         match effect_handler
-            .view(payload, inspection_plan)
+            .view(payload, accepted_encodings)
             .await
             .map_err(|error| {
                 otel_warn!("console.pdata.decode_failed", error = %error);

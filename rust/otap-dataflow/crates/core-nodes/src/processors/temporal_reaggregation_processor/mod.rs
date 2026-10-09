@@ -44,7 +44,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::PayloadData;
-use otel_arrow_dfe_pdata_codec::{InspectionPlan, OtapPayload, PdataEncoding, PdataView};
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, OtapPayload, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
@@ -270,8 +270,8 @@ pub struct TemporalReaggregationProcessor {
 
     /// Resolved on first use because processors currently receive codec services
     /// only while processing messages. A future PR will expose the pipeline registry
-    /// at construction so this plan can be required instead of optional.
-    inspection_plan: Option<InspectionPlan>,
+    /// at construction so this set can be required instead of optional.
+    accepted_encodings: Option<AcceptedEncodings>,
 }
 
 struct InboundTracker {
@@ -295,20 +295,21 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
             Message::PData(pdata) => {
                 match pdata.signal_type() {
                     SignalType::Metrics => {
-                        if self.inspection_plan.is_none() {
-                            self.inspection_plan = Some(
-                                effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?,
+                        if self.accepted_encodings.is_none() {
+                            self.accepted_encodings = Some(
+                                effect_handler
+                                    .resolve_accepted_encodings(&[PdataEncoding::OTLP])?,
                             );
                         }
-                        // SAFETY: If absent, the plan is set to Some above; resolution errors
+                        // SAFETY: If absent, the set is stored in Some above; resolution errors
                         // return via `?`. There is no intervening mutation or await.
-                        // A future PR will resolve plans at construction and remove this expect.
-                        let inspection_plan = self
-                            .inspection_plan
+                        // A future PR will resolve this set at construction and remove this expect.
+                        let accepted_encodings = self
+                            .accepted_encodings
                             .as_ref()
-                            .expect("view plan initialized")
+                            .expect("accepted encodings initialized")
                             .clone();
-                        self.process_metric_pdata(effect_handler, pdata, &inspection_plan)
+                        self.process_metric_pdata(effect_handler, pdata, &accepted_encodings)
                             .await?;
                     }
                     // Non-metrics signals pass through unchanged.
@@ -395,7 +396,7 @@ impl TemporalReaggregationProcessor {
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
             aggregated_peer: PeerAddrMerger::new(),
-            inspection_plan: None,
+            accepted_encodings: None,
         })
     }
 
@@ -651,10 +652,10 @@ impl TemporalReaggregationProcessor {
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         pdata: OtapPdata,
-        inspection_plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<(), Error> {
         let view = match effect_handler
-            .view(pdata.payload_ref(), inspection_plan)
+            .view(pdata.payload_ref(), accepted_encodings)
             .await
         {
             Ok(view) => view,

@@ -338,8 +338,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CodecRegistry, CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation,
-        EncodingPlan, InspectionPlan, PdataView,
+        AcceptedEncodings, CodecRegistry, CodecService, CodecServiceBuilder, DecodePolicy,
+        DecodeValidation, EncodingPlan, PdataView,
     };
     use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
@@ -389,13 +389,16 @@ mod tests {
         let encoded = codec.admit(SignalType::Logs, logs_bytes()).unwrap();
         let pointer = encoded.bytes().as_ptr();
         match service
-            .view(&encoded, &InspectionPlan::accept_encoded([codec]))
+            .view(&encoded, &AcceptedEncodings::accept_encoded([codec]))
             .unwrap()
         {
             PdataView::Encoded(view) => assert_eq!(view.bytes().as_ptr(), pointer),
             PdataView::Native(_) => panic!("the accepted representation must remain encoded"),
         }
-        match service.view(&encoded, &InspectionPlan::native()).unwrap() {
+        match service
+            .view(&encoded, &AcceptedEncodings::native())
+            .unwrap()
+        {
             PdataView::Native(records) => assert_eq!(records.num_items(), 4),
             PdataView::Encoded(_) => panic!("native fallback must decode"),
         }
