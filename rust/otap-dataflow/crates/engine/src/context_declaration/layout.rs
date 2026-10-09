@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use otel_arrow_dfe_config::context::ContextEntryName;
 pub use otel_arrow_dfe_config::context_policy::ContextDomain;
 use otel_arrow_dfe_config::context_policy::{
-    ContextEntryDeclaration, ContextEntryPart, ContextScope,
+    ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind, ContextScope,
 };
 use otel_arrow_dfe_config::error::Error;
 
@@ -80,7 +80,7 @@ pub struct ContextMember {
     /// Canonical member name.
     ///
     /// Field-backed members use `store_as` or the referenced primitive name;
-    /// constants use their configured name.
+    /// domainless members use their configured name.
     pub name: ContextEntryName,
     /// Value source for this member.
     pub source: ContextMemberSource,
@@ -93,6 +93,8 @@ pub enum ContextMemberSource {
     Field(ContextFieldId),
     /// Inline UTF-8 value supplied by configuration.
     Constant(Box<str>),
+    /// Random value generated according to the configured kind.
+    Randomness(ContextRandomnessKind),
 }
 
 /// One conditional element
@@ -111,7 +113,7 @@ pub struct ContextEntryLayout {
     pub name: ContextEntryName,
     /// Declaring scope.
     pub scope: ContextScope,
-    /// Members in canonical name order; field sources must be present, while constants always are.
+    /// Members in canonical name order; fields must be present, while domainless sources always are.
     pub members: Box<[ContextMember]>,
     /// Canonically ordered conditions; all must match for this entry to exist.
     pub conditions: Box<[ContextCondition]>,
@@ -206,19 +208,28 @@ impl ContextLayout {
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
-                if let ContextEntryPart::Constant { name, value } = part {
-                    members.push(ContextMember {
-                        name: name.clone(),
-                        source: ContextMemberSource::Constant(value.clone().into_boxed_str()),
-                    });
-                    continue;
+                match part {
+                    ContextEntryPart::Constant { name, value } => {
+                        members.push(ContextMember {
+                            name: name.clone(),
+                            source: ContextMemberSource::Constant(value.clone().into_boxed_str()),
+                        });
+                        continue;
+                    }
+                    ContextEntryPart::Randomness { name, value } => {
+                        members.push(ContextMember {
+                            name: name.clone(),
+                            source: ContextMemberSource::Randomness(*value),
+                        });
+                        continue;
+                    }
+                    ContextEntryPart::TransportHeader { .. }
+                    | ContextEntryPart::AuthorizedIdentity { .. }
+                    | ContextEntryPart::TransportHeaderMatch { .. } => {}
                 }
-                let domain = part
-                    .domain()
-                    .expect("referenced context part has an authority domain");
-                let source_name = part
-                    .source_name()
-                    .expect("referenced context part has a source name");
+                let (domain, source_name) = part
+                    .referenced_source()
+                    .expect("referenced context part has a domain and source name");
                 let mut matching = fields
                     .iter()
                     .enumerate()
@@ -458,7 +469,9 @@ mod tests {
                     ContextMemberSource::Field(field) => {
                         layout.fields()[field.index()].name.as_str()
                     }
-                    ContextMemberSource::Constant(_) => member.name.as_str(),
+                    ContextMemberSource::Constant(_) | ContextMemberSource::Randomness(_) => {
+                        member.name.as_str()
+                    }
                 })
                 .collect(),
         }
@@ -677,7 +690,9 @@ mod tests {
                 .iter()
                 .map(|member| match &member.source {
                     ContextMemberSource::Field(field) => layout.fields()[field.index()].domain,
-                    ContextMemberSource::Constant(_) => panic!("unexpected constant"),
+                    ContextMemberSource::Constant(_) | ContextMemberSource::Randomness(_) => {
+                        panic!("unexpected domainless member")
+                    }
                 })
                 .collect::<Vec<_>>(),
             [
@@ -807,6 +822,85 @@ mod tests {
             projection.presence(),
             ContextNameId::Composite(ContextEntryId(0))
         );
+    }
+
+    /// Scenario: a UUID v7 randomness-only entry compiles without primitive fields.
+    /// Guarantees: the generator is projected as an always-available domainless member.
+    #[test]
+    fn randomness_only_entry_compiles_without_fields() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: name("idempotency"),
+            definition: ContextEntryDefinition(vec![ContextEntryPart::Randomness {
+                name: name("id"),
+                value: ContextRandomnessKind::Uuid7,
+            }]),
+        };
+
+        let layout = compile([], &[declaration]);
+        assert!(layout.fields().is_empty());
+        assert!(layout.entries()[0].conditions.is_empty());
+        let projection = layout
+            .resolve_member(&name("idempotency"), &name("id"))
+            .expect("randomness member");
+        assert_eq!(
+            projection.members().expect("composite members"),
+            [ContextMember {
+                name: name("id"),
+                source: ContextMemberSource::Randomness(ContextRandomnessKind::Uuid7),
+            }]
+        );
+        assert_eq!(
+            projection.presence(),
+            ContextNameId::Composite(ContextEntryId(0))
+        );
+    }
+
+    /// Scenario: a randomness member is guarded by a transport-header match condition.
+    /// Guarantees: generated values remain available without bypassing the composite condition.
+    #[test]
+    fn randomness_member_retains_composite_condition_gate() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: name("idempotency"),
+            definition: ContextEntryDefinition(vec![
+                ContextEntryPart::Randomness {
+                    name: name("id"),
+                    value: ContextRandomnessKind::Uuid7,
+                },
+                ContextEntryPart::TransportHeaderMatch {
+                    name: name("environment"),
+                    value: "production".to_owned(),
+                },
+            ]),
+        };
+
+        let layout = compile(
+            [field("environment", ContextDomain::TransportHeader)],
+            &[declaration],
+        );
+        let projection = layout
+            .resolve_member(&name("idempotency"), &name("id"))
+            .expect("randomness member");
+        let ContextNameId::Composite(entry_id) = projection.presence() else {
+            panic!("randomness member must retain composite presence");
+        };
+        let entry = &layout.entries()[entry_id.index()];
+        assert_eq!(
+            projection.members().expect("composite members"),
+            [ContextMember {
+                name: name("id"),
+                source: ContextMemberSource::Randomness(ContextRandomnessKind::Uuid7),
+            }]
+        );
+        assert_eq!(entry.conditions.len(), 1);
+        assert_eq!(
+            layout.fields()[entry.conditions[0].field.index()]
+                .name
+                .as_str(),
+            "environment"
+        );
+        assert_eq!(entry.conditions[0].value.as_ref(), b"production");
     }
 
     /// Scenario: a constant member is guarded by a transport-header match condition.
