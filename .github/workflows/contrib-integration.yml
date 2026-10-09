@@ -34,11 +34,13 @@ jobs:
       - name: Discover affected integration tests
         id: tests
         env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
           INCLUDE_NON_REQUIRED: ${{ inputs.include_non_required }}
         run: |
           args=(
-            --base-sha "${{ inputs.base_sha }}"
-            --head-sha "${{ inputs.head_sha }}"
+            --base-sha "$BASE_SHA"
+            --head-sha "$HEAD_SHA"
           )
           if [[ "$INCLUDE_NON_REQUIRED" != "true" ]]; then
             args+=(--required-only)
@@ -69,9 +71,11 @@ jobs:
           cache-bin: false
           save-if: false
       - name: Run component integration test
+        env:
+          MANIFEST_PATH: ${{ matrix.manifest }}
         run: >
           python3 .github/scripts/run-contrib-integration-test.py
-          --manifest "${{ matrix.manifest }}"
+          --manifest "$MANIFEST_PATH"
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
