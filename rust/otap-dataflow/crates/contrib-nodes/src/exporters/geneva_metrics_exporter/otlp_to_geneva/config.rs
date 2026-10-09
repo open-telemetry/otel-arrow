@@ -5,6 +5,21 @@
 
 use serde::Deserialize;
 
+const BANNED_MONITORING_ACCOUNTS: &[&str] = &[
+    "",
+    "%MDM_MONITORING_ACCOUNT%",
+    "%MONITORING_MDM_ACCOUNT_NAME%",
+    "!AZUREDB_METRICS_ACCOUNT!",
+    "!AZUREDB_SHOEBOX_METRICS_ACCOUNT!",
+    "<unknown>",
+    "Default",
+    "MDM ACCOUNT",
+    "<monitoringAccountPlaceholder>",
+    "*",
+    "{{AccountName}}",
+    "<<Metric Account Name>>",
+];
+
 /// Scope attribute selection for one instrumentation scope name.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +66,12 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         if self.monitoring_account.trim().is_empty() {
             return Err("monitoring_account must not be empty".to_string());
+        }
+        if BANNED_MONITORING_ACCOUNTS.contains(&self.monitoring_account.as_str()) {
+            return Err(format!(
+                "monitoring_account {:?} is a reserved placeholder and cannot be used",
+                self.monitoring_account
+            ));
         }
         if self.metric_namespace.trim().is_empty() {
             return Err("metric_namespace must not be empty".to_string());
@@ -105,6 +126,28 @@ mod tests {
             config.validate(),
             Err("monitoring_account must not be empty".to_string())
         );
+    }
+
+    /// Scenario: A configuration's monitoring account is a reserved placeholder value.
+    /// Guarantees: OTLP metrics cannot be mapped to a monitoring account known to be invalid.
+    #[test]
+    fn rejects_banned_monitoring_account() {
+        for account in BANNED_MONITORING_ACCOUNTS {
+            if account.trim().is_empty() {
+                continue;
+            }
+            let config = Config {
+                monitoring_account: (*account).to_string(),
+                metric_namespace: "example-namespace".to_string(),
+                resource_attributes: Vec::new(),
+                honor_resource_attributes: false,
+                scope_attributes: Vec::new(),
+                honor_scope_attributes: false,
+                disable_exemplars: false,
+            };
+
+            assert!(config.validate().is_err());
+        }
     }
 
     /// Scenario: A configuration omits the fallback metric namespace.

@@ -589,14 +589,6 @@ mod tests {
         exporter_with_timeout(endpoint, Duration::from_secs(1), token_provider)
     }
 
-    async fn ready_exporter(endpoint: &str) -> GenevaMetricsExporter {
-        let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let mut exporter = exporter(endpoint, provider);
-        poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
-        controller.wait_until_observed().await;
-        exporter
-    }
-
     async fn wait_until_request_received(server: &MockServer) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -612,40 +604,6 @@ mod tests {
         })
         .await
         .expect("exporter should start the HTTP publication");
-    }
-
-    /// Scenario: One OTLP request selects two different monitoring accounts.
-    /// Guarantees: The exporter permanently NACKs without issuing an HTTP request.
-    #[tokio::test]
-    async fn rejects_multiple_accounts_before_publication() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-        let mut exporter = ready_exporter(&server.uri()).await;
-        let (effect_handler, mut completions) = completion_harness();
-
-        let completion = match exporter.start_publication(
-            metrics_pdata(&["account-a", "account-b"], 1),
-            &effect_handler,
-        ) {
-            PublicationStart::Completion(completion) => completion,
-            PublicationStart::InFlight(_) => panic!("invalid request must not be published"),
-        };
-        completion.await.expect("NACK should be routed");
-
-        match completions.recv().await.expect("completion should arrive") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert!(nack.permanent);
-                assert!(
-                    nack.reason
-                        .contains("supports one monitoring account per OTLP request")
-                );
-            }
-            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
-        }
     }
 
     /// Scenario: Pdata is queued before the bearer provider publishes its initial token.

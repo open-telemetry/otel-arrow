@@ -12,10 +12,7 @@ use otel_arrow_dfe_pdata_views::views::common::{
 use otel_arrow_dfe_pdata_views::views::metrics::ScopeMetricsView;
 
 use super::super::encoder::Dimension;
-use super::{
-    ACCOUNT_ATTRIBUTE, CardinalityOverflow, Config, PREVIOUS_ACCOUNT_ATTRIBUTE, PointContext,
-    ResourceContext,
-};
+use super::{CardinalityOverflow, Config, PointContext, ResourceContext, ScopeContext};
 
 const MAX_DIMENSIONS: usize = 74;
 pub(super) const MAX_DIMENSION_NAME_UTF16_UNITS: usize = 512;
@@ -27,7 +24,6 @@ const CARDINALITY_OVERFLOW_ATTRIBUTE: &str = "otel.metric.overflow";
 
 pub(super) fn default_resource_context(config: &Config) -> ResourceContext {
     ResourceContext {
-        monitoring_account: config.monitoring_account.clone(),
         namespace: config.metric_namespace.clone(),
         original_dimensions: Vec::new(),
         dimensions: Vec::new(),
@@ -41,14 +37,10 @@ pub(super) fn resource_context<A>(
 where
     A: AttributeView,
 {
-    let mut monitoring_account = None;
     let mut namespace = None;
     let mut dimensions = Vec::new();
     for attribute in attributes {
         match str::from_utf8(attribute.key())? {
-            ACCOUNT_ATTRIBUTE | PREVIOUS_ACCOUNT_ATTRIBUTE => {
-                monitoring_account = Some(routing_value(&attribute)?);
-            }
             NAMESPACE_ATTRIBUTE | PREVIOUS_NAMESPACE_ATTRIBUTE => {
                 namespace = Some(routing_value(&attribute)?);
             }
@@ -59,12 +51,7 @@ where
         }
     }
     Ok(ResourceContext {
-        monitoring_account: monitoring_account
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| config.monitoring_account.clone()),
-        namespace: namespace
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| config.metric_namespace.clone()),
+        namespace: non_empty_or(namespace, &config.metric_namespace),
         original_dimensions: dimensions.clone(),
         dimensions,
     })
@@ -72,25 +59,18 @@ where
 
 pub(super) fn point_context<A>(
     attributes: impl IntoIterator<Item = A>,
-    resource: &ResourceContext,
-    scope_namespace: &str,
-    scope_dimensions: &[Dimension],
-    config: &Config,
+    scope: &ScopeContext<'_>,
     metric_name: Option<&str>,
 ) -> Result<(Option<PointContext>, Option<CardinalityOverflow>), Utf8Error>
 where
     A: AttributeView,
 {
-    let mut monitoring_account = None;
     let mut namespace = None;
     let mut point_dimensions = Vec::new();
     let mut dimensions_valid = metric_name.is_some();
     let mut cardinality_overflow = false;
     for attribute in attributes {
         match str::from_utf8(attribute.key())? {
-            ACCOUNT_ATTRIBUTE => {
-                monitoring_account = Some(routing_value(&attribute)?);
-            }
             NAMESPACE_ATTRIBUTE => {
                 namespace = Some(routing_value(&attribute)?);
             }
@@ -112,10 +92,10 @@ where
     let dimensions = if dimensions_valid {
         merge_dimensions(
             point_dimensions,
-            &resource.dimensions,
-            scope_dimensions,
-            config.honor_resource_attributes,
-            config.honor_scope_attributes,
+            &scope.resource.dimensions,
+            scope.dimensions,
+            scope.config.honor_resource_attributes,
+            scope.config.honor_scope_attributes,
         )
         .filter(|dimensions| dimensions_within_limits(dimensions))
         .map(|mut dimensions| {
@@ -129,18 +109,12 @@ where
         return Ok((None, None));
     }
 
-    let monitoring_account =
-        monitoring_account.unwrap_or_else(|| resource.monitoring_account.clone());
-    let namespace = namespace.unwrap_or_else(|| scope_namespace.to_string());
+    let namespace = namespace.unwrap_or_else(|| scope.namespace.to_string());
     if let Some(dimensions) = dimensions {
-        let overflow = cardinality_overflow.then(|| CardinalityOverflow {
-            monitoring_account: monitoring_account.clone(),
-            namespace: namespace.clone(),
-            metric_name: metric_name.unwrap_or_default().to_string(),
-        });
+        let overflow = cardinality_overflow
+            .then(|| overflow_diagnostic(scope, namespace.clone(), metric_name));
         return Ok((
             Some(PointContext {
-                monitoring_account,
                 namespace,
                 dimensions,
             }),
@@ -149,12 +123,26 @@ where
     }
     Ok((
         None,
-        Some(CardinalityOverflow {
-            monitoring_account,
-            namespace,
-            metric_name: metric_name.unwrap_or_default().to_string(),
-        }),
+        Some(overflow_diagnostic(scope, namespace, metric_name)),
     ))
+}
+
+fn non_empty_or(value: Option<String>, default: &str) -> String {
+    value
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn overflow_diagnostic(
+    scope: &ScopeContext<'_>,
+    namespace: String,
+    metric_name: Option<&str>,
+) -> CardinalityOverflow {
+    CardinalityOverflow {
+        monitoring_account: scope.config.monitoring_account.clone(),
+        namespace,
+        metric_name: metric_name.unwrap_or_default().to_string(),
+    }
 }
 
 fn add_dimension<A>(
@@ -240,28 +228,19 @@ where
         .iter()
         .find(|selection| selection.name == "*");
     let selected_keys = if let Some(selection) = wildcard_selection {
-        selection
-            .keys
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
+        selection.keys.clone()
     } else {
         config
             .scope_attributes
             .iter()
             .filter(|selection| selection.name == scope_name)
-            .flat_map(|selection| selection.keys.iter())
-            .map(String::as_str)
+            .flat_map(|selection| selection.keys.iter().cloned())
             .collect::<Vec<_>>()
     };
     let mut dimensions = Vec::new();
     for attribute in scope.attributes() {
         let key = str::from_utf8(attribute.key())?;
-        if key != NAMESPACE_ATTRIBUTE
-            && selected_keys
-                .iter()
-                .any(|candidate| *candidate == "*" || *candidate == key)
-        {
+        if key != NAMESPACE_ATTRIBUTE && selected_attribute(key, &selected_keys) {
             dimensions.push(attribute_dimension(&attribute, true)?);
         }
     }
@@ -437,16 +416,15 @@ mod tests {
         scope_dimensions: &[Dimension],
         config: &Config,
     ) -> Option<PointContext> {
-        super::point_context(
-            KeyValueIter::new(attributes.iter()),
+        let scope = ScopeContext {
             resource,
-            scope_namespace,
-            scope_dimensions,
+            namespace: scope_namespace,
+            dimensions: scope_dimensions,
             config,
-            Some("metric"),
-        )
-        .expect("test attributes should contain valid UTF-8")
-        .0
+        };
+        super::point_context(KeyValueIter::new(attributes.iter()), &scope, Some("metric"))
+            .expect("test attributes should contain valid UTF-8")
+            .0
     }
 
     fn overflow_diagnostic(
@@ -455,12 +433,16 @@ mod tests {
         scope_namespace: &str,
         metric_name: &str,
     ) -> Option<CardinalityOverflow> {
+        let config = config();
+        let scope = ScopeContext {
+            resource,
+            namespace: scope_namespace,
+            dimensions: &[],
+            config: &config,
+        };
         super::point_context(
             KeyValueIter::new(attributes.iter()),
-            resource,
-            scope_namespace,
-            &[],
-            &config(),
+            &scope,
             Some(metric_name),
         )
         .expect("test attributes should contain valid UTF-8")
@@ -513,7 +495,6 @@ mod tests {
 
     fn resource_with_dimensions(dimensions: Vec<Dimension>) -> ResourceContext {
         ResourceContext {
-            monitoring_account: "resource-account".to_string(),
             namespace: "resource-namespace".to_string(),
             original_dimensions: dimensions.clone(),
             dimensions,
@@ -534,58 +515,49 @@ mod tests {
     }
 
     /// Scenario: A resource has no routing or dimension attributes.
-    /// Guarantees: Configured account and namespace defaults are retained with a valid empty dimension set.
+    /// Guarantees: The configured namespace default is retained with a valid empty dimension set.
     #[test]
     fn uses_configured_resource_defaults() {
         let context = resource_context(&[], &config());
 
-        assert_eq!(context.monitoring_account, "default-account");
         assert_eq!(context.namespace, "default-namespace");
         assert!(context.dimensions.is_empty());
     }
 
-    /// Scenario: Resource routing uses either the current or legacy account and namespace attribute names.
-    /// Guarantees: Both naming generations override the configured routing defaults.
+    /// Scenario: Resource routing uses either the current or legacy namespace attribute name.
+    /// Guarantees: Both naming generations override the configured namespace default.
     #[test]
-    fn accepts_current_and_legacy_resource_routing_attributes() {
+    fn accepts_current_and_legacy_resource_namespace_attributes() {
         let mapping_config = config();
         let legacy = resource_context(
-            &[
-                string_attribute(PREVIOUS_ACCOUNT_ATTRIBUTE, "legacy-account"),
-                string_attribute(PREVIOUS_NAMESPACE_ATTRIBUTE, "legacy-namespace"),
-            ],
+            &[string_attribute(
+                PREVIOUS_NAMESPACE_ATTRIBUTE,
+                "legacy-namespace",
+            )],
             &mapping_config,
         );
         let current = resource_context(
-            &[
-                string_attribute(ACCOUNT_ATTRIBUTE, "current-account"),
-                string_attribute(NAMESPACE_ATTRIBUTE, "current-namespace"),
-            ],
+            &[string_attribute(NAMESPACE_ATTRIBUTE, "current-namespace")],
             &mapping_config,
         );
 
-        assert_eq!(legacy.monitoring_account, "legacy-account");
         assert_eq!(legacy.namespace, "legacy-namespace");
-        assert_eq!(current.monitoring_account, "current-account");
         assert_eq!(current.namespace, "current-namespace");
     }
 
-    /// Scenario: Final resource routing attributes are empty or non-string after earlier non-empty values.
-    /// Guarantees: Routing falls back to the configured monitoring account and namespace.
+    /// Scenario: Final resource namespace attributes are empty or non-string after earlier non-empty values.
+    /// Guarantees: Routing falls back to the configured namespace.
     #[test]
     fn falls_back_from_empty_resource_routing_values() {
         let mapping_config = config();
         let context = resource_context(
             &[
-                string_attribute(ACCOUNT_ATTRIBUTE, "ignored-account"),
-                attribute(ACCOUNT_ATTRIBUTE, any_value::Value::IntValue(1)),
                 string_attribute(NAMESPACE_ATTRIBUTE, "ignored-namespace"),
                 string_attribute(NAMESPACE_ATTRIBUTE, ""),
             ],
             &mapping_config,
         );
 
-        assert_eq!(context.monitoring_account, "default-account");
         assert_eq!(context.namespace, "default-namespace");
     }
 
@@ -606,14 +578,13 @@ mod tests {
         assert_eq!(context.dimensions, vec![dimension("region", "west")]);
     }
 
-    /// Scenario: A point supplies destination overrides alongside ordinary dimensions.
-    /// Guarantees: Routing attributes update account and namespace without being emitted as dimensions.
+    /// Scenario: A point supplies a destination namespace override alongside ordinary dimensions.
+    /// Guarantees: The routing attribute updates the namespace without being emitted as a dimension.
     #[test]
     fn applies_point_routing_attributes_without_emitting_them() {
         let resource = resource_with_dimensions(Vec::new());
         let point = point_context(
             &[
-                string_attribute(ACCOUNT_ATTRIBUTE, "point-account"),
                 string_attribute(NAMESPACE_ATTRIBUTE, "point-namespace"),
                 string_attribute("region", "west"),
             ],
@@ -624,19 +595,16 @@ mod tests {
         )
         .expect("point context should be valid");
 
-        assert_eq!(point.monitoring_account, "point-account");
         assert_eq!(point.namespace, "point-namespace");
         assert_eq!(point.dimensions, vec![dimension("region", "west")]);
     }
 
-    /// Scenario: Point routing attributes contain non-string OTLP values.
-    /// Guarantees: Protobuf string-value semantics apply empty account and namespace overrides instead of retaining parent routing.
+    /// Scenario: A point namespace routing attribute contains a non-string OTLP value.
+    /// Guarantees: Protobuf string-value semantics apply an empty namespace override instead of retaining parent routing.
     #[test]
     fn applies_empty_point_overrides_for_non_string_routing_values() {
         let point = point_context(
             &[
-                string_attribute(ACCOUNT_ATTRIBUTE, "ignored-account"),
-                attribute(ACCOUNT_ATTRIBUTE, any_value::Value::IntValue(1)),
                 string_attribute(NAMESPACE_ATTRIBUTE, "ignored-namespace"),
                 attribute(NAMESPACE_ATTRIBUTE, any_value::Value::BoolValue(true)),
             ],
@@ -647,7 +615,6 @@ mod tests {
         )
         .expect("point context should be valid");
 
-        assert!(point.monitoring_account.is_empty());
         assert!(point.namespace.is_empty());
         assert!(point.dimensions.is_empty());
     }
