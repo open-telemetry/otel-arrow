@@ -1,0 +1,5 @@
+change_type: enhancement
+component: engine
+note: df_engine now waits for every configured pipeline instance to become ready before completing startup.
+issues: [4302]
+subtext: Placement is validated as one reconciliation request. Failed or timed-out startup exits before controller extensions and the admin server start, and candidate instances are cleaned up.

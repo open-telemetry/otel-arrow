@@ -14,6 +14,41 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    /// Reports the resolved target placement before a rollout launches pipeline instances.
+    fn report_pipeline_core_allocation(&self, plan: &CandidateRolloutPlan) {
+        let placement = &plan.target_deployment.placement;
+        let resolved_cores = placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let resolved_numa_nodes = placement
+            .cores
+            .iter()
+            .map(|core| {
+                core.known_numa_node_id
+                    .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+
+        otel_info!(
+            "pipeline.core_allocation",
+            pipeline_group_id = plan.pipeline_group_id.as_ref(),
+            pipeline_id = plan.pipeline_id.as_ref(),
+            num_cores = placement.core_count(),
+            core_allocation = %plan
+                .target_deployment
+                .resolved
+                .policies
+                .resources
+                .core_allocation,
+            resolved_cores = resolved_cores,
+            resolved_numa_nodes = resolved_numa_nodes,
+        );
+    }
+
     /// Emits the internal telemetry event for a rollout/shutdown worker panic.
     pub(super) fn report_controller_worker_panic(
         &self,
@@ -149,6 +184,10 @@ impl<
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;
         });
+
+        if !matches!(plan.action, RolloutAction::NoOp) {
+            self.report_pipeline_core_allocation(&plan);
+        }
 
         let result = match plan.action {
             RolloutAction::Create => self.run_create_rollout(&plan),

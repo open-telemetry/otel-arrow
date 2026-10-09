@@ -49,27 +49,35 @@ const CPU_PROFILE_PERMITS: usize = 1;
 const HEAP_PROFILE_PERMITS: usize = 1;
 
 /// Control-plane error surfaced to admin handlers.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, thiserror::Error)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlPlaneError {
     /// The requested pipeline group does not exist.
+    #[error("pipeline group not found")]
     GroupNotFound,
     /// The requested pipeline group already exists.
+    #[error("pipeline group already exists")]
     GroupAlreadyExists,
     /// The requested pipeline does not exist.
+    #[error("pipeline not found")]
     PipelineNotFound,
     /// Another incompatible live operation is active in the current consistency scope.
+    #[error("another incompatible live operation is active")]
     RolloutConflict,
     /// Submitted pipeline configuration failed validation or violated a runtime boundary.
+    #[error("{message}")]
     InvalidRequest {
         /// Human-readable validation failure detail.
         message: String,
     },
     /// The requested rollout could not be found.
+    #[error("pipeline rollout not found")]
     RolloutNotFound,
     /// The requested shutdown could not be found.
+    #[error("pipeline shutdown not found")]
     ShutdownNotFound,
     /// Unexpected internal failure while processing the request.
+    #[error("{message}")]
     Internal {
         /// Human-readable internal failure detail.
         message: String,
@@ -464,9 +472,24 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::attach_api_security_headers;
+    use super::{ControlPlaneError, attach_api_security_headers};
     use axum::body::Body;
     use axum::http::Response;
+
+    /// Scenario: a rejected control-plane request includes a specific validation message.
+    /// Guarantees: displaying the error returns the message directly without exposing the enum's
+    /// debug representation.
+    #[test]
+    fn control_plane_error_displays_request_message_directly() {
+        let error = ControlPlaneError::InvalidRequest {
+            message: "Core ID 999 exceeds available cores".to_owned(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Core ID 999 exceeds available cores".to_owned()
+        );
+    }
 
     /// Verify that all four hardened security headers are injected with the
     /// expected values and that a pre-existing header on the response is
