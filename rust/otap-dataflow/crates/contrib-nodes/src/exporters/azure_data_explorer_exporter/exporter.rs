@@ -32,9 +32,7 @@ impl AzureDataExplorerExporter {
         config: Config,
         token_provider: Box<dyn BearerTokenProvider>,
     ) -> Result<Self, Error> {
-        config
-            .validate()
-            .map_err(|e| Error::Config(e.to_string()))?;
+        config.validate()?;
 
         let _framework_inputs = (pipeline_ctx, token_provider);
         Err(Error::NotImplemented)
