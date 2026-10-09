@@ -1256,7 +1256,8 @@ mod tests {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_pdata_views::views::common::{
         AnyValueView, AttributeView, InstrumentationScopeView,
     };

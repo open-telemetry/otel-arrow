@@ -175,6 +175,10 @@ impl<T: Sized> From<TypedError<T>> for Error {
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// A pdata codec operation failed.
+    #[error("PData codec operation failed: {0}")]
+    PdataCodec(#[from] otel_arrow_dfe_pdata_codec::CodecError),
+
     /// The linked pdata codec registry is invalid.
     #[error("PData codec initialization failed: {0}")]
     PdataCodecRegistry(#[from] otel_arrow_dfe_pdata_codec::RegistryError),
@@ -605,6 +609,7 @@ impl Error {
     #[must_use]
     pub fn variant_name(&self) -> String {
         match self {
+            Error::PdataCodec(_) => "PdataCodec",
             Error::PdataCodecRegistry(_) => "PdataCodecRegistry",
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",

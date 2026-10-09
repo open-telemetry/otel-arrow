@@ -320,7 +320,7 @@ fn delivery_retryability_matches_auth_aware_nacks() {
                             TestCallData::default().into(),
                             123,
                         );
-                        let (context, saved_payload) = pdata.into_parts();
+                        let delivery = pdata.into_delivery();
                         let response = reqwest::Response::from(
                             http::Response::builder().status(status).body("").unwrap(),
                         );
@@ -345,8 +345,7 @@ fn delivery_retryability_matches_auth_aware_nacks() {
                             CompletedExport {
                                 diagnostic_started_at: Instant::now(),
                                 attempt,
-                                context,
-                                saved_payload,
+                                delivery,
                                 signal_type: SignalType::Logs,
                                 auth_generation,
                             },
@@ -424,7 +423,7 @@ fn notification_failure_does_not_redefine_delivery() {
                         TestCallData::default().into(),
                         123,
                     );
-                    let (context, saved_payload) = pdata.into_parts();
+                    let delivery = pdata.into_delivery();
                     let attempt = metrics
                         .boundary
                         .attempt(SignalType::Logs)
@@ -443,8 +442,7 @@ fn notification_failure_does_not_redefine_delivery() {
                         CompletedExport {
                             diagnostic_started_at: Instant::now(),
                             attempt,
-                            context,
-                            saved_payload,
+                            delivery,
                             signal_type: SignalType::Logs,
                             auth_generation: None,
                         },

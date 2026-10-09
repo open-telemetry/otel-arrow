@@ -3,12 +3,16 @@
 
 //! Representation-neutral, read-only access to pdata.
 //!
-//! A consumer resolves an [`crate::InspectionPlan`] once and then receives either an
-//! [`EncodedView`] when it explicitly accepts the current encoding, or a
-//! [`PdataView::Native`] value after native OTAP fallback. Encoded views borrow
-//! the original bytes without allocation or codec construction. Native views
-//! use [`Cow`]: already-native records can be borrowed, while fallback decoding
-//! owns the materialized records.
+//! [`crate::PdataPayload::encoded_view`] directly borrows an [`EncodedView`] when
+//! the payload already holds bytes, returning `None` for native OTAP. It performs
+//! no registry lookup, allocation, codec construction, validation, or decoding.
+//! The caller checks whether it supports the encoding and signal.
+//!
+//! Alternatively, a consumer resolves [`crate::AcceptedEncodings`] once and
+//! receives either an [`EncodedView`] when it explicitly accepts the current
+//! encoding, or a [`PdataView::Native`] value after native OTAP fallback. Native
+//! views use [`Cow`]: already-native records can be borrowed, while fallback
+//! decoding owns the materialized records.
 //!
 //! Views do not grant mutable native access. Processors that modify records use
 //! the owned conversion capability supplied by the pdata integration layer.
@@ -20,7 +24,13 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::PdataEncoding;
 
-/// Borrowed view of an accepted encoded representation.
+/// Borrowed encoding identity, signal, and bytes of an encoded representation.
+///
+/// A view guarantees byte availability, not valid content or acceptance by a
+/// consumer. Direct borrowing through [`crate::PdataPayload::encoded_view`]
+/// requires the caller to check the encoding and signal. [`crate::AcceptedEncodings`]
+/// selects accepted encodings for the consumer but likewise does not validate
+/// the borrowed content.
 #[derive(Clone, Copy, Debug)]
 pub struct EncodedView<'a> {
     encoding: &'a PdataEncoding,
@@ -49,7 +59,7 @@ impl<'a> EncodedView<'a> {
         self.signal
     }
 
-    /// Complete independently decodable batch bytes.
+    /// Original batch bytes, not validated by this view.
     #[must_use]
     pub const fn bytes(&self) -> &[u8] {
         self.bytes
@@ -58,7 +68,7 @@ impl<'a> EncodedView<'a> {
 
 /// Representation-neutral read-only pdata view.
 pub enum PdataView<'a> {
-    /// Encoded bytes explicitly accepted by the consumer's inspection plan.
+    /// Encoded bytes explicitly listed in the consumer's [`crate::AcceptedEncodings`].
     Encoded(EncodedView<'a>),
     /// Native records, borrowed when already native or owned after fallback decode.
     Native(Cow<'a, OtapArrowRecords>),

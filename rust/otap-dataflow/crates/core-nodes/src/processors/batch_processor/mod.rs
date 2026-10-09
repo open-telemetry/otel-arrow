@@ -65,12 +65,12 @@ use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData, Sizer,
-    TryIntoWithOptions,
+    OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes, Sizer, TryIntoWithOptions,
     error::Error as PDataError,
     otap::batching::make_item_batches,
     otlp::batching::{BytesBatches, make_bytes_batches_owned},
 };
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -108,6 +108,7 @@ const fn wakeup_slot(format: SignalFormat, signal: SignalType) -> WakeupSlot {
     let format_base = match format {
         SignalFormat::OtapRecords => 0,
         SignalFormat::OtlpBytes => 3,
+        SignalFormat::Encoded => 6,
     };
     let signal_offset = match signal {
         SignalType::Logs => 0,
@@ -470,6 +471,10 @@ impl FormatConfig {
         let (expect_sizer, with_msg) = match format {
             SignalFormat::OtapRecords => (Sizer::Items, "OTAP batch sizer: must be items"),
             SignalFormat::OtlpBytes => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
+            SignalFormat::Encoded => (
+                Sizer::Bytes,
+                "encoded batches require conversion before legacy batching",
+            ),
         };
         if self.sizer != expect_sizer {
             return Err(ConfigError::InvalidUserConfig {
@@ -862,6 +867,9 @@ impl BatchProcessor {
                     return Err(Self::no_active_format_error());
                 }
             }
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         };
         Ok(())
     }
@@ -965,7 +973,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
     }
 }
 
-impl<'a, T: OtapPayloadHelpers> BatchProcessorSignal<'a, T>
+impl<'a, T: OtapPayloadHelpers + Into<OtapPayload>> BatchProcessorSignal<'a, T>
 where
     SignalBuffer<T>: Batcher<T>,
 {
@@ -1437,6 +1445,11 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                                     .flush_signal_impl(effect, when, FlushReason::Timer)
                                     .await?;
                             }
+                        }
+                        SignalFormat::Encoded => {
+                            unreachable!(
+                                "encoded payloads are not admitted during the storage transition"
+                            )
                         }
                     };
 
@@ -3584,6 +3597,7 @@ mod tests {
                     match output.signal_format() {
                         SignalFormat::OtapRecords => has_otap = true,
                         SignalFormat::OtlpBytes => has_otlp = true,
+                        SignalFormat::Encoded => panic!("unexpected encoded output"),
                     }
                 }
 

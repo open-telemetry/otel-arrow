@@ -47,6 +47,7 @@ crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 [dev-dependencies]
 bytes = { workspace = true }
 otel-arrow-dfe-contrib-nodes = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-quiver = { workspace = true }
 otel-arrow-dfe-state = { workspace = true }
 parking_lot = { workspace = true }
