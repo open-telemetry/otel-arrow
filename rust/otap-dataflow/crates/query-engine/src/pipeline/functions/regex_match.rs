@@ -16,7 +16,7 @@ use arrow::array::{
     Array, ArrayAccessor, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, StringArrayType,
     downcast_dictionary_array,
 };
-use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
 use arrow::datatypes::DataType;
 use datafusion::common::exec_err;
 use datafusion::error::Result;
@@ -99,6 +99,11 @@ fn regex_match_array(regex: &Regex, arr: &ArrayRef) -> Result<ArrayRef> {
         DataType::Utf8View => Arc::new(is_match(regex, arr.as_string_view())),
         DataType::Dictionary(_, _) => {
             // Evaluate once per distinct value, then expand through the keys.
+
+            // TODO: Consider refactoring `is_match` to return `MutableBuffer`
+            // instead of `BooleanArray`. This way we can convert the mutable buffer
+            // to an array when needed here. This will save us an Arc for dicts
+            // don't need a full BooleanArray for the values, just the keys.
             let values = arr.as_any_dictionary().values();
             let evaluated_values = regex_match_array(regex, values)?;
             let evaluated_values = evaluated_values.as_boolean();
@@ -136,12 +141,7 @@ fn is_match<'a, S>(regex: &Regex, array: &'a S) -> BooleanArray
 where
     &'a S: StringArrayType<'a>,
 {
-    let mut result = BooleanBufferBuilder::new(array.len());
-    for i in 0..array.len() {
-        result.append(regex.is_match(array.value(i)));
-    }
-
-    let values = BooleanBuffer::from(result);
+    let values = BooleanBuffer::collect_bool(array.len(), |i| regex.is_match(array.value(i)));
     let nulls = array
         .nulls()
         .map(|n| n.inner().sliced())
