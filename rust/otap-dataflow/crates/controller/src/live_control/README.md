@@ -85,9 +85,16 @@ all active instances.
 - Terminal rollout and shutdown records are retained in memory with both a
   per-logical-pipeline cap and a TTL. This keeps recent admin lookups useful
   without unbounded history growth.
-- Runtime exit reporting is race-tolerant. A pipeline thread can exit before
-  `register_launched_instance()` publishes it as active; such exits are parked
-  in `pending_instance_exits` and reconciled during registration.
+- Runtime exit reporting is race-tolerant. Production launches reserve
+  liveness before OS-thread creation, then transition that reservation to an
+  active record after spawn. Synthetic test exits without a reservation are
+  parked in `pending_instance_exits` and reconciled during test registration.
+- Global shutdown retains its finite terminal instance set until teardown
+  completes, so an exit racing with shutdown dispatch cannot be mistaken for a
+  control-channel failure. The first accepted deadline bounds producer draining.
+  Group hosts, engine hosts, and observability receive separate ordered grace
+  periods; requests cannot reset an active phase's deadline. Scope-thread cleanup
+  retains telemetry support after a join timeout until all producers actually exit.
 - Unexpected runtime errors are recovered per logical core. A ready replacement
   uses a newer generation and becomes the serving generation only for that
   core, so healthy siblings do not restart.

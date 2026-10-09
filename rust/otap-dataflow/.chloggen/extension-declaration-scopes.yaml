@@ -1,0 +1,5 @@
+change_type: enhancement
+component: engine
+note: Add engine- and group-scoped extension declarations with lexical capability resolution, shared state propagation, readiness barriers, and ordered shutdown.
+issues: [1966]
+subtext: Higher scopes require a shared variant. Hosted engine/group declaration or runtime-policy changes require restart; pipeline-scoped updates remain supported. Shutdown preserves per-phase grace and terminal telemetry when providers finish at different times.
