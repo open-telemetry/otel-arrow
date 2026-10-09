@@ -139,7 +139,7 @@ impl CompiledHeaderPropagationPolicy {
     /// Compiles a standalone policy using the same layout compiler as pipeline construction.
     ///
     /// Pipeline construction instead binds each policy to its already-compiled shared layout.
-    pub fn compile_propagation_policy(
+    pub fn compile(
         policy: HeaderPropagationPolicy,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, String> {
@@ -157,7 +157,7 @@ impl CompiledHeaderPropagationPolicy {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         let layout = Arc::new(
-            ContextLayout::compile_layout(primitive_fields(&policy), selected)
+            ContextLayout::compile(primitive_fields(&policy), selected)
                 .map_err(|error| error.to_string())?,
         );
         Self::bind_propagation_policy_to_layout(policy, layout)
@@ -630,11 +630,8 @@ mod tests {
         let policy = CompiledHeaderPropagationPolicy::default();
         assert_eq!(
             policy,
-            CompiledHeaderPropagationPolicy::compile_propagation_policy(
-                HeaderPropagationPolicy::default(),
-                &[],
-            )
-            .expect("default propagation policy compiles")
+            CompiledHeaderPropagationPolicy::compile(HeaderPropagationPolicy::default(), &[])
+                .expect("default propagation policy compiles")
         );
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant", "X-Tenant", b"acme"));
@@ -673,7 +670,7 @@ mod tests {
                 },
             ],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("propagation policy compiles");
 
         assert!(policy.propagates_original_name(&context_name("preserved")));
@@ -697,7 +694,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(
+        let policy = CompiledHeaderPropagationPolicy::compile(
             policy,
             &[conditional_product_user_declaration()],
         )
@@ -751,7 +748,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(
+        let policy = CompiledHeaderPropagationPolicy::compile(
             policy,
             &[conditional_product_user_declaration()],
         )
@@ -788,7 +785,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(
+        let policy = CompiledHeaderPropagationPolicy::compile(
             policy,
             &[conditional_product_user_declaration()],
         )
@@ -886,7 +883,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(
+        let policy = CompiledHeaderPropagationPolicy::compile(
             policy,
             &[ContextEntryDeclaration {
                 scope: context_policy::ContextScope::Engine,
@@ -961,7 +958,7 @@ overrides:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(
+        let policy = CompiledHeaderPropagationPolicy::compile(
             policy,
             &[conditional_product_user_declaration()],
         )
@@ -992,7 +989,7 @@ overrides:
             },
             vec![],
         );
-        let error = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect_err("invalid selector must not create a binding");
         assert!(error.contains("'named' list is required"));
     }
@@ -1029,8 +1026,7 @@ entries:
         )
         .expect("propagation policy");
         let policy =
-            CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &declarations)
-                .expect("compiled");
+            CompiledHeaderPropagationPolicy::compile(policy, &declarations).expect("compiled");
         let mut headers = TransportHeaders::new();
         for (name, value) in [
             ("workspace", "acme"),
@@ -1107,7 +1103,7 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
     }
@@ -1122,11 +1118,9 @@ default:
             "default:\n  selector: {type: named, named: ['product_user:workspace_id']}",
         )
         .expect("propagation policy");
-        let error = CompiledHeaderPropagationPolicy::compile_propagation_policy(
-            policy,
-            &[declaration.clone(), declaration],
-        )
-        .expect_err("duplicate declarations must fail");
+        let error =
+            CompiledHeaderPropagationPolicy::compile(policy, &[declaration.clone(), declaration])
+                .expect_err("duplicate declarations must fail");
         assert!(error.contains("duplicate composite context entry `product_user`"));
     }
 
@@ -1164,9 +1158,8 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy =
-            CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[declaration])
-                .expect("header member compiles");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("header member compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
             context_name("workspace"),
@@ -1209,9 +1202,8 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error =
-            CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[declaration])
-                .expect_err("constant propagation must wait for runtime integration");
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("constant propagation must wait for runtime integration");
         assert!(error.contains("selects constant member `route_name`"));
         assert!(error.contains("constant runtime integration"));
     }
@@ -1230,7 +1222,7 @@ default:
         )
         .expect("valid propagation policy");
 
-        let _compiled = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let _compiled = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("equivalent unqualified duplicates must remain valid");
     }
 
@@ -1252,9 +1244,8 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error =
-            CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[declaration])
-                .expect_err("duplicate source must fail");
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("duplicate source must fail");
         assert!(error.contains("`workspace` and `tenant_a:workspace_id`"));
         assert!(error.contains("same transport-header entry `workspace`"));
     }
@@ -1274,9 +1265,8 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error =
-            CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &declarations)
-                .expect_err("duplicate source must fail");
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &declarations)
+            .expect_err("duplicate source must fail");
         assert!(error.contains("`tenant_a:workspace_id` and `tenant_b:workspace_id`"));
         assert!(error.contains("same transport-header entry `WORKSPACE`"));
     }
@@ -1330,7 +1320,7 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("propagation policy compiles");
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1363,7 +1353,7 @@ entries:
                 on_error: None,
             }],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
@@ -1396,7 +1386,7 @@ entries:
                 on_error: None,
             }],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
@@ -1423,7 +1413,7 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
@@ -1448,7 +1438,7 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
@@ -1504,8 +1494,7 @@ entries:
                     ],
                 );
                 let policy =
-                    CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
-                        .expect("compiled");
+                    CompiledHeaderPropagationPolicy::compile(policy, &[]).expect("compiled");
                 for name in names.iter().map(|name| name.as_str()).chain(["unknown"]) {
                     let upper = name.to_ascii_uppercase();
                     let mut headers = TransportHeaders::new();

@@ -907,7 +907,7 @@ mod tests {
     /// Guarantees: capture returns no headers or limit errors.
     #[test]
     fn capture_empty_policy_captures_nothing() {
-        let policy = HeaderCapturePolicy::default().compile_capture_policy(|_| true);
+        let policy = HeaderCapturePolicy::default().compile(|_| true);
         let pairs = vec![("X-Tenant-Id", b"abc" as &[u8])];
         let mut result = TransportHeaders::new();
         let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
@@ -923,7 +923,7 @@ mod tests {
             rule(&["x-tenant-id"], Some("tenant_id")),
             rule(&["x-request-id"], None),
         ])
-        .compile_capture_policy(|_| true);
+        .compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![
             ("X-Tenant-Id", b"t-123"),
@@ -956,7 +956,7 @@ mod tests {
                 rule(&["x-tenant"], Some("tenant")),
                 rule(&["trace-bin", "x-plain"], None),
             ])
-            .compile_capture_policy(|_| preserve_original);
+            .compile(|_| preserve_original);
             for count in [0, 1, 4, 5, 16] {
                 let mut expected = Vec::new();
                 let mut pairs = Vec::new();
@@ -1157,8 +1157,7 @@ mod tests {
     /// Guarantees: it matches the rule and retains its wire spelling.
     #[test]
     fn capture_case_insensitive_matching() {
-        let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)])
-            .compile_capture_policy(|_| true);
+        let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)]).compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("X-TENANT-ID", b"val")];
         let mut result = TransportHeaders::new();
@@ -1177,7 +1176,7 @@ mod tests {
     #[test]
     fn capture_rule_supports_multiple_match_names() {
         let policy = make_capture_policy(vec![rule(&["x-first", "x-second"], Some("combined"))])
-            .compile_capture_policy(|_| false);
+            .compile(|_| false);
 
         let mut result = TransportHeaders::new();
         let stats = policy.capture_from_pairs(
@@ -1200,7 +1199,7 @@ mod tests {
     fn capture_respects_max_entries() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
         policy.defaults.max_entries = 2;
-        let policy = policy.compile_capture_policy(|_| true);
+        let policy = policy.compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("x-key", b"1"), ("x-key", b"2"), ("x-key", b"3")];
         let mut result = TransportHeaders::new();
@@ -1218,7 +1217,7 @@ mod tests {
     fn capture_drops_oversized_value() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
         policy.defaults.max_value_bytes = 3;
-        let policy = policy.compile_capture_policy(|_| true);
+        let policy = policy.compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("x-key", b"toolong"), ("x-key", b"ok")];
         let mut result = TransportHeaders::new();
@@ -1235,8 +1234,7 @@ mod tests {
     /// Guarantees: capture accepts the bytes and marks the value as binary.
     #[test]
     fn capture_binary_detection() {
-        let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)])
-            .compile_capture_policy(|_| true);
+        let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)]).compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("auth-token-bin", &[0xFF, 0x00])];
         let mut result = TransportHeaders::new();

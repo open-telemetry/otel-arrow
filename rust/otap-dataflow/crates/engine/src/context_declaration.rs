@@ -640,7 +640,7 @@ pub struct PreparedContext {
 
 impl ContextRuntimeRequirements {
     /// Combines runtime requirements from every node in every pipeline.
-    fn compile_runtime_requirements(declarations: &ContextDeclarationsByPipeline) -> Self {
+    fn compile(declarations: &ContextDeclarationsByPipeline) -> Self {
         declarations
             .values()
             .flat_map(HashMap::values)
@@ -744,7 +744,7 @@ fn original_name_key(name: &ContextEntryName) -> Box<str> {
 
 impl CompiledNodeBindings {
     /// Compiles header capture and separates component declarations from engine policies.
-    fn compile_node_bindings(
+    fn compile(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
         layout: &Arc<ContextLayout>,
@@ -761,9 +761,7 @@ impl CompiledNodeBindings {
                 }
                 ContextDeclaration::HeaderCapture { policy } => {
                     header_capture =
-                        Some(policy.compile_capture_policy(|name| {
-                            requirements.preserves_original_name(name)
-                        }));
+                        Some(policy.compile(|name| requirements.preserves_original_name(name)));
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
                     header_propagation = Some(
@@ -808,7 +806,7 @@ impl CompiledContextBindings {
     }
 
     /// Compiles one layout per pipeline, then binds its nodes using engine-wide requirements.
-    fn compile_context_bindings(
+    fn compile(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
     ) -> Result<Self, Error> {
@@ -820,17 +818,13 @@ impl CompiledContextBindings {
                     node.collect_primitive_fields(&mut fields);
                 }
                 let composites = nodes.values().flat_map(|node| node.composites.iter());
-                let layout = Arc::new(ContextLayout::compile_layout(fields, composites)?);
+                let layout = Arc::new(ContextLayout::compile(fields, composites)?);
                 let nodes = nodes
                     .into_iter()
                     .map(|(node, declarations)| {
                         Ok((
                             node,
-                            CompiledNodeBindings::compile_node_bindings(
-                                declarations,
-                                requirements,
-                                &layout,
-                            )?,
+                            CompiledNodeBindings::compile(declarations, requirements, &layout)?,
                         ))
                     })
                     .collect::<Result<_, Error>>()?;
@@ -952,8 +946,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         resolved: &ResolvedOtelDataflowSpec,
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
-        let runtime_requirements =
-            ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
+        let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
         let bindings = Self::compile_bindings(declarations, &runtime_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
@@ -968,8 +961,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         installed_requirements: &ContextRuntimeRequirements,
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
-        let runtime_requirements =
-            ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
+        let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
         let bindings = Self::compile_bindings(declarations, installed_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
@@ -982,7 +974,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
     ) -> Result<Arc<CompiledContextBindings>, EngineError> {
-        CompiledContextBindings::compile_context_bindings(declarations, requirements)
+        CompiledContextBindings::compile(declarations, requirements)
             .map(Arc::new)
             .map_err(|error| EngineError::ConfigError(Box::new(error)))
     }
@@ -1368,8 +1360,8 @@ groups:
     /// Compiles one test node's bindings using its own runtime requirements.
     fn compiled_bindings(effective: NodeContextDeclarations) -> CompiledContextBindings {
         let declarations = declarations_by_pipeline(effective);
-        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
-        CompiledContextBindings::compile_context_bindings(declarations, &requirements)
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+        CompiledContextBindings::compile(declarations, &requirements)
             .expect("test context bindings compile")
     }
 
@@ -1377,9 +1369,7 @@ groups:
     fn context_runtime_requirements(
         effective: NodeContextDeclarations,
     ) -> ContextRuntimeRequirements {
-        ContextRuntimeRequirements::compile_runtime_requirements(&declarations_by_pipeline(
-            effective,
-        ))
+        ContextRuntimeRequirements::compile(&declarations_by_pipeline(effective))
     }
 
     /// Builds a primitive test target in the specified source domain.
@@ -2073,8 +2063,8 @@ groups:
         let requirements = context_runtime_requirements(declarations.clone());
         assert!(requirements.preserves_original_name(&context_name("preserved")));
         assert!(!requirements.preserves_original_name(&context_name("other")));
-        let expected = HeaderPropagationPolicy::compile_propagation_policy(policy, &[])
-            .expect("propagation policy compiles");
+        let expected =
+            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         assert_eq!(
             compiled.header_propagation_policy(
                 &pipeline("group", "pipeline"),
@@ -2442,10 +2432,9 @@ default:
                     .expect("valid declarations"),
             )]),
         )]);
-        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
-        let bindings =
-            CompiledContextBindings::compile_context_bindings(declarations, &requirements)
-                .expect("test context bindings compile");
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+        let bindings = CompiledContextBindings::compile(declarations, &requirements)
+            .expect("test context bindings compile");
 
         assert!(
             bindings
@@ -2648,9 +2637,8 @@ overrides:
 "#,
         )
         .expect("propagation config");
-        let standalone =
-            HeaderPropagationPolicy::compile_propagation_policy(policy.clone(), &composites)
-                .expect("standalone policy");
+        let standalone = HeaderPropagationPolicy::compile(policy.clone(), &composites)
+            .expect("standalone policy");
         let node = PreparedNodeContextDeclarations::new(
             [ContextDeclaration::HeaderPropagation { policy }]
                 .into_iter()
@@ -2663,10 +2651,9 @@ overrides:
             key.clone(),
             HashMap::from([(ConfigNodeId::from("exporter"), node)]),
         )]);
-        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
-        let bindings =
-            CompiledContextBindings::compile_context_bindings(declarations, &requirements)
-                .expect("pipeline bindings");
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+        let bindings = CompiledContextBindings::compile(declarations, &requirements)
+            .expect("pipeline bindings");
         let bound = bindings
             .header_propagation_policy(&key, &"exporter".into())
             .expect("bound policy");
@@ -2714,10 +2701,9 @@ overrides:
                 )
             })
             .collect();
-        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
-        let bindings =
-            CompiledContextBindings::compile_context_bindings(declarations, &requirements)
-                .expect("independent pipeline layouts");
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+        let bindings = CompiledContextBindings::compile(declarations, &requirements)
+            .expect("independent pipeline layouts");
         for name in ["first", "second"] {
             let layout = bindings
                 .pipeline_layout(&pipeline("group", name))

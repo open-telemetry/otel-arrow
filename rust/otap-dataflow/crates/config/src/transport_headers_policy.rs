@@ -179,7 +179,7 @@ impl HeaderCapturePolicy {
     /// to generic transports but are omitted from the native HTTP index because
     /// they cannot occur in an [`HeaderMap`].
     #[must_use]
-    pub fn compile_capture_policy(
+    pub fn compile(
         self,
         mut consumes_original_name: impl FnMut(&ContextEntryName) -> bool,
     ) -> CompiledHeaderCapturePolicy {
@@ -751,7 +751,7 @@ mod tests {
                 },
             ],
         )
-        .compile_capture_policy(|_| false);
+        .compile(|_| false);
         let mut headers = TransportHeaders::new();
 
         assert!(
@@ -793,7 +793,7 @@ mod tests {
                 value_kind: None,
             }],
         )
-        .compile_capture_policy(|_| false);
+        .compile(|_| false);
         let mut headers = TransportHeaders::new();
 
         let _ =
@@ -819,7 +819,7 @@ mod tests {
                 value_kind: None,
             }],
         )
-        .compile_capture_policy(|_| true);
+        .compile(|_| true);
         let mut headers = HeaderMap::new();
         _ = headers.append(
             HeaderName::from_static("x-tenant"),
@@ -857,7 +857,7 @@ mod tests {
                 value_kind: None,
             }],
         )
-        .compile_capture_policy(|_| true);
+        .compile(|_| true);
 
         for count in [0, 1, 4, 5, 16] {
             let values: Vec<_> = (0..count).map(|index| format!("tenant-{index}")).collect();
@@ -917,7 +917,7 @@ mod tests {
                 value_kind: None,
             }],
         )
-        .compile_capture_policy(|_| false);
+        .compile(|_| false);
         let mut headers = HeaderMap::new();
         for value in ["oversized", "ok", "end"] {
             _ = headers.append(
@@ -951,7 +951,7 @@ mod tests {
                 value_kind: None,
             }],
         )
-        .compile_capture_policy(|_| false);
+        .compile(|_| false);
         let mut captured = TransportHeaders::new();
 
         let stats = policy.capture_from_pairs(

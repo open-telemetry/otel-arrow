@@ -241,7 +241,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
         self.receiver = self
             .receiver
-            .with_capture_policy(policy.map(|policy| policy.compile_capture_policy(|_| true)));
+            .with_capture_policy(policy.map(|policy| policy.compile(|_| true)));
         self
     }
 

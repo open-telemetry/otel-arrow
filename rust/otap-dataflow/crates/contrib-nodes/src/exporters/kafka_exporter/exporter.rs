@@ -7025,7 +7025,7 @@ pub mod test_support {
                 },
                 vec![],
             );
-            let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+            let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
                 .expect("propagation policy compiles");
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
@@ -7106,8 +7106,7 @@ pub mod test_support {
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             handler.set_propagation_policy(Some(
-                CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &declarations)
-                    .expect("compiled"),
+                CompiledHeaderPropagationPolicy::compile(policy, &declarations).expect("compiled"),
             ));
             let mut transport = TransportHeaders::new();
             transport.push(transport_header("workspace", "X-Workspace", b"acme"));

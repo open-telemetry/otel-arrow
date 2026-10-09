@@ -141,8 +141,7 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             },
             vec![],
         );
-        let policy = HeaderPropagationPolicy::compile_propagation_policy(unqualified, &[])
-            .expect("unqualified");
+        let policy = HeaderPropagationPolicy::compile(unqualified, &[]).expect("unqualified");
         assert_eq!(policy.propagate(&headers).count(), member_count);
         let _ = group.bench_with_input(
             BenchmarkId::new("unqualified", format!("{member_count}_members")),
@@ -164,8 +163,8 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             ("miss", Some(false)),
         ] {
             let (config, declarations) = small_composite_config(member_count, condition);
-            let policy = HeaderPropagationPolicy::compile_propagation_policy(config, &declarations)
-                .expect("composite");
+            let policy =
+                HeaderPropagationPolicy::compile(config, &declarations).expect("composite");
             assert_eq!(
                 policy.propagate(&headers).count(),
                 if condition == Some(false) {
@@ -260,8 +259,7 @@ default:
         header_count - 1
     ))
     .expect("valid unqualified propagation policy");
-    HeaderPropagationPolicy::compile_propagation_policy(policy, &[])
-        .expect("propagation policy compiles")
+    HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
 }
 
 fn conditional_policy(
@@ -278,7 +276,7 @@ default:
 "#,
     )
     .expect("valid conditional propagation policy");
-    HeaderPropagationPolicy::compile_propagation_policy(
+    HeaderPropagationPolicy::compile(
         policy,
         &[conditional_declaration(
             header_count,
@@ -369,7 +367,7 @@ default:
             },
         });
     }
-    HeaderPropagationPolicy::compile_propagation_policy(
+    HeaderPropagationPolicy::compile(
         policy,
         &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -422,7 +420,7 @@ default:
             },
         });
     }
-    HeaderPropagationPolicy::compile_propagation_policy(
+    HeaderPropagationPolicy::compile(
         policy,
         &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -446,7 +444,7 @@ fn packed_headers(headers: Vec<(String, String)>) -> TransportHeaders {
             value_kind: None,
         }],
     )
-    .compile_capture_policy(|_| false);
+    .compile(|_| false);
     let mut captured = TransportHeaders::new();
     let stats = capture.capture_from_pairs(
         headers
