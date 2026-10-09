@@ -1,11 +1,5 @@
 $ErrorActionPreference = "Stop"
 
-$artifactDir = $env:OTEL_ARROW_INTEGRATION_ARTIFACT_DIR
-if (-not $artifactDir) {
-    throw "OTEL_ARROW_INTEGRATION_ARTIFACT_DIR is required"
-}
-New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-
 Push-Location "rust/otap-dataflow"
 try {
     cargo test --locked `

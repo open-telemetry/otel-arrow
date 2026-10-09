@@ -34,6 +34,12 @@ REQUIRED_FIELDS = {
     "paths": list,
     "command": list,
 }
+SUPPORTED_RUNNERS = {
+    "macos-latest": "macOS",
+    "ubuntu-24.04": "Linux",
+    "ubuntu-latest": "Linux",
+    "windows-latest": "Windows",
+}
 
 
 def parse_args():
@@ -67,6 +73,17 @@ def load_manifests():
         if manifest["platform"] not in ("Linux", "Windows", "macOS"):
             raise ValueError(
                 f"{relative_path}: unsupported platform '{manifest['platform']}'"
+            )
+        expected_platform = SUPPORTED_RUNNERS.get(manifest["runner"])
+        if expected_platform is None:
+            raise ValueError(
+                f"{relative_path}: unsupported GitHub-hosted runner "
+                f"'{manifest['runner']}'"
+            )
+        if manifest["platform"] != expected_platform:
+            raise ValueError(
+                f"{relative_path}: runner '{manifest['runner']}' requires "
+                f"platform '{expected_platform}'"
             )
         if manifest["timeout_minutes"] <= 0:
             raise ValueError(f"{relative_path}: timeout_minutes must be positive")
@@ -107,7 +124,7 @@ def changed_paths(base_sha, head_sha):
 
 def matches(path, pattern):
     if pattern.endswith("/**"):
-        return path.startswith(pattern[:-3])
+        return path.startswith(pattern[:-2])
     return fnmatch.fnmatchcase(path, pattern)
 
 

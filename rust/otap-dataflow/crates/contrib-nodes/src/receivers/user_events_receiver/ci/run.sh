@@ -2,9 +2,6 @@
 
 set -euo pipefail
 
-artifact_dir="${OTEL_ARROW_INTEGRATION_ARTIFACT_DIR:?artifact directory is required}"
-mkdir -p "$artifact_dir"
-
 cd rust/otap-dataflow
 OTAP_DF_RUN_USEREVENTS_E2E=1 cargo test --locked \
   -p otel-arrow-dfe-contrib-nodes \

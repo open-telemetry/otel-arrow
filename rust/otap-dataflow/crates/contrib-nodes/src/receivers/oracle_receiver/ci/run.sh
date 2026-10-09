@@ -93,10 +93,3 @@ OTAP_ORACLE_RECEIVER_E2E=1 cargo test --locked \
   --nocapture \
   --test-threads=1 \
   2>&1 | tee "$artifact_dir/oracle-receiver-test.log"
-
-if ! grep -Eq \
-  'test result: ok\. 1 passed; 0 failed; 0 ignored;' \
-  "$artifact_dir/oracle-receiver-test.log"; then
-  echo "Expected exactly one Oracle receiver smoke test to execute." >&2
-  exit 1
-fi

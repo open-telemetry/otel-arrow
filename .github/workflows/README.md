@@ -51,6 +51,10 @@ diagnostic logs there when useful. Its exit status preserves the component's
 existing CI success semantics. An optional `cleanup` command array runs after
 the primary command, including on failure.
 
+Supported runner labels are `ubuntu-latest`, `ubuntu-24.04`,
+`windows-latest`, and `macos-latest`. Discovery rejects other labels and
+runner/platform mismatches.
+
 Changes to the shared workflow, discovery and execution scripts, the
 otap-dataflow workspace manifests, lockfile, or contrib-nodes crate manifest
 select every registered integration test. Advisory tests run on pull requests
