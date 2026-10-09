@@ -182,18 +182,55 @@ pub enum ContextDomain {
     AuthorizedIdentity,
 }
 
+/// Source of one value-bearing composite member.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextEntryValueSource<'a> {
+    /// UTF-8 value supplied directly by configuration.
+    Constant {
+        /// Member name within the composite.
+        name: &'a ContextEntryName,
+        /// Configured constant value.
+        value: &'a str,
+    },
+    /// Value read from one named authority-domain entry.
+    Referenced {
+        /// Authority domain containing the source entry.
+        domain: ContextDomain,
+        /// External source entry name.
+        name: &'a ContextEntryName,
+    },
+}
+
 impl ContextEntryPart {
+    /// Returns the source of a value-bearing member, or `None` for a condition.
+    #[must_use]
+    pub fn value_source(&self) -> Option<ContextEntryValueSource<'_>> {
+        match self {
+            Self::Constant { name, value } => Some(ContextEntryValueSource::Constant {
+                name,
+                value: value.as_str(),
+            }),
+            Self::TransportHeader { name, .. } => Some(ContextEntryValueSource::Referenced {
+                domain: ContextDomain::TransportHeader,
+                name,
+            }),
+            Self::AuthorizedIdentity { name, .. } => Some(ContextEntryValueSource::Referenced {
+                domain: ContextDomain::AuthorizedIdentity,
+                name,
+            }),
+            Self::TransportHeaderMatch { .. } => None,
+        }
+    }
+
     /// Returns the authority domain and external name of a referenced source.
     #[must_use]
     pub fn referenced_source(&self) -> Option<(ContextDomain, &ContextEntryName)> {
-        match self {
-            Self::TransportHeader { name, .. } | Self::TransportHeaderMatch { name, .. } => {
-                Some((ContextDomain::TransportHeader, name))
-            }
-            Self::AuthorizedIdentity { name, .. } => {
-                Some((ContextDomain::AuthorizedIdentity, name))
-            }
-            Self::Constant { .. } => None,
+        if let Self::TransportHeaderMatch { name, .. } = self {
+            return Some((ContextDomain::TransportHeader, name));
+        }
+        match self.value_source() {
+            Some(ContextEntryValueSource::Referenced { domain, name }) => Some((domain, name)),
+            Some(ContextEntryValueSource::Constant { .. }) | None => None,
         }
     }
 
@@ -367,6 +404,11 @@ entries:
             ContextEntryPart::Constant { name, value }
                 if name.as_str() == "http.header_scheme" && value == "ApiKey"
         ));
+        assert!(matches!(
+            parts[0].value_source(),
+            Some(ContextEntryValueSource::Constant { name, value })
+                if name.as_str() == "http.header_scheme" && value == "ApiKey"
+        ));
         assert!(parts[0].referenced_source().is_none());
         assert_eq!(
             parts[0].member_name().map(ContextEntryName::as_str),
@@ -410,6 +452,11 @@ entries:
             &parts[1],
             ContextEntryPart::TransportHeaderMatch { name, value }
                 if name.as_str() == "environment" && value == "production"
+        ));
+        assert!(parts[1].value_source().is_none());
+        assert!(matches!(
+            parts[1].referenced_source(),
+            Some((ContextDomain::TransportHeader, name)) if name.as_str() == "environment"
         ));
         assert!(policy.validation_errors("context").is_empty());
     }

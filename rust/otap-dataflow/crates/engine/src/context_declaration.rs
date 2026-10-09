@@ -23,6 +23,7 @@ use crate::error::Error as EngineError;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
+    ContextEntryValueSource,
 };
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
@@ -70,10 +71,9 @@ enum SelectedSource<'a> {
 impl<'a> SelectedSource<'a> {
     /// Resolves one value-bearing composite part, excluding conditions.
     fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
-        let member_name = part.member_name()?;
-        Some(match part.referenced_source() {
-            Some((domain, source_name)) => Self::Field(domain, source_name),
-            None => Self::Constant(member_name),
+        Some(match part.value_source()? {
+            ContextEntryValueSource::Constant { name, .. } => Self::Constant(name),
+            ContextEntryValueSource::Referenced { domain, name } => Self::Field(domain, name),
         })
     }
 }
