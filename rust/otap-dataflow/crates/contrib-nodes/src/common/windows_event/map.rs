@@ -138,14 +138,17 @@ fn encode_attributes(
         AttrValue::Int(i64::from(system.level)),
     );
     emit_opt_str(attributes, record_id, "channel", system.channel.as_deref());
-    // EventRecordID is a u64 sequence; emit only when it fits a signed 64-bit value.
-    if let Some(value) = system.record_id.and_then(|id| i64::try_from(id).ok()) {
-        emit(
-            attributes,
-            record_id,
-            &format!("{ATTR_PREFIX}.record_id"),
-            AttrValue::Int(value),
-        );
+    // EventRecordID is a u64 sequence; emit it as an integer when it fits a signed
+    // 64-bit value, otherwise as a decimal string so the value is never dropped.
+    if let Some(id) = system.record_id {
+        let key = format!("{ATTR_PREFIX}.record_id");
+        match i64::try_from(id) {
+            Ok(value) => emit(attributes, record_id, &key, AttrValue::Int(value)),
+            Err(_) => {
+                let decimal = id.to_string();
+                emit(attributes, record_id, &key, AttrValue::Str(&decimal));
+            }
+        }
     }
     if let Some(task) = system.task {
         emit(
@@ -402,8 +405,39 @@ mod tests {
         assert_eq!(body["event_data"]["entries"][0]["name"], "a");
         assert_eq!(body["event_data"]["entries"][0]["value"], "one");
         assert_eq!(body["event_data"]["complex"][0]["name"], "ComplexData");
-        assert_eq!(body["event_data"]["complex"][0]["content"][0]["name"], "Child");
+        assert_eq!(
+            body["event_data"]["complex"][0]["content"][0]["name"],
+            "Child"
+        );
         assert_eq!(body["event_data"]["binary"], "0102FF");
+    }
+
+    /// Scenario: an EventRecordID above i64::MAX is mapped.
+    /// Guarantees: the value is preserved as a decimal string attribute, never dropped.
+    #[test]
+    fn preserves_large_record_id() {
+        let event = parse(concat!(
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>",
+            "<System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/>",
+            "<EventRecordID>18446744073709551615</EventRecordID></System></Event>",
+        ));
+        let ctx = MappingContext {
+            scope_name: "scope",
+            extra_attributes: &[],
+        };
+        let records = encode(&[event], &ctx, 0).unwrap().unwrap();
+        let attrs = records.get(ArrowPayloadType::LogAttrs).unwrap();
+        let keys = cast(attrs.column_by_name("key").unwrap(), &DataType::Utf8).unwrap();
+        let keys = keys.as_any().downcast_ref::<StringArray>().unwrap();
+        let strings = cast(attrs.column_by_name("str").unwrap(), &DataType::Utf8).unwrap();
+        let strings = strings.as_any().downcast_ref::<StringArray>().unwrap();
+        let mut record_id = None;
+        for index in 0..attrs.num_rows() {
+            if keys.value(index) == "windows.eventlog.record_id" && !strings.is_null(index) {
+                record_id = Some(strings.value(index).to_owned());
+            }
+        }
+        assert_eq!(record_id.as_deref(), Some("18446744073709551615"));
     }
 
     /// Scenario: an empty batch is encoded.
