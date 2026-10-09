@@ -98,7 +98,8 @@ impl ContextEntryDefinition {
                 | ContextEntryPart::AuthorizedIdentity { .. } => part
                     .member_name()
                     .expect("value-bearing part has a member name"),
-                ContextEntryPart::Constant { name, .. } => name,
+                ContextEntryPart::Constant { name, .. }
+                | ContextEntryPart::Randomness { name, .. } => name,
                 ContextEntryPart::TransportHeaderMatch { name, value } => {
                     if !conditions.insert((name, value)) {
                         errors.push(format!(
@@ -133,6 +134,16 @@ impl ContextEntryDefinition {
     }
 }
 
+/// Configured source of a generated random context value.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextRandomnessKind {
+    /// A time-ordered UUID version 7 rendered in canonical text form.
+    Uuid7,
+}
+
 /// Single member of a composite entry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -143,6 +154,13 @@ pub enum ContextEntryPart {
         name: ContextEntryName,
         /// Constant UTF-8 value.
         value: String,
+    },
+    /// Includes a generated random value.
+    Randomness {
+        /// Member name within the composite entry.
+        name: ContextEntryName,
+        /// Random value generator.
+        value: ContextRandomnessKind,
     },
     /// Includes values from a transport-header entry.
     TransportHeader {
@@ -185,7 +203,7 @@ pub enum ContextDomain {
 impl ContextEntryPart {
     /// Returns the authority domain and external name of a referenced member or condition.
     ///
-    /// Domainless value sources such as constants return `None`.
+    /// Domainless value sources such as constants and randomness return `None`.
     #[must_use]
     pub fn referenced_source(&self) -> Option<(ContextDomain, &ContextEntryName)> {
         match self {
@@ -195,7 +213,7 @@ impl ContextEntryPart {
             Self::AuthorizedIdentity { name, .. } => {
                 Some((ContextDomain::AuthorizedIdentity, name))
             }
-            Self::Constant { .. } => None,
+            Self::Constant { .. } | Self::Randomness { .. } => None,
         }
     }
 
@@ -207,7 +225,7 @@ impl ContextEntryPart {
             | Self::AuthorizedIdentity { name, store_as } => {
                 Some(store_as.as_ref().unwrap_or(name))
             }
-            Self::Constant { name, .. } => Some(name),
+            Self::Constant { name, .. } | Self::Randomness { name, .. } => Some(name),
             Self::TransportHeaderMatch { .. } => None,
         }
     }
@@ -232,6 +250,7 @@ impl JsonSchema for ContextEntryPart {
                     "type": "string",
                     "enum": [
                         "constant",
+                        "randomness",
                         "transport_header",
                         "authorized_identity",
                         "transport_header_match"
@@ -247,8 +266,8 @@ impl JsonSchema for ContextEntryPart {
             "additionalProperties": false,
             "x-kubernetes-validations": [
                 {
-                    "rule": "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)",
-                    "message": "`value` is required for constant and transport_header_match and forbidden for referenced value-bearing members"
+                    "rule": "self.type in ['constant', 'randomness', 'transport_header_match'] ? has(self.value) : !has(self.value)",
+                    "message": "`value` is required for constant, randomness, and transport_header_match and forbidden for referenced value-bearing members"
                 },
                 {
                     "rule": "self.type in ['transport_header', 'authorized_identity'] || !has(self.store_as)",
@@ -261,6 +280,10 @@ impl JsonSchema for ContextEntryPart {
                 {
                     "rule": "!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')",
                     "message": "`store_as` must be a single printable ASCII name without `:`"
+                },
+                {
+                    "rule": "self.type != 'randomness' || (has(self.value) && self.value == 'uuid7')",
+                    "message": "`randomness` value must be `uuid7`"
                 }
             ]
         })
@@ -332,6 +355,7 @@ entries:
     fn rejects_qualified_part_and_stored_member_names() {
         for yaml in [
             "entries: {tenant: [{type: constant, name: 'scope:id', value: value}]}",
+            "entries: {tenant: [{type: randomness, name: 'scope:id', value: uuid7}]}",
             "entries: {tenant: [{type: transport_header, name: 'scope:id'}]}",
             "entries: {tenant: [{type: transport_header, name: id, store_as: 'scope:id'}]}",
             "entries: {tenant: [{type: authorized_identity, name: 'scope:id'}]}",
@@ -373,6 +397,38 @@ entries:
         assert_eq!(
             parts[0].member_name().map(ContextEntryName::as_str),
             Some("http.header_scheme")
+        );
+        assert!(policy.validation_errors("context").is_empty());
+    }
+
+    /// Scenario: a composite entry includes a named UUID v7 randomness member.
+    /// Guarantees: the generator kind and member name are retained without an external reference.
+    #[test]
+    fn parses_randomness_member() {
+        let policy: ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  idempotency:
+    - type: randomness
+      name: id
+      value: uuid7
+"#,
+        )
+        .expect("valid context policy");
+
+        let name = ContextEntryName::try_from("idempotency").expect("valid name");
+        let parts = &policy.entries.get(&name).expect("entry is present").0;
+        assert!(matches!(
+            &parts[0],
+            ContextEntryPart::Randomness {
+                name,
+                value: ContextRandomnessKind::Uuid7,
+            } if name.as_str() == "id"
+        ));
+        assert!(parts[0].referenced_source().is_none());
+        assert_eq!(
+            parts[0].member_name().map(ContextEntryName::as_str),
+            Some("id")
         );
         assert!(policy.validation_errors("context").is_empty());
     }
@@ -455,6 +511,7 @@ entries:
             "entries: {tenant: [{type: transport_header, name: id}, {type: authorized_identity, name: id}]}",
             "entries: {tenant: [{type: transport_header, name: first, store_as: id}, {type: authorized_identity, name: second, store_as: id}]}",
             "entries: {tenant: [{type: constant, name: id, value: first}, {type: transport_header, name: id}]}",
+            "entries: {tenant: [{type: randomness, name: id, value: uuid7}, {type: constant, name: id, value: first}]}",
         ] {
             let policy = serde_yaml::from_str::<ContextPolicy>(yaml).expect("valid syntax");
             assert!(!policy.validation_errors("context").is_empty(), "{yaml}");
@@ -517,6 +574,10 @@ entries:
             "entries: {tenant: [{type: authorized_identity, name: id, value: prod}]}",
             "entries: {tenant: [{type: constant, name: id}]}",
             "entries: {tenant: [{type: constant, name: id, value: value, store_as: other}]}",
+            "entries: {tenant: [{type: randomness, value: uuid7}]}",
+            "entries: {tenant: [{type: randomness, name: id}]}",
+            "entries: {tenant: [{type: randomness, name: id, value: uuid4}]}",
+            "entries: {tenant: [{type: randomness, name: id, value: uuid7, store_as: other}]}",
             "entries: {tenant: [{type: transport_header, name: id, alias: other}]}",
             "entries: {tenant: [{type: transport_header_match, name: id}]}",
             "entries: {tenant: [{type: transport_header_match, name: id, store_as: other, value: prod}]}",
@@ -552,6 +613,7 @@ entries:
 
         for variant in [
             "constant",
+            "randomness",
             "transport_header",
             "authorized_identity",
             "transport_header_match",
@@ -568,10 +630,10 @@ entries:
         let validations = schema["x-kubernetes-validations"]
             .as_array()
             .expect("variant validation");
-        assert_eq!(validations.len(), 4);
+        assert_eq!(validations.len(), 5);
         assert_eq!(
             validations[0]["rule"],
-            "self.type in ['constant', 'transport_header_match'] ? has(self.value) : !has(self.value)"
+            "self.type in ['constant', 'randomness', 'transport_header_match'] ? has(self.value) : !has(self.value)"
         );
         assert_eq!(
             validations[1]["rule"],
@@ -581,6 +643,10 @@ entries:
         assert_eq!(
             validations[3]["rule"],
             "!has(self.store_as) || self.store_as.matches('^[!-9;-~]+$')"
+        );
+        assert_eq!(
+            validations[4]["rule"],
+            "self.type != 'randomness' || (has(self.value) && self.value == 'uuid7')"
         );
     }
 }

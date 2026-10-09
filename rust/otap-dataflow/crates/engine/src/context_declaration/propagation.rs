@@ -77,6 +77,13 @@ impl CompiledHeaderPropagationPolicy {
                             ));
                         }
                     }
+                    ContextEntryPart::Randomness { name, .. } => {
+                        if name == reference.name() {
+                            return Err(format!(
+                                "context entry reference `{reference}` selects randomness member `{name}`, which cannot be propagated until randomness runtime integration is available"
+                            ));
+                        }
+                    }
                     ContextEntryPart::TransportHeader { name, store_as } => {
                         if store_as.as_ref().unwrap_or(name) == reference.name() {
                             source_name = Some(name.clone());
@@ -732,6 +739,42 @@ default:
             .expect_err("constant propagation must wait for runtime integration");
         assert!(error.contains("selects constant member `route_name`"));
         assert!(error.contains("constant runtime integration"));
+    }
+
+    /// Scenario: a qualified propagation selector names a configured randomness member.
+    /// Guarantees: pre-integration compilation fails explicitly instead of silently dropping it.
+    #[test]
+    fn composite_transport_header_propagation_rejects_randomness_member() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  idempotency:
+    - type: randomness
+      name: id
+      value: uuid7
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [idempotency:id]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("randomness propagation must wait for runtime integration");
+        assert!(error.contains("selects randomness member `id`"));
+        assert!(error.contains("randomness runtime integration"));
     }
 
     /// Scenario: a named selector repeats an unqualified header using identical and varied case.

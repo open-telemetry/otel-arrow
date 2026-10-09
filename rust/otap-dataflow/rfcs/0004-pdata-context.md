@@ -256,8 +256,15 @@ policies:
     entries:
       idempotency:              # Named context entry
         - type: randomness
+          name: id              # Composite member name
           value: uuid7
 ```
+
+The randomness `value` selects a generator rather than containing generated data.
+The initial supported generator is `uuid7`. Randomness members have configured
+member names but no source domain or original wire name, and they are always
+available for composite presence. The logical model records the generator kind;
+runtime value generation and propagation are separate integration work.
 
 Or `constant`,
 

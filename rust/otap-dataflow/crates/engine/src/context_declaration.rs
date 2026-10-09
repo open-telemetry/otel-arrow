@@ -5,8 +5,8 @@
 //!
 //! Primitive reads, writes, and all-stored selections always specify a source domain.
 //! Composite selections instead name the composite and optionally its member; the
-//! definition supplies each member's value source (a domain-backed field or configured
-//! constant) and the entire entry's presence gate.
+//! definition supplies each member's value source (a domain-backed field, configured
+//! constant, or random generator) and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
 
 /// Compiles logical context layouts and resolves member projections.
@@ -65,6 +65,8 @@ enum SelectedSource<'a> {
     Field(ContextDomain, &'a ContextEntryName),
     /// Inline configured value with no source domain or wire name.
     Constant(&'a ContextEntryName),
+    /// Generated random value with no source domain or wire name.
+    Randomness(&'a ContextEntryName),
 }
 
 impl<'a> SelectedSource<'a> {
@@ -72,6 +74,7 @@ impl<'a> SelectedSource<'a> {
     fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
         match part {
             ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
+            ContextEntryPart::Randomness { name, .. } => Some(Self::Randomness(name)),
             ContextEntryPart::TransportHeader { name, .. } => {
                 Some(Self::Field(ContextDomain::TransportHeader, name))
             }
@@ -259,6 +262,11 @@ impl ContextDeclaration {
                             SelectedSource::Constant(name) => {
                                 return Err(invalid_context(format!(
                                     "original wire name requested for constant context entry `{name}`; constants have no original wire names"
+                                )));
+                            }
+                            SelectedSource::Randomness(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for randomness context entry `{name}`; generated values have no original wire names"
                                 )));
                             }
                         }
@@ -1284,6 +1292,20 @@ groups:
         }
     }
 
+    /// Builds a test composite containing one randomness member.
+    fn randomness_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("idempotency"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "randomness", "name": "id", "value": "uuid7"}
+            ]))
+            .expect("valid randomness composite"),
+        }
+    }
+
     /// Scenario: same-name sources are declared in different domains for reads, writes, and all-stored.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
@@ -1466,6 +1488,40 @@ groups:
                     "original wire name requested for constant context entry `route_name`"
                 ),
                 "{error}"
+            );
+        }
+    }
+
+    /// Scenario: a consumer selects a generated randomness member.
+    /// Guarantees: randomness adds no external requirements and rejects original wire names.
+    #[test]
+    fn randomness_members_have_no_external_or_original_name_requirements() {
+        let context = [randomness_composite()];
+        let member = member_target("idempotency", "id");
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("idempotency"),
+        };
+        let randomness_name = context_name("id");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [SelectedSource::Randomness(&randomness_name)]
+        );
+
+        let _prepared = PreparedNodeContextDeclarations::new(
+            consumer(member.clone(), ContextEntrySelectorForm::Value),
+            &context,
+        )
+        .expect("randomness value selection");
+        for target in [member, whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("randomness has no original wire name");
+            assert!(
+                error
+                    .to_string()
+                    .contains("original wire name requested for randomness context entry `id`")
             );
         }
     }
