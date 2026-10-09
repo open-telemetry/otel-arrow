@@ -141,6 +141,7 @@ impl<
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.active_engine_operation.is_some()
                 || !state.pipeline_operation_reservations.is_empty()
+                || !state.active_rollouts.is_empty()
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
@@ -499,6 +500,12 @@ impl<
 
         let mut profiles = HashMap::new();
         for (topic_name, spec) in &config.topics {
+            let TopicSpec {
+                description: _,
+                backend,
+                impl_selection,
+                policies,
+            } = spec;
             let declared_name = global_names
                 .get(topic_name)
                 .ok_or_else(|| ControlPlaneError::Internal {
@@ -512,7 +519,7 @@ impl<
                 .get(&declared_name)
                 .copied()
                 .unwrap_or(InferredTopicMode::Mixed);
-            let selection_policy = spec.impl_selection.unwrap_or(default_selection_policy);
+            let selection_policy = impl_selection.unwrap_or(default_selection_policy);
             let selected_mode = Controller::<PData>::apply_topic_impl_selection_policy(
                 topology_mode,
                 selection_policy,
@@ -520,8 +527,8 @@ impl<
             _ = profiles.insert(
                 declared_name,
                 TopicRuntimeProfile {
-                    backend: spec.backend,
-                    policies: spec.policies.clone(),
+                    backend: *backend,
+                    policies: policies.clone(),
                     selected_mode,
                 },
             );
@@ -529,6 +536,12 @@ impl<
 
         for (group_id, group_cfg) in &config.groups {
             for (topic_name, spec) in &group_cfg.topics {
+                let TopicSpec {
+                    description: _,
+                    backend,
+                    impl_selection,
+                    policies,
+                } = spec;
                 let declared_name = group_names
                     .get(&(group_id.clone(), topic_name.clone()))
                     .ok_or_else(|| ControlPlaneError::Internal {
@@ -543,7 +556,7 @@ impl<
                     .get(&declared_name)
                     .copied()
                     .unwrap_or(InferredTopicMode::Mixed);
-                let selection_policy = spec.impl_selection.unwrap_or(default_selection_policy);
+                let selection_policy = impl_selection.unwrap_or(default_selection_policy);
                 let selected_mode = Controller::<PData>::apply_topic_impl_selection_policy(
                     topology_mode,
                     selection_policy,
@@ -551,8 +564,8 @@ impl<
                 _ = profiles.insert(
                     declared_name,
                     TopicRuntimeProfile {
-                        backend: spec.backend,
-                        policies: spec.policies.clone(),
+                        backend: *backend,
+                        policies: policies.clone(),
                         selected_mode,
                     },
                 );
@@ -591,11 +604,104 @@ impl<
             .resources()
             .and_then(|resources| resources.memory_limiter.as_ref());
         if current != desired {
-            return Err(ControlPlaneError::InvalidRequest {
-                message: "request would require runtime memory_limiter mutation".to_owned(),
+            return Err(ControlPlaneError::UnsupportedMutation {
+                message: "live reconciliation does not support changing the process memory limiter; restart required"
+                    .to_owned(),
             });
         }
         Ok(())
+    }
+
+    fn validate_topic_profiles_unchanged(
+        current_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        let current_profiles = Self::pipeline_topic_profiles(current_config)?;
+        let desired_profiles = Self::pipeline_topic_profiles(desired_config)?;
+        if current_profiles != desired_profiles {
+            return Err(ControlPlaneError::UnsupportedMutation {
+                message: "live reconciliation does not support changing the topic broker configuration; restart required"
+                    .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    // Runtime log filtering is live-reconfigurable and custom values are metadata.
+    // Every other engine field remains startup-owned until it has an explicit apply path.
+    fn validate_live_engine_config_supported(
+        current_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        let mut desired_engine = desired_config.engine.clone();
+        desired_engine.telemetry.logs.level = current_config.engine.telemetry.logs.level.clone();
+        desired_engine.custom = current_config.engine.custom.clone();
+        if desired_engine != current_config.engine {
+            return Err(ControlPlaneError::UnsupportedMutation {
+                message: "live reconciliation does not support changing this engine configuration; restart required"
+                    .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_live_shared_policies_unchanged(
+        current_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        // Context declarations are excluded from this comparison: they are
+        // validated separately via compiled context bindings, which already
+        // reject incompatible changes to pipelines that keep running. An
+        // absent group-level policy block is treated the same as one that
+        // only declares context entries, so moving context declarations
+        // between scopes is not mistaken for a shared-policy change.
+        fn normalized_group_policies(
+            policies: Option<&otel_arrow_dfe_config::policy::Policies>,
+        ) -> otel_arrow_dfe_config::policy::Policies {
+            policies
+                .map(otel_arrow_dfe_config::policy::Policies::without_context)
+                .unwrap_or_default()
+        }
+
+        let top_level_changed =
+            current_config.policies.without_context() != desired_config.policies.without_context();
+        let group_policy_changed = desired_config
+            .groups
+            .iter()
+            .any(|(group_id, desired_group)| {
+                let desired_normalized = normalized_group_policies(desired_group.policies.as_ref());
+                match current_config.groups.get(group_id) {
+                    Some(current_group) => {
+                        let current_normalized =
+                            normalized_group_policies(current_group.policies.as_ref());
+                        current_normalized != desired_normalized
+                            && (!current_group.pipelines.is_empty()
+                                || !desired_group.pipelines.is_empty())
+                    }
+                    None => {
+                        desired_normalized != otel_arrow_dfe_config::policy::Policies::default()
+                            && !desired_group.pipelines.is_empty()
+                    }
+                }
+            });
+        if top_level_changed || group_policy_changed {
+            return Err(ControlPlaneError::UnsupportedMutation {
+                message: "live reconciliation does not support changing top-level or group policy declarations; move the changes to pipeline-level policies and retry"
+                    .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Rejects target changes that do not have a complete live-apply path.
+    fn validate_reconcile_capabilities(
+        current_config: &OtelDataflowSpec,
+        target_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        Self::validate_live_engine_config_supported(current_config, target_config)?;
+        Self::validate_topic_profiles_unchanged(current_config, target_config)?;
+        Self::validate_live_memory_limiter_unchanged(current_config, target_config)?;
+        Self::validate_live_shared_policies_unchanged(current_config, target_config)
     }
 
     /// Reserves, plans, and starts one explicit per-pipeline rollout.
@@ -812,13 +918,7 @@ impl<
             },
         )?;
 
-        let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
-        let candidate_profiles = Self::pipeline_topic_profiles(&candidate_config)?;
-        if current_profiles != candidate_profiles {
-            return Err(ControlPlaneError::InvalidRequest {
-                message: "request would require runtime topic broker mutation".to_owned(),
-            });
-        }
+        Self::validate_topic_profiles_unchanged(&live_config, &candidate_config)?;
         Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
         let resolved_candidate_config = candidate_config.resolve();
@@ -1625,44 +1725,52 @@ impl<
         state.live_config.clone()
     }
 
-    fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec, delete_missing: bool) {
+    fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec) {
         self.log_filter_handle
             .apply(desired_config.engine.telemetry.logs.level.as_ref());
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::merge_reconcile_config(&mut state.live_config, desired_config, delete_missing);
+        state.live_config = desired_config.clone();
         state.config_revision += 1;
     }
 
-    fn merge_reconcile_config(
-        live_config: &mut OtelDataflowSpec,
+    fn reconcile_target_config(
+        live_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
         delete_missing: bool,
-    ) {
+    ) -> OtelDataflowSpec {
         if delete_missing {
-            *live_config = desired_config.clone();
-            return;
+            return desired_config.clone();
         }
 
-        live_config.version = desired_config.version.clone();
-        live_config.policies = desired_config.policies.clone();
-        live_config.topics = desired_config.topics.clone();
-        live_config.engine = desired_config.engine.clone();
-        for (pipeline_group_id, desired_group) in &desired_config.groups {
-            let group = live_config
-                .groups
-                .entry(pipeline_group_id.clone())
-                .or_default();
-            group.policies = desired_group.policies.clone();
-            group.topics = desired_group.topics.clone();
-            for (pipeline_id, pipeline) in &desired_group.pipelines {
-                _ = group
-                    .pipelines
-                    .insert(pipeline_id.clone(), pipeline.clone());
+        let OtelDataflowSpec {
+            version,
+            policies,
+            topics,
+            engine,
+            groups,
+        } = desired_config.clone();
+        let mut target = live_config.clone();
+        target.version = version;
+        target.policies = policies;
+        target.topics = topics;
+        target.engine = engine;
+        for (pipeline_group_id, desired_group) in groups {
+            let PipelineGroupConfig {
+                policies,
+                topics,
+                pipelines,
+            } = desired_group;
+            let group = target.groups.entry(pipeline_group_id.clone()).or_default();
+            group.policies = policies;
+            group.topics = topics;
+            for (pipeline_id, pipeline) in pipelines {
+                _ = group.pipelines.insert(pipeline_id, pipeline);
             }
         }
+        target
     }
 
     fn live_pipeline_keys(&self) -> Vec<PipelineKey> {
@@ -2124,46 +2232,48 @@ impl<
 
         let live_config = self.engine_config_snapshot();
         let desired_config = request.config;
-        let mut candidate_config = live_config.clone();
-        Self::merge_reconcile_config(
-            &mut candidate_config,
-            &desired_config,
-            request.delete_missing,
-        );
-        Self::validate_live_state_dir_unchanged(&live_config, &candidate_config)?;
-        candidate_config
+        desired_config
             .validate()
             .map_err(|err| ControlPlaneError::InvalidRequest {
                 message: err.to_string(),
             })?;
-        startup::validate_engine_components(&candidate_config, self.pipeline_factory).map_err(
+        startup::validate_engine_components(&desired_config, self.pipeline_factory).map_err(
             |error| ControlPlaneError::InvalidRequest {
                 message: error.to_string(),
             },
         )?;
 
-        let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
-        let candidate_profiles = Self::pipeline_topic_profiles(&candidate_config)?;
-        if current_profiles != candidate_profiles {
-            return Err(ControlPlaneError::InvalidRequest {
-                message: "desired config would require runtime topic broker mutation".to_owned(),
-            });
-        }
-        Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
+        let target_config =
+            Self::reconcile_target_config(&live_config, &desired_config, request.delete_missing);
+        Self::validate_live_state_dir_unchanged(&live_config, &target_config)?;
+        target_config
+            .validate()
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+        startup::validate_engine_components(&target_config, self.pipeline_factory).map_err(
+            |error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            },
+        )?;
 
-        let mut desired_keys = Vec::new();
-        for (pipeline_group_id, group) in &desired_config.groups {
-            for (pipeline_id, pipeline) in &group.pipelines {
-                desired_keys.push((
-                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone()),
-                    pipeline.clone(),
-                ));
-            }
-        }
-        let candidate_resolved_config = candidate_config.resolve();
-        let candidate_context_bindings =
-            self.compile_context_bindings(&candidate_resolved_config)?;
-        let retained_pipeline_keys: HashSet<_> = candidate_resolved_config
+        Self::validate_reconcile_capabilities(&live_config, &target_config)?;
+
+        let mut desired_keys: Vec<_> = desired_config
+            .groups
+            .iter()
+            .flat_map(|(pipeline_group_id, group)| {
+                group.pipelines.iter().map(|(pipeline_id, pipeline)| {
+                    (
+                        PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                        pipeline.clone(),
+                    )
+                })
+            })
+            .collect();
+        let target_resolved_config = target_config.resolve();
+        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
+        let retained_pipeline_keys: HashSet<_> = target_resolved_config
             .pipelines
             .iter()
             .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
@@ -2183,12 +2293,12 @@ impl<
                 &state,
                 None,
                 Some(&retained_pipeline_keys),
-                &candidate_context_bindings,
+                &target_context_bindings,
             )?;
         }
-        let desired_phase_by_key: HashMap<_, _> = candidate_resolved_config
+        let target_resolved: HashMap<_, _> = target_resolved_config
             .pipelines
-            .iter()
+            .into_iter()
             .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
             .map(|pipeline| {
                 (
@@ -2196,6 +2306,15 @@ impl<
                         pipeline.pipeline_group_id.clone(),
                         pipeline.pipeline_id.clone(),
                     ),
+                    pipeline,
+                )
+            })
+            .collect();
+        let desired_phase_by_key: HashMap<_, _> = target_resolved
+            .iter()
+            .map(|(pipeline_key, pipeline)| {
+                (
+                    pipeline_key.clone(),
                     Self::reconcile_placement_phase_for_strategy(
                         &pipeline.policies.resources.core_allocation.strategy,
                     ),
@@ -2221,9 +2340,14 @@ impl<
                         .cmp(right_key.pipeline_id().as_ref())
                 })
         });
-        let desired_key_set: HashSet<_> = desired_keys
+        let desired_key_set: HashSet<_> = target_config
+            .groups
             .iter()
-            .map(|(pipeline_key, _)| pipeline_key.clone())
+            .flat_map(|(pipeline_group_id, group)| {
+                group.pipelines.keys().map(|pipeline_id| {
+                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone())
+                })
+            })
             .collect();
 
         let mut projected_exclusive_core_ids = BTreeSet::new();
@@ -2239,8 +2363,8 @@ impl<
                 pipeline_key.pipeline_group_id(),
                 pipeline_key.pipeline_id(),
                 &reconfigure_request,
-                Some(&candidate_config),
-                Some(Arc::clone(&candidate_context_bindings)),
+                Some(&target_config),
+                Some(Arc::clone(&target_context_bindings)),
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;
@@ -2339,7 +2463,7 @@ impl<
                 }
             }
 
-            let desired_group_ids: HashSet<_> = desired_config.groups.keys().cloned().collect();
+            let desired_group_ids: HashSet<_> = target_config.groups.keys().cloned().collect();
             for pipeline_group_id in self.live_group_ids() {
                 if desired_group_ids.contains(&pipeline_group_id) {
                     continue;
@@ -2370,7 +2494,7 @@ impl<
             }
         }
 
-        self.apply_reconcile_success(&desired_config, request.delete_missing);
+        self.apply_reconcile_success(&target_config);
         status.state = EngineConfigReconcileState::Succeeded;
         status.updated_at = timestamp_now();
         Ok(status)

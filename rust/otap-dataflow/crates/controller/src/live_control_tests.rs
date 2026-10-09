@@ -736,6 +736,32 @@ fn engine_config_with_context_entries(
     OtelDataflowSpec::from_yaml(&yaml).expect("context engine config should parse")
 }
 
+fn engine_config_with_group_policy_and_pipeline() -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+    g1:
+        policies:
+            channel_capacity:
+                control:
+                    node: 257
+        pipelines:
+            p1:
+                nodes:
+                    receiver:
+                        type: "urn:test:receiver:example"
+                        config: null
+                    exporter:
+                        type: "urn:test:exporter:example"
+                        config: null
+                connections:
+                    - { from: receiver, to: exporter }
+"#,
+    )
+    .expect("engine config with group policy should parse")
+}
+
 fn empty_engine_config() -> OtelDataflowSpec {
     OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\n")
         .expect("empty engine config should parse")
@@ -3091,8 +3117,9 @@ connections:
         .expect_err("topic runtime changes should be rejected");
 
     match err {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("topic broker mutation"));
+        ControlPlaneError::UnsupportedMutation { message } => {
+            assert!(message.contains("topic broker configuration"));
+            assert!(message.contains("restart required"));
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -4905,13 +4932,13 @@ fn initial_config_activation_applies_log_level_before_noop_reconciliation() {
     assert_eq!(event_count.load(Ordering::SeqCst), 1);
 }
 
-/// Scenario: a full-config reconciliation request omits live stopped
-/// resources with `delete_missing` enabled.
-/// Guarantees: reconciliation deletes the omitted pipeline and then the
-/// now-empty group from committed live config.
+/// Scenario: a full-config reconciliation request omits a stopped pipeline and
+/// its policy-bearing group with `delete_missing` enabled.
+/// Guarantees: reconciliation deletes the omitted pipeline and group instead
+/// of treating removal of the group's policy declaration as unsupported.
 #[test]
 fn reconcile_engine_config_deletes_missing_resources_by_default() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let config = engine_config_with_group_policy_and_pipeline();
     let runtime = test_runtime(&config);
 
     let status = runtime
@@ -5031,7 +5058,7 @@ groups:
 /// omitting deployed pipeline p2 with context declarations.
 /// Guarantees: `delete_missing=false` plans p1 as a no-op and retains p2.
 #[test]
-fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+fn reconcile_engine_config_preserves_missing_context_pipeline() {
     let desired_config = engine_config_with_pipeline(
         r#"
         policies:
@@ -5088,6 +5115,34 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
     }
 }
 
+/// Scenario: a full-config reconciliation request omits a pipeline and its
+/// policy-bearing group with `delete_missing` disabled.
+/// Guarantees: reconciliation preserves the omitted pipeline, group, and
+/// group policy.
+#[test]
+fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+    let config = engine_config_with_group_policy_and_pipeline();
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(empty_engine_config(), false))
+        .expect("missing resources should be preserved");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert!(status.changes.is_empty());
+    let snapshot = runtime.engine_config_snapshot();
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .pipelines
+            .contains_key(&PipelineId::from("p1"))
+    );
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .policies
+            .is_some()
+    );
+}
+
 /// Scenario: full-config reconciliation is rejected after validation because a
 /// target pipeline already has an active rollout.
 /// Guarantees: desired engine-level fields and the active log filter remain
@@ -5121,6 +5176,50 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     let err = runtime
         .reconcile_engine_config(reconcile_request(desired, true))
         .expect_err("active rollout should reject full-config reconciliation");
+
+    assert_eq!(err, ControlPlaneError::RolloutConflict);
+    assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
+    assert_eq!(log_filter_handle.effective_level().as_str(), "warn");
+}
+
+/// Scenario: full-config reconciliation is attempted while a pipeline not
+/// mentioned in the desired config (and therefore retained under
+/// `delete_missing: false`) has an active rollout in flight.
+/// Guarantees: reconciliation is rejected before `apply_reconcile_success`
+/// can overwrite the live config snapshot, so the in-flight rollout's
+/// eventual update to that pipeline cannot be silently reverted.
+#[test]
+fn reconcile_engine_config_rejects_when_omitted_pipeline_has_active_rollout() {
+    let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+    config.engine.telemetry.logs.level =
+        Some(serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse"));
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .active_rollouts
+            .insert(pipeline_key, "rollout-42".to_owned());
+    }
+
+    // The desired config omits g1/p1 entirely; with `delete_missing: false`
+    // this pipeline should be retained rather than deleted, but it still
+    // must not be silently re-snapshotted while its rollout is in flight.
+    let mut desired = empty_engine_config();
+    desired.engine.telemetry.logs.level =
+        Some(serde_json::from_value(serde_json::json!("info")).expect("info level should parse"));
+    _ = desired
+        .engine
+        .custom
+        .insert("desired".to_owned(), serde_json::json!({"enabled": true}));
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, false))
+        .expect_err("active rollout on an omitted pipeline should reject reconciliation");
 
     assert_eq!(err, ControlPlaneError::RolloutConflict);
     assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
@@ -5199,8 +5298,9 @@ groups:
         .expect_err("topic runtime changes should be rejected");
 
     match err {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("runtime topic broker mutation"));
+        ControlPlaneError::UnsupportedMutation { message } => {
+            assert!(message.contains("topic broker configuration"));
+            assert!(message.contains("restart required"));
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -5397,12 +5497,185 @@ groups:
     );
 }
 
-/// Scenario: a detached shutdown worker panics before it reaches the normal
-/// terminal-state bookkeeping path.
-/// Guarantees: the shutdown is forced into a failed terminal state and the
-/// logical pipeline no longer stays blocked by a stale active-shutdown entry.
+/// Scenario: full-config reconciliation changes a startup-owned engine telemetry setting.
+/// Guarantees: the request is rejected before committed configuration diverges from runtime behavior.
+#[test]
+fn reconcile_engine_config_rejects_unsupported_engine_mutation() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let mut desired = config.clone();
+    desired.engine.telemetry.reporting_interval = Duration::from_secs(5);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("startup-owned engine settings should be rejected");
+
+    match err {
+        ControlPlaneError::UnsupportedMutation { message } => {
+            assert!(message.contains("engine configuration"));
+            assert!(message.contains("restart required"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: one request combines a supported pipeline creation with an unsupported engine change.
+/// Guarantees: admission rejects the complete request before recording a rollout or changing config.
+#[test]
+fn reconcile_engine_config_rejects_mixed_supported_and_unsupported_changes() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let mut desired = engine_config_with_pipeline(simple_pipeline_yaml());
+    desired.engine.telemetry.reporting_interval = Duration::from_secs(5);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("a partially unsupported request should be rejected as a whole");
+
+    assert!(matches!(err, ControlPlaneError::UnsupportedMutation { .. }));
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.rollouts.is_empty());
+    assert_eq!(state.live_config, config);
+}
+
+/// Scenario: full reconciliation changes a top-level policy declaration.
+/// Guarantees: admission rejects the shared-scope mutation and directs the caller to pipeline scope.
+#[test]
+fn reconcile_engine_config_rejects_top_level_policy_mutation() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let desired = OtelDataflowSpec::from_json(
+        r#"
+{
+    "version": "otel_dataflow/v1",
+    "policies": {
+        "channel_capacity": {
+            "control": { "node": 257, "pipeline": 256 },
+            "pdata": 128
+        }
+    }
+}
+"#,
+    )
+    .expect("policy config should parse");
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("top-level policy changes should be rejected");
+
+    match err {
+        ControlPlaneError::UnsupportedMutation { message } => {
+            assert!(message.contains("top-level or group policy"));
+            assert!(message.contains("pipeline-level policies"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full reconciliation creates an empty group with a policy declaration.
+/// Guarantees: the metadata-only group is committed because no running pipeline inherits it.
+#[test]
+fn reconcile_engine_config_accepts_policy_bearing_empty_group() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+    g1:
+        policies:
+            runtime_recovery:
+                max_restarts: 5
+                initial_backoff: 1s
+                max_backoff: 5s
+                startup_timeout: 1s
+                reset_after: 1m
+"#,
+    )
+    .expect("group policy should parse");
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), true))
+        .expect("policy-bearing empty group should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), desired);
+}
+
+/// Scenario: full reconciliation adds a group policy inherited by an existing pipeline.
+/// Guarantees: admission rejects the shared-scope runtime mutation before rollout planning.
+#[test]
+fn reconcile_engine_config_rejects_group_policy_change_for_existing_pipeline() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let desired = engine_config_with_group_policy_and_pipeline();
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("group policy changes affecting a pipeline should be rejected");
+
+    assert!(matches!(err, ControlPlaneError::UnsupportedMutation { .. }));
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation changes only application-owned engine metadata.
+/// Guarantees: metadata commits without requiring a runtime subsystem update.
+#[test]
+fn reconcile_engine_config_accepts_custom_engine_metadata() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let mut desired = config.clone();
+    _ = desired
+        .engine
+        .custom
+        .insert("fleet".to_owned(), serde_json::json!("canary"));
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), true))
+        .expect("custom engine metadata should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), desired);
+}
+
+/// Scenario: full-config reconciliation changes only a declared topic's description.
+/// Guarantees: metadata updates without requiring topic broker mutation or restart.
+#[test]
+fn reconcile_engine_config_accepts_topic_description_metadata() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+"#,
+    )
+    .expect("topic config should parse");
+    let runtime = test_runtime(&config);
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+topics:
+  shared:
+    description: "shared telemetry"
+"#,
+    )
+    .expect("topic metadata should parse");
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), true))
+        .expect("topic metadata should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), desired);
+}
+
 /// Scenario: full-config reconciliation changes the process-wide memory limiter policy.
-/// Guarantees: live reconciliation rejects startup-owned sampler changes before mutating committed config.
+/// Guarantees: live reconciliation requires restart before mutating committed config.
 #[test]
 fn reconcile_engine_config_rejects_runtime_memory_limiter_mutation() {
     let config = OtelDataflowSpec::from_yaml(
@@ -5468,8 +5741,9 @@ groups:
         .expect_err("memory limiter runtime changes should be rejected");
 
     match err {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("runtime memory_limiter mutation"));
+        ControlPlaneError::UnsupportedMutation { message } => {
+            assert!(message.contains("process memory limiter"));
+            assert!(message.contains("restart required"));
         }
         other => panic!("unexpected error: {other:?}"),
     }

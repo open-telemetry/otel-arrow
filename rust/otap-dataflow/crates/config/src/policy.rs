@@ -77,6 +77,17 @@ impl Policies {
         self.resources.as_ref()
     }
 
+    /// Returns a clone of this policy set with the context declarations
+    /// cleared, for comparisons that intentionally ignore context-only
+    /// changes (which are validated separately via context bindings).
+    #[must_use]
+    pub fn without_context(&self) -> Self {
+        Self {
+            context: None,
+            ..self.clone()
+        }
+    }
+
     /// Resolves a fully-populated policy set from scopes ordered by precedence.
     #[must_use]
     pub fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
