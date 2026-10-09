@@ -2271,6 +2271,7 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
             assert!(pdata.num_items() >= 1);
             emitted.send(()).expect("signal emission");
         });
+    println!("OTEL_ARROW_INTEGRATION_TEST_COMPLETED=oracle-receiver");
 }
 
 #[path = "scalar_config_tests.rs"]

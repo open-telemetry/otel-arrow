@@ -1,0 +1,106 @@
+name: Contrib integration tests
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      base_sha:
+        description: Base commit used to detect affected components
+        required: true
+        type: string
+      head_sha:
+        description: Head commit used to detect affected components
+        required: true
+        type: string
+      include_non_required:
+        description: Run affected non-required integration tests
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.tests.outputs.matrix }}
+      selected_count: ${{ steps.tests.outputs.selected_count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Discover affected integration tests
+        id: tests
+        env:
+          INCLUDE_NON_REQUIRED: ${{ inputs.include_non_required }}
+        run: |
+          args=(
+            --base-sha "${{ inputs.base_sha }}"
+            --head-sha "${{ inputs.head_sha }}"
+          )
+          if [[ "$INCLUDE_NON_REQUIRED" != "true" ]]; then
+            args+=(--required-only)
+          fi
+          python3 .github/scripts/discover-contrib-integration-tests.py "${args[@]}"
+
+  test:
+    name: ${{ matrix.name }}
+    needs: discover
+    if: needs.discover.outputs.selected_count != '0'
+    continue-on-error: ${{ matrix.required == false }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: false
+      - name: Run component integration test
+        run: >
+          python3 .github/scripts/run-contrib-integration-test.py
+          --manifest "${{ matrix.manifest }}"
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: contrib-integration-${{ matrix.id }}
+          path: .ci/contrib-integration/${{ matrix.id }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  status:
+    name: Contrib integration status
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - discover
+      - test
+    steps:
+      - name: Check required integration tests
+        env:
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          SELECTED_COUNT: ${{ needs.discover.outputs.selected_count }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          if [[ "$DISCOVER_RESULT" != "success" ]]; then
+            echo "Integration test discovery failed or was cancelled."
+            exit 1
+          fi
+          if [[ "$SELECTED_COUNT" != "0" && "$TEST_RESULT" != "success" ]]; then
+            echo "One or more required contrib integration tests failed."
+            exit 1
+          fi
+          echo "Contrib integration tests passed."

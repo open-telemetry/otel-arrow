@@ -2,8 +2,9 @@
 
 This directory contains the repository's main CI workflows:
 
-- [`rust-ci.yml`](rust-ci.yml): Rust validation, including contrib receiver
-  smoke tests.
+- [`rust-ci.yml`](rust-ci.yml): Rust validation.
+- [`contrib-integration.yml`](contrib-integration.yml): Path-aware contrib
+  integration tests called by Rust CI.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
@@ -28,6 +29,32 @@ The aggregate Rust and Go status jobs define required validation through their
 `needs` lists. Treat those lists as the source of truth when adding or removing
 required jobs. New external integration jobs can remain non-required while
 their reliability is established.
+
+## Contrib integration tests
+
+Contrib components declare platform-specific integration tests in a
+`ci/integration-test.json` file next to the component. The shared
+`contrib-integration.yml` workflow discovers manifests affected by a pull
+request, executes each selected component entry point on its declared runner,
+uploads failure diagnostics, and reports one stable status to Rust CI.
+
+Each manifest contains:
+
+- a repository-unique `id` and display `name`;
+- the GitHub-hosted `runner`, expected `platform`, and `timeout_minutes`;
+- whether failures are `required` or advisory;
+- component-owned `paths` that select the test; and
+- a `command` array executed without a shell wrapper.
+
+The command receives `OTEL_ARROW_INTEGRATION_ARTIFACT_DIR` and should write
+diagnostic logs there. It must also fail when its expected test does not
+execute. An optional `cleanup` command array runs after the primary command,
+including on failure.
+
+Changes to the shared workflow, discovery and execution scripts, the
+otap-dataflow workspace manifests, lockfile, or contrib-nodes crate manifest
+select every registered integration test. Advisory tests run on pull requests
+but are omitted from merge-queue runs.
 
 ## Caching and artifacts
 
