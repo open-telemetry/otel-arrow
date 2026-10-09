@@ -111,6 +111,52 @@ otel_info!(
 );
 ```
 
+### Logging suppression and sampling
+
+The `otel_arrow_dfe_telemetry::log_sampler::Sampler` interface
+supports custom logs sampling. After standard `tracing` filters, the macro
+mutably borrows the expression supplied as `logger:`, enabling stateful
+observation of the event before its body and attributes are evaluated.
+
+Filtering skips the logger expression and fields; sampling rejection skips
+the fields. Logger expressions, sampling decisions, and field-producing
+expressions can emit their own logs, just as field expressions can in ordinary
+`otel_*` calls. Emission and field encoding still run under tracing's recursion
+guard.
+
+The `logger:` argument is supported only by `otel_debug!`, `otel_info!`,
+`otel_warn!`, and `otel_error!` in an `otel_component_scope!`.
+
+```rust
+struct O11y {
+   /// Export request preparation errors (e.g., parse errors)
+   /// are emitted periodically after the first occurrence.
+   preparation: SignalSuppression,
+}
+
+...
+
+   // Pass the self.o11y.preparation sampler for these failures.
+   otel_warn!(
+       logger: self.o11y.preparation,
+       "otlp.exporter.http.parse_error",
+       ...
+   );
+```
+
+The expression may return a temporary, for example the following
+calls `outcome(&result)` to determine the logger that makes the
+decision:
+
+```rust
+   // Pass the self.o11y.preparation sampler for these failures.
+   otel_warn!(
+       logger: self.o11y.delivery_episodes.outcome(&result),
+       "otlp.exporter.http.parse_error",
+       ...
+   );
+```
+
 ## Internal telemetry collection
 
 The dataflow engine supports multiple ways to configure internal logs and

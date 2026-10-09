@@ -13,10 +13,13 @@
 #[doc(hidden)]
 pub mod _private {
     pub use tracing::callsite::{Callsite, DefaultCallsite};
+    pub use tracing::dispatcher::get_default;
     pub use tracing::field::ValueSet;
     pub use tracing::metadata::Kind;
     pub use tracing::{Event, Level};
-    pub use tracing::{callsite2, debug, error, info, trace, valueset, warn};
+    pub use tracing::{
+        callsite2, debug, error, info, level_enabled, trace, valueset, valueset_all, warn,
+    };
 
     /// Compile-time validator for OpenTelemetry event names used by the
     /// `otel_info!` / `otel_warn!` / `otel_debug!` / `otel_error!` /
@@ -296,6 +299,43 @@ macro_rules! otel_event {
     }};
     ($level:expr, $name:expr) => {{
         $crate::otel_event!(target: env!("CARGO_PKG_NAME"), $level, $name);
+    }};
+}
+
+/// Constructs an event lazily through an explicit logger after tracing accepts its metadata.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __otel_logger_event {
+    (target: $target:expr, logger: $logger:expr, $level:expr, $name:expr $(, $($fields:tt)+)?) => {{
+        const _: () = $crate::_private::validate_event_name($name);
+        use $crate::_private::Callsite;
+
+        if $crate::_private::level_enabled!($level) {
+            static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
+                name: $name,
+                kind: $crate::_private::Kind::EVENT,
+                target: $target,
+                level: $level,
+                fields: $($($fields)+)?
+            };
+            let interest = __CALLSITE.interest();
+            let metadata = __CALLSITE.metadata();
+            if !interest.is_never()
+                && (interest.is_always()
+                    || $crate::_private::get_default(|dispatch| dispatch.enabled(metadata)))
+            {
+                // Evaluate the logger / should_sample / arguments before dispatch.
+                let logger = &mut ($logger);
+                if $crate::log_sampler::Sampler::should_sample(logger, metadata) {
+                    (|values: $crate::_private::ValueSet<'_>| {
+                        let event = $crate::_private::Event::new(metadata, &values);
+                        $crate::_private::get_default(|dispatch| {
+                            $crate::log_sampler::Sampler::emit(logger, &event, dispatch);
+                        });
+                    })($crate::_private::valueset_all!(metadata.fields(), $($($fields)+)?));
+                }
+            }
+        }
     }};
 }
 

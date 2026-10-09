@@ -79,6 +79,12 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
 
         #[allow(unused_macros)]
         macro_rules! otel_debug {
+            (logger: $logger:expr, $name:expr $(, $($fields:tt)+)?) => {
+                #telemetry::__otel_logger_event!(
+                    target: #target, logger: $logger,
+                    #telemetry::_private::Level::DEBUG, $name $(, $($fields)+)?
+                )
+            };
             ($($tokens:tt)*) => {
                 #telemetry::otel_debug!(
                     target: #target,
@@ -89,6 +95,12 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
 
         #[allow(unused_macros)]
         macro_rules! otel_info {
+            (logger: $logger:expr, $name:expr $(, $($fields:tt)+)?) => {
+                #telemetry::__otel_logger_event!(
+                    target: #target, logger: $logger,
+                    #telemetry::_private::Level::INFO, $name $(, $($fields)+)?
+                )
+            };
             ($($tokens:tt)*) => {
                 #telemetry::otel_info!(
                     target: #target,
@@ -99,6 +111,12 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
 
         #[allow(unused_macros)]
         macro_rules! otel_warn {
+            (logger: $logger:expr, $name:expr $(, $($fields:tt)+)?) => {
+                #telemetry::__otel_logger_event!(
+                    target: #target, logger: $logger,
+                    #telemetry::_private::Level::WARN, $name $(, $($fields)+)?
+                )
+            };
             ($($tokens:tt)*) => {
                 #telemetry::otel_warn!(
                     target: #target,
@@ -109,6 +127,12 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
 
         #[allow(unused_macros)]
         macro_rules! otel_error {
+            (logger: $logger:expr, $name:expr $(, $($fields:tt)+)?) => {
+                #telemetry::__otel_logger_event!(
+                    target: #target, logger: $logger,
+                    #telemetry::_private::Level::ERROR, $name $(, $($fields)+)?
+                )
+            };
             ($($tokens:tt)*) => {
                 #telemetry::otel_error!(
                     target: #target,
