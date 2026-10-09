@@ -11,10 +11,13 @@
 
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
+/// Materializes selected constant and randomness composites at runtime.
+mod materialization;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
 
 pub use layout::*;
+pub use materialization::*;
 pub use propagation::CompiledHeaderPropagationPolicy;
 use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
@@ -417,6 +420,8 @@ where
 pub struct CompiledContextBindings {
     /// Compiled node bindings indexed first by pipeline, then by node.
     by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
+    /// Constant/randomness materialization plans indexed by pipeline.
+    materialization_by_pipeline: HashMap<PipelineKey, ContextMaterializationPlan>,
 }
 
 /// Stores one node's component declarations, selected composites, and engine context policies.
@@ -673,6 +678,7 @@ impl CompiledContextBindings {
     pub fn empty() -> Self {
         Self {
             by_pipeline: HashMap::new(),
+            materialization_by_pipeline: HashMap::new(),
         }
     }
 
@@ -681,10 +687,23 @@ impl CompiledContextBindings {
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
     ) -> Self {
+        let mut materialization_by_pipeline = HashMap::new();
         let by_pipeline = declarations
             .into_iter()
-            .map(|(pipeline, nodes)| {
-                let nodes = nodes
+            .map(|(pipeline, prepared_nodes)| {
+                let selected_composites = prepared_nodes
+                    .values()
+                    .flat_map(|prepared| prepared.composites.iter())
+                    .map(|declaration| (declaration.name.clone(), declaration.clone()))
+                    .collect::<BTreeMap<_, _>>()
+                    .into_values()
+                    .collect::<Vec<_>>();
+                let materialization = ContextMaterializationPlan::compile(&selected_composites)
+                    .expect("prepared context declarations compile into a runtime layout");
+                if !materialization.is_empty() {
+                    _ = materialization_by_pipeline.insert(pipeline.clone(), materialization);
+                }
+                let nodes = prepared_nodes
                     .into_iter()
                     .map(|(node, declarations)| {
                         (
@@ -697,7 +716,23 @@ impl CompiledContextBindings {
             })
             .collect();
 
-        Self { by_pipeline }
+        Self {
+            by_pipeline,
+            materialization_by_pipeline,
+        }
+    }
+
+    /// Returns the pipeline's constant/randomness materialization plan.
+    ///
+    /// Consumers may resolve existing [`ContextProjection`] values against this
+    /// plan. General consumer bindings and optimized lookup structures are
+    /// intentionally outside this API.
+    #[must_use]
+    pub fn context_materialization_plan(
+        &self,
+        pipeline: &PipelineKey,
+    ) -> Option<&ContextMaterializationPlan> {
+        self.materialization_by_pipeline.get(pipeline)
     }
 
     /// Returns the node's compiled header capture policy.
@@ -1486,6 +1521,36 @@ groups:
                 "{error}"
             );
         }
+    }
+
+    /// Scenario: one pipeline consumer selects a constant member from a composite.
+    /// Guarantees: the compiled pipeline bindings include a materialization plan for that composite.
+    #[test]
+    fn selected_constant_builds_pipeline_materialization_plan() {
+        let pipeline = pipeline("group", "pipeline");
+        let declarations = HashMap::from([(
+            pipeline.clone(),
+            HashMap::from([(
+                ConfigNodeId::from("node"),
+                PreparedNodeContextDeclarations::new(
+                    consumer(
+                        member_target("route", "route_name"),
+                        ContextEntrySelectorForm::Value,
+                    ),
+                    &[constant_composite()],
+                )
+                .expect("constant selection is valid"),
+            )]),
+        )]);
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+
+        let bindings = CompiledContextBindings::compile(declarations, &requirements);
+
+        let plan = bindings
+            .context_materialization_plan(&pipeline)
+            .expect("pipeline materialization plan");
+        assert_eq!(plan.layout().entries().len(), 1);
+        assert_eq!(plan.layout().entries()[0].name, context_name("route"));
     }
 
     /// Scenario: a consumer selects a generated randomness member.

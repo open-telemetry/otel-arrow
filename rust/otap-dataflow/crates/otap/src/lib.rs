@@ -83,5 +83,5 @@ mod transport_headers;
 pub mod tls_utils;
 
 /// Factory for OTAP-based pipeline
-#[pipeline_factory(OTAP, OtapPdata)]
+#[pipeline_factory(OTAP, OtapPdata, pdata::materialize_context)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
