@@ -20,6 +20,7 @@ use rustls::{
 use rustls_native_certs::load_native_certs;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{PrivateKeyDer, UnixTime};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -58,8 +59,8 @@ const CA_RELOAD_RETRY_MIN: Duration = Duration::from_secs(1);
 /// Maximum delay between CA reload retries.
 const CA_RELOAD_RETRY_MAX: Duration = Duration::from_secs(60);
 
-/// Delay before reading file metadata after receiving a filesystem event.
-/// This allows atomic rename operations to fully complete before we check the file identity.
+/// Delay before reading the CA file after receiving a filesystem event.
+/// This allows atomic rename operations to fully complete before we read the CA file.
 /// On macOS, kqueue events can arrive before the rename operation is visible to stat().
 const FS_EVENT_SETTLE_DELAY_MS: u64 = 50;
 
@@ -820,6 +821,15 @@ impl ResolvesServerCert for LazyReloadableCertResolver {
     }
 }
 
+/// SHA-256 digest of CA PEM bytes, used to detect content changes.
+type CaFingerprint = [u8; 32];
+
+/// Fingerprints CA PEM content. Content, not file metadata, decides whether a reload is
+/// needed: inode reuse and coarse timestamps can hide a replacement on some platforms.
+fn ca_fingerprint(ca_pem: &[u8]) -> CaFingerprint {
+    Sha256::digest(ca_pem).into()
+}
+
 /// Reload state owned by the CA watcher's worker thread.
 ///
 /// The notify callback only signals the worker, which rechecks the configured path
@@ -833,14 +843,14 @@ struct CaWatcherState {
     reload_path: PathBuf,
     /// Whether to include system CAs
     include_system_cas: bool,
-    /// File identity (inode on Unix) of the currently loaded CA.
-    last_identity: u64,
+    /// Fingerprint of the PEM bytes the current verifier was built from.
+    last_fingerprint: CaFingerprint,
     /// When the last successful reload happened (for debouncing).
     last_reload: Option<Instant>,
     /// When the next check is due without a new signal (debounce end or retry).
     retry_at: Option<Instant>,
-    /// Identity that last failed to load (`None` inside means the path was unreadable).
-    failed_candidate: Option<Option<u64>>,
+    /// Fingerprint that last failed to load (`None` inside means the path was unreadable).
+    failed_candidate: Option<Option<CaFingerprint>>,
     /// Delay before the next retry after a failed reload.
     retry_delay: Duration,
 }
@@ -850,13 +860,13 @@ impl CaWatcherState {
         inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
         reload_path: PathBuf,
         include_system_cas: bool,
-        initial_identity: u64,
+        initial_fingerprint: CaFingerprint,
     ) -> Self {
         Self {
             inner,
             reload_path,
             include_system_cas,
-            last_identity: initial_identity,
+            last_fingerprint: initial_fingerprint,
             last_reload: None,
             retry_at: None,
             failed_candidate: None,
@@ -898,21 +908,21 @@ impl CaWatcherState {
 
     /// Reloads if the configured file changed, updating `retry_at` when a follow-up is needed.
     fn check(&mut self) {
-        let identity = match get_file_identity(&self.reload_path) {
-            Ok(id) => Some(id),
-            Err(e) => {
-                otel_debug!("tls.file_watcher.identity_error", error = ?e, message = "Failed to get file identity, will retry");
-                None
-            }
-        };
+        // The verifier is built from these same bytes, so the recorded fingerprint always
+        // matches the loaded CA even if the file changes again after this read.
+        let read = read_file_with_limit_sync(&self.reload_path).map(|ca_pem| {
+            let fingerprint = ca_fingerprint(&ca_pem);
+            (ca_pem, fingerprint)
+        });
+        let fingerprint = read.as_ref().ok().map(|(_, fingerprint)| *fingerprint);
 
-        if identity == Some(self.last_identity) {
+        if fingerprint == Some(self.last_fingerprint) {
             self.clear_retry();
             return;
         }
 
         // A candidate that already failed waits for its scheduled retry, but never past the deadline.
-        if self.failed_candidate == Some(identity)
+        if self.failed_candidate == Some(fingerprint)
             && self.retry_at.is_some_and(|at| Instant::now() < at)
         {
             return;
@@ -930,22 +940,34 @@ impl CaWatcherState {
             }
         }
 
-        let Some(identity) = identity else {
-            self.schedule_retry(None);
-            return;
+        let (ca_pem, fingerprint) = match read {
+            Ok(candidate) => candidate,
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    otel_debug!("tls.file_watcher.read_error", error = ?e, message = "CA file not found, will retry");
+                } else {
+                    otel_error!(
+                        "tls.file_watcher.reload_failed",
+                        error = ?e,
+                        message = "Failed to read CA certificates (keeping previous, will retry)",
+                    );
+                }
+                self.schedule_retry(None);
+                return;
+            }
         };
 
         otel_info!(
             "tls.file_watcher.reload_start",
             path = ?self.reload_path,
+            size_bytes = ca_pem.len(),
             message = "CA certificate file changed, reloading"
         );
 
-        // If the file changes after the identity read, the next check sees a mismatch and reloads again.
-        match reload_ca_verifier(&self.reload_path, self.include_system_cas) {
+        match build_webpki_verifier(&ca_pem, self.include_system_cas) {
             Ok(new_verifier) => {
                 self.inner.store(Arc::new(new_verifier));
-                self.last_identity = identity;
+                self.last_fingerprint = fingerprint;
                 self.last_reload = Some(Instant::now());
                 self.clear_retry();
                 otel_info!(
@@ -959,12 +981,12 @@ impl CaWatcherState {
                     error = ?e,
                     message = "Failed to reload CA certificates (keeping previous, will retry)",
                 );
-                self.schedule_retry(Some(identity));
+                self.schedule_retry(Some(fingerprint));
             }
         }
     }
 
-    fn schedule_retry(&mut self, candidate: Option<u64>) {
+    fn schedule_retry(&mut self, candidate: Option<CaFingerprint>) {
         self.failed_candidate = Some(candidate);
         self.retry_at = Some(Instant::now() + self.retry_delay);
         self.retry_delay = (self.retry_delay * 2).min(CA_RELOAD_RETRY_MAX);
@@ -1075,9 +1097,9 @@ impl ReloadableClientCaVerifier {
         ca_file_path: PathBuf,
         include_system_cas: bool,
     ) -> Result<Arc<Self>, io::Error> {
-        // Read identity before content so the worker's initial check detects a change racing the load.
-        let initial_identity = get_file_identity(&ca_file_path).unwrap_or(0);
         let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
+        // Fingerprint the loaded bytes so the worker's initial check detects a change racing the load.
+        let initial_fingerprint = ca_fingerprint(&ca_pem);
         otel_debug!(
             "tls.ca.initial_load",
             size_bytes = ca_pem.len(),
@@ -1090,7 +1112,7 @@ impl ReloadableClientCaVerifier {
             &ca_file_path,
             Arc::clone(&inner),
             include_system_cas,
-            initial_identity,
+            initial_fingerprint,
         )?;
 
         Ok(Arc::new(Self {
@@ -1157,13 +1179,13 @@ impl ReloadableClientCaVerifier {
         ca_file_path: &Path,
         inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
         include_system_cas: bool,
-        initial_identity: u64,
+        initial_fingerprint: CaFingerprint,
     ) -> Result<Box<dyn Watcher + Send + Sync>, io::Error> {
         let state = CaWatcherState::new(
             inner,
             ca_file_path.to_path_buf(),
             include_system_cas,
-            initial_identity,
+            initial_fingerprint,
         );
 
         // Capacity 1 coalesces bursts of events into a single pending check.
@@ -1443,31 +1465,6 @@ fn get_mtime(path: &Path) -> Result<u64, io::Error> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .map_err(io::Error::other)
-}
-
-/// Get a unique file identifier that changes when the file is replaced.
-/// On Unix, this uses the inode number which changes on atomic rename.
-/// On other platforms, falls back to mtime.
-#[cfg(unix)]
-fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::metadata(path)?;
-    Ok(metadata.ino())
-}
-
-#[cfg(windows)]
-fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
-    // On Windows, use last_write_time() which has 100-nanosecond precision (FILETIME),
-    // unlike get_mtime() which truncates to seconds and can miss rapid file replacements.
-    use std::os::windows::fs::MetadataExt;
-    let metadata = std::fs::metadata(path)?;
-    Ok(metadata.last_write_time())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
-    // On other platforms, fall back to mtime
-    get_mtime(path)
 }
 
 /// Parses a certified key from PEM-encoded certificate and key bytes.
@@ -2878,11 +2875,16 @@ mod tests {
         let ca_path = temp_dir.path().join("ca.crt");
         fs::write(&ca_path, "not a certificate\n").expect("Write invalid CA");
 
+        let ca_pem = tls_certs::generate_ca("Test CA").cert_pem;
         let initial =
-            build_webpki_verifier(tls_certs::generate_ca("Test CA").cert_pem.as_bytes(), false)
-                .expect("Build initial verifier");
+            build_webpki_verifier(ca_pem.as_bytes(), false).expect("Build initial verifier");
         let inner = Arc::new(ArcSwap::from_pointee(initial));
-        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path, false, 0);
+        let mut state = CaWatcherState::new(
+            Arc::clone(&inner),
+            ca_path,
+            false,
+            ca_fingerprint(ca_pem.as_bytes()),
+        );
         state.retry_delay = CA_RELOAD_RETRY_MAX;
 
         let (signal_tx, signal_rx) = mpsc::sync_channel::<()>(1);
@@ -2938,9 +2940,8 @@ mod tests {
         let ca_path = temp_dir.path().join("ca.crt");
         fs::write(&ca_path, tls_certs::generate_ca("Test CA 1").cert_pem).expect("Write CA 1");
 
-        let stale_identity = get_file_identity(&ca_path).expect("Read CA 1 identity");
-        let initial = build_webpki_verifier(&fs::read(&ca_path).expect("Read CA 1"), false)
-            .expect("Build initial verifier");
+        let ca1_pem = fs::read(&ca_path).expect("Read CA 1");
+        let initial = build_webpki_verifier(&ca1_pem, false).expect("Build initial verifier");
         let inner = Arc::new(ArcSwap::from_pointee(initial));
         let loaded = inner.load_full();
 
@@ -2952,7 +2953,7 @@ mod tests {
             &ca_path,
             Arc::clone(&inner),
             false,
-            stale_identity,
+            ca_fingerprint(&ca1_pem),
         )
         .expect("Set up watcher");
 
@@ -2963,6 +2964,63 @@ mod tests {
             )),
             "change made before watch registration was not reloaded"
         );
+    }
+
+    /// Scenario: the CA file is rewritten in place with a different CA and its last-write
+    /// time is restored to the previous value, as when a rotation lands within the same
+    /// filesystem timestamp tick (observed on Windows).
+    /// Guarantees: the watcher detects the change from file contents and publishes a
+    /// verifier for the new CA; an unchanged file is not reloaded.
+    #[test]
+    fn ca_watcher_reloads_content_change_with_unchanged_mtime() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let ca_path = temp_dir.path().join("ca.crt");
+        let ca1_pem = tls_certs::generate_ca("Test CA 1").cert_pem;
+        fs::write(&ca_path, &ca1_pem).expect("Write CA 1");
+        let mtime = fs::metadata(&ca_path)
+            .and_then(|m| m.modified())
+            .expect("Read CA 1 mtime");
+
+        let initial =
+            build_webpki_verifier(ca1_pem.as_bytes(), false).expect("Build initial verifier");
+        let inner = Arc::new(ArcSwap::from_pointee(initial));
+        let loaded = inner.load_full();
+        let mut state = CaWatcherState::new(
+            Arc::clone(&inner),
+            ca_path.clone(),
+            false,
+            ca_fingerprint(ca1_pem.as_bytes()),
+        );
+
+        state.check();
+        assert!(
+            Arc::ptr_eq(&inner.load_full(), &loaded),
+            "unchanged file was reloaded"
+        );
+        assert!(state.retry_at.is_none());
+
+        let ca2_pem = tls_certs::generate_ca("Test CA 2").cert_pem;
+        fs::write(&ca_path, &ca2_pem).expect("Write CA 2");
+        fs::File::options()
+            .write(true)
+            .open(&ca_path)
+            .and_then(|f| f.set_modified(mtime))
+            .expect("Restore CA mtime");
+        assert_eq!(
+            fs::metadata(&ca_path)
+                .and_then(|m| m.modified())
+                .expect("Read CA 2 mtime"),
+            mtime
+        );
+
+        state.check();
+        assert!(
+            !Arc::ptr_eq(&inner.load_full(), &loaded),
+            "content change with unchanged mtime was not reloaded"
+        );
+        assert_eq!(state.last_fingerprint, ca_fingerprint(ca2_pem.as_bytes()));
+        assert!(state.retry_at.is_none());
     }
 
     /// Scenario: a reload fails and the file stays unchanged, then checks run before and after
@@ -2976,14 +3034,17 @@ mod tests {
         let ca_path = temp_dir.path().join("ca.crt");
         fs::write(&ca_path, "not a certificate\n").expect("Write invalid CA");
 
-        let initial = build_webpki_verifier(
-            tls_certs::generate_ca("Test CA 1").cert_pem.as_bytes(),
-            false,
-        )
-        .expect("Build initial verifier");
+        let ca1_pem = tls_certs::generate_ca("Test CA 1").cert_pem;
+        let initial =
+            build_webpki_verifier(ca1_pem.as_bytes(), false).expect("Build initial verifier");
         let inner = Arc::new(ArcSwap::from_pointee(initial));
         let loaded = inner.load_full();
-        let mut state = CaWatcherState::new(Arc::clone(&inner), ca_path, false, 0);
+        let mut state = CaWatcherState::new(
+            Arc::clone(&inner),
+            ca_path,
+            false,
+            ca_fingerprint(ca1_pem.as_bytes()),
+        );
 
         state.check();
         let scheduled = state
@@ -2991,8 +3052,8 @@ mod tests {
             .expect("failed reload should schedule a retry");
         assert_eq!(state.retry_delay, CA_RELOAD_RETRY_MIN * 2);
 
-        // The file is never modified, so its identity stays that of the failed candidate on
-        // every platform (Windows identity is the last write time).
+        // The file is never modified, so its content fingerprint stays that of the failed
+        // candidate.
         state.check();
         assert_eq!(
             state.retry_at,
