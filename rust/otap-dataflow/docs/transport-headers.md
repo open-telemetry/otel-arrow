@@ -263,17 +263,6 @@ over transport headers.
 Composite entry bindings (e.g., `product_user:workspace`) are valid only
 when all conditional entries match (i.e., when `environment=production`)
 
-During startup and live-update preparation, each pipeline compiles one logical
-context layout from its explicitly declared primitive fields and selected
-composites. Exporter policies share that layout and use its field and composite
-IDs to resolve header sources and evaluate conditions against captured headers.
-Unselected composite definitions remain inactive.
-
-This integration preserves existing propagation behavior: the selected header
-must exist and every condition must match, but unselected value members,
-including authorized-identity members, are not required. Whole-composite
-presence enforcement and changes to message storage are separate work.
-
 Matching has these semantics:
 
 - Stored header names use ASCII case-insensitive comparison.
