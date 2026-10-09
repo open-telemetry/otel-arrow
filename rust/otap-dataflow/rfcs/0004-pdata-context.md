@@ -248,7 +248,7 @@ policies:
           name: peer_socket_addr
 ```
 
-More entry types can be added as needed, for example `randomness`,
+Randomness entries are configured with a named member and generator:
 
 ```yaml
 policies:
@@ -260,11 +260,20 @@ policies:
           value: uuid7
 ```
 
-The randomness `value` selects a generator rather than containing generated data.
-The initial supported generator is `uuid7`. Randomness members have configured
-member names but no source domain or original wire name, and they are always
-available for composite presence. The logical model records the generator kind;
-runtime value generation and propagation are separate integration work.
+The randomness `value` selects a generator rather than containing generated
+data. The initial supported generator is `uuid7`. Randomness members have
+configured member names but no source domain or original wire name. They add
+no presence requirement, so referenced fields and conditions still determine
+whether the composite entry is present.
+
+When runtime materialization is implemented, each random value is generated
+once when its context is materialized and retained for that context's lifetime.
+The current logical model records the generator kind; runtime value generation
+and propagation remain separate integration work.
+
+UUID v7 values expose their generation time and are not secrets. They must not
+be used as authentication tokens, secret values, or cryptographic anti-replay
+mechanisms.
 
 Or `constant`,
 
