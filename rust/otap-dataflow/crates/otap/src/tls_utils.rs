@@ -643,14 +643,14 @@ pub(crate) async fn build_tonic_client_tls(
 /// message and verifies that signature against the leaf certificate's public
 /// key.
 ///
-/// When no crypto provider is installed, certificate parsing is unsupported,
-/// or the key cannot produce a verifiable signature, the check is skipped
-/// rather than failing. Only a direct public-key mismatch or a rejected probe
-/// signature is treated as a definitive mismatch.
+/// Certificate parsing errors are rejected. When no crypto provider is
+/// installed or the key cannot produce a verifiable signature, only the
+/// cert/key match check is skipped.
 pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Result<(), io::Error> {
     use std::io::BufReader;
 
-    let certs = parse_certificate_chain(cert_pem, "client certificate")?;
+    let certs = collect_pem_certificate_chain(cert_pem, "client certificate")?;
+    validate_client_certificate_chain(&certs)?;
     let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -672,7 +672,7 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
 
     let leaf = certs
         .first()
-        .expect("parse_certificate_chain rejects empty chains")
+        .expect("collect_pem_certificate_chain rejects empty chains")
         .clone();
     let certified_key = CertifiedKey::new(certs, Arc::clone(&signing_key));
     match certified_key.keys_match() {
@@ -689,7 +689,7 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
     validate_client_key_with_probe(&leaf, signing_key.as_ref(), provider)
 }
 
-fn parse_certificate_chain(
+fn collect_pem_certificate_chain(
     cert_pem: &[u8],
     description: &str,
 ) -> Result<Vec<CertificateDer<'static>>, io::Error> {
@@ -709,16 +709,20 @@ fn parse_certificate_chain(
         ));
     }
 
-    for cert in &certs {
+    Ok(certs)
+}
+
+fn validate_client_certificate_chain(certs: &[CertificateDer<'static>]) -> Result<(), io::Error> {
+    for cert in certs {
         let _trust_anchor = webpki::anchor_from_trusted_cert(cert).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid DER certificate in {description}: {error}"),
+                format!("invalid DER certificate in client certificate: {error}"),
             )
         })?;
     }
 
-    Ok(certs)
+    Ok(())
 }
 
 fn validate_client_key_with_probe(
@@ -1732,7 +1736,7 @@ fn parse_certified_key(
     use std::io::BufReader;
 
     let certs =
-        parse_certificate_chain(cert_pem, &format!("certificate file {cert_path_debug:?}"))?;
+        collect_pem_certificate_chain(cert_pem, &format!("certificate file {cert_path_debug:?}"))?;
 
     let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
