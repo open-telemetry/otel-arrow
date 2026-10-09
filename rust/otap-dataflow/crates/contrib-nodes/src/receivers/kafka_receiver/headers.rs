@@ -249,6 +249,12 @@ impl HeaderExtractions {
         ))
     }
 
+    /// Apply header extractions while converting a plaintext payload to Arrow logs.
+    pub(crate) fn apply_plaintext_logs(&self, data: &[u8]) -> Result<OtapPdata, EngineError> {
+        let arrow_records = SignalDecoder::decode_plaintext_logs(data)?;
+        self.apply_otap_resource_attrs(arrow_records)
+    }
+
     /// Apply header extractions to an OTAP Arrow traces payload.
     ///
     /// Injects attributes into `ResourceAttrs` for the traces payload.
@@ -457,7 +463,9 @@ mod tests {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, Producer, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::{
+        OtapPayload, OtlpProtoBytes, PayloadData, Producer, TryIntoWithOptions,
+    };
     use prost::Message;
     use std::collections::BTreeMap;
 
@@ -844,6 +852,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Scenario (routing and payload correctness): a header-derived attribute is
+    /// applied while a plaintext Kafka record is converted directly to Arrow logs.
+    /// Guarantees: the output remains Arrow pdata, the payload remains the log body,
+    /// and the extracted value is added to the generated resource.
+    #[test]
+    fn apply_plaintext_logs_preserves_body_and_adds_resource_attribute() {
+        let input = br#"{ "message": "Hello world" }"#;
+        let extractions = HeaderExtractions {
+            otlp_attributes: None,
+            otap_attributes: Some(AttributesTransform::default().with_upsert(
+                UpsertTransform::new(BTreeMap::from([(
+                    "tenant.id".to_string(),
+                    LiteralValue::Str("acme-corp".to_string()),
+                )])),
+            )),
+        };
+
+        let mut pdata = extractions
+            .apply_plaintext_logs(input)
+            .expect("should succeed");
+        let payload: OtapPayload = pdata.take_payload();
+        let arrow_records = match payload.into_data() {
+            PayloadData::OtapArrowRecords(records @ OtapArrowRecords::Logs(_)) => records,
+            _ => panic!("expected plaintext to produce OtapArrowRecords::Logs"),
+        };
+        let mut pdata = OtapPdata::new(Default::default(), arrow_records.into());
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("to OtlpProtoBytes");
+        let result = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode result");
+        let resource_logs = &result.resource_logs[0];
+        let resource = resource_logs.resource.as_ref().expect("generated resource");
+        assert!(resource.attributes.iter().any(|kv| kv.key == "tenant.id"));
+        let body = resource_logs.scope_logs[0].log_records[0]
+            .body
+            .as_ref()
+            .and_then(|body| body.value.as_ref());
+        assert!(matches!(
+            body,
+            Some(any_value::Value::StringValue(body)) if body.as_bytes() == input
+        ));
     }
 
     /// Scenario (routing and payload correctness): `HeaderExtractions` is queried for

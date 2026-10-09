@@ -28,7 +28,9 @@ use super::topic_router::TopicRouter;
 use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
+use crate::common::kafka::{
+    MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG, MessageFormat,
+};
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -530,7 +532,7 @@ impl KafkaExporter {
 
     /// Builds the Kafka record headers (format header + propagated transport headers).
     ///
-    /// The encoding format (`otlp` or `otap`) is always written under the
+    /// The encoding format is always written under the
     /// `format_header_key`. Any propagated transport header with the same
     /// name is skipped to avoid collision.
     fn build_kafka_headers(
@@ -545,6 +547,7 @@ impl KafkaExporter {
         let format_value = match encoding {
             MessageFormat::OtlpProto => MSG_FORMAT_OTLP,
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
+            MessageFormat::Plaintext => MSG_FORMAT_PLAINTEXT,
             MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
         };
         headers = headers.insert(Header {
@@ -700,6 +703,9 @@ impl KafkaExporter {
                 payload.clone(),
                 &mut self.pdata_producer,
             ),
+            MessageFormat::Plaintext => Err(KafkaExporterError::Configuration(
+                "plaintext encoding is not supported by the Kafka exporter".to_string(),
+            )),
             MessageFormat::Syslog => Err(KafkaExporterError::Configuration(
                 "syslog encoding is not supported by the Kafka exporter".to_string(),
             )),

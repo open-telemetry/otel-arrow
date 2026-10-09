@@ -113,6 +113,71 @@ fn decode_logs_payload_otap_proto() {
     );
 }
 
+/// Scenario (routing and payload correctness): a UTF-8 JSON document is received in a
+/// Kafka record configured for plaintext.
+/// Guarantees: the receiver emits Arrow logs directly, with exactly one record whose
+/// string body preserves the complete payload byte-for-byte.
+#[test]
+fn decode_logs_payload_plaintext_sets_body() {
+    let input = br#"{ "message": "Hello world", "level": "Info" }"#;
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, input, MessageFormat::Plaintext)
+            .expect("decode plaintext");
+    let payload: OtapPayload = pdata.take_payload();
+    let arrow_records = match payload.into_data() {
+        PayloadData::OtapArrowRecords(records @ OtapArrowRecords::Logs(_)) => records,
+        _ => panic!("expected plaintext to produce OtapArrowRecords::Logs"),
+    };
+    let mut pdata = OtapPdata::new(Default::default(), arrow_records.into());
+    let proto = take_otlp_proto(&mut pdata);
+    let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+
+    assert_eq!(request.resource_logs.len(), 1);
+    assert_eq!(request.resource_logs[0].scope_logs.len(), 1);
+    let records = &request.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(records.len(), 1);
+    assert!(matches!(
+        records[0].body.as_ref().and_then(|body| body.value.as_ref()),
+        Some(any_value::Value::StringValue(body)) if body.as_bytes() == input
+    ));
+    assert!(records[0].observed_time_unix_nano > 0);
+}
+
+/// Scenario (routing and payload correctness): a plaintext payload contains invalid
+/// UTF-8.
+/// Guarantees: decoding returns a recoverable per-message error instead of altering
+/// the payload with lossy text conversion.
+#[test]
+fn decode_logs_payload_invalid_utf8_plaintext_returns_error() {
+    let result =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, &[0xff], MessageFormat::Plaintext);
+    assert!(result.is_err());
+}
+
+/// Scenario (routing and payload correctness): a traces or metrics message-format
+/// header requests plaintext.
+/// Guarantees: runtime header overrides cannot route the logs-only encoding into
+/// non-log signals.
+#[test]
+fn decode_non_logs_payload_plaintext_returns_error() {
+    assert!(
+        SignalDecoder::decode_signal_payload(
+            SignalType::Traces,
+            b"message",
+            MessageFormat::Plaintext,
+        )
+        .is_err()
+    );
+    assert!(
+        SignalDecoder::decode_signal_payload(
+            SignalType::Metrics,
+            b"message",
+            MessageFormat::Plaintext,
+        )
+        .is_err()
+    );
+}
+
 /// Scenario (routing and payload correctness): one RFC 5424 message is received in a
 /// Kafka record configured for Syslog.
 /// Guarantees: the shared Syslog parser produces exactly one OpenTelemetry log record.

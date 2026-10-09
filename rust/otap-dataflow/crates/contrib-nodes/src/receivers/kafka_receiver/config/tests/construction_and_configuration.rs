@@ -262,6 +262,20 @@ fn signal_config_deserialize_with_exclude_and_encoding() {
     assert_eq!(cfg.encoding(), MessageFormat::OtapProto);
 }
 
+/// Scenario (construction and configuration): a signal config selects the plaintext
+/// encoding by name.
+/// Guarantees: the `plaintext` configuration value maps to the plaintext message
+/// format.
+#[test]
+fn signal_config_deserialize_plaintext_encoding() {
+    let json = json!({
+        "topics": ["logs"],
+        "encoding": "plaintext"
+    });
+    let cfg: SignalConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(cfg.encoding(), MessageFormat::Plaintext);
+}
+
 /// Scenario (construction and configuration): the config getters are read after
 /// construction.
 /// Guarantees: each getter returns the configured value, so downstream code reads
