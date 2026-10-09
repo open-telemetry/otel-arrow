@@ -30,10 +30,6 @@ components:
       docker:
         image: {{otelcol_image}}
         network: testbed
-        # Raise the file-descriptor limit so the benchmarked engine is not
-        # throttled by docker's default soft nofile limit (1024) at high rates.
-        ulimits:
-          nofile: {{ sut_nofile | default(65536) }}
         ports:
           - "8086:8086"
         volumes:

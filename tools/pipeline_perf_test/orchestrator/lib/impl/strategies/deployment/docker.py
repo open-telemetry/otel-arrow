@@ -64,6 +64,11 @@ from ..hooks.docker.wait_for_status import (
 
 STRATEGY_NAME = "docker"
 
+# Default ulimits applied to every docker container unless overridden. The
+# docker daemon's default soft nofile limit (1024) throttles benchmarked
+# engines at high rates, so raise the file-descriptor ceiling by default.
+DEFAULT_ULIMITS: Dict[str, int] = {"nofile": 16384}
+
 
 class DockerBuildConfig(BaseModel):
     """
@@ -149,7 +154,9 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
         ulimits (Optional[Dict[str, Union[int, DockerUlimit]]]): Resource ulimits to
             apply to the container (docker --ulimit), keyed by limit name (e.g.
             'nofile'). A bare int sets both the soft and hard limit; a
-            DockerUlimit object sets them independently.
+            DockerUlimit object sets them independently. 'nofile' defaults to
+            16384; entries here are merged on top of the defaults, so an explicit
+            value for a key overrides the default for that key.
     """
 
     image: str
@@ -179,7 +186,8 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
             "Resource ulimits applied to the container (docker --ulimit), keyed "
             "by limit name (e.g. 'nofile'). A bare int sets both the soft and "
             "hard limit to that value; an object with 'soft' and 'hard' sets "
-            "them independently."
+            "them independently. 'nofile' defaults to 16384; entries here are "
+            "merged on top of the defaults, overriding the default per key."
         ),
     )
 
@@ -280,8 +288,11 @@ components:
             run_kwargs["cpuset_cpus"] = self.config.cpuset_cpus
         if self.config.extra_hosts:
             run_kwargs["extra_hosts"] = dict(self.config.extra_hosts)
-        if self.config.ulimits:
-            run_kwargs["ulimits"] = build_ulimits(self.config.ulimits)
+        # Merge any configured ulimits on top of the defaults so every
+        # container gets the raised nofile limit unless it overrides it.
+        run_kwargs["ulimits"] = build_ulimits(
+            {**DEFAULT_ULIMITS, **(self.config.ulimits or {})}
+        )
 
         try:
             container = client.containers.run(**run_kwargs)

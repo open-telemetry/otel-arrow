@@ -94,6 +94,7 @@ def test_start_successful(
         volumes={"/host": {"bind": "/container", "mode": "rw"}},
         environment=sample_config.environment,
         command=sample_config.command,
+        ulimits=[{"Name": "nofile", "Soft": 16384, "Hard": 16384}],
     )
     assert mock_runtime.container_id == "container123"
     mock_set_runtime.assert_called_once_with(mock_context, mock_runtime)
@@ -132,11 +133,11 @@ def test_start_passes_extra_hosts(
     assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
 
 
-# Scenario: A docker deployment config specifies a ulimit as a bare int
-#   (e.g. {"nofile": 65536}).
-# Guarantees: The value is forwarded to containers.run as a single Ulimit with
-#   matching soft and hard limits, so the container's file-descriptor ceiling
-#   is raised as requested.
+# Scenario: A docker deployment config specifies a ulimit as a bare int that
+#   differs from the default (e.g. {"nofile": 65536}).
+# Guarantees: The explicit value replaces the default and is forwarded to
+#   containers.run as a single Ulimit with matching soft and hard limits, so
+#   the container's file-descriptor ceiling is raised as requested.
 @patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
 @patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
 @patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
@@ -206,8 +207,9 @@ def test_start_passes_ulimit_soft_hard(
 
 
 # Scenario: A docker deployment config leaves ulimits unset.
-# Guarantees: No ulimits kwarg is passed to containers.run, preserving the
-#   docker daemon's default limits for components that do not opt in.
+# Guarantees: The default nofile limit (16384) is still forwarded to
+#   containers.run, so every container gets a raised file-descriptor ceiling
+#   without having to opt in.
 @patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
 @patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
 @patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
@@ -215,7 +217,7 @@ def test_start_passes_ulimit_soft_hard(
     "lib.impl.strategies.deployment.docker.sanitize_docker_name",
     side_effect=lambda x: x,
 )
-def test_start_omits_ulimits_when_unset(
+def test_start_applies_default_ulimits_when_unset(
     mock_sanitize,
     mock_set_runtime,
     mock_get_runtime,
@@ -232,7 +234,85 @@ def test_start_omits_ulimits_when_unset(
 
     DockerDeployment(config=config).start(mock_component, mock_context)
 
-    assert "ulimits" not in mock_client.containers.run.call_args.kwargs
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    assert len(ulimits) == 1
+    assert ulimits[0]["Name"] == "nofile"
+    assert ulimits[0]["Soft"] == 16384
+    assert ulimits[0]["Hard"] == 16384
+
+
+# Scenario: A docker deployment config sets a ulimit for a key other than the
+#   defaulted one (e.g. {"nproc": 1024}).
+# Guarantees: The configured limit is merged on top of the default nofile
+#   limit, so the container keeps the raised file-descriptor ceiling while also
+#   getting the explicitly configured limit.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_merges_ulimits_with_default(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nproc": 1024},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    by_name = {u["Name"]: u for u in ulimits}
+    assert by_name["nofile"]["Soft"] == 16384
+    assert by_name["nofile"]["Hard"] == 16384
+    assert by_name["nproc"]["Soft"] == 1024
+    assert by_name["nproc"]["Hard"] == 1024
+
+
+# Scenario: A docker deployment config overrides the defaulted key itself
+#   (e.g. {"nofile": 4096}).
+# Guarantees: The explicit value replaces the default for that key, so a
+#   component can lower (or raise) the nofile limit from the default.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_ulimit_overrides_default_nofile(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nofile": 4096},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    assert len(ulimits) == 1
+    assert ulimits[0]["Name"] == "nofile"
+    assert ulimits[0]["Soft"] == 4096
+    assert ulimits[0]["Hard"] == 4096
 
 
 # Scenario: build_ulimits is given a mix of bare-int and explicit soft/hard
