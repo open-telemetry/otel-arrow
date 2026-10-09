@@ -32,6 +32,15 @@ pub(super) struct SamplePoint {
     pub(super) value: SampleValue,
 }
 
+/// A counter-local failure; healthy peers remain available for projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SampleFailure {
+    /// Index into the configured counters.
+    pub(super) counter_index: usize,
+    /// Actionable diagnostic for the failed read or calculation.
+    pub(super) error: String,
+}
+
 /// A sample from one collection.
 #[derive(Debug, Clone)]
 pub(super) struct Sample {
@@ -42,6 +51,8 @@ pub(super) struct Sample {
     pub(super) timestamp_unix_nano: i64,
     /// At most one point per configured counter.
     pub(super) points: Vec<SamplePoint>,
+    /// At most one failure per configured counter, separate from expected omissions.
+    pub(super) failures: Vec<SampleFailure>,
 }
 
 /// A bounded reason why a numeric value cannot be scaled.
