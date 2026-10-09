@@ -1472,11 +1472,7 @@ groups:
             &context,
         )
         .expect("constant value selection");
-        assert!(
-            !prepared
-                .requirements
-                .preserves_original_name(&context_name("route_name"))
-        );
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member_target("route", "route_name"), whole] {
             let error = PreparedNodeContextDeclarations::new(
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
@@ -1507,11 +1503,12 @@ groups:
             [SelectedSource::Randomness(&randomness_name)]
         );
 
-        let _prepared = PreparedNodeContextDeclarations::new(
+        let prepared = PreparedNodeContextDeclarations::new(
             consumer(member.clone(), ContextEntrySelectorForm::Value),
             &context,
         )
         .expect("randomness value selection");
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member, whole] {
             let error = PreparedNodeContextDeclarations::new(
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
