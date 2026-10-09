@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Numeric performance-counter values and decimal scaling.
+//! Numeric performance-counter values, exact-counter samples, and decimal scaling.
 
 use super::config::{MAX_SCALE_POWER10, MIN_SCALE_POWER10};
 
@@ -12,6 +12,36 @@ pub(super) enum Number {
     Integer(i64),
     /// A finite calculated or scaled value, including subnormals and signed zero.
     Double(f64),
+}
+
+/// One configured counter's observation state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum SampleValue {
+    /// An emit-ready, already scaled numeric value.
+    Value(Number),
+    /// No emit-ready value, including warm-up or an idle calculation.
+    NoObservation,
+}
+
+/// One exact counter point, identified by its normalized configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SamplePoint {
+    /// Index of the configured counter that supplies the path and metric mapping.
+    pub(super) counter_index: usize,
+    /// Ready value or expected omission.
+    pub(super) value: SampleValue,
+}
+
+/// One collection's observations, independent of native handles.
+#[derive(Debug, Clone)]
+pub(super) struct Sample {
+    /// Start of the cumulative sequence, used only by emitted Sum points.
+    /// Collection owns sequence continuity and clock rollback handling.
+    pub(super) start_time_unix_nano: i64,
+    /// Positive observation time in nanoseconds since the Unix epoch.
+    pub(super) timestamp_unix_nano: i64,
+    /// Exact points keyed by configured counter.
+    pub(super) points: Vec<SamplePoint>,
 }
 
 /// A bounded reason why a numeric value cannot be scaled.
