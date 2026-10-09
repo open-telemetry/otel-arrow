@@ -17,7 +17,8 @@ Target module: `crates/contrib-nodes/src/receivers/kafka_receiver/`
 
 The receiver ingests telemetry from Kafka topics into the OTAP df-engine
 pipeline. Payloads may be OTLP-proto, OTAP-proto, or Syslog (logs only),
-selected per signal by config and overridable per message by a Kafka header.
+or plaintext (logs only), selected per signal by config and overridable per
+message by a Kafka header.
 Topics are routed to a signal by
 subscription (literal names or `^`-prefixed regex, with optional exclude
 patterns).
@@ -173,9 +174,10 @@ behavior funnels through a single stateless `SignalDecoder` (receiver/decode.rs)
 `decode_signal_with_extractions` selects the per-signal format via
 `config.encoding_for(signal)`, applies any header extractions, and defers to the
 one `decode_signal_payload` path. That decoder is the single source of truth for
-message formats, the Syslog-logs-only restriction, and decode-error mapping (a
-failure becomes one `SignalDecode { signal }` error, tagged with the routed
-signal for metrics and events).
+message formats, the plaintext/Syslog logs-only restrictions, and decode-error
+mapping (a failure becomes one `SignalDecode { signal }` error, tagged with the
+routed signal for metrics and events). Plaintext and Syslog are constructed
+directly as Arrow records without an intermediate OTLP protobuf representation.
 
 ```mermaid
 flowchart TD
@@ -185,7 +187,7 @@ flowchart TD
     TID -->|id space exhausted| REJX["reject: topic-id exhausted"]
     TID -->|ok| DUP{"duplicate? (idempotency,<br/>generation-aware)"}
     DUP -->|yes| SKIP["skip"]
-    DUP -->|no| PROC["process_kafka:<br/>route topic -> signal,<br/>SignalDecoder: detect format (OTLP / OTAP / Syslog),<br/>decode_signal_payload + optional header extraction,<br/>capture transport headers"]
+    DUP -->|no| PROC["process_kafka:<br/>route topic -> signal,<br/>SignalDecoder: detect format (OTLP / OTAP / plaintext / Syslog),<br/>decode_signal_payload + optional header extraction,<br/>capture transport headers"]
     PROC -->|empty payload| REJE["reject: empty payload"]
     PROC -->|unknown topic| REJU["reject: unknown topic"]
     PROC -->|decode ok| SEND["track offset, subscribe Ack/Nack<br/>send downstream (awaits = backpressure)"]
@@ -206,8 +208,8 @@ Highlights:
   reprocessed, not skipped.
 - Records buffered inside librdkafka for a partition that is paused for replay
   are discarded here; the pending seek is what re-reads them.
-- Syslog decoding is supported only for the logs signal; a Syslog format on a
-  traces or metrics signal is rejected as a decode error.
+- Plaintext and Syslog decoding are supported only for the logs signal; either
+  format on a traces or metrics signal is rejected as a decode error.
 
 ## Offset commit and at-least-once
 

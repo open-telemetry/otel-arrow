@@ -57,7 +57,7 @@ use otel_arrow_dfe_config::SignalType;
 
 // Test-only imports for symbols the split test files reference but the
 // receiver implementation no longer imports directly.
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_SYSLOG};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG};
 use crate::receivers::kafka_receiver::identity::DeliveryGeneration;
 use bytes::Bytes;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8};

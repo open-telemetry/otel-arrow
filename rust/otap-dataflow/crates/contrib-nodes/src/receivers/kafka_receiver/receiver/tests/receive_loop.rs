@@ -85,6 +85,54 @@ async fn test_kafka_receiver_logs() {
     .await;
 }
 
+/// Scenario: A Kafka log record carries a UTF-8 JSON document and a
+/// `MessageFormat: plaintext` header that overrides the OTLP default.
+/// Guarantees: The end-to-end receiver emits one OTLP log record whose body is the
+/// complete original document.
+#[tokio::test]
+async fn test_kafka_receiver_plaintext_log_header_override() {
+    const TOPIC: &str = "test-logs-plaintext";
+    with_cluster(
+        KafkaTestCluster::builder().topic(TOPIC),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let input = br#"{ "message": "Hello world", "level": "Info" }"#;
+            producer
+                .send_full(
+                    SendRecord::new(TOPIC, input)
+                        .key(b"plaintext-key")
+                        .header("MessageFormat", MSG_FORMAT_PLAINTEXT),
+                )
+                .await
+                .expect("send plaintext record");
+
+            let cfg = auto_config(
+                cluster.bootstrap_servers(),
+                &[],
+                &[],
+                &[TOPIC],
+                MessageFormat::OtlpProto,
+                HashMap::new(),
+            );
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut pdata = receiver.recv_pdata().await;
+            let proto = take_otlp_proto(&mut pdata);
+            let request =
+                ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+            let records = &request.resource_logs[0].scope_logs[0].log_records;
+
+            assert_eq!(records.len(), 1);
+            assert!(matches!(
+                records[0].body.as_ref().and_then(|body| body.value.as_ref()),
+                Some(any_value::Value::StringValue(body)) if body.as_bytes() == input
+            ));
+
+            shutdown_receiver(receiver).await;
+        },
+    )
+    .await;
+}
+
 /// Scenario (routing and payload correctness): OTLP-proto metric records produced to a Kafka topic are consumed
 /// by an auto-commit receiver.
 /// Guarantees: each delivered pdata decodes to an `ExportMetricsRequest` whose

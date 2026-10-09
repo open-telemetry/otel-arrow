@@ -584,16 +584,16 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             return Err(KafkaReceiverError::ConfigNoSignalTopics);
         }
 
-        if builder.traces.encoding() == MessageFormat::Syslog {
+        for (signal, signal_config) in [("traces", &builder.traces), ("metrics", &builder.metrics)]
+        {
+            let encoding = match signal_config.encoding() {
+                MessageFormat::Plaintext => "plaintext",
+                MessageFormat::Syslog => "syslog",
+                MessageFormat::OtlpProto | MessageFormat::OtapProto => continue,
+            };
             return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
-                signal: "traces".to_string(),
-                encoding: "syslog".to_string(),
-            });
-        }
-        if builder.metrics.encoding() == MessageFormat::Syslog {
-            return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
-                signal: "metrics".to_string(),
-                encoding: "syslog".to_string(),
+                signal: signal.to_string(),
+                encoding: encoding.to_string(),
             });
         }
 
