@@ -847,7 +847,7 @@ impl SummaryDataPointsRecordBatchBuilder {
 
         if let Some(array) = self.count.finish() {
             fields.push(Field::new(
-                consts::SUMMARY_COUNT,
+                consts::COUNT,
                 array.data_type().clone(),
                 false,
             ));
@@ -856,7 +856,7 @@ impl SummaryDataPointsRecordBatchBuilder {
 
         if let Some(array) = self.sum.finish() {
             fields.push(Field::new(
-                consts::SUMMARY_SUM,
+                consts::SUM,
                 array.data_type().clone(),
                 false,
             ));
@@ -1058,7 +1058,7 @@ impl HistogramDataPointsRecordBatchBuilder {
 
         if let Some(array) = self.count.finish() {
             fields.push(Field::new(
-                consts::HISTOGRAM_COUNT,
+                consts::COUNT,
                 array.data_type().clone(),
                 false,
             ));
@@ -1087,7 +1087,7 @@ impl HistogramDataPointsRecordBatchBuilder {
 
         if let Some(array) = self.sum.finish() {
             fields.push(Field::new(
-                consts::HISTOGRAM_SUM,
+                consts::SUM,
                 array.data_type().clone(),
                 true,
             ));
@@ -1323,7 +1323,7 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
 
         if let Some(array) = self.count.finish() {
             fields.push(Field::new(
-                consts::HISTOGRAM_COUNT,
+                consts::COUNT,
                 array.data_type().clone(),
                 false,
             ));
@@ -1332,7 +1332,7 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
 
         if let Some(array) = self.sum.finish() {
             fields.push(Field::new(
-                consts::HISTOGRAM_SUM,
+                consts::SUM,
                 array.data_type().clone(),
                 true,
             ));

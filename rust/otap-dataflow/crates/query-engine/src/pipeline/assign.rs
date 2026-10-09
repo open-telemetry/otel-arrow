@@ -71,7 +71,7 @@ use crate::pipeline::expr::join::{
 };
 use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, MetricDataPointType, nested_struct_field_type,
+    ExprLogicalType, MetricDataPointType, attribute_field_type, nested_struct_field_type,
     root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
@@ -115,6 +115,9 @@ pub(crate) struct AssignPipelineStage {
 
     /// Unified execution trees that produce the data to be assigned to the destination.
     sources: Vec<ScopedExpr>,
+
+    /// The record type context from planning, used at runtime for field type resolution.
+    record_type: RecordType,
 
     /// This is used when assigning attributes to keep track of ID/parent ID membership as we
     /// determine which attributes must be updated or inserted
@@ -183,6 +186,7 @@ impl AssignPipelineStage {
                 .map(Rc::new)
                 .collect(),
             dest_columns,
+            record_type: record_type.clone(),
             sources: source_exprs,
             id_bitmap_pool: IdBitmapPool::new(),
         })
@@ -204,7 +208,13 @@ impl AssignPipelineStage {
             }
         };
 
-        let expected_column_logical_type = root_field_type(dest_column_name)
+        // safety: the signal context was validated during planning, so root_field_type
+        // should not return Err or Ok(None) for any field that was accepted at plan time.
+        let signal_ctx = self
+            .record_type
+            .signal_context()
+            .expect("assign_to_root called with Signal record type");
+        let expected_column_logical_type = root_field_type(dest_column_name, signal_ctx)
             // safety: this will only return None if the destination column does not exist in OTAP
             // data model, but this has been validated in the constructor of this type, so it's
             // safe to expect here
@@ -2072,12 +2082,28 @@ fn validate_assign(
             // No relationship cardinality validation needs to happen for these columns which
             // are on the root record because they are not one:many with anything else in that
             // could be assigned. Validation in this case only checks the types.
-
-            let dest_type =
-                root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
-                    cause: format!("cannot assign to non-existent column '{col_name}'"),
-                    query_location: dest_query_location.cloned(),
-                })?;
+            let dest_type = match record_type {
+                RecordType::Signal(ctx) => {
+                    root_field_type(col_name, ctx).ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!("cannot assign to non-existent column '{col_name}'"),
+                        query_location: dest_query_location.cloned(),
+                    })?
+                }
+                RecordType::Attributes => {
+                    attribute_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!(
+                            "cannot assign to '{col_name}' in attribute pipeline; \
+                             only 'key' and 'value' are available"
+                        ),
+                        query_location: dest_query_location.cloned(),
+                    })?
+                }
+                RecordType::DataPoint(_) => {
+                    return Err(Error::NotYetSupportedError {
+                        message: "assignment to datapoint fields not yet supported".into(),
+                    });
+                }
+            };
 
             let source_type = &source_plan.expr_type;
             if !can_assign_type(&dest_type, source_type) {
@@ -2971,7 +2997,7 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::All));
+        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {

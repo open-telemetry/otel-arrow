@@ -51,8 +51,8 @@ impl<'a> TryFrom<&'a RecordBatch> for HistogramDpArrays<'a> {
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano = get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?;
-        let histogram_count = get_u64_array_opt(rb, consts::HISTOGRAM_COUNT)?;
-        let histogram_sum = get_f64_array_opt(rb, consts::HISTOGRAM_SUM)?;
+        let histogram_count = get_u64_array_opt(rb, consts::COUNT)?;
+        let histogram_sum = get_f64_array_opt(rb, consts::SUM)?;
         let histogram_bucket_counts = rb
             .column_by_name(consts::HISTOGRAM_BUCKET_COUNTS)
             .map(ListValueAccessor::try_new)
