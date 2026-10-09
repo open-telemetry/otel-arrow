@@ -40,12 +40,12 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_pdata_codec::{
-    AcceptedEncodings, CodecError, CodecService, EncodePolicy, EncodingPlan, OtapPayload,
-    PdataEncoding, PdataPayloadDecodeError, PdataView,
+    AcceptedEncodings, CodecError, EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding,
+    PdataPayloadDecodeError, PdataView,
 };
 
-mod completion;
-pub use completion::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataCompletion};
+mod delivery;
+pub use delivery::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataDelivery};
 
 const AUTHORIZED_ENTRY_LEN: usize = 20;
 const AUTHORIZED_VALUE_LEN: usize = 8;
@@ -1120,25 +1120,6 @@ impl OtapPdata {
         Self { context, payload }
     }
 
-    /// Extracts native records through reusable codec state while retaining
-    /// the exact original pdata on failure.
-    pub fn try_into_otap(
-        self,
-        codecs: &CodecService,
-    ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
-        let Self { context, payload } = self;
-        match payload.try_into_otap(codecs) {
-            Ok(records) => Ok(OtapArrowPdata::new(context, records)),
-            Err(error) => {
-                let (source, payload) = error.into_parts();
-                Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
-                    source,
-                    pdata: Self { context, payload },
-                })))
-            }
-        }
-    }
-
     /// Returns the type of signal represented by this `OtapPdata` instance.
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
@@ -1498,32 +1479,46 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
         Ok(AcceptedEncodings::accept_encoded(codecs))
     }
 
-    /// Moves native records or decodes encoded pdata with recoverable failure.
-    async fn try_into_otap(&self, pdata: OtapPdata)
-    -> Result<OtapArrowPdata, OtapPdataDecodeError>;
+    /// Obtains owned native pdata, keeping delivery context and records together.
+    ///
+    /// Native input moves directly without cloning or creating a codec. Encoded
+    /// input is decoded only when needed. Failure returns the exact original
+    /// pdata; success retains no original payload for later processing failures.
+    /// Use [`Self::prepare_otap_work`] when that later recovery is required.
+    async fn materialize_otap(
+        &self,
+        pdata: OtapPdata,
+    ) -> Result<OtapArrowPdata, OtapPdataDecodeError>;
 
-    /// Moves native records or decodes a payload with recoverable failure.
-    async fn try_payload_into_otap(
+    /// Obtains owned native records when the caller manages context separately.
+    ///
+    /// Native records move directly; encoded input is decoded only when needed.
+    /// Failure returns the exact original payload. Success retains no snapshot.
+    async fn materialize_otap_payload(
         &self,
         payload: OtapPayload,
     ) -> Result<OtapArrowRecords, PdataPayloadDecodeError>;
 
-    /// Obtains native working records and separately owned completion state.
+    /// Obtains native working records and separately owned delivery context.
     ///
-    /// A snapshot is retained only for RETURN_DATA subscribers.
-    /// A decode failure always returns the exact input, including its payload.
-    async fn try_into_otap_with_completion(
+    /// Unlike [`Self::materialize_otap`], this retains an original payload snapshot
+    /// for later processing failures when RETURN_DATA is requested. Without it,
+    /// native records still move directly without cloning or creating a codec.
+    /// A decode failure always returns the exact input, regardless of RETURN_DATA.
+    /// The caller explicitly forwards an output or reports Ack/Nack; no codec
+    /// state remains borrowed while the working records are used.
+    async fn prepare_otap_work(
         &self,
         pdata: OtapPdata,
-    ) -> Result<(PdataCompletion, OtapArrowRecords), OtapPdataDecodeError> {
-        let (completion, payload) = pdata.into_work();
-        match self.try_payload_into_otap(payload).await {
-            Ok(records) => Ok((completion, records)),
+    ) -> Result<(PdataDelivery, OtapArrowRecords), OtapPdataDecodeError> {
+        let (delivery, payload) = pdata.into_work();
+        match self.materialize_otap_payload(payload).await {
+            Ok(records) => Ok((delivery, records)),
             Err(error) => {
                 let (source, payload) = error.into_parts();
                 Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
                     source,
-                    pdata: completion.with_payload(payload),
+                    pdata: delivery.with_payload(payload),
                 })))
             }
         }
@@ -1533,22 +1528,24 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
     ///
     /// Processing failures recover the original payload only when RETURN_DATA is
     /// requested; decoding failures always recover it. The caller chooses how to
-    /// report failures. No codec state is borrowed while the callback runs.
-    async fn try_update_otap<R, E>(
+    /// report failures. No codec state is borrowed while the callback runs, and
+    /// no Ack/Nack is sent automatically. For asynchronous work, use
+    /// [`Self::prepare_otap_work`] and keep its delivery owner until work completes.
+    async fn update_otap<R, E>(
         &self,
         pdata: OtapPdata,
         update: impl FnOnce(&mut OtapArrowRecords) -> Result<R, E>,
     ) -> Result<(OtapArrowPdata, R), OtapPdataUpdateError<E>> {
-        let (completion, mut records) = self
-            .try_into_otap_with_completion(pdata)
+        let (delivery, mut records) = self
+            .prepare_otap_work(pdata)
             .await
             .map_err(OtapPdataUpdateError::decode)?;
         match update(&mut records) {
             Ok(value) => {
-                let (context, _) = completion.into_pdata().into_parts();
+                let (context, _) = delivery.into_pdata().into_parts();
                 Ok((OtapArrowPdata::new(context, records), value))
             }
-            Err(error) => Err(OtapPdataUpdateError::update(error, completion.into_pdata())),
+            Err(error) => Err(OtapPdataUpdateError::update(error, delivery.into_pdata())),
         }
     }
 
@@ -1623,7 +1620,7 @@ impl NativeProcessorAdapter {
                 processor.process_control(control, effect_handler).await
             }
             otel_arrow_dfe_engine::message::Message::PData(pdata) => {
-                match effect_handler.try_into_otap(pdata).await {
+                match effect_handler.materialize_otap(pdata).await {
                     Ok(pdata) => processor.process_native(pdata, effect_handler).await,
                     Err(error) => {
                         let (error, pdata) = error.into_parts();
@@ -1640,7 +1637,7 @@ impl NativeProcessorAdapter {
 macro_rules! impl_pdata_effect_handler_ext {
     ($handler:ty) => {
         impl PdataEffectHandlerExtension for $handler {
-            async fn try_into_otap(
+            async fn materialize_otap(
                 &self,
                 pdata: OtapPdata,
             ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
@@ -1657,7 +1654,7 @@ macro_rules! impl_pdata_effect_handler_ext {
                 }
             }
 
-            async fn try_payload_into_otap(
+            async fn materialize_otap_payload(
                 &self,
                 payload: OtapPayload,
             ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
@@ -1972,22 +1969,23 @@ mod test {
     fn legacy_otap_pdata_layout_is_stable() {
         assert_eq!(size_of::<OtapPdata>(), 152);
         assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
-        assert_eq!(size_of::<PdataCompletion>(), size_of::<OtapPdata>());
+        assert_eq!(size_of::<PdataDelivery>(), size_of::<OtapPdata>());
     }
 
-    /// Scenario: Malformed encoded pdata carries delivery context through failed conversion.
+    /// Scenario: An effect handler materializes malformed encoded pdata with delivery context.
     /// Guarantees: Diagnostics omit telemetry and context; recovery preserves peer address,
     /// codec identity, bytes, signal, and item count.
-    #[test]
-    fn encoded_conversion_failure_preserves_delivery_ownership() {
+    #[tokio::test]
+    async fn encoded_conversion_failure_preserves_delivery_ownership() {
         use bytes::Bytes;
-        use otel_arrow_dfe_pdata_codec::{CodecService, PdataEncoding, PdataFormat};
+        use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataFormat};
 
         let peer = "127.0.0.1:4317".parse().expect("peer address");
         let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
         let pointer = bytes.as_ptr();
-        let service = CodecService::new().expect("valid codec registry");
-        let codec = service
+        let handler = delivery_handler();
+        let codec = handler
+            .codec_service()
             .registry()
             .resolve(&PdataEncoding::OTLP)
             .expect("OTLP codec");
@@ -1999,8 +1997,9 @@ mod test {
         .with_item_count(9);
         let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
 
-        let error = pdata
-            .try_into_otap(&service)
+        let error = handler
+            .materialize_otap(pdata)
+            .await
             .expect_err("malformed OTLP must fail");
         assert_eq!(error.to_string(), error.error().to_string());
         for diagnostic in [
@@ -2025,16 +2024,16 @@ mod test {
         assert_eq!(recovered.signal_type(), SignalType::Logs);
     }
 
-    fn completion_handler() -> LocalExporterEffectHandler<OtapPdata> {
+    fn delivery_handler() -> LocalExporterEffectHandler<OtapPdata> {
         let (_rx, metrics) = MetricsReporter::create_new_and_receiver(1);
         LocalExporterEffectHandler::new(
-            otel_arrow_dfe_engine::testing::test_node("completion-test"),
+            otel_arrow_dfe_engine::testing::test_node("delivery-test"),
             metrics,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         )
     }
 
-    fn completion_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
+    fn delivery_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
         let legacy = create_test_pdata().payload();
         let codec = handler
             .codec_service()
@@ -2050,14 +2049,14 @@ mod test {
         [legacy, encoded.into(), create_test_otap_pdata().payload()]
     }
 
-    /// Scenario: legacy, generalized encoded, and native inputs prepare work or completion.
+    /// Scenario: legacy, generalized encoded, and native inputs prepare work or delivery ownership.
     /// Guarantees: only RETURN_DATA retains input, context and measurement caches survive,
     /// and encoded snapshots share the original byte buffer without codec creation.
     #[test]
-    fn completion_retention_preserves_input_and_caches() {
-        let handler = completion_handler();
+    fn delivery_retention_preserves_input_and_caches() {
+        let handler = delivery_handler();
         for return_data in [false, true] {
-            for mut payload in completion_inputs(&handler) {
+            for mut payload in delivery_inputs(&handler) {
                 let count = payload.num_items();
                 let size = payload.num_bytes();
                 let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
@@ -2075,13 +2074,13 @@ mod test {
                     )
                     .with_peer_addr("127.0.0.1:1234".parse().unwrap());
                 let expected_context = pdata.context.clone();
-                let (completion, mut work) = pdata.into_work();
-                assert_eq!(completion.context(), &expected_context);
+                let (delivery, mut work) = pdata.into_work();
+                assert_eq!(delivery.context(), &expected_context);
                 assert_eq!(work.num_items(), count);
                 assert_eq!(work.num_bytes(), size);
                 assert_eq!(work.encoded_bytes().map(|bytes| bytes.as_ptr()), pointer);
-                // Use the same completion entry point as already-prepared exporters.
-                let mut returned = completion.into_pdata().into_completion().into_pdata();
+                // Use the same delivery entry point as already-prepared exporters.
+                let mut returned = delivery.into_pdata().into_delivery().into_pdata();
                 assert_eq!(returned.context, expected_context);
                 if return_data {
                     assert_eq!(returned.payload_ref().format(), format);
@@ -2109,7 +2108,7 @@ mod test {
     #[tokio::test]
     async fn native_update_moves_records_without_snapshot() {
         use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-        let handler = completion_handler();
+        let handler = delivery_handler();
         let pdata = create_test_otap_pdata();
         let pointer = pdata
             .payload_ref()
@@ -2127,7 +2126,7 @@ mod test {
                 .schema(),
         );
         let (updated, value) = handler
-            .try_update_otap(pdata, |records| {
+            .update_otap(pdata, |records| {
                 // A retained native snapshot would add a schema owner even if
                 // the working records themselves were moved without cloning.
                 assert_eq!(
@@ -2156,9 +2155,9 @@ mod test {
     #[tokio::test]
     async fn failed_update_recovers_input_after_partial_mutation() {
         use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-        let handler = completion_handler();
+        let handler = delivery_handler();
         for return_data in [false, true] {
-            for mut payload in completion_inputs(&handler) {
+            for mut payload in delivery_inputs(&handler) {
                 let count = payload.num_items();
                 let size = payload.num_bytes();
                 let format = payload.format();
@@ -2177,7 +2176,7 @@ mod test {
                     .with_peer_addr("127.0.0.1:1234".parse().unwrap());
                 let context = pdata.context.clone();
                 let error = handler
-                    .try_update_otap(pdata, |records| {
+                    .update_otap(pdata, |records| {
                         drop(records.remove(ArrowPayloadType::Logs));
                         Err::<(), _>(std::io::Error::other("update failed"))
                     })
@@ -2217,7 +2216,7 @@ mod test {
     async fn update_decode_failure_recovers_exact_input() {
         use bytes::Bytes;
         use otel_arrow_dfe_pdata::OtlpProtoBytes;
-        let handler = completion_handler();
+        let handler = delivery_handler();
         let codec = handler
             .codec_service()
             .registry()
@@ -2240,7 +2239,7 @@ mod test {
                 let context = pdata.context.clone();
                 let format = pdata.payload_ref().format();
                 let error = handler
-                    .try_update_otap(pdata, |_| -> Result<(), std::io::Error> {
+                    .update_otap(pdata, |_| -> Result<(), std::io::Error> {
                         panic!("decode failure must not run the update")
                     })
                     .await
@@ -2264,7 +2263,7 @@ mod test {
             }
             let valid = OtapPdata::new_default(codec.admit(signal, Bytes::new()).unwrap().into());
             let _ = handler
-                .try_update_otap(valid, |_| Ok::<_, std::io::Error>(()))
+                .update_otap(valid, |_| Ok::<_, std::io::Error>(()))
                 .await
                 .unwrap();
         }

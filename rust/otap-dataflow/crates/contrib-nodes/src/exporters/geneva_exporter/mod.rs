@@ -1427,7 +1427,7 @@ impl GenevaExporter {
 
         if payload.encoding() != Some(&PdataEncoding::OTLP) {
             let otap_records = effect_handler
-                .try_payload_into_otap(payload)
+                .materialize_otap_payload(payload)
                 .await
                 .map_err(|error| {
                     self.metrics
@@ -1719,7 +1719,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                 Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
                     let unsubmitted_attempt = self.metrics.boundary.attempt(signal_type);
-                    let (completion, payload) = pdata.into_work();
+                    let (delivery, payload) = pdata.into_work();
 
                     match self
                         .export_payload(payload, &effect_handler, &encoding_plan)
@@ -1735,7 +1735,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     .await;
                             }
                             effect_handler
-                                .notify_ack(AckMsg::new(completion.into_pdata()))
+                                .notify_ack(AckMsg::new(delivery.into_pdata()))
                                 .await?;
                         }
                         Err(error) => {
@@ -1750,7 +1750,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                 permanent = error.is_permanent(),
                                 message = "Failed to export to Geneva"
                             );
-                            let refused = completion.into_pdata();
+                            let refused = delivery.into_pdata();
                             effect_handler.notify_nack(error.into_nack(refused)).await?;
                         }
                     }

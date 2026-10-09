@@ -13,13 +13,13 @@ use std::num::NonZeroUsize;
 
 use crate::{
     accessory::slots::{Key, State},
-    pdata::PdataCompletion,
+    pdata::PdataDelivery,
 };
 
 /// Context for inbound batch
 pub struct Inbound {
     /// Original delivery ownership and input retained for completion.
-    pub completion: PdataCompletion,
+    pub delivery: PdataDelivery,
 
     /// error that may have been produced via processing for some outbound batch
     pub error: Option<OutboundError>,
@@ -78,20 +78,20 @@ impl Contexts {
     ///
     /// # Parameters
     ///
-    /// - `completion`: Delivery context and conditionally retained input.
+    /// - `delivery`: Delivery context and conditionally retained input.
     /// - `error`: A failure that occurred while processing the inbound batch.
     pub fn insert_inbound(
         &mut self,
-        completion: PdataCompletion,
+        delivery: PdataDelivery,
         error: Option<OutboundError>,
     ) -> Option<Key> {
-        if !completion.context().needs_completion_tracking() {
+        if !delivery.context().needs_completion_tracking() {
             // No completion routing or metrics unwinding depends on this context.
             return Some(Key::null());
         }
 
         let inbound = Inbound {
-            completion,
+            delivery,
             num_outbound: 0,
             error,
 
@@ -153,7 +153,7 @@ impl Contexts {
         self.inbound.cancel(inbound_key);
     }
 
-    /// Clears an outbound slot and returns completion ownership for the last output.
+    /// Clears an outbound slot and returns delivery ownership for the last output.
     ///
     /// Returns `Some(Inbound)` exactly once, when all outbound batches for this
     /// inbound slot have been processed and the inbound batch can be completed.
@@ -197,12 +197,12 @@ mod test {
     use otel_arrow_dfe_config::SignalType;
     use std::num::NonZeroUsize;
 
-    fn test_completion(context: Context, payload: Option<OtapPayload>) -> PdataCompletion {
+    fn test_delivery(context: Context, payload: Option<OtapPayload>) -> PdataDelivery {
         OtapPdata::new(
             context,
             payload.unwrap_or_else(|| OtapPayload::empty(SignalType::Logs)),
         )
-        .into_completion()
+        .into_delivery()
     }
 
     fn new_contexts() -> Contexts {
@@ -229,13 +229,13 @@ mod test {
     }
 
     /// Scenario: an inbound batch has Ack subscribers.
-    /// Guarantees: completion ownership is retained until its only output completes.
+    /// Guarantees: delivery ownership is retained until its only output completes.
     #[test]
     fn test_with_subscribers() {
         let mut contexts = new_contexts();
         let original_context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(original_context.clone(), None), None)
+            .insert_inbound(test_delivery(original_context.clone(), None), None)
             .unwrap();
         assert!(
             !inbound_key.is_null(),
@@ -249,10 +249,10 @@ mod test {
         );
 
         let inbound = contexts.clear_outbound(outbound_key).unwrap();
-        assert_eq!(inbound.completion.context(), &original_context);
+        assert_eq!(inbound.delivery.context(), &original_context);
         assert!(inbound.error.is_none());
         assert!(inbound.outbound_all_transient_errors);
-        assert!(inbound.completion.into_pdata().is_empty());
+        assert!(inbound.delivery.into_pdata().is_empty());
     }
 
     /// Scenario: an inbound batch has no completion interests.
@@ -262,7 +262,7 @@ mod test {
         let mut contexts = new_contexts();
         let original_context = create_context_without_subscribers();
         let key = contexts
-            .insert_inbound(test_completion(original_context.clone(), None), None)
+            .insert_inbound(test_delivery(original_context.clone(), None), None)
             .unwrap();
         assert!(
             key.is_null(),
@@ -286,7 +286,7 @@ mod test {
         // Insert an inbound
         let original_context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(original_context.clone(), None), None)
+            .insert_inbound(test_delivery(original_context.clone(), None), None)
             .unwrap();
 
         // Insert multiple outbounds
@@ -303,10 +303,10 @@ mod test {
         assert!(contexts.clear_outbound(outbound_key1).is_none());
 
         let inbound = contexts.clear_outbound(outbound_key3).unwrap();
-        assert_eq!(inbound.completion.context(), &original_context);
+        assert_eq!(inbound.delivery.context(), &original_context);
         assert!(inbound.error.is_none());
         assert!(inbound.outbound_all_transient_errors);
-        assert!(inbound.completion.into_pdata().is_empty());
+        assert!(inbound.delivery.into_pdata().is_empty());
     }
 
     /// Scenario: completion references an invalid outbound slot.
@@ -320,7 +320,7 @@ mod test {
             let mut temp_contexts = new_contexts();
             let ctx = create_context_with_subscribers();
             let inbound_key = temp_contexts
-                .insert_inbound(test_completion(ctx, None), None)
+                .insert_inbound(test_delivery(ctx, None), None)
                 .unwrap();
             temp_contexts.insert_outbound(inbound_key).unwrap()
         };
@@ -340,7 +340,7 @@ mod test {
         let error_msg = "pipeline processing failed".to_string();
         let inbound_key = contexts
             .insert_inbound(
-                test_completion(context, None),
+                test_delivery(context, None),
                 Some(OutboundError {
                     reason: error_msg.clone(),
                     cause: NackCause::Refused,
@@ -366,7 +366,7 @@ mod test {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -386,7 +386,7 @@ mod test {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -416,7 +416,7 @@ mod test {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
 
         let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();
@@ -469,13 +469,13 @@ mod test {
         let (original_context, _) = pdata.into_parts();
 
         let inbound_key = contexts
-            .insert_inbound(test_completion(original_context.clone(), None), None)
+            .insert_inbound(test_delivery(original_context.clone(), None), None)
             .unwrap();
         assert!(!inbound_key.is_null());
 
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
         let inbound = contexts.clear_outbound(outbound_key).unwrap();
-        assert_eq!(inbound.completion.context(), &original_context);
+        assert_eq!(inbound.delivery.context(), &original_context);
         assert!(inbound.error.is_none());
     }
 
@@ -490,7 +490,7 @@ mod test {
             let mut temp_contexts = new_contexts();
             let ctx = create_context_with_subscribers();
             let inbound_key = temp_contexts
-                .insert_inbound(test_completion(ctx, None), None)
+                .insert_inbound(test_delivery(ctx, None), None)
                 .unwrap();
             temp_contexts.insert_outbound(inbound_key).unwrap()
         };
@@ -514,7 +514,7 @@ mod test {
         // Create a context without subscribers (results in null key)
         let context = create_context_without_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -541,7 +541,7 @@ mod test {
         let inbound_error = "initial inbound error".to_string();
         let inbound_key = contexts
             .insert_inbound(
-                test_completion(context, None),
+                test_delivery(context, None),
                 Some(OutboundError {
                     reason: inbound_error.clone(),
                     cause: NackCause::RouteClosed,
@@ -584,7 +584,7 @@ mod test {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
 
         // Create two outbounds
@@ -623,7 +623,7 @@ mod test {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -648,7 +648,7 @@ mod test {
             let mut temp_contexts = new_contexts();
             let ctx = create_context_with_subscribers();
             let inbound_key = temp_contexts
-                .insert_inbound(test_completion(ctx, None), None)
+                .insert_inbound(test_delivery(ctx, None), None)
                 .unwrap();
             temp_contexts.insert_outbound(inbound_key).unwrap()
         };
@@ -675,14 +675,14 @@ mod test {
         let (context, payload) = pdata.into_parts();
 
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, Some(payload.clone())), None)
+            .insert_inbound(test_delivery(context, Some(payload.clone())), None)
             .unwrap();
         assert!(!inbound_key.is_null());
 
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
         let inbound = contexts.clear_outbound(outbound_key).unwrap();
 
-        let returned = inbound.completion.into_pdata();
+        let returned = inbound.delivery.into_pdata();
         assert_eq!(
             returned.signal_type(),
             payload.signal_type(),
@@ -699,7 +699,7 @@ mod test {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(test_completion(context, None), None)
+            .insert_inbound(test_delivery(context, None), None)
             .unwrap();
 
         let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();

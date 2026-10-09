@@ -168,7 +168,7 @@ impl local::Processor<OtapPdata> for WasmProcessor {
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
                 let processor_id = effect_handler.processor_id();
-                let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
                     Ok(arrow_pdata) => arrow_pdata,
                     Err(error) => {
                         let (error, pdata) = error.into_parts();

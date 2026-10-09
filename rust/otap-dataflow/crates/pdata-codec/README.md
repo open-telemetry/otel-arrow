@@ -11,6 +11,31 @@ time, and keep mutable decoder or encoder state inside one pipeline runtime. A
 payload carries only its encoding identity, signal, bytes, and cached metadata;
 it never owns a codec instance.
 
+## Architecture overview
+
+![PData passthrough, read-only views, and on-demand conversion][codec-diagram]
+
+[codec-diagram]: assets/pdata-codec-framework.png
+
+The three paths are alternatives selected by the consumer, not sequential
+pipeline stages:
+
+- **Passthrough (blue):** a matching output encoding forwards the shared bytes
+  without decoding, re-encoding, or creating a codec instance.
+- **Read-only view (teal):** `AcceptedEncodings` selects direct byte borrowing.
+  Existing OTAP records are borrowed; other encodings decode to temporary OTAP
+  records without changing the original payload.
+- **On-demand conversion (orange):** decode to native OTAP when processing
+  requires records, then encode if the output requires an encoded format.
+  Already-native input skips decoding.
+
+The lower band shows codec registrations, registry validation, and the pipeline
+service that lazily creates and reuses decoder and encoder instances. Nodes
+access that service through effect handlers.
+
+The syslog encoding shown belongs to the follow-up syslog codec integration.
+Native OTAP is the common processing representation, not a registered byte codec.
+
 ## Design model
 
 - `PdataEncoding` is the stable identity used by configuration and diagnostics.
@@ -81,6 +106,41 @@ let accepted_encodings =
     effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
 let view = effect_handler.view(payload, &accepted_encodings).await?;
 ```
+
+### Owned native access and delivery ownership
+
+Nodes use `PdataEffectHandlerExtension` from the OTAP crate to obtain owned
+native records through pipeline-managed codecs. Choose the operation according
+to who owns delivery context and whether processing needs original-input recovery:
+
+| Operation | Use when | Successful result |
+| --- | --- | --- |
+| `materialize_otap(pdata)` | Context and records should remain together | `OtapArrowPdata` |
+| `materialize_otap_payload(payload)` | The caller already manages context separately | `OtapArrowRecords` |
+| `prepare_otap_work(pdata)` | Working records and delivery ownership must be independent | `(PdataDelivery, OtapArrowRecords)` |
+| `update_otap(pdata, update)` | A synchronous, fallible update needs recovery bookkeeping | `(OtapArrowPdata, R)` |
+
+Materialization consumes its input and decodes only when necessary. Already-native
+records move directly without creating a codec. Decode failures return the exact
+original input for the caller to Nack or retry. Successful ordinary
+materialization retains no original snapshot for subsequent processing failures.
+
+`prepare_otap_work` retains a shallow snapshot before conversion only when
+`RETURN_DATA` requires recovery after processing. `update_otap` uses that same
+retention policy around its synchronous callback. Async algorithms instead keep
+the delivery owner from `prepare_otap_work` across their awaits; no codec borrow
+survives into the algorithm.
+
+`PdataDelivery` is an inline, non-`Clone`, `#[must_use]` owner of delivery context
+and conditionally retained input. `with_payload` attaches an output to the
+context; `into_pdata` constructs a message for Ack/Nack with retained input, or
+an empty payload of the original signal when none was retained. Neither method
+sends anything, and dropping the owner does not acknowledge automatically.
+
+`OtapPdata::into_work()` separates delivery ownership from a working payload
+without materializing it. `OtapPdata::into_delivery()` transfers an already-used
+input into delivery ownership without cloning, retaining or discarding its
+payload according to `RETURN_DATA`.
 
 ## Implement a codec
 

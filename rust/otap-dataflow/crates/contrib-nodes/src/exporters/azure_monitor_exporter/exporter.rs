@@ -32,7 +32,7 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataCompletion, PdataEffectHandlerExtension};
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 
 use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
 
@@ -215,9 +215,9 @@ impl AzureMonitorExporter {
             duration_ms = duration.as_millis() as u64
         );
 
-        for (_, completion) in completed_messages {
+        for (_, delivery) in completed_messages {
             effect_handler
-                .notify_ack(AckMsg::new(completion.into_pdata()))
+                .notify_ack(AckMsg::new(delivery.into_pdata()))
                 .await?;
         }
         Ok(())
@@ -250,9 +250,9 @@ impl AzureMonitorExporter {
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
-        for (_, completion) in failed_messages {
+        for (_, delivery) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(error.to_string(), completion.into_pdata()))
+                .notify_nack(NackMsg::new(error.to_string(), delivery.into_pdata()))
                 .await?;
         }
         Ok(())
@@ -320,12 +320,12 @@ impl AzureMonitorExporter {
     async fn handle_logs(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        completion: PdataCompletion,
+        delivery: PdataDelivery,
         log_entries: Vec<Bytes>,
         msg_id: u64,
         auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
-        self.state.add_msg_to_data(msg_id, completion);
+        self.state.add_msg_to_data(msg_id, delivery);
 
         for log_entry in log_entries {
             let entry_len = log_entry.len();
@@ -347,9 +347,9 @@ impl AzureMonitorExporter {
                         msg_id = msg_id,
                         size_bytes = entry_len
                     );
-                    if let Some(completion) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some(delivery) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
-                            .notify_nack(NackMsg::new(error.to_string(), completion.into_pdata()))
+                            .notify_nack(NackMsg::new(error.to_string(), delivery.into_pdata()))
                             .await?;
                     }
                     return Err(EngineError::InternalError {
@@ -358,9 +358,9 @@ impl AzureMonitorExporter {
                 }
                 Err(error) => {
                     otel_error!("azure_monitor_exporter.message.batch_push_failed", msg_id = msg_id, error = %error);
-                    if let Some(completion) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some(delivery) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
-                            .notify_nack(NackMsg::new(error.to_string(), completion.into_pdata()))
+                            .notify_nack(NackMsg::new(error.to_string(), delivery.into_pdata()))
                             .await?;
                     }
                     return Err(EngineError::InternalError {
@@ -370,7 +370,7 @@ impl AzureMonitorExporter {
             }
         }
 
-        if let Some(completion) = self.state.delete_msg_data_if_orphaned(msg_id) {
+        if let Some(delivery) = self.state.delete_msg_data_if_orphaned(msg_id) {
             otel_debug!(
                 "azure_monitor_exporter.message.no_valid_entries",
                 msg_id = msg_id
@@ -378,7 +378,7 @@ impl AzureMonitorExporter {
             effect_handler
                 .notify_nack(NackMsg::new_permanent(
                     "No valid log entries produced",
-                    completion.into_pdata(),
+                    delivery.into_pdata(),
                 ))
                 .await?;
         }
@@ -425,7 +425,7 @@ impl AzureMonitorExporter {
         }
         self.drain_in_flight_exports(effect_handler, auth).await?;
 
-        for (msg_id, completion) in self.state.drain_all() {
+        for (msg_id, delivery) in self.state.drain_all() {
             otel_warn!(
                 "azure_monitor_exporter.shutdown.orphaned_message",
                 msg_id = msg_id
@@ -433,7 +433,7 @@ impl AzureMonitorExporter {
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",
-                    completion.into_pdata(),
+                    delivery.into_pdata(),
                 ))
                 .await?;
         }
@@ -514,7 +514,7 @@ impl AzureMonitorExporter {
                 if let Some(log_entries) = log_entries {
                     self.handle_logs(
                         effect_handler,
-                        OtapPdata::new(context, payload).into_completion(),
+                        OtapPdata::new(context, payload).into_delivery(),
                         log_entries,
                         *msg_id,
                         auth,
@@ -871,7 +871,7 @@ mod tests {
 
         exporter.state.add_msg_to_data(
             msg_id,
-            OtapPdata::new(context.clone(), payload).into_completion(),
+            OtapPdata::new(context.clone(), payload).into_delivery(),
         );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
@@ -918,7 +918,7 @@ mod tests {
 
         exporter.state.add_msg_to_data(
             msg_id,
-            OtapPdata::new(context.clone(), payload).into_completion(),
+            OtapPdata::new(context.clone(), payload).into_delivery(),
         );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
@@ -972,7 +972,7 @@ mod tests {
 
         exporter.state.add_msg_to_data(
             msg_id,
-            OtapPdata::new(context.clone(), payload).into_completion(),
+            OtapPdata::new(context.clone(), payload).into_delivery(),
         );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
@@ -1331,7 +1331,7 @@ mod tests {
         exporter
             .handle_logs(
                 &effect_handler,
-                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_completion(),
+                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_delivery(),
                 vec![Bytes::from_static(br#"{"Message":"hello"}"#)],
                 1,
                 &mut auth,
@@ -1384,7 +1384,7 @@ mod tests {
         exporter
             .handle_logs(
                 &effect_handler,
-                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_completion(),
+                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_delivery(),
                 entries,
                 1,
                 &mut auth,
@@ -1426,7 +1426,7 @@ mod tests {
         exporter.state.add_msg_to_data(
             7,
             OtapPdata::new(Context::default(), OtapPayload::empty(SignalType::Logs))
-                .into_completion(),
+                .into_delivery(),
         );
 
         exporter

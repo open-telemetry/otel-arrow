@@ -65,7 +65,7 @@ use otel_arrow_dfe_otap::{
         context::split_contexts::{Contexts, OutboundError},
         slots::Key,
     },
-    pdata::{OtapPdata, PdataCompletion, PdataEffectHandlerExtension},
+    pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension},
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -282,7 +282,7 @@ impl TransformProcessor {
     /// while managing subscriptions and context
     async fn handle_exec_result(
         &mut self,
-        completion: PdataCompletion,
+        delivery: PdataDelivery,
         signal: SignalType,
         pipeline_result: Result<OtapArrowRecords, TransformOperationError>,
         counters: ExecutionCounters,
@@ -333,7 +333,7 @@ impl TransformProcessor {
         // With no named outputs, preserve the direct-context fast path. A fully
         // empty transform result instead completes the original request locally.
         if router_impl.routed.is_empty() {
-            let mut pdata = completion.with_payload(default_otap_batch.into());
+            let mut pdata = delivery.with_payload(default_otap_batch.into());
             if default_has_data {
                 effect_handler
                     .send_message_with_source_node(pdata)
@@ -387,13 +387,13 @@ impl TransformProcessor {
 
         // Must be built before the context is moved into the slot map below. Holds no
         // frames, so cloning it per outbound batch is cheap.
-        let outbound_context = completion.context().clone_detached();
+        let outbound_context = delivery.context().clone_detached();
 
         // keep error reason if there was an error, so we can send it to upstream in Nack once
         // all routed outbound batches have been Ack/Nack'd
         let inbound_ctx_key = self
             .contexts
-            .insert_inbound(completion, None)
+            .insert_inbound(delivery, None)
             .ok_or_else(|| {
                 TransformOperationError::new(
                     TransformErrorType::InboundCapacity,
@@ -518,7 +518,7 @@ impl TransformProcessor {
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if here, we have cleared the final outbound context for some inbound batch,
             // which means we can now Ack or Nack the inbound context
-            let pdata = inbound.completion.into_pdata();
+            let pdata = inbound.delivery.into_pdata();
             if let Some(error) = inbound.error {
                 let nack_msg = if inbound.outbound_all_transient_errors {
                     // this constructor creates a non-permanent Nack
@@ -633,19 +633,18 @@ impl Processor<OtapPdata> for TransformProcessor {
                     effect_handler.send_message_with_source_node(pdata).await?;
                     return Ok(());
                 };
-                let (completion, records) =
-                    match effect_handler.try_into_otap_with_completion(pdata).await {
-                        Ok(prepared) => prepared,
-                        Err(error) => {
-                            self.metrics
-                                .record_failure(signal, TransformErrorType::PayloadConversion);
-                            let (error, pdata) = error.into_parts();
-                            effect_handler
-                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                                .await?;
-                            return Ok(());
-                        }
-                    };
+                let (delivery, records) = match effect_handler.prepare_otap_work(pdata).await {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        self.metrics
+                            .record_failure(signal, TransformErrorType::PayloadConversion);
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
 
                 let result = async {
                     let mut records = records;
@@ -680,7 +679,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                 .await;
                 let counters = self.execution_state.counters();
                 match self
-                    .handle_exec_result(completion, signal, result, counters, effect_handler)
+                    .handle_exec_result(delivery, signal, result, counters, effect_handler)
                     .await
                 {
                     Ok(()) => self.metrics.record_success(signal),

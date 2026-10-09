@@ -1,40 +1,42 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Explicit ownership of completion context and conditionally retained input.
+//! Delivery ownership and conditionally retained input during independent work.
 //!
-//! Working payloads may be consumed or modified independently of their completion.
-//! Keeping completion state does not schedule an Ack/Nack: nodes retain control of
-//! error classification, routing, and timing, including across asynchronous sends.
+//! Working payloads may be consumed or modified independently of their delivery
+//! context. This owner constructs messages for forwarding or Ack/Nack, but does
+//! not send them. Nodes retain control of error classification, routing, and
+//! timing, including across asynchronous sends.
 
 use super::{Context, OtapPdata, OtapPdataDecodeError};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata_codec::{CodecError, OtapPayload};
 use std::fmt;
 
-/// Delivery context and the input retained for a later Ack/Nack.
+/// Owns delivery context and optionally retained input while work proceeds separately.
 ///
-/// This inline owner is deliberately not Clone. Consume it to forward an output
-/// or report completion once. Dropping it performs no I/O or automatic completion.
-/// Without RETURN_DATA, only an empty payload of the original signal is retained.
-#[must_use = "completion must be forwarded, reported, or explicitly discarded"]
-pub struct PdataCompletion {
+/// This inline owner is deliberately not Clone. Consume it to attach an output
+/// or recover a message for Ack/Nack. Its methods construct messages; they do not
+/// send them. Dropping it performs no I/O or automatic acknowledgement. Without
+/// RETURN_DATA, only an empty payload of the original signal is retained.
+#[must_use = "delivery ownership must be forwarded, reported, or explicitly discarded"]
+pub struct PdataDelivery {
     pdata: OtapPdata,
 }
 
-impl fmt::Debug for PdataCompletion {
+impl fmt::Debug for PdataDelivery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PdataCompletion").finish_non_exhaustive()
+        f.debug_struct("PdataDelivery").finish_non_exhaustive()
     }
 }
 
 impl OtapPdata {
-    /// Separates a working payload from its completion owner.
+    /// Separates a working payload from its delivery owner.
     ///
     /// The working payload moves without cloning. When RETURN_DATA is requested,
     /// a shallow snapshot retains encoded Bytes or shared Arrow buffers; Arrow
     /// container metadata may still allocate. The delivery context never clones.
-    pub fn into_work(self) -> (PdataCompletion, OtapPayload) {
+    pub fn into_work(self) -> (PdataDelivery, OtapPayload) {
         let saved = if self.context.may_return_payload() {
             self.payload.clone()
         } else {
@@ -42,26 +44,26 @@ impl OtapPdata {
         };
         let Self { context, payload } = self;
         (
-            PdataCompletion {
+            PdataDelivery {
                 pdata: Self::new(context, saved),
             },
             payload,
         )
     }
 
-    /// Retains this input for completion after preparation has succeeded.
+    /// Transfers delivery ownership after preparation has succeeded.
     ///
     /// Moves the payload when RETURN_DATA is requested and discards it otherwise.
     /// Unlike into_work, this never needs a snapshot or payload clone.
-    pub fn into_completion(mut self) -> PdataCompletion {
+    pub fn into_delivery(mut self) -> PdataDelivery {
         if !self.context.may_return_payload() {
             self.payload = OtapPayload::empty(self.signal_type());
         }
-        PdataCompletion { pdata: self }
+        PdataDelivery { pdata: self }
     }
 }
 
-impl PdataCompletion {
+impl PdataDelivery {
     /// Borrows the original delivery context without duplicating ownership.
     #[must_use]
     pub const fn context(&self) -> &Context {
@@ -79,7 +81,8 @@ impl PdataCompletion {
         self.pdata.signal_type()
     }
 
-    /// Consumes the owner to report completion with the retained input, if any.
+    /// Constructs a message for Ack/Nack with the retained input, if any.
+    /// This does not send or acknowledge the resulting message.
     #[must_use]
     pub fn into_pdata(self) -> OtapPdata {
         self.pdata

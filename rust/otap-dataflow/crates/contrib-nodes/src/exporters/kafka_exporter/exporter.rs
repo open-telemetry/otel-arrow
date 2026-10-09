@@ -701,7 +701,7 @@ impl KafkaExporter {
                     .map_err(|error| KafkaExporterError::OtlpConversion(error.to_string()))
             }
             MessageFormat::OtapProto => effect_handler
-                .try_payload_into_otap(payload.clone())
+                .materialize_otap_payload(payload.clone())
                 .await
                 .map_err(|error| KafkaExporterError::OtapArrowRecordsConversion(error.to_string()))
                 .and_then(|records| {

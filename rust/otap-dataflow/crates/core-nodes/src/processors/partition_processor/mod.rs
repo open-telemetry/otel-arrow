@@ -169,7 +169,7 @@ impl PartitionProcessor {
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let pdata = inbound.completion.into_pdata();
+            let pdata = inbound.delivery.into_pdata();
             if let Some(error) = inbound.error {
                 let nack_msg = if inbound.outbound_all_transient_errors {
                     NackMsg::new_with_cause(error.reason, pdata, error.cause)
@@ -246,8 +246,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (mut completion, mut otap_batch) =
-                    match effect_handler.try_into_otap_with_completion(pdata).await {
+                let (mut delivery, mut otap_batch) =
+                    match effect_handler.prepare_otap_work(pdata).await {
                         Ok(prepared) => prepared,
                         Err(error) => {
                             let (error, pdata) = error.into_parts();
@@ -257,7 +257,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             return Ok(());
                         }
                     };
-                let signal_type = completion.signal_type();
+                let signal_type = delivery.signal_type();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
 
@@ -290,7 +290,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 match partitions.len() {
                     0 => {
                         // no partitions, just Ack the inbound
-                        let mut pdata = completion.with_payload(OtapPayload::empty(signal_type));
+                        let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
 
                         pdata.complete_processor_without_output(effect_handler);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -304,7 +304,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let partition = partitions.next().expect("at least one partition");
 
                         // update the header values
-                        let mut headers = completion
+                        let mut headers = delivery
                             .context_mut()
                             .take_transport_headers()
                             .unwrap_or_default();
@@ -313,19 +313,19 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             &self.serialization_strategy,
                             partition.value,
                         ));
-                        completion.context_mut().set_transport_headers(headers);
+                        delivery.context_mut().set_transport_headers(headers);
 
-                        let pdata = completion.with_payload(partition.batch.into());
+                        let pdata = delivery.with_payload(partition.batch.into());
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
-                        let outbound_context = completion.context().clone_detached();
+                        let outbound_context = delivery.context().clone_detached();
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(completion, None)
+                            .insert_inbound(delivery, None)
                             .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,

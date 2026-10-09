@@ -40,9 +40,7 @@ use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
 use otel_arrow_dfe_otap::otlp_exporter::{InFlightExports, default_max_in_flight};
-use otel_arrow_dfe_otap::pdata::{
-    Context, OtapPdata, PdataCompletion, PdataEffectHandlerExtension,
-};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 #[cfg(test)]
@@ -538,10 +536,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             continue;
                         }
                     };
-                    let completion = OtapPdata::new(context, payload).into_completion();
+                    let delivery = OtapPdata::new(context, payload).into_delivery();
                     let prepared = EncodedExport {
                         bytes,
-                        completion,
+                        delivery,
                         signal_type,
                         attempt,
                         metadata,
@@ -572,14 +570,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
 /// unsuccessful request.
 async fn route_export_result<T>(
     result: &Result<T, GrpcAttemptError>,
-    completion: PdataCompletion,
+    delivery: PdataDelivery,
     effect_handler: &EffectHandler<OtapPdata>,
     auth_failure: bool,
 ) -> Result<(), Error> {
     match result {
         Ok(_) => {
             effect_handler
-                .notify_ack(AckMsg::new(completion.into_pdata()))
+                .notify_ack(AckMsg::new(delivery.into_pdata()))
                 .await?;
         }
         Err((_, status)) => {
@@ -595,7 +593,7 @@ async fn route_export_result<T>(
                 reason.push_str(&format!(" (retry after {})", format_retry_delay(&delay)));
             }
 
-            let mut nack = NackMsg::new(&reason, completion.into_pdata());
+            let mut nack = NackMsg::new(&reason, delivery.into_pdata());
             nack.permanent = !retryable;
             effect_handler.notify_nack(nack).await?;
         }
@@ -711,7 +709,7 @@ fn format_retry_delay(delay: &prost_types::Duration) -> String {
 
 struct EncodedExport {
     bytes: Bytes,
-    completion: PdataCompletion,
+    delivery: PdataDelivery,
     signal_type: SignalType,
     attempt: ExporterAttempt,
     /// Per-request metadata plus the auth generation it carries.
@@ -795,7 +793,7 @@ async fn finalize_completed_export(
 ) -> (SignalClient, Option<u64>) {
     let CompletedExport {
         attempt,
-        completion,
+        delivery,
         signal_type,
         auth_generation,
     } = completed;
@@ -820,7 +818,7 @@ async fn finalize_completed_export(
     }
 
     if let Err(e) =
-        route_export_result(&export_result, completion, effect_handler, auth_failure).await
+        route_export_result(&export_result, delivery, effect_handler, auth_failure).await
     {
         otel_warn!(
             "otlp.exporter.grpc.export_error",
@@ -965,7 +963,7 @@ fn make_export_future(
 ) -> impl Future<Output = CompletedExport> {
     let EncodedExport {
         bytes,
-        completion,
+        delivery,
         signal_type,
         attempt,
         metadata: RequestMetadata {
@@ -1017,7 +1015,7 @@ fn make_export_future(
             .await;
         CompletedExport {
             attempt: completed,
-            completion,
+            delivery,
             signal_type,
             auth_generation,
         }
@@ -1142,7 +1140,7 @@ enum SignalClient {
 /// Captures everything we need once a single export RPC has completed.
 struct CompletedExport {
     attempt: CompletedExporterAttempt<SignalClient, (GrpcAttemptError, SignalClient)>,
-    completion: PdataCompletion,
+    delivery: PdataDelivery,
     signal_type: SignalType,
     /// Generation of the auth this request carried, echoed back so an
     /// `UNAUTHENTICATED` response invalidates exactly that auth and a stale
@@ -2831,10 +2829,10 @@ mod tests {
         ));
         let completed = CompletedExport {
             attempt,
-            completion: OtapPdata::new_default(
+            delivery: OtapPdata::new_default(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             )
-            .into_completion(),
+            .into_delivery(),
             signal_type: SignalType::Logs,
             auth_generation: Some(auth_generation),
         };

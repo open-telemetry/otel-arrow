@@ -652,7 +652,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                 let signal = pdata.signal_type();
                 let mut input_items = 0;
                 let result = effect_handler
-                    .try_update_otap(pdata, |records| {
+                    .update_otap(pdata, |records| {
                         input_items = records.num_items() as u64;
                         otel_debug!("condense_attributes_processor.processing", input_items);
                         effect_handler.timed(&self.compute_duration, || match signal {

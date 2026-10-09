@@ -425,7 +425,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     return res;
                 }
 
-                let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
                     Ok(arrow_pdata) => arrow_pdata,
                     Err(error) => {
                         let (error, pdata) = error.into_parts();

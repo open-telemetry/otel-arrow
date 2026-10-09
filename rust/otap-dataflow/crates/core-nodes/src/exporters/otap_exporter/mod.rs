@@ -417,7 +417,7 @@ impl OTAPExporter {
         sender: &Sender<StreamBatch>,
         signal: SignalType,
         pdata: OtapPdata,
-        message: OtapArrowRecords,
+        records: OtapArrowRecords,
         export_started_at: Instant,
     ) -> Result<EnqueueResult, Error> {
         let queue_depth = sender.max_capacity() - sender.capacity();
@@ -425,7 +425,7 @@ impl OTAPExporter {
 
         match sender.try_send(StreamBatch {
             pdata,
-            records: message,
+            records,
             export_started_at,
         }) {
             Ok(()) => {
@@ -733,8 +733,8 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let export_started_at = Instant::now();
                         let signal_type = pdata.signal_type();
 
-                        let (completion, message) = match effect_handler
-                            .try_into_otap_with_completion(pdata)
+                        let (delivery, records) = match effect_handler
+                            .prepare_otap_work(pdata)
                             .await
                         {
                             Ok(prepared) => prepared,
@@ -751,7 +751,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 continue;
                             }
                         };
-                        let pdata = completion.into_pdata();
+                        let pdata = delivery.into_pdata();
 
                         // Route each batch to the stream with the smallest
                         // local backlog. This is intentionally based on queue
@@ -771,7 +771,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 sender,
                                 signal_type,
                                 pdata,
-                                message,
+                                records,
                                 export_started_at,
                             )
                             .await?

@@ -329,7 +329,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
-                    let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                    let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
                         Ok(arrow_pdata) => arrow_pdata,
                         Err(error) => {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
