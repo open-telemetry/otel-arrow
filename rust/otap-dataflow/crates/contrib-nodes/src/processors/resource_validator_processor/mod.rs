@@ -479,6 +479,9 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                     self.inspection_plan =
                         Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
                 }
+                // SAFETY: If absent, the plan is set to Some above; resolution errors
+                // return via `?`. There is no intervening mutation or await.
+                // A future PR will resolve plans at construction and remove this expect.
                 let inspection_plan = self
                     .inspection_plan
                     .as_ref()
