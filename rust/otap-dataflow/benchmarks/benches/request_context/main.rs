@@ -81,7 +81,10 @@ impl ConsumerCase {
             },
             vec![],
         );
-        Some(HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles"))
+        Some(
+            HeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+                .expect("propagation policy compiles"),
+        )
     }
 
     const fn preserves_original_names(self) -> bool {
@@ -113,8 +116,8 @@ fn bench_receive_http(c: &mut Criterion) {
         for producer in PRODUCER_CASES {
             for consumer in RECEIVE_CONSUMER_CASES {
                 let preserve_original_names = consumer.preserves_original_names();
-                let capture =
-                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+                let capture = capture_policy(header_count, producer)
+                    .compile_capture_policy(|_| preserve_original_names);
                 let headers = inbound_http_headers(header_count);
                 let _ = group.bench_with_input(
                     BenchmarkId::new(
@@ -300,8 +303,8 @@ fn bench_receive(c: &mut Criterion) {
         for producer in PRODUCER_CASES {
             for consumer in RECEIVE_CONSUMER_CASES {
                 let preserve_original_names = consumer.preserves_original_names();
-                let capture =
-                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+                let capture = capture_policy(header_count, producer)
+                    .compile_capture_policy(|_| preserve_original_names);
                 let metadata = inbound_metadata(header_count);
                 let _ = group.bench_with_input(
                     BenchmarkId::new(case_name(producer, consumer), header_count),
@@ -325,8 +328,8 @@ fn bench_end_to_end(c: &mut Criterion) {
             for consumer in CONSUMER_CASES {
                 let propagation = consumer.propagation_policy();
                 let preserve_original_names = consumer.preserves_original_names();
-                let capture =
-                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+                let capture = capture_policy(header_count, producer)
+                    .compile_capture_policy(|_| preserve_original_names);
                 let metadata = inbound_metadata(header_count);
                 let _ = group.bench_with_input(
                     BenchmarkId::new(case_name(producer, consumer), header_count),
@@ -507,7 +510,8 @@ fn previous_headers(header_count: usize) -> ArcVecHeaders {
 }
 
 fn comparison_headers(header_count: usize) -> (TransportHeaders, ArcVecHeaders, String) {
-    let capture = capture_policy(header_count, ProducerCase::Renamed).compile(|_| true);
+    let capture =
+        capture_policy(header_count, ProducerCase::Renamed).compile_capture_policy(|_| true);
     let metadata = inbound_metadata(header_count);
     (
         receive_metadata(&capture, &metadata),

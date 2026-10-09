@@ -3023,7 +3023,8 @@ mod test {
             "default": {"selector": {"type": "named", "named": ["tenant:workspace"]}}
         }))
         .expect("propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile(policy, &entries).expect("compiled");
+        let policy = CompiledHeaderPropagationPolicy::compile_propagation_policy(policy, &entries)
+            .expect("compiled");
         let mut headers = TransportHeaders::new();
         for name in ["workspace", "customer"] {
             headers.push(TransportHeader::text(

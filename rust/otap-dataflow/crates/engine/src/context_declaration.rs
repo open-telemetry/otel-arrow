@@ -518,7 +518,7 @@ impl PreparedNodeContextDeclarations {
                 | ContextDeclaration::HeaderPropagation { .. } => {}
             }
         }
-        let primitive_layout = ContextLayout::compile(primitive_fields, &[])?;
+        let primitive_layout = ContextLayout::compile_layout(primitive_fields, &[])?;
         ContextLayout::merge(
             [&component_layout, &primitive_layout].into_iter().chain(
                 self.declarations
@@ -561,7 +561,7 @@ pub struct PreparedContext {
 
 impl ContextRuntimeRequirements {
     /// Combines runtime requirements from every node in every pipeline.
-    fn compile(declarations: &ContextDeclarationsByPipeline) -> Self {
+    fn compile_runtime_requirements(declarations: &ContextDeclarationsByPipeline) -> Self {
         declarations
             .values()
             .flat_map(HashMap::values)
@@ -665,7 +665,7 @@ fn original_name_key(name: &ContextEntryName) -> Box<str> {
 
 impl CompiledNodeBindings {
     /// Compiles header capture and separates component declarations from engine policies.
-    fn compile(
+    fn compile_node_bindings(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
         layout: &Arc<ContextLayout>,
@@ -682,12 +682,14 @@ impl CompiledNodeBindings {
                 }
                 ContextDeclaration::HeaderCapture { policy } => {
                     header_capture =
-                        Some(policy.compile(|name| requirements.preserves_original_name(name)));
+                        Some(policy.compile_capture_policy(|name| {
+                            requirements.preserves_original_name(name)
+                        }));
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
                     header_propagation = Some(
                         policy
-                            .recompile_with_layout(Arc::clone(layout))
+                            .rebind_to_layout(Arc::clone(layout))
                             .map_err(invalid_context)?,
                     );
                 }
@@ -725,7 +727,7 @@ impl CompiledContextBindings {
     }
 
     /// Compiles every node's bindings using the same engine-wide runtime requirements.
-    fn compile(
+    fn compile_context_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
     ) -> Result<Self, Error> {
@@ -744,7 +746,11 @@ impl CompiledContextBindings {
                     .map(|(node, declarations)| {
                         Ok((
                             node,
-                            CompiledNodeBindings::compile(declarations, requirements, &layout)?,
+                            CompiledNodeBindings::compile_node_bindings(
+                                declarations,
+                                requirements,
+                                &layout,
+                            )?,
                         ))
                     })
                     .collect::<Result<_, Error>>()?;
@@ -756,8 +762,9 @@ impl CompiledContextBindings {
     }
 
     /// Returns the canonical layout shared by every node in a pipeline.
+    #[cfg(test)]
     #[must_use]
-    pub fn pipeline_layout(&self, pipeline: &PipelineKey) -> Option<&Arc<ContextLayout>> {
+    fn pipeline_layout(&self, pipeline: &PipelineKey) -> Option<&Arc<ContextLayout>> {
         self.by_pipeline
             .get(pipeline)
             .map(|bindings| &bindings.layout)
@@ -865,7 +872,8 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         resolved: &ResolvedOtelDataflowSpec,
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
-        let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
+        let runtime_requirements =
+            ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
         let bindings = Self::compile_bindings(declarations, &runtime_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
@@ -880,7 +888,8 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         installed_requirements: &ContextRuntimeRequirements,
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
-        let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
+        let runtime_requirements =
+            ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
         let bindings = Self::compile_bindings(declarations, installed_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
@@ -893,7 +902,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
     ) -> Result<Arc<CompiledContextBindings>, EngineError> {
-        CompiledContextBindings::compile(declarations, requirements)
+        CompiledContextBindings::compile_context_bindings(declarations, requirements)
             .map(Arc::new)
             .map_err(|error| EngineError::ConfigError(Box::new(error)))
     }
@@ -974,7 +983,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 policy
                     .cloned()
                     .map(|policy| {
-                        HeaderPropagationPolicy::compile(policy, context)
+                        HeaderPropagationPolicy::compile_propagation_policy(policy, context)
                             .map(|policy| ContextDeclaration::HeaderPropagation { policy })
                             .map_err(|error| {
                                 EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
@@ -1280,8 +1289,8 @@ groups:
     /// Compiles one test node's bindings using its own runtime requirements.
     fn compiled_bindings(effective: NodeContextDeclarations) -> CompiledContextBindings {
         let declarations = declarations_by_pipeline(effective);
-        let requirements = ContextRuntimeRequirements::compile(&declarations);
-        CompiledContextBindings::compile(declarations, &requirements)
+        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
+        CompiledContextBindings::compile_context_bindings(declarations, &requirements)
             .expect("test context bindings compile")
     }
 
@@ -1289,7 +1298,9 @@ groups:
     fn context_runtime_requirements(
         effective: NodeContextDeclarations,
     ) -> ContextRuntimeRequirements {
-        ContextRuntimeRequirements::compile(&declarations_by_pipeline(effective))
+        ContextRuntimeRequirements::compile_runtime_requirements(&declarations_by_pipeline(
+            effective,
+        ))
     }
 
     /// Builds a primitive test target in the specified source domain.
@@ -1851,7 +1862,7 @@ groups:
             }]
         }))
         .expect("valid propagation policy");
-        let propagation = HeaderPropagationPolicy::compile(propagation, &[])
+        let propagation = HeaderPropagationPolicy::compile_propagation_policy(propagation, &[])
             .expect("propagation policy compiles");
         let requirements = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
@@ -1943,7 +1954,7 @@ groups:
         );
         let unsupported_default = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(
+                policy: HeaderPropagationPolicy::compile_propagation_policy(
                     serde_json::from_value(serde_json::json!({
                         "default": {
                             "selector": {"type": "all_captured"},
@@ -1979,8 +1990,8 @@ groups:
             }
         }))
         .expect("valid propagation policy");
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+        let policy = HeaderPropagationPolicy::compile_propagation_policy(policy, &[])
+            .expect("propagation policy compiles");
         let declarations: NodeContextDeclarations = [ContextDeclaration::HeaderPropagation {
             policy: policy.clone(),
         }]
@@ -2084,7 +2095,7 @@ groups:
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(node_propagation, &[])
+                policy: HeaderPropagationPolicy::compile_propagation_policy(node_propagation, &[])
                     .expect("node propagation policy compiles"),
             }]
             .into_iter()
@@ -2101,8 +2112,11 @@ groups:
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(pipeline_policy.header_propagation, &[])
-                    .expect("pipeline propagation policy compiles"),
+                policy: HeaderPropagationPolicy::compile_propagation_policy(
+                    pipeline_policy.header_propagation,
+                    &[],
+                )
+                .expect("pipeline propagation policy compiles"),
             }]
             .into_iter()
             .collect(),
@@ -2399,9 +2413,10 @@ default:
                     .expect("valid declarations"),
             )]),
         )]);
-        let requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = CompiledContextBindings::compile(declarations, &requirements)
-            .expect("test context bindings compile");
+        let requirements = ContextRuntimeRequirements::compile_runtime_requirements(&declarations);
+        let bindings =
+            CompiledContextBindings::compile_context_bindings(declarations, &requirements)
+                .expect("test context bindings compile");
 
         assert!(
             bindings
@@ -2437,7 +2452,7 @@ default:
             .pipeline_layout(&pipeline)
             .expect("pipeline layout");
         let expected_policy = propagation_policy
-            .recompile_with_layout(Arc::clone(layout))
+            .rebind_to_layout(Arc::clone(layout))
             .expect("propagation policy rebinds");
         assert_eq!(
             bindings.header_propagation_policy(&pipeline, &node),

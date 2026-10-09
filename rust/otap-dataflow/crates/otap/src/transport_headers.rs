@@ -15,7 +15,7 @@ mod tests {
     // -- Helper functions for tests ------------------------------------------
 
     fn make_capture_policy(rules: Vec<CaptureRule>) -> CompiledHeaderCapturePolicy {
-        HeaderCapturePolicy::new(CaptureDefaults::default(), rules).compile(|_| true)
+        HeaderCapturePolicy::new(CaptureDefaults::default(), rules).compile_capture_policy(|_| true)
     }
 
     fn context_name(raw: &str) -> ContextEntryName {
@@ -147,8 +147,9 @@ mod tests {
                 on_error: None,
             }],
         );
-        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
-            .expect("propagation policy compiles");
+        let propagation_policy =
+            CompiledHeaderPropagationPolicy::compile_propagation_policy(propagation_policy, &[])
+                .expect("propagation policy compiles");
 
         let propagated: Vec<_> = propagation_policy.propagate(headers_after).collect();
 
@@ -209,8 +210,9 @@ mod tests {
             },
             vec![],
         );
-        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
-            .expect("propagation policy compiles");
+        let propagation_policy =
+            CompiledHeaderPropagationPolicy::compile_propagation_policy(propagation_policy, &[])
+                .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
@@ -255,8 +257,9 @@ mod tests {
             },
             vec![],
         );
-        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
-            .expect("propagation policy compiles");
+        let propagation_policy =
+            CompiledHeaderPropagationPolicy::compile_propagation_policy(propagation_policy, &[])
+                .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
 
         assert_eq!(propagated[0].value_kind, ValueKind::Binary);

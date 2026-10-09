@@ -987,7 +987,9 @@ mod tests {
             Arc::new(NodeUserConfig::new_receiver_config("test")),
             test_runtime.config(),
         )
-        .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
+        .with_capture_policy(Some(
+            HeaderCapturePolicy::default().compile_capture_policy(|_| true),
+        ));
 
         match wrapper {
             ReceiverWrapper::Local { capture_policy, .. } => assert!(
@@ -1008,7 +1010,9 @@ mod tests {
             Arc::new(NodeUserConfig::new_receiver_config("test")),
             test_runtime.config(),
         )
-        .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
+        .with_capture_policy(Some(
+            HeaderCapturePolicy::default().compile_capture_policy(|_| true),
+        ));
 
         match wrapper {
             ReceiverWrapper::Shared { capture_policy, .. } => assert!(

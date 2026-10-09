@@ -121,7 +121,10 @@ struct EntryPresence {
 }
 
 impl EntryPresence {
-    fn compile(entry: &ContextEntryLayout, fields: &[ContextFieldLayout]) -> Self {
+    fn compile_presence_requirements(
+        entry: &ContextEntryLayout,
+        fields: &[ContextFieldLayout],
+    ) -> Self {
         let mut headers = BTreeMap::<ContextEntryName, BTreeSet<Option<Box<[u8]>>>>::new();
         let mut identities = Vec::new();
         for member in &entry.members {
@@ -165,11 +168,7 @@ impl EntryPresence {
         }
     }
 
-    fn is_present(
-        &self,
-        context: &impl ContextValues,
-        observed: Option<TransportHeaderRef<'_>>,
-    ) -> bool {
+    fn is_present(&self, context: &impl ContextValues) -> bool {
         if !self
             .identities
             .iter()
@@ -184,7 +183,7 @@ impl EntryPresence {
             return false;
         };
         if headers.len() == 1 {
-            let header = observed.or_else(|| headers.get(0)).expect("one header");
+            let header = headers.get(0).expect("one header");
             return self
                 .headers
                 .iter()
@@ -206,10 +205,9 @@ impl EntryPresence {
                     .any(|header| requirement.matches(*header))
             });
         }
-        self.headers.iter().all(|requirement| {
-            observed.is_some_and(|header| requirement.matches(header))
-                || headers.iter().any(|header| requirement.matches(header))
-        })
+        self.headers
+            .iter()
+            .all(|requirement| headers.iter().any(|header| requirement.matches(header)))
     }
 }
 
@@ -419,7 +417,7 @@ impl ContextLayout {
                 _ = fields.insert(field);
             }
         }
-        Self::compile(fields, declarations)
+        Self::compile_layout(fields, declarations)
     }
 
     /// Merges node-local layouts into one canonical pipeline layout.
@@ -525,7 +523,7 @@ impl ContextLayout {
             .collect();
         let presence = entries
             .iter()
-            .map(|entry| EntryPresence::compile(entry, &fields))
+            .map(|entry| EntryPresence::compile_presence_requirements(entry, &fields))
             .collect();
         Ok(Self {
             fields,
@@ -537,7 +535,7 @@ impl ContextLayout {
     }
 
     /// Compiles a binding's fields and entry declarations into a logical layout.
-    pub fn compile(
+    pub fn compile_layout(
         fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, Error> {
@@ -642,7 +640,7 @@ impl ContextLayout {
         }
         let presence = entries
             .iter()
-            .map(|entry| EntryPresence::compile(entry, &fields))
+            .map(|entry| EntryPresence::compile_presence_requirements(entry, &fields))
             .collect();
         Ok(Self {
             fields,
@@ -668,16 +666,7 @@ impl ContextLayout {
     /// Evaluates a composite atomically, including members not selected for output.
     #[must_use]
     pub fn is_present(&self, entry: ContextEntryId, context: &impl ContextValues) -> bool {
-        self.presence[entry.index()].is_present(context, None)
-    }
-
-    pub(super) fn is_present_with_header(
-        &self,
-        entry: ContextEntryId,
-        context: &impl ContextValues,
-        header: TransportHeaderRef<'_>,
-    ) -> bool {
-        self.presence[entry.index()].is_present(context, Some(header))
+        self.presence[entry.index()].is_present(context)
     }
 
     /// Resolves a primitive, whole composite, or qualified composite member.
@@ -840,11 +829,11 @@ mod tests {
         result
     }
 
-    fn compile(
+    fn compile_layout(
         fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: &[ContextEntryDeclaration],
     ) -> ContextLayout {
-        ContextLayout::compile(fields, declarations).expect("valid layout")
+        ContextLayout::compile_layout(fields, declarations).expect("valid layout")
     }
 
     fn assert_compile_error(
@@ -853,7 +842,7 @@ mod tests {
         expected: &str,
     ) {
         let error =
-            ContextLayout::compile(fields, declarations).expect_err("compilation must fail");
+            ContextLayout::compile_layout(fields, declarations).expect_err("compilation must fail");
         assert!(
             error.to_string().contains(expected),
             "expected {expected:?} in {error}"
@@ -897,7 +886,7 @@ mod tests {
     #[test]
     fn projections_preserve_fields_and_presence_gates() {
         for declaration in [entry(), conditional_entry()] {
-            let layout = compile(conditional_fields(), &[declaration]);
+            let layout = compile_layout(conditional_fields(), &[declaration]);
             let primitive = layout
                 .resolve_primitive(ContextDomain::TransportHeader, &name("workspace"))
                 .expect("primitive");
@@ -941,7 +930,7 @@ mod tests {
         let mut zeta = entry();
         zeta.name = name("zeta");
         let declarations = [zeta, alpha];
-        let expected = compile(fields(), &declarations);
+        let expected = compile_layout(fields(), &declarations);
         for permutation in 0..8 {
             let mut sources = fields();
             let mut entries = declarations.clone();
@@ -956,7 +945,7 @@ mod tests {
                     entry.definition.0.reverse();
                 }
             }
-            assert_eq!(compile(sources, &entries), expected, "{permutation}");
+            assert_eq!(compile_layout(sources, &entries), expected, "{permutation}");
         }
         assert_eq!(
             expected
@@ -1018,7 +1007,7 @@ mod tests {
     /// Guarantees: explicit resolution never falls back to another domain or namespace.
     #[test]
     fn invalid_projections_are_rejected() {
-        let layout = compile(fields(), &[entry()]);
+        let layout = compile_layout(fields(), &[entry()]);
         for (result, expected) in [
             (
                 layout.resolve_primitive(ContextDomain::TransportHeader, &name("missing")),
@@ -1064,7 +1053,7 @@ mod tests {
             name: name("customer"),
             store_as: Some(name("header")),
         };
-        let layout = compile(fields, &[declaration]);
+        let layout = compile_layout(fields, &[declaration]);
         let identity = layout
             .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("customer"))
             .expect("identity");
@@ -1119,7 +1108,7 @@ mod tests {
             },
         ]);
 
-        let layout = compile(fields(), &[conditional]);
+        let layout = compile_layout(fields(), &[conditional]);
         assert_eq!(layout.entries()[0].conditions.len(), 2);
         assert_eq!(
             layout.entries()[0]
@@ -1139,8 +1128,8 @@ mod tests {
         let mut reordered = conditional.clone();
         reordered.definition.0.swap(2, 3);
 
-        let first = compile(conditional_fields(), &[conditional]);
-        let second = compile(conditional_fields(), &[reordered]);
+        let first = compile_layout(conditional_fields(), &[conditional]);
+        let second = compile_layout(conditional_fields(), &[reordered]);
         assert_eq!(first, second);
         let projection = first
             .resolve_composite(&name("product_user"))
@@ -1172,7 +1161,7 @@ mod tests {
             name: name("WORKSPACE"),
             store_as: None,
         };
-        let layout = compile(fields(), &[declaration.clone()]);
+        let layout = compile_layout(fields(), &[declaration.clone()]);
         let projection = layout
             .resolve_member(&name("product_user"), &name("WORKSPACE"))
             .expect("member");
@@ -1197,10 +1186,10 @@ mod tests {
     /// Guarantees: pipeline merging assigns identical field and entry IDs independent of order.
     #[test]
     fn merged_pipeline_layout_is_canonical() {
-        let first = compile(fields(), &[entry()]);
+        let first = compile_layout(fields(), &[entry()]);
         let mut other = entry();
         other.name = name("other");
-        let second = compile(fields(), &[other]);
+        let second = compile_layout(fields(), &[other]);
 
         let forward = ContextLayout::merge([&first, &second]).expect("forward merge");
         let reverse = ContextLayout::merge([&second, &first]).expect("reverse merge");
@@ -1263,7 +1252,7 @@ mod tests {
 
     /// Scenario: small and larger composites require multiple values from the same header.
     /// Guarantees: every member and distinct value is required; duplicate and mixed-case headers
-    /// cannot satisfy missing requirements, even when an observed header proves one requirement.
+    /// cannot satisfy missing requirements.
     #[test]
     fn compiled_presence_handles_duplicate_values_and_member_counts() {
         use otel_arrow_dfe_config::transport_headers::TransportHeader;
@@ -1288,7 +1277,7 @@ mod tests {
                     value: value.into(),
                 }),
             );
-            let layout = compile(
+            let layout = compile_layout(
                 sources,
                 &[ContextEntryDeclaration {
                     scope: ContextScope::Engine,
@@ -1302,14 +1291,6 @@ mod tests {
                     expected,
                     "{count}"
                 );
-                for header in headers.iter() {
-                    assert_eq!(
-                        layout.is_present_with_header(ContextEntryId(0), headers, header),
-                        expected,
-                        "{count}: {}",
-                        header.name.as_str()
-                    );
-                }
             };
             let mut headers = TransportHeaders::new();
             for index in 0..count {
@@ -1341,7 +1322,7 @@ mod tests {
             }]),
         };
 
-        let layout = compile([], &[declaration]);
+        let layout = compile_layout([], &[declaration]);
         assert!(layout.fields().is_empty());
         assert!(layout.entries()[0].conditions.is_empty());
         let projection = layout
@@ -1379,7 +1360,7 @@ mod tests {
             ]),
         };
 
-        let layout = compile(
+        let layout = compile_layout(
             [field("environment", ContextDomain::TransportHeader)],
             &[declaration],
         );
@@ -1419,8 +1400,8 @@ mod tests {
         let mut reordered = declaration.clone();
         reordered.definition.0.reverse();
         assert_eq!(
-            compile(fields(), &[declaration.clone()]),
-            compile(fields(), &[reordered])
+            compile_layout(fields(), &[declaration.clone()]),
+            compile_layout(fields(), &[reordered])
         );
 
         let mut changed = declaration.clone();
@@ -1431,8 +1412,8 @@ mod tests {
         };
         *value = "Bearer".to_owned();
         assert_ne!(
-            compile(fields(), &[declaration]),
-            compile(fields(), &[changed])
+            compile_layout(fields(), &[declaration]),
+            compile_layout(fields(), &[changed])
         );
     }
 }

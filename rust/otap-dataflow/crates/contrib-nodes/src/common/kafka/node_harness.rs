@@ -611,8 +611,9 @@ mod receiver_harness {
                 metrics_reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
-            effect_handler
-                .set_capture_policy(capture_policy.map(|policy| policy.compile(|_| true)));
+            effect_handler.set_capture_policy(
+                capture_policy.map(|policy| policy.compile_capture_policy(|_| true)),
+            );
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
