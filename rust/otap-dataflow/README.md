@@ -22,6 +22,27 @@ data.
 > [`src/main.rs`](./src/main.rs) is provided as a means to test and validate
 > OTAP pipelines built using the dataflow engine.
 
+## Release builds
+
+Choose a profile based on binary size, runtime performance, and build time:
+
+- `release`: level `3` optimization with profiling line tables, without
+  cross-crate LTO.
+- `release-perf`: level `3` with fat LTO and one codegen unit to prioritize runtime
+  performance, no debug information, and stripped symbols.
+- `release-balanced`: level `2` with fat LTO and one codegen unit, no debug
+  information, and stripped symbols to balance binary size and runtime
+  performance.
+- `release-size`: level `z` with fat LTO and one codegen unit, no debug information,
+  and stripped symbols to prioritize binary size, accepting possible throughput
+  loss.
+
+Use `profiling` for the same optimizations as `release-perf` with full debug
+information and symbols retained for profiling and debugging.
+
+See [release profiles](docs/release-profiles.md) for build commands, feature
+selection, and measurements with and without Transform.
+
 ## Architecture
 
 ![OTAP Dataflow Engine architecture](docs/images/architecture-high-level.svg)

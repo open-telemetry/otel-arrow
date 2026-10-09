@@ -330,7 +330,9 @@ pub fn system_info<PData: 'static + Clone + Debug>(
         "release"
     };
 
-    let mut sys = System::new_all();
+    // The startup banner only needs memory data. Avoid scanning every process
+    // and CPU when generating CLI help or starting the engine.
+    let mut sys = System::new();
     sys.refresh_memory();
     let total_memory_gb = sys.total_memory() as f64 / 1_073_741_824.0;
     let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;

@@ -491,14 +491,35 @@ missing_crate_level_docs = "deny"
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
 
-[profile.profiling]
+# Opt in to whole-program optimization without changing the default release build.
+[profile.release-perf]
 inherits = "release"
-debug = 2
+opt-level = 3
+debug = 0
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+incremental = false
 
-# A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
-#[profile.release]
-#lto = "thin"
-#strip = true
+# Favor a compact binary while retaining speed-oriented optimizations.
+[profile.release-balanced]
+inherits = "release-perf"
+opt-level = 2
+debug = 0
+strip = "symbols"
+
+# Favor the smallest binary, accepting potential processing throughput loss.
+[profile.release-size]
+inherits = "release-perf"
+opt-level = "z"
+debug = 0
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release-perf"
+debug = 2
+strip = "none"
 
 [profile.bench]
 inherits = "release"
