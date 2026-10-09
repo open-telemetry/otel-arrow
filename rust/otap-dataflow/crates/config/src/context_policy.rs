@@ -135,9 +135,7 @@ impl ContextEntryDefinition {
 }
 
 /// Configured source of a generated random context value.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextRandomnessKind {
     /// A time-ordered UUID version 7 rendered in canonical text form.
@@ -565,8 +563,8 @@ entries:
         assert!(policy.validation_errors("context").is_empty());
     }
 
-    /// Scenario: a part uses an unsupported variant or property.
-    /// Guarantees: strict serde contracts reject unknown variants and fields.
+    /// Scenario: a part uses an unsupported variant, property, or randomness generator.
+    /// Guarantees: strict serde rejects unknown variants, fields, and generator values.
     #[test]
     fn rejects_unsupported_variants_and_fields() {
         for yaml in [
