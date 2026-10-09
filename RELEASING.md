@@ -169,8 +169,11 @@ The repository uses two complementary Rust dependency checks:
 
 - Renovate OSV vulnerability alerts, labeled `area:security` and allowed to
   run outside the normal dependency-update schedule.
-- `cargo audit`, run daily and whenever `rust/otap-dataflow/Cargo.toml` or
-  `rust/otap-dataflow/Cargo.lock` changes in a pull request or on `main`.
+- `cargo deny check advisories`, run by Rust-CI on pull requests and configured
+  by `rust/otap-dataflow/deny.toml`.
+- `cargo audit`, run daily, on manual dispatch, and when
+  `rust/otap-dataflow/Cargo.toml` or `rust/otap-dataflow/Cargo.lock` changes on
+  `main`.
 
 When a finding applies:
 
