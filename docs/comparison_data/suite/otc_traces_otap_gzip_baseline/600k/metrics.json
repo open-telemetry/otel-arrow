@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -0.17164435982704163
+    "value": -2.1530404090881348
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.09705621866365
+    "value": 100.08824308645971
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.30383031815346
+    "value": 100.57922094110315
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 382.15638020833336
+    "value": 494.95598958333335
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 453.0234375
+    "value": 644.24609375
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 49234.672120915086
+    "value": 58277.79238160889
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 48731.96764805245
+    "value": 59225.39325762334
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000621
+    "value": 60.000563
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1826763.258280533
+    "value": 2182819.987873195
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2067622.0871815006
+    "value": 2509172.7361070197
   }
 ]

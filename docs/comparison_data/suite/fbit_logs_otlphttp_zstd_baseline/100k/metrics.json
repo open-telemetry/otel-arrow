@@ -9,60 +9,60 @@
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 36.66833766299637
+    "value": 31.593365380830495
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 36.938500000000005
+    "value": 32.26399252569293
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 71.16822916666666
+    "value": 80.28932291666666
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 73.68359375
+    "value": 85.98046875
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 99215.89676784373
+    "value": 98930.40138947916
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 100897.52213679024
+    "value": 100607.12543594115
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000486
+    "value": 60.000552
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1812020.318921127
+    "value": 1897323.4335781261
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 35794079.392122194
+    "value": 37551998.77557301
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Zstd)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 17.959017035765346
+    "value": 18.858738139637982
   }
 ]

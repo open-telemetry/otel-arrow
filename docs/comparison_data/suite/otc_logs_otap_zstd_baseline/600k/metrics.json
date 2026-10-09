@@ -3,66 +3,66 @@
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 2.937911033630371
+    "value": -0.911854088306427
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.12706910107856
+    "value": 100.15813425784006
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.32619225967541
+    "value": 100.65236907730673
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 364.22044270833334
+    "value": 396.20885416666664
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 635.7734375
+    "value": 593.98046875
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 196375.97521325637
+    "value": 189980.70369423303
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 192567.61525095525
+    "value": 191366.55094765688
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000562
+    "value": 60.000666
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1038922.6429424725
+    "value": 1071306.8721621635
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1451260.801234147
+    "value": 1476257.9054803036
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Logs)/600k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 5.395105722156565
+    "value": 5.598192927954219
   }
 ]

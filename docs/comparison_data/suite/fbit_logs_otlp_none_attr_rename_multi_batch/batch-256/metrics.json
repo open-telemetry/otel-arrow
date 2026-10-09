@@ -3,66 +3,66 @@
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -1.8140246868133545
+    "value": 100.0
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.12236067135825
+    "value": 100.06919284178927
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.67983714375195
+    "value": 100.39082786629179
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 103.96575520833333
+    "value": 3617.738802083333
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 108.0
+    "value": 6569.63671875
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 113995.13656577056
+    "value": 187191.48384457853
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 115866.52439053831
+    "value": 0.0
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000477
+    "value": 60.000609
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 38640387.58782597
+    "value": 314842.68475522596
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 41185647.93191103
+    "value": 69611164.64082263
   },
   {
     "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-256 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 333.4905210204213
+    "value": 0.0
   }
 ]

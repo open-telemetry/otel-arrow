@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline (Metrics)/600k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.6951067447662354
+    "value": -1.6952027082443237
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 13.499808598891628
+    "value": 13.156844881469246
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 14.551239773442418
+    "value": 13.3917
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 51.47903645833333
+    "value": 68.70677083333334
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 51.98828125
+    "value": 69.12890625
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 597708.4140394202
+    "value": 597565.2684814457
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 605400.2998409976
+    "value": 607695.2103102548
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000579
+    "value": 60.000543
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 118811726.20206147
+    "value": 118743746.44033137
   },
   {
     "extra": "DFE OTLP Baseline (Metrics)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 118583842.33131672
+    "value": 118689653.03905006
   }
 ]

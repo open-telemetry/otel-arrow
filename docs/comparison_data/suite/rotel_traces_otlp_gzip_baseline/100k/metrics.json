@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -1.6363389492034912
+    "value": -0.07893332839012146
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 94.82909022394004
+    "value": 94.21180480156292
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 97.41309204368174
+    "value": 95.86480697384808
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 83.21341145833334
+    "value": 81.67408854166666
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 95.44921875
+    "value": 82.2109375
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 99111.57892522967
+    "value": 100442.59863684997
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 100903.85396383995
+    "value": 100521.88132804066
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000477
+    "value": 60.00054
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13018948.47788979
+    "value": 13608211.046936091
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 14173836.23334582
+    "value": 14689094.993200265
   }
 ]

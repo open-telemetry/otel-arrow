@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -0.9536541700363159
+    "value": -2.8630406856536865
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.30566023654511
+    "value": 100.17732198580399
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 101.0961
+    "value": 100.9720924422236
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 2925.442447916667
+    "value": 2638.2712239583334
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 3345.62890625
+    "value": 2996.33984375
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 191512.31746802284
+    "value": 191243.01627002278
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 191654.73329578072
+    "value": 192681.84241701878
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000652
+    "value": 60.000532
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27405190.605410405
+    "value": 27946510.762107246
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Traces)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 170607927.49793968
+    "value": 172282774.79289952
   }
 ]

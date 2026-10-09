@@ -3,66 +3,66 @@
     "extra": "FB OTLP Baseline (Logs, None)/300k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 3.8358054161071777
+    "value": 18.438888549804688
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.24415692589174
+    "value": 100.22261448613916
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.50866416978776
+    "value": 100.60121363778542
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 156.573828125
+    "value": 1185.7700520833334
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 172.42578125
+    "value": 2287.3828125
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 245004.07616129608
+    "value": 303943.9051935469
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 234404.33417464854
+    "value": 247900.026230359
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000554
+    "value": 60.000545
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 78235373.25788386
+    "value": 88354642.43419184
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 83832194.48986183
+    "value": 113279280.66764316
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/300k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 333.76248580622547
+    "value": 356.4123964718303
   }
 ]

@@ -9,60 +9,60 @@
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 38.37946252279398
+    "value": 40.37251143256454
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 39.63498288204171
+    "value": 40.62404015056462
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 52.32578125
+    "value": 64.47473958333333
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 53.39453125
+    "value": 65.15234375
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 298287.44079942245
+    "value": 303020.1349118104
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 298796.78585816757
+    "value": 301480.7936566485
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000606
+    "value": 60.000542
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 7750529.19578962
+    "value": 8361995.572003051
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 107463804.8720831
+    "value": 112545526.60398321
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 25.93913175313951
+    "value": 27.736412229053602
   }
 ]

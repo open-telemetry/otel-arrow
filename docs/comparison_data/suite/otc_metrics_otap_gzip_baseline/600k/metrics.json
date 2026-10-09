@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -2.2531347274780273
+    "value": 2.150197744369507
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.25252467888845
+    "value": 100.1233833208334
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.6204194053208
+    "value": 100.4935491905355
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 394.387109375
+    "value": 485.40546875
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 585.53515625
+    "value": 838.12109375
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 172727.85541920448
+    "value": 215015.86859603494
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 174822.34336739554
+    "value": 209663.60171273717
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000625
+    "value": 60.000601
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1565919.6427081593
+    "value": 1904201.235402632
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2273624.447071843
+    "value": 2892282.831146805
   }
 ]

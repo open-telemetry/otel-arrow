@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 4.435408592224121
+    "value": 2.5644826889038086
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.12837793541178
+    "value": 100.28435606983084
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.4672
+    "value": 100.62832917705735
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 3637.385546875
+    "value": 990.8009114583333
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 4448.9921875
+    "value": 1712.203125
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 454283.46244155086
+    "value": 564420.397313138
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 429674.10767021286
+    "value": 549013.1786717075
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000642
+    "value": 60.000483
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 154818217.64965856
+    "value": 207350692.08197865
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 162463690.99860018
+    "value": 209207557.4392551
   },
   {
     "extra": "OTC OTLP Transform Rename Replace (Logs)/800k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 360.31544579010557
+    "value": 377.6788975879353
   }
 ]

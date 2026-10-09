@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 26.862031936645508
+    "value": 27.821552276611328
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.97232301953748
+    "value": 100.14331205451992
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.29906962222917
+    "value": 100.58325814536342
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 9807.557942708334
+    "value": 9569.301692708334
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 10528.23828125
+    "value": 10753.53515625
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 326589.02597271156
+    "value": 407952.3066605595
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 237223.9869931937
+    "value": 294965.2450469401
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000546
+    "value": 60.000696
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 10353089.318332082
+    "value": 12571917.381656012
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Metrics)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 65405358.74126498
+    "value": 79262712.785532
   }
 ]

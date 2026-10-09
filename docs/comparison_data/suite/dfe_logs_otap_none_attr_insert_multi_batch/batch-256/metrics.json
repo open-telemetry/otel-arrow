@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -1.6962714195251465
+    "value": -1.6950485706329346
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 50.59487488799267
+    "value": 48.35965092580714
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 51.2334581772784
+    "value": 48.58573566084788
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 55.18828125
+    "value": 68.705859375
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 55.9765625
+    "value": 69.1953125
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 399261.61329940736
+    "value": 397437.3849204068
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 403950.6036673221
+    "value": 404166.83774912456
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000589
+    "value": 60.000536
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 60518574.18565121
+    "value": 63785203.92376812
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 52404050.94504103
+    "value": 56537383.642806545
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-256 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 149.81676877376805
+    "value": 157.81899445040818
   }
 ]

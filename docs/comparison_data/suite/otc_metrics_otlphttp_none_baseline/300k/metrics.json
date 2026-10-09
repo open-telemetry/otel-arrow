@@ -3,60 +3,60 @@
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 1.330265998840332
+    "value": 2.320742607116699
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.22932450408393
+    "value": 100.15062630260046
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.42335310646268
+    "value": 100.54
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 1314.727734375
+    "value": 1265.064453125
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 1339.04296875
+    "value": 1296.05078125
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 168854.97512657114
+    "value": 211218.92997598907
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 165759.31156503304
+    "value": 204575.32050664286
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000579
+    "value": 60.000572
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 7406129.569985188
+    "value": 9040107.298467183
   },
   {
     "extra": "OTC OTLP/HTTP Baseline (Metrics)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 32876529.332146145
+    "value": 40994504.25775988
   }
 ]

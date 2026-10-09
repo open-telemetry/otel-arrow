@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 0.0
+    "value": 1.6666667461395264
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 1.0490371428749785
+    "value": 1.060015994338106
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 1.153657927590512
+    "value": 1.1456519026824703
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 45.10325520833333
+    "value": 62.941796875
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 45.421875
+    "value": 63.66015625
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 100762.62021169522
+    "value": 100379.82890760062
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 100933.4697370673
+    "value": 100221.29030766527
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000568
+    "value": 60.000488
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 19703634.422309373
+    "value": 19716460.13493885
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 19662250.06977972
+    "value": 19656868.02583521
   }
 ]

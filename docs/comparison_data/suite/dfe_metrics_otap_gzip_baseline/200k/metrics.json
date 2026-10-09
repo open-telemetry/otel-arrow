@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": -0.8404067754745483
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 18.392825709536435
+    "value": 18.304461143154366
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 18.77932584269663
+    "value": 18.457189155500156
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 43.19348958333333
+    "value": 63.74140625
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 43.63671875
+    "value": 64.25390625
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 199085.38822916077
+    "value": 200033.97164887033
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 201768.57893902247
+    "value": 200672.76468368058
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.00062
+    "value": 60.000509
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2679701.884354873
+    "value": 2752811.800549997
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Metrics)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2616812.083489386
+    "value": 2678697.4305864517
   }
 ]

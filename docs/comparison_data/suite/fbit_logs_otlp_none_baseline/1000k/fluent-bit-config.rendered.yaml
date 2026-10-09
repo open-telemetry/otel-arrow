@@ -1,7 +1,3 @@
-# Fluent Bit OTLP/gRPC -> OTLP/gRPC passthrough.
-# The opentelemetry input accepts gRPC on the listen port when http2 is on; the
-# load generator's otlp_grpc exporter targets port 4317.
-# Single-threaded (threaded off, no extra workers) to bind the engine to ~1 core.
 service:
   flush: 1
   log_level: info

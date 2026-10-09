@@ -3,66 +3,66 @@
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 2.5477707386016846
+    "value": 1.514695644378662
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.06662311108143
+    "value": 100.11888223092382
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.34742428972838
+    "value": 100.50321295143212
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 261.1294270833333
+    "value": 263.5182291666667
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 315.27734375
+    "value": 327.72265625
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 170652.02551997782
+    "value": 168824.52373245364
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 168877.4327329091
+    "value": 166557.64418750888
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.001473
+    "value": 60.000626
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1002579.5704277827
+    "value": 1014920.9516045601
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1364020.4700599178
+    "value": 1411691.6592607994
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Logs)/400k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 5.9367291070407795
+    "value": 6.093511688133464
   }
 ]

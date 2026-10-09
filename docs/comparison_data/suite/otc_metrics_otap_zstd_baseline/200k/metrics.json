@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -0.04237647354602814
+    "value": -1.6949152946472168
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 86.77840921452128
+    "value": 73.11185083158878
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 92.98717357432223
+    "value": 78.03619166148103
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 154.48541666666668
+    "value": 169.17734375
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 161.94140625
+    "value": 175.14453125
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 199367.424515208
+    "value": 199413.0563974936
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 199109.72112898924
+    "value": 201079.3571244955
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000623
+    "value": 60.000603
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1750020.3125995859
+    "value": 1742148.1817514102
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2539819.783480542
+    "value": 2572150.0557394917
   }
 ]

@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.42555001378059387
+    "value": -1.6949152946472168
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 62.3401867151989
+    "value": 54.24123607841174
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 63.65917159763313
+    "value": 56.293642342624494
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 77.079296875
+    "value": 81.11197916666667
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 82.578125
+    "value": 84.53125
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 398403.2403666999
+    "value": 397474.72852307616
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 399411.88508209726
+    "value": 401480.23084577965
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000632
+    "value": 60.000464
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 145079963.18981332
+    "value": 152200966.3629193
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 143824077.9242388
+    "value": 151012427.9769204
   },
   {
     "extra": "OTC OTLP Attr Rename (Logs)/400k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 363.2339662601497
+    "value": 379.09952886667577
   }
 ]

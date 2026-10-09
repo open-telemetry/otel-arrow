@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 29.638273239135742
+    "value": 28.634511947631836
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.16168176454858
+    "value": 99.90577480628933
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.59817841547098
+    "value": 100.31939999999999
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 9309.993489583334
+    "value": 9739.592838541666
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 10853.58984375
+    "value": 11057.03515625
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 310076.9856318283
+    "value": 331275.2046148109
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 216671.27022262302
+    "value": 237609.9282213636
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000513
+    "value": 60.000516
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 9269025.401575007
+    "value": 10056186.392034294
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 15410455.764193663
+    "value": 16096485.469495019
   }
 ]

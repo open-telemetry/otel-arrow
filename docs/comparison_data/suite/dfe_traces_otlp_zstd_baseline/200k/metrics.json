@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -1.7035342454910278
+    "value": 0.8403362035751343
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 27.34682440102651
+    "value": 27.08775451969339
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 27.756708229426437
+    "value": 27.81344109418713
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 48.29088541666667
+    "value": 69.523828125
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 49.015625
+    "value": 73.734375
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 200509.65036174326
+    "value": 200812.5279882461
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 201842.73672107753
+    "value": 200148.25557989167
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000592
+    "value": 60.000544
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13270164.621241251
+    "value": 13587650.492880637
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13226593.593643056
+    "value": 13549854.228108486
   }
 ]

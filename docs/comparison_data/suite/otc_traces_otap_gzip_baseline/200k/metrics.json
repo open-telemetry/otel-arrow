@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -0.9317803382873535
+    "value": -0.5638567805290222
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.10522016926065
+    "value": 100.14754171671274
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.34960374414976
+    "value": 100.36740555729004
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 262.03684895833334
+    "value": 260.484765625
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 288.53515625
+    "value": 289.26171875
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 50705.91150102373
+    "value": 59836.72284104017
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 51090.58264286649
+    "value": 59765.96272292855
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000686
+    "value": 60.000682
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1879379.9357326557
+    "value": 2220662.11469509
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Traces)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2138129.711082611
+    "value": 2587158.4005500865
   }
 ]

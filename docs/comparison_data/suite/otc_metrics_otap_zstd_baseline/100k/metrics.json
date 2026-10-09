@@ -9,54 +9,54 @@
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 44.95498365527152
+    "value": 36.651145431245844
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 51.008996884735204
+    "value": 40.24241218526578
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 131.54270833333334
+    "value": 127.72591145833333
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 135.96484375
+    "value": 129.9765625
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 100479.6462902094
+    "value": 100105.42798268746
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 100479.6462902094
+    "value": 100105.42798268746
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000601
+    "value": 60.000552
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 896792.1393024715
+    "value": 887064.1598425542
   },
   {
     "extra": "OTC OTAP Baseline w/ Zstd (Metrics)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1278109.991844694
+    "value": 1292086.847176395
   }
 ]

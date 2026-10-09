@@ -3,60 +3,60 @@
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -0.5586591958999634
+    "value": -1.6949152946472168
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 63.5931322089661
+    "value": 50.942652486392284
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 64.51668439161715
+    "value": 52.36917316692667
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 77.12109375
+    "value": 80.4421875
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 79.3671875
+    "value": 83.48046875
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 302233.1483914105
+    "value": 299061.87836947275
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 302373.61778089916
+    "value": 301545.5718284065
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000602
+    "value": 60.000561
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 9065623.209474789
+    "value": 9195405.161774408
   },
   {
     "extra": "OTC OTLP Baseline w/ Zstd (Metrics)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 8999834.90345808
+    "value": 9129034.973690832
   }
 ]

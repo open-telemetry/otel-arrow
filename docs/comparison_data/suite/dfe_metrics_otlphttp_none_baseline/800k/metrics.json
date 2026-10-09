@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 0.0021186440717428923
+    "value": -2.5641026496887207
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 7.357641283837488
+    "value": 7.517582330835664
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 7.466599686028258
+    "value": 7.695604876523913
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 50.3578125
+    "value": 70.48372395833333
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 51.0078125
+    "value": 71.16796875
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 802825.1962945876
+    "value": 795427.772387867
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 797225.7038714675
+    "value": 808851.3411109108
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000589
+    "value": 60.000518
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 157725480.0755748
+    "value": 157463006.43110096
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/800k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 157638227.08130085
+    "value": 157378017.4312648
   }
 ]

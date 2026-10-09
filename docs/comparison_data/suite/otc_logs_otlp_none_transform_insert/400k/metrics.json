@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.4184100329875946
+    "value": -0.8403714895248413
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 68.13331658322073
+    "value": 59.519257317283966
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 69.03266375545851
+    "value": 63.30596754057428
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 80.16848958333334
+    "value": 77.868359375
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 87.46875
+    "value": 82.63671875
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 401179.4272302567
+    "value": 401549.1607683281
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 402858.00223958836
+    "value": 402182.50750260835
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000621
+    "value": 60.000521
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 158719298.1814167
+    "value": 165889129.97398356
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 143895724.80075982
+    "value": 151008509.44960955
   },
   {
     "extra": "OTC OTLP Transform Insert (Logs)/400k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 393.9832330475166
+    "value": 412.4722654003237
   }
 ]

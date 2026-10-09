@@ -3,60 +3,60 @@
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 0.38310506939888
+    "value": -0.4562390446662903
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.11857321142162
+    "value": 99.86421171759538
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.3847191011236
+    "value": 100.44763149704326
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 259.07825520833336
+    "value": 262.17760416666664
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 297.26171875
+    "value": 303.8671875
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 177287.99057841933
+    "value": 220787.7723161816
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 176305.37467299134
+    "value": 221418.21593634272
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000776
+    "value": 60.00054
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1587906.3360016756
+    "value": 1977575.8820341495
   },
   {
     "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2309378.1145060817
+    "value": 2941883.6494872505
   }
 ]

@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 51.26288986206055
+    "value": 42.80659484863281
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.02488586266418
+    "value": 99.98367740053394
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.39780821917807
+    "value": 100.39297196261683
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 5708.401822916667
+    "value": 5186.490364583334
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 11043.12109375
+    "value": 9475.171875
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 141996.18065515935
+    "value": 129938.7787732308
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 69204.69533769689
+    "value": 74833.08026026867
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000564
+    "value": 60.000562
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 8933552.763155496
+    "value": 10102569.605274862
   },
   {
     "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 20413793.98436146
+    "value": 19109124.96953353
   }
 ]
