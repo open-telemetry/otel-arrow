@@ -13,8 +13,9 @@ folding precedes class negation. Captures do not change the boolean result.
 
 In raw mode, `\xFF` and `\x{FF}` both denote byte `FF`. This also applies to
 classes and range endpoints. Braced values above `FF` are rejected. Ordinary
-non-ASCII pattern characters retain their UTF-8 source bytes: literal `é`
-matches `C3 A9`. Text-mode hex escapes retain Unicode semantics.
+non-ASCII pattern characters outside classes retain their UTF-8 source bytes:
+the literal character U+00E9 matches bytes `C3 A9`. Text-mode hex escapes retain
+Unicode semantics.
 
 The profile limits source to 4,096 bytes, counted repetitions and nested count
 products to 1,000, and parsed syntax-tree depth to 64. Unsupported syntax is
