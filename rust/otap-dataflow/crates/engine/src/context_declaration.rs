@@ -59,25 +59,6 @@ pub enum ContextEntryTarget {
     },
 }
 
-/// One selected value source after resolving a primitive or composite target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelectedSource<'a> {
-    /// Value supplied by a domain-backed primitive field.
-    Field(ContextDomain, &'a ContextEntryName),
-    /// Inline configured value with no source domain or wire name.
-    Constant(&'a ContextEntryName),
-}
-
-impl<'a> SelectedSource<'a> {
-    /// Resolves one value-bearing composite part, excluding conditions.
-    fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
-        Some(match part.value_source()? {
-            ContextEntryValueSource::Constant { name, .. } => Self::Constant(name),
-            ContextEntryValueSource::Referenced { domain, name } => Self::Field(domain, name),
-        })
-    }
-}
-
 impl ContextEntryTarget {
     /// Returns the enclosing composite name, or none for a primitive.
     fn composite_name(&self) -> Option<&ContextEntryName> {
@@ -92,10 +73,13 @@ impl ContextEntryTarget {
     fn visit_sources<'a>(
         &'a self,
         composites: &'a [ConfigContextEntryDeclaration],
-        mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
+        mut visit: impl FnMut(ContextEntryValueSource<'a>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
+            Self::Primitive { domain, name } => visit(ContextEntryValueSource::Referenced {
+                domain: *domain,
+                name,
+            }),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -107,7 +91,7 @@ impl ContextEntryTarget {
                         invalid_context(format!("unknown context member `{composite}:{member}`"))
                     })?;
                 visit(
-                    SelectedSource::from_part(part)
+                    part.value_source()
                         .expect("selected composite member is value-bearing"),
                 )
             }
@@ -117,7 +101,7 @@ impl ContextEntryTarget {
                     .definition
                     .0
                     .iter()
-                    .filter_map(SelectedSource::from_part)
+                    .filter_map(ContextEntryPart::value_source)
                 {
                     visit(source)?;
                 }
@@ -240,17 +224,22 @@ impl ContextDeclaration {
                             return Ok(());
                         }
                         match source {
-                            SelectedSource::Field(ContextDomain::TransportHeader, name) => {
+                            ContextEntryValueSource::Referenced {
+                                domain: ContextDomain::TransportHeader,
+                                name,
+                            } => {
                                 _ = requirements
                                     .original_name_retention
                                     .overrides
                                     .insert(original_name_key(name), true);
                                 Ok(())
                             }
-                            SelectedSource::Field(domain, name) => Err(invalid_context(format!(
-                                "original wire name requested for {domain:?} context entry `{name}`; only transport headers have original wire names"
-                            ))),
-                            SelectedSource::Constant(name) => Err(invalid_context(format!(
+                            ContextEntryValueSource::Referenced { domain, name } => {
+                                Err(invalid_context(format!(
+                                    "original wire name requested for {domain:?} context entry `{name}`; only transport headers have original wire names"
+                                )))
+                            }
+                            ContextEntryValueSource::Constant { name, .. } => Err(invalid_context(format!(
                                 "original wire name requested for constant context entry `{name}`; constants have no original wire names"
                             ))),
                         }
@@ -1474,8 +1463,14 @@ groups:
         assert_eq!(
             sources,
             [
-                SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
-                SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
+                ContextEntryValueSource::Referenced {
+                    domain: ContextDomain::TransportHeader,
+                    name: &source_name,
+                },
+                ContextEntryValueSource::Referenced {
+                    domain: ContextDomain::AuthorizedIdentity,
+                    name: &source_name,
+                },
             ]
         );
         let prepared = PreparedNodeContextDeclarations::new(
@@ -1528,8 +1523,14 @@ groups:
         assert_eq!(
             sources,
             [
-                SelectedSource::Constant(&constant_name),
-                SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
+                ContextEntryValueSource::Constant {
+                    name: &constant_name,
+                    value: "otlp-http-json",
+                },
+                ContextEntryValueSource::Referenced {
+                    domain: ContextDomain::TransportHeader,
+                    name: &header_name,
+                },
             ]
         );
 
