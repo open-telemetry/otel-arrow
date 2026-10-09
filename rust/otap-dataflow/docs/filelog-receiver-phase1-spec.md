@@ -465,9 +465,15 @@ The following relationships are enforced:
 15. Exactly zero or one multiline boundary pattern is configured.
 16. `re2-v1` is the only accepted regex profile.
 17. A multiline pattern contains at most 4,096 bytes.
-18. Counted repetition bounds do not exceed 1,000.
-19. Each compiled matcher has a 10 MiB program-size limit.
-20. Each matcher has a 2 MiB lazy-DFA cache limit.
+18. Counted repetition bounds do not exceed 1,000, including nested products.
+    Parsed syntax-tree depth does not exceed 64.
+19. The canonical forward-NFA compiler has a 10 MiB limit. Each compiled matcher
+    also has a provisional 10 MiB aggregate engine-reported
+    program-payload limit, including simultaneously retained forward/reverse
+    programs and prefilters. Allocator and capacity allowances are separate.
+20. Each lazy-DFA cache has a provisional 2 MiB capacity limit. This is not a
+    total worker-memory limit; all caches and fallback scratch require aggregate
+    admission under the [regex execution policy](#regex-execution-policy).
 21. Text patterns compile for validated decoded UTF-8.
 22. Raw patterns compile in non-Unicode byte mode.
 23. Backreferences, look-around, Unicode properties, unsupported set operations,
@@ -1902,16 +1908,66 @@ End-pattern mode begins buffering with the first physical line.
   ASCII semantics.
 - Counted repetition limits are at most 1,000.
 - Text patterns run over validated decoded UTF-8.
-- Raw patterns use non-Unicode byte semantics, including exact byte escapes.
+- Raw patterns use non-Unicode byte semantics. Fixed and braced hex escapes
+  denote bytes (`\xFF` and `\x{FF}` both denote byte `FF`); values above `FF`
+  are rejected in raw mode, including in classes and range endpoints.
+  Literal non-ASCII pattern characters outside character classes use their
+  UTF-8 source bytes. Non-ASCII literals inside raw character classes are
+  rejected; use byte hex escapes for class members and range endpoints.
 - Backreferences and look-around are rejected.
 - Rust-only `u`, `R`, and `x` flags are rejected.
 - Unicode property escapes are rejected.
 - Nested or set-operation character classes outside the profile are rejected.
 - Constructs unsupported by the selected linear-time engine are rejected.
-- Program and cache bounds are enforced at compile time.
+- Program admission and cache reservations are established before source activation.
 
 The receiver compiles defensively as well. A defensive mismatch fails the affected data
 source. It never silently falls back to different regex semantics.
+
+### Regex execution policy
+
+The semantic profile fixes syntax and matching results, independently of the
+chosen execution engine. An implementation may use literal prefilters, a lazy
+DFA, or an equivalent non-backtracking NFA simulation. A bounded backtracker
+that visits each input/state pair at most once is a qualification candidate,
+not a required engine. Unbounded backtracking is prohibited.
+
+An accelerator's failure to build or cache churn may select an equivalent
+fallback. Accelerator state growth alone must not reject a pattern when an
+admissible fallback exists. A search must produce the correct boolean answer
+or explicitly fail the source. It must never convert resource exhaustion or
+an engine failure into a nonmatch. Fallback does not change pattern source,
+profile digests, source boundaries, or decoding semantics.
+
+Admission is staged:
+
+1. Before construction, reserve a conservative compilation working set and
+   bound concurrent compilations. Constructing during configuration does not
+   exempt temporary allocations from the engine's memory budget.
+2. Before activation, check the combined retained program payload against its
+   limit and charge shared capacities/bookkeeping once. A per-NFA builder limit
+   alone does not establish the aggregate limit.
+3. Reserve mutable scratch for each worker and active pattern, including every
+   lazy cache and deferred fallback allocation. Caches are worker-owned, not
+   attached to every pending file. Account for multiplicity with checked
+   arithmetic. Never enlarge a cache silently to make an accelerator fit.
+4. Use engine memory reports to verify the model, not as an allocator-capacity
+   oracle. A freshly created cache may omit scratch allocated on first fallback.
+   A violated reservation is a resource-accounting failure, never a nonmatch.
+
+The initial limits are qualification ceilings, not a latency guarantee.
+Matching can require O(program size * line length) work. A synchronous search
+cannot yield merely because a source turn has a byte budget. Oversized lines
+remain excluded from matching, but a maximum-sized eligible line can still
+occupy its worker for too long.
+
+Before production qualification, record a numeric control-latency target and
+reference Linux hardware, then measure maximum-sized nonmatches, cold/warm
+caches, actual fallback paths, prefilter effects, and peak allocations. Full
+receiver tests must measure delay to pending control work as well as throughput.
+If the target is missed, resolve bounds, accepted workload constraints, or
+resumable matching explicitly; selecting a different engine alone does not
+prove the target. Generic chunking must not reset anchors or word-boundary state.
 
 ### Physical-line and logical-record bounds
 

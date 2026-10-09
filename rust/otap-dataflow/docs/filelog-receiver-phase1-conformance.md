@@ -72,6 +72,28 @@ terms cover delimiter lookahead and a pending decoded/source unit. Regex program
 decoder objects, allocator metadata, and library overhead remain separate bounded or
 measured terms.
 
+### Regex construction and worker scratch
+
+Apply the [regex execution policy](filelog-receiver-phase1-spec.md#regex-execution-policy)
+before source activation. Keep three charges distinct: transient compilation,
+shared retained programs, and worker-local scratch. Per-program NFA limits and
+per-cache lazy-DFA limits do not establish either aggregate charge.
+
+For the initial meta-engine implementation, full and one-pass DFAs are disabled,
+implicit captures are retained, and the bounded backtracker is a benchmark
+variant. The worker model counts the reachable lazy-cache paths, capacity-growth
+overlap, and PikeVM storage derived from canonical forward-NFA states,
+capture slots, and epsilon branches. The implementation
+must document its coefficients and re-audit them when engine internals change.
+Fresh-cache measurements alone are insufficient because PikeVM scratch is
+allocated lazily. Post-search reports can also omit spare allocation capacity.
+
+Qualification must compare engine-reported storage with measured peak/live
+allocations for construction and forced fallback separately. Report any
+unqualified compilation reservation, admission integration, or control-latency
+target explicitly. Do not treat a successful microbenchmark as a complete
+receiver memory or control-latency qualification.
+
 ### Aggregate partial-state capacity
 
 `limits.max_partial_state_bytes` bounds charged unfinished state across all
@@ -113,8 +135,10 @@ retained-work RFC's per-owner attribution semantics.
 For aggregate admission, replace an unmultiplied single-reader framer allowance
 with the complete partial-state budget. Add the one shared source-turn buffer,
 shared immutable regex programs, checkpoint/identity state, and simultaneous
-batch/carry-over allocations once in their respective models. Mutable per-reader
-regex or decoder storage belongs in the partial-state charge. Do not multiply
+batch/carry-over allocations once in their respective models. Filelog regex
+caches are worker-owned and charged for each simultaneously retained worker /
+pattern pair, including deferred fallback scratch. Decoder storage and any
+other mutable per-reader framing state belong in the partial-state charge. Do not multiply
 shared scratch by the durable tracked population or add the same framer payload
 again outside the budget.
 
@@ -530,6 +554,10 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Stored profile used 500ms and new configuration omits idle flush | Default resolves to 0s and mismatch remains fail-closed; explicit old setting preserves compatibility |
 | Configuration | Both multiline patterns | Rejected |
 | Configuration | Unsupported regex construct/profile | Rejected |
+| Configuration | Aggregate regex programs exceed admission after acceleration is disabled | Rejected before activation |
+| Resource | Regex fallback allocates scratch absent from the initial cache | Covered by the worker reservation |
+| Framing | Same normalized pattern through lazy DFA and forced NFA fallback | Same boolean results, including empty matches and text/raw boundaries |
+| Performance | Maximum eligible line under cache churn or NFA fallback | Report synchronous blocking time and receiver control latency against the qualification target |
 | Configuration | Framing bound exactly minimum | Accepted |
 | Configuration | Framing bound below encoding minimum | Rejected |
 | Configuration | Record plus attributes equals batch bound | Accepted |
