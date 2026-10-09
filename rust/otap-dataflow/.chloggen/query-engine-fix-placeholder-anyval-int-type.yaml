@@ -1,5 +1,5 @@
 change_type: bug_fix
 component: query-engine
-note: correct placeholder column type for any value int column.
+note: Prevent apply attributes assignments from failing when all integer values are zero.
 issues: [4335]
 
