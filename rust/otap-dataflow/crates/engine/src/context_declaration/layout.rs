@@ -206,19 +206,21 @@ impl ContextLayout {
             let mut members = Vec::with_capacity(declaration.definition.0.len());
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
-                if let ContextEntryPart::Constant { name, value } = part {
-                    members.push(ContextMember {
-                        name: name.clone(),
-                        source: ContextMemberSource::Constant(value.clone().into_boxed_str()),
-                    });
-                    continue;
+                match part {
+                    ContextEntryPart::Constant { name, value } => {
+                        members.push(ContextMember {
+                            name: name.clone(),
+                            source: ContextMemberSource::Constant(value.clone().into_boxed_str()),
+                        });
+                        continue;
+                    }
+                    ContextEntryPart::TransportHeader { .. }
+                    | ContextEntryPart::AuthorizedIdentity { .. }
+                    | ContextEntryPart::TransportHeaderMatch { .. } => {}
                 }
-                let domain = part
-                    .domain()
-                    .expect("referenced context part has an authority domain");
-                let source_name = part
-                    .source_name()
-                    .expect("referenced context part has a source name");
+                let (domain, source_name) = part
+                    .referenced_source()
+                    .expect("referenced context part has a domain and source name");
                 let mut matching = fields
                     .iter()
                     .enumerate()

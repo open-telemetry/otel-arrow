@@ -115,7 +115,7 @@ impl ContextEntryDefinition {
                     "{path_prefix}[{index}] produces duplicate member name `{name}`"
                 ));
             }
-            if let (Some(domain), Some(source_name)) = (part.domain(), part.source_name())
+            if let Some((domain, source_name)) = part.referenced_source()
                 && !value_references.insert((domain, source_name))
             {
                 errors.push(format!(
@@ -183,25 +183,18 @@ pub enum ContextDomain {
 }
 
 impl ContextEntryPart {
-    /// Returns the authority domain required by a referenced member or condition.
+    /// Returns the authority domain and external name of a referenced member or condition.
+    ///
+    /// Domainless value sources such as constants return `None`.
     #[must_use]
-    pub fn domain(&self) -> Option<ContextDomain> {
+    pub fn referenced_source(&self) -> Option<(ContextDomain, &ContextEntryName)> {
         match self {
-            Self::TransportHeader { .. } | Self::TransportHeaderMatch { .. } => {
-                Some(ContextDomain::TransportHeader)
+            Self::TransportHeader { name, .. } | Self::TransportHeaderMatch { name, .. } => {
+                Some((ContextDomain::TransportHeader, name))
             }
-            Self::AuthorizedIdentity { .. } => Some(ContextDomain::AuthorizedIdentity),
-            Self::Constant { .. } => None,
-        }
-    }
-
-    /// Returns the external source name of a member or condition.
-    #[must_use]
-    pub fn source_name(&self) -> Option<&ContextEntryName> {
-        match self {
-            Self::TransportHeader { name, .. }
-            | Self::AuthorizedIdentity { name, .. }
-            | Self::TransportHeaderMatch { name, .. } => Some(name),
+            Self::AuthorizedIdentity { name, .. } => {
+                Some((ContextDomain::AuthorizedIdentity, name))
+            }
             Self::Constant { .. } => None,
         }
     }
@@ -376,8 +369,7 @@ entries:
             ContextEntryPart::Constant { name, value }
                 if name.as_str() == "http.header_scheme" && value == "ApiKey"
         ));
-        assert!(parts[0].domain().is_none());
-        assert!(parts[0].source_name().is_none());
+        assert!(parts[0].referenced_source().is_none());
         assert_eq!(
             parts[0].member_name().map(ContextEntryName::as_str),
             Some("http.header_scheme")

@@ -93,13 +93,14 @@ impl ContextEntryTarget {
         }
     }
 
-    /// Resolves selected values, excluding condition-only fields.
-    fn selected_sources<'a>(
+    /// Visits selected values, excluding condition-only fields.
+    fn visit_selected_sources<'a>(
         &'a self,
         composites: &'a [ConfigContextEntryDeclaration],
-    ) -> Result<Vec<SelectedSource<'a>>, Error> {
+        mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => Ok(vec![SelectedSource::Field(*domain, name)]),
+            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -110,19 +111,22 @@ impl ContextEntryTarget {
                     .ok_or_else(|| {
                         invalid_context(format!("unknown context member `{composite}:{member}`"))
                     })?;
-                Ok(vec![
+                visit(
                     SelectedSource::from_part(part)
                         .expect("selected composite member is value-bearing"),
-                ])
+                )
             }
             Self::Composite { name } => {
                 let declaration = composite_declaration(name, composites)?;
-                Ok(declaration
+                for source in declaration
                     .definition
                     .0
                     .iter()
                     .filter_map(SelectedSource::from_part)
-                    .collect())
+                {
+                    visit(source)?;
+                }
+                Ok(())
             }
         }
     }
@@ -236,12 +240,10 @@ impl ContextDeclaration {
                 selector: ContextConsumerSelector::Entries { entries },
             } => {
                 for entry in entries {
-                    let sources = entry.target.selected_sources(composites)?;
-                    if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
-                        continue;
-                    }
-
-                    for source in sources {
+                    entry.target.visit_selected_sources(composites, |source| {
+                        if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
+                            return Ok(());
+                        }
                         match source {
                             SelectedSource::Field(ContextDomain::TransportHeader, name) => {
                                 _ = requirements
@@ -260,7 +262,8 @@ impl ContextDeclaration {
                                 )));
                             }
                         }
-                    }
+                        Ok(())
+                    })?;
                 }
             }
             Self::Consumes {
@@ -1029,6 +1032,21 @@ mod tests {
         name.try_into().expect("valid test context entry name")
     }
 
+    /// Collects selected sources for assertions over visitor traversal.
+    fn collect_selected_sources<'a>(
+        target: &'a ContextEntryTarget,
+        composites: &'a [ConfigContextEntryDeclaration],
+    ) -> Vec<SelectedSource<'a>> {
+        let mut sources = Vec::new();
+        target
+            .visit_selected_sources(composites, |source| {
+                sources.push(source);
+                Ok(())
+            })
+            .expect("selected sources");
+        sources
+    }
+
     /// Fails if context compilation unexpectedly constructs a receiver.
     fn unused_test_receiver(
         _: crate::context::PipelineContext,
@@ -1370,9 +1388,7 @@ groups:
         };
         let source_name = context_name("id");
         assert_eq!(
-            whole
-                .selected_sources(&context)
-                .expect("whole composite sources"),
+            collect_selected_sources(&whole, &context),
             [
                 SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
                 SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
@@ -1419,9 +1435,7 @@ groups:
         let constant_name = context_name("route_name");
         let header_name = context_name("workspace");
         assert_eq!(
-            whole
-                .selected_sources(&context)
-                .expect("whole composite sources"),
+            collect_selected_sources(&whole, &context),
             [
                 SelectedSource::Constant(&constant_name),
                 SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
