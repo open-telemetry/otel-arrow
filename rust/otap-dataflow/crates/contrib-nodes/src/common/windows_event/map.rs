@@ -394,13 +394,15 @@ mod tests {
         let event = parse(concat!(
             "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>",
             "<System><EventID>1</EventID><TimeCreated SystemTime='2026-09-22T19:28:11Z'/></System>",
-            "<EventData><Data Name='a'>one</Data><Binary>0102FF</Binary></EventData>",
+            "<EventData><Data Name='a'>one</Data><ComplexData><Child>nested</Child></ComplexData><Binary>0102FF</Binary></EventData>",
             "</Event>",
         ));
         let body: serde_json::Value =
             serde_cbor::from_slice(&structured_body(&event).unwrap()).unwrap();
         assert_eq!(body["event_data"]["entries"][0]["name"], "a");
         assert_eq!(body["event_data"]["entries"][0]["value"], "one");
+        assert_eq!(body["event_data"]["complex"][0]["name"], "ComplexData");
+        assert_eq!(body["event_data"]["complex"][0]["content"][0]["name"], "Child");
         assert_eq!(body["event_data"]["binary"], "0102FF");
     }
 
