@@ -17,22 +17,22 @@ pub(super) enum Number {
 /// One configured counter's observation state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum SampleValue {
-    /// An emit-ready, already scaled numeric value.
+    /// A scaled value ready to emit.
     Value(Number),
-    /// No emit-ready value, including warm-up or an idle calculation.
+    /// No value to emit, such as during warm-up or an idle calculation.
     NoObservation,
 }
 
-/// One exact counter point, identified by its normalized configuration.
+/// One configured counter's result in a sample.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SamplePoint {
-    /// Index of the configured counter that supplies the path and metric mapping.
+    /// Index into the configured counters.
     pub(super) counter_index: usize,
     /// Ready value or expected omission.
     pub(super) value: SampleValue,
 }
 
-/// One collection's observations, independent of native handles.
+/// A sample from one collection.
 #[derive(Debug, Clone)]
 pub(super) struct Sample {
     /// Start of the cumulative sequence, used only by emitted Sum points.
@@ -40,7 +40,7 @@ pub(super) struct Sample {
     pub(super) start_time_unix_nano: i64,
     /// Positive observation time in nanoseconds since the Unix epoch.
     pub(super) timestamp_unix_nano: i64,
-    /// Exact points keyed by configured counter.
+    /// At most one point per configured counter.
     pub(super) points: Vec<SamplePoint>,
 }
 

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Projection of exact-counter observations directly into OTAP metric records.
+//! Projects exact-counter samples into OTAP metric records.
 
 use super::config::{CounterConfig, MetricKind};
 use super::model::{Number, Sample, SampleValue};
@@ -17,9 +17,10 @@ use std::collections::BTreeMap;
 
 const AGGREGATION_TEMPORALITY_CUMULATIVE: i32 = 2;
 
-/// Projects ready, already scaled observations using validated exact-counter configuration.
-/// No-observation points are omitted; a collection without values produces no batch.
-/// Errors reject the whole sample and indicate a broken collection contract, not bad counter data.
+/// Projects already-scaled counter samples into OTAP metrics.
+/// Each input point must reference a distinct configured counter.
+/// Only numeric values are emitted; returns `Ok(None)` when there are none.
+/// Contract violations reject the whole sample and indicate a collection bug, not bad counter data.
 pub(super) fn into_otap(
     counters: &[CounterConfig],
     sample: Sample,
@@ -34,18 +35,26 @@ pub(super) fn into_otap(
     let mut points = NumberDataPointsRecordBatchBuilder::new();
     let mut attrs = StrKeysAttributesRecordBatchBuilder::<u32>::new();
     let mut metric_ids = BTreeMap::new();
+    let mut seen_counters = vec![false; counters.len()];
     let mut point_count = 0_u32;
 
     for point in sample.points {
-        let SampleValue::Value(value) = point.value else {
-            continue;
-        };
         let counter = counters.get(point.counter_index).ok_or_else(|| {
             ArrowError::InvalidArgumentError(format!(
                 "sample references missing configured counter {}",
                 point.counter_index
             ))
         })?;
+        if seen_counters[point.counter_index] {
+            return Err(ArrowError::InvalidArgumentError(format!(
+                "sample repeats counter {} (metric {}) at index {}",
+                counter.path, counter.name, point.counter_index
+            )));
+        }
+        seen_counters[point.counter_index] = true;
+        let SampleValue::Value(value) = point.value else {
+            continue;
+        };
         if counter.kind == MetricKind::UpDownCounter
             && (sample.start_time_unix_nano <= 0
                 || sample.start_time_unix_nano > sample.timestamp_unix_nano)
@@ -328,7 +337,7 @@ mod tests {
     }
 
     /// Scenario: Validated configuration maps exact counters to a shared metric with static attributes.
-    /// Guarantees: Observed points share one metric and retain correct path/attribute joins despite omissions and reordering.
+    /// Guarantees: Observed points share one metric and keep their own path and attributes despite omissions and reordering.
     #[test]
     fn projects_shared_metric_with_attributes_and_omissions() {
         let config = RuntimeConfig::from_json(&serde_json::json!({
@@ -520,10 +529,10 @@ mod tests {
         assert!(into_otap(&[], sample(0, 1, vec![])).unwrap().is_none());
     }
 
-    /// Scenario: An emit-ready point references a missing counter or carries a non-finite double.
-    /// Guarantees: Invalid observations are rejected; non-finite errors retain the counter path and value.
+    /// Scenario: A point references a missing counter or an emit-ready value is a non-finite double.
+    /// Guarantees: Invalid indices are rejected even for omissions; non-finite errors retain the path and value.
     #[test]
-    fn rejects_invalid_ready_values() {
+    fn rejects_invalid_counter_references_and_values() {
         let counters = [counter("gauge", MetricKind::Gauge)];
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(matches!(
@@ -539,12 +548,42 @@ mod tests {
                     if message == format!("counter \\Object\\gauge has non-finite double value {value}")
             ));
         }
-        assert!(matches!(
-            into_otap(
-                &counters,
-                sample(0, 1, vec![point(1, SampleValue::Value(Number::Integer(1)))])
-            ),
-            Err(ArrowError::InvalidArgumentError(_))
-        ));
+        for index in [1, usize::MAX] {
+            for value in [
+                SampleValue::Value(Number::Integer(1)),
+                SampleValue::NoObservation,
+            ] {
+                assert!(matches!(
+                    into_otap(&counters, sample(0, 1, vec![point(index, value)])),
+                    Err(ArrowError::InvalidArgumentError(message))
+                        if message == format!("sample references missing configured counter {index}")
+                ));
+            }
+        }
+    }
+
+    /// Scenario: A configured counter occurs twice with numeric values, omissions or a mix of both.
+    /// Guarantees: A repeated counter rejects the whole sample, whether its points have values or not.
+    #[test]
+    fn rejects_duplicate_counter_indices() {
+        let counters = [counter("gauge", MetricKind::Gauge)];
+        for first in [
+            SampleValue::Value(Number::Integer(7)),
+            SampleValue::NoObservation,
+        ] {
+            for second in [
+                SampleValue::Value(Number::Integer(9)),
+                SampleValue::NoObservation,
+            ] {
+                assert!(matches!(
+                    into_otap(
+                        &counters,
+                        sample(0, 1, vec![point(0, first), point(0, second)])
+                    ),
+                    Err(ArrowError::InvalidArgumentError(message))
+                        if message == r"sample repeats counter \Object\gauge (metric gauge) at index 0"
+                ));
+            }
+        }
     }
 }
