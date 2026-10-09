@@ -235,199 +235,12 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-  user_events_linux_smoke:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ./rust/otap-dataflow
-          cache-bin: false
-          save-if: false
-      - name: Run user_events Linux smoke test when supported
-        env:
-          OTAP_DF_RUN_USEREVENTS_E2E: "1"
-        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes user_events_linux_e2e_smoke_when_available --features user-events,otel-arrow-dfe-otap/crypto-ring
-        working-directory: ./rust/otap-dataflow
-
-  etw_windows_smoke:
-    # GitHub-hosted windows-latest runners execute as Administrator with UAC
-    # disabled, which the test requires in order to start an ETW session.
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ./rust/otap-dataflow
-          cache-bin: false
-          save-if: false
-      - name: Run ETW Windows smoke test
-        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw -- --ignored
-        working-directory: ./rust/otap-dataflow
-
-  oracle_receiver_smoke:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - name: Start Oracle
-        shell: bash
-        run: |
-          set -euo pipefail
-          oracle_username="OTAP$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
-          oracle_password="CiA1_$(openssl rand -hex 10)"
-          echo "::add-mask::$oracle_password"
-
-          docker run --detach \
-            --name oracle-receiver-ci \
-            --publish 127.0.0.1:1521:1521 \
-            --env ORACLE_RANDOM_PASSWORD=true \
-            --env APP_USER="$oracle_username" \
-            --env APP_USER_PASSWORD="$oracle_password" \
-            --health-cmd healthcheck.sh \
-            --health-interval 10s \
-            --health-timeout 5s \
-            --health-retries 60 \
-            gvenzl/oracle-free@sha256:0489e0c1f20b2ca632075653c66f284234689ccff62c9a39809d9a5b3e7c1642
-          {
-            echo "ORACLE_CONNECT_STRING=//127.0.0.1:1521/FREEPDB1"
-            echo "ORACLE_USERNAME=$oracle_username"
-            echo "ORACLE_PWD=$oracle_password"
-          } >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ./rust/otap-dataflow
-          cache-bin: false
-          save-if: false
-      - name: Install Oracle Instant Client
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes libaio1t64 unzip
-
-          libaio_path="$(dpkg-query -L libaio1t64 | grep -E '/libaio\.so\.1t64$' || true)"
-          if [[ ! -f "$libaio_path" ]]; then
-            echo "libaio1t64 did not provide libaio.so.1t64." >&2
-            exit 1
-          fi
-          sudo ln -sf "$libaio_path" "$(dirname "$libaio_path")/libaio.so.1"
-
-          curl --fail --location --silent --show-error \
-            https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
-            --output "$RUNNER_TEMP/instantclient.zip"
-          echo "94a458f43873a420e5be6fdf18e9a85df0393b4a1e2999ed406d8ec50f235e71  $RUNNER_TEMP/instantclient.zip" \
-            | sha256sum --check
-          unzip -q "$RUNNER_TEMP/instantclient.zip" -d "$RUNNER_TEMP"
-
-          client_dir="$RUNNER_TEMP/instantclient_23_26"
-          export LD_LIBRARY_PATH="$client_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          ldd "$client_dir/libclntsh.so" | tee "$RUNNER_TEMP/instant-client-ldd.txt"
-          if grep -F 'not found' "$RUNNER_TEMP/instant-client-ldd.txt" > /dev/null; then
-            echo "Oracle Instant Client has unresolved dependencies." >&2
-            exit 1
-          fi
-          echo "ORACLE_INSTANT_CLIENT_DIR=$client_dir" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-      - name: Create Oracle credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          printf '%s' "${ORACLE_PWD:?Oracle password is required}" > "$RUNNER_TEMP/oracle-password"
-          chmod 600 "$RUNNER_TEMP/oracle-password"
-          echo "ORACLE_PASSWORD_FILE=$RUNNER_TEMP/oracle-password" >> "$GITHUB_ENV"
-      - name: Wait for Oracle
-        shell: bash
-        run: |
-          set -euo pipefail
-          for _ in {1..60}; do
-            state="$(docker inspect --format '{{.State.Status}}' oracle-receiver-ci)"
-            health="$(docker inspect --format '{{.State.Health.Status}}' oracle-receiver-ci)"
-            if [[ "$health" == "healthy" ]]; then
-              exit 0
-            fi
-            if [[ "$state" != "running" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          docker logs oracle-receiver-ci > oracle-container.log 2>&1 || true
-          echo "Oracle did not become healthy." >&2
-          exit 1
-      - name: Seed Oracle source data
-        shell: bash
-        run: |
-          cargo run --locked \
-            -p otel-arrow-dfe-contrib-nodes \
-            --features oracle \
-            --example oracle_load_generator \
-            -- \
-            --rows 10 \
-            --collision-size 2 \
-            --reset
-        working-directory: ./rust/otap-dataflow
-      - name: Run live Oracle receiver test
-        env:
-          OTAP_ORACLE_RECEIVER_E2E: "1"
-        shell: bash
-        run: |
-          set -euo pipefail
-          output="$RUNNER_TEMP/oracle-receiver-test.log"
-          cargo test --locked \
-            -p otel-arrow-dfe-contrib-nodes \
-            --features oracle \
-            --lib \
-            emits_oracle_rows_when_live_test_is_enabled \
-            -- \
-            --nocapture \
-            --test-threads=1 \
-            | tee "$output"
-          grep -Eq \
-            'test result: ok\. 1 passed; 0 failed; 0 ignored;' \
-            "$output"
-        working-directory: ./rust/otap-dataflow
-      - name: Capture Oracle logs
-        if: failure()
-        shell: bash
-        run: |
-          if docker inspect oracle-receiver-ci > /dev/null 2>&1; then
-            docker logs oracle-receiver-ci > oracle-container.log 2>&1
-          fi
-      - name: Upload Oracle diagnostics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: oracle-receiver-integration-logs
-          path: |
-            oracle-container.log
-            ${{ runner.temp }}/instant-client-ldd.txt
-            ${{ runner.temp }}/oracle-receiver-test.log
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Remove Oracle container
-        if: always()
-        shell: bash
-        run: docker rm --force oracle-receiver-ci > /dev/null 2>&1 || true
+  contrib_integration:
+    uses: ./.github/workflows/contrib-integration.yml
+    with:
+      base_sha: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      head_sha: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+      include_non_required: ${{ github.event_name == 'pull_request' }}
 
   fmt:
     if: github.event_name == 'pull_request'
@@ -1498,8 +1311,7 @@ jobs:
       - no_default_features_check
       - pipeline_perf_test
       - host-metrics-semconv
-      - user_events_linux_smoke
-      - etw_windows_smoke
+      - contrib_integration
       - license-header-check
     steps:
       - name: Summarize required-build caches
@@ -1575,12 +1387,8 @@ jobs:
             echo "host-metrics-semconv failed or was cancelled"
             exit 1
           fi
-          if [[ "${{ needs.user_events_linux_smoke.result }}" != "success" ]]; then
-            echo "user_events_linux_smoke failed or was cancelled"
-            exit 1
-          fi
-          if [[ "${{ needs.etw_windows_smoke.result }}" != "success" ]]; then
-            echo "etw_windows_smoke failed or was cancelled"
+          if [[ "${{ needs.contrib_integration.result }}" != "success" ]]; then
+            echo "contrib_integration failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.license-header-check.result }}" != "success" ]]; then

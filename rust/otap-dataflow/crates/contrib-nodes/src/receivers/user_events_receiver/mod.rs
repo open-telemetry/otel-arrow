@@ -949,6 +949,8 @@ mod linux_integration_tests {
         true
     }
 
+    /// Scenario: CI enables the live User Events smoke test on a capable Linux host.
+    /// Guarantees: Tracefs and EventHeader samples are emitted, collected, and decoded.
     #[tokio::test(flavor = "current_thread")]
     async fn user_events_linux_e2e_smoke_when_available() {
         if std::env::var_os(RUN_USEREVENTS_E2E_ENV).is_none() {
