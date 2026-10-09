@@ -136,20 +136,14 @@ These measurements used the matching code in
 
 [measured-source]: https://github.com/lalitb/otel-arrow/commit/727113330e4110a44d2ee7697d059430c03db887
 
-## Evidence and interpretation
+## Interpreting results
 
-Keep CSVs, source hashes, cgroup reports, and detailed logs as review artifacts.
-Re-run or clearly mark this snapshot as historical when the implementation or
-timed region changes. Record the compiler, dependency lock, CPU, sample count,
-and exact source hashes alongside each run.
+These results measure the matcher, not the complete receiver. Timing and
+memory use depend on the pattern, input, hardware, and cache settings.
 
-On Linux, pin the process to one CPU and enforce memory/swap limits using cgroup
-v2. Compare 16/32 MiB matcher-process runs, smaller eligible lines, and reduced
-cache ceilings. Build binaries outside timing cgroups; compilation has separate
-memory requirements. Inspect OOM and CPU-throttling counters.
+When rerunning, record the code version, build settings, hardware, and
+sample count. Keep detailed output with the PR and refresh the table when
+matching behavior changes.
 
-Observed medians/maxima describe only the selected fixtures and hardware. Engine
-memory reports can omit spare capacity; requested allocation, RSS, cgroup usage,
-and modeled heap bounds are different measures. A successful 16 MiB matcher
-process does not establish a 16 MiB full-receiver footprint. Receiver admission
-integration and a numeric control-latency qualification target remain separate.
+Passing a memory-limited matcher test does not establish the full
+receiver's memory requirements or responsiveness.
