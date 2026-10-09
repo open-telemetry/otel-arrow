@@ -25,9 +25,10 @@ pub enum KafkaReceiverError {
     #[error("empty kafka payload: {0}")]
     EmptyPayloadDecode(#[source] EngineError),
 
-    /// Topic didn't match any configured signal.
-    #[error("unknown kafka topic: {0}")]
-    UnknownTopicDecode(#[source] EngineError),
+    /// Topic was delivered by a regex subscription but removed by `exclude_topics`,
+    /// so it routed to no configured signal.
+    #[error("excluded kafka topic: {0}")]
+    ExcludedTopicDecode(#[source] EngineError),
 
     /// Decode/unmarshal failed for a routed signal (traces, metrics, or logs).
     ///
@@ -184,6 +185,51 @@ pub enum KafkaReceiverError {
     )]
     ConfigTransientNackReplayRequiresManual,
 
+    /// The DLQ was configured while librdkafka auto-commit was enabled. DLQ
+    /// delivery guarantees depend on the receiver controlling offset commits.
+    #[error("invalid kafka receiver configuration: dlq requires commit.mode manual")]
+    ConfigDlqRequiresManual,
+
+    /// The DLQ `capture` list was empty.
+    #[error("invalid kafka receiver configuration: dlq.capture must not be empty")]
+    ConfigDlqEmptyCapture,
+
+    /// A DLQ topic could not be resolved for a signal that ingests data.
+    #[error(
+        "invalid kafka receiver configuration: dlq has no topic for signal '{signal}' \
+         (set dlq.topic or dlq.per_signal.{signal})"
+    )]
+    ConfigDlqMissingTopic {
+        /// The signal missing a DLQ topic.
+        signal: String,
+    },
+
+    /// A DLQ topic name failed Kafka topic-name validation.
+    #[error("invalid kafka receiver configuration: dlq topic '{topic}': {message}")]
+    ConfigInvalidDlqTopic {
+        /// The offending topic.
+        topic: String,
+        /// The validation message.
+        message: String,
+    },
+
+    /// A DLQ topic overlaps an ingest topic on the same cluster (loop risk).
+    #[error(
+        "invalid kafka receiver configuration: dlq topic '{topic}' overlaps a configured \
+         ingest topic on the same cluster; the receiver would consume its own dead-letter output"
+    )]
+    ConfigDlqTopicOverlapsIngest {
+        /// The overlapping topic.
+        topic: String,
+    },
+
+    /// The DLQ `connection` auth/tls sub-configuration failed validation.
+    #[error("invalid kafka receiver configuration: dlq.connection: {message}")]
+    ConfigInvalidDlqConnection {
+        /// The underlying validation message.
+        message: String,
+    },
+
     /// A field that must be strictly positive was zero (or negative).
     #[error("invalid kafka receiver configuration: {field} must be > 0")]
     ConfigNonPositiveValue {
@@ -226,7 +272,7 @@ impl KafkaReceiverError {
     pub(crate) fn inner(&self) -> Option<&EngineError> {
         match self {
             Self::EmptyPayloadDecode(e)
-            | Self::UnknownTopicDecode(e)
+            | Self::ExcludedTopicDecode(e)
             | Self::SignalDecode { source: e, .. } => Some(e),
             _ => None,
         }
@@ -251,8 +297,8 @@ mod tests {
             KafkaReceiverError::EmptyPayloadDecode(EngineError::PdataConversionError {
                 error: "empty".to_string(),
             }),
-            KafkaReceiverError::UnknownTopicDecode(EngineError::PdataConversionError {
-                error: "unknown".to_string(),
+            KafkaReceiverError::ExcludedTopicDecode(EngineError::PdataConversionError {
+                error: "excluded".to_string(),
             }),
             KafkaReceiverError::SignalDecode {
                 signal: SignalType::Traces,

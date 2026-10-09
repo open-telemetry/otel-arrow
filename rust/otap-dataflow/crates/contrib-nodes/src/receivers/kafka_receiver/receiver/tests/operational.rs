@@ -347,7 +347,7 @@ async fn lag_apply_processes_completion_after_deadline() {
 /// well-formed record followed by an undecodable OTAP record on the same
 /// topic.
 /// Guarantees: the data-processing failure is attributed to the bounded
-/// `decode` rejection reason while the unrelated `unknown_topic` rejection
+/// `decode` rejection reason while the unrelated `excluded_topic` rejection
 /// and partition-revocation metrics stay at zero.
 #[tokio::test]
 async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalance() {
@@ -405,13 +405,13 @@ async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalan
                 ],
                 "messages",
             );
-            let unknown_topic_rejections = measurement_counter(
+            let excluded_topic_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",
                 &[
-                    ("signal", "unknown"),
+                    ("signal", "traces"),
                     ("error.type", "invalid_request"),
-                    ("reason", "unknown_topic"),
+                    ("reason", "excluded_topic"),
                 ],
                 "messages",
             );
@@ -420,8 +420,8 @@ async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalan
                 "decode rejection reason should count the failure, got {decode_rejections}",
             );
             assert_eq!(
-                unknown_topic_rejections, 0,
-                "a decode failure must not be counted as an unknown-topic rejection",
+                excluded_topic_rejections, 0,
+                "a decode failure must not be counted as an excluded-topic rejection",
             );
             assert_eq!(
                 m.value("group.partition.revocations"),
@@ -439,10 +439,11 @@ async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalan
 /// include regex that also matches an `exclude_topics` pattern; a record is
 /// produced to the excluded topic (which librdkafka still delivers because
 /// the include regex matches) alongside a record on a normal included topic.
-/// Guarantees: the excluded record is attributed to the bounded
-/// `unknown_topic` rejection reason while the `decode` reason stays at zero.
+/// Guarantees: the excluded record is attributed to the bounded `excluded_topic`
+/// rejection reason with its matching signal (`traces`) while the `decode` reason
+/// stays at zero.
 #[tokio::test]
-async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors() {
+async fn excluded_topic_rejections_are_categorized_separately_from_decode_errors() {
     const INCLUDED: &str = "visibility-included";
     const EXCLUDED: &str = "visibility-excluded";
     let group = "visibility-filtering-group";
@@ -490,13 +491,13 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
             );
 
             let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
-            let unknown_topic_rejections = measurement_counter(
+            let excluded_topic_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",
                 &[
-                    ("signal", "unknown"),
+                    ("signal", "traces"),
                     ("error.type", "invalid_request"),
-                    ("reason", "unknown_topic"),
+                    ("reason", "excluded_topic"),
                 ],
                 "messages",
             );
@@ -511,9 +512,9 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
                 "messages",
             );
             assert!(
-                unknown_topic_rejections >= 1,
-                "the excluded topic should be counted as an unknown-topic rejection, got \
-                     {unknown_topic_rejections}",
+                excluded_topic_rejections >= 1,
+                "the excluded topic should be counted as an excluded-topic rejection, got \
+                     {excluded_topic_rejections}",
             );
             assert_eq!(
                 decode_rejections, 0,
