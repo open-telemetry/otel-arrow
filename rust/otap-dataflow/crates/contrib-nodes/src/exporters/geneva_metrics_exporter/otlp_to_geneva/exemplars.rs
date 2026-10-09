@@ -261,10 +261,7 @@ fn retain_distribution_sample<E>(
                     mixed_negative_exemplar_bucket(value, extrema.negative, bucket_count),
                 )
             } else {
-                // `value` is NaN here (the `is_zero`, `value > 0.0`, and `value < 0.0` arms
-                // above are all false for NaN). There's no meaningful bucket to place it in,
-                // so discard it rather than leaving the loop cursor stuck on this candidate
-                // forever (which would stall sampling for every later candidate).
+                // NaN: no comparison above matches, so discard rather than stall the loop.
                 SamplingDecision::Discard
             }
         } else {

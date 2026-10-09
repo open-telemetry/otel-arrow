@@ -542,8 +542,7 @@ fn is_banned_metric_namespace(namespace: &str) -> bool {
     BANNED_METRIC_NAMESPACES.contains(&namespace)
 }
 
-// Non-Delta (including Unspecified) maps to Cumulative,
-// and non-monotonic Delta sums are rejected rather than mapped to an up-down counter.
+// Non-Delta maps to Cumulative; non-monotonic Delta sums are rejected.
 fn sum_metric_type(is_monotonic: bool, temporality: AggregationTemporality) -> Option<u32> {
     let is_delta = temporality == AggregationTemporality::Delta;
     match (is_monotonic, is_delta) {
@@ -591,22 +590,22 @@ where
 }
 
 fn unix_nanos_to_dotnet_seconds_floor(value: u64) -> Option<u64> {
-    let ticks = unix_nanos_to_dotnet_ticks(value)?;
+    let ticks = unix_nanos_to_dotnet_ticks(value);
     let seconds = ticks / DOTNET_TICKS_PER_SECOND;
     DOTNET_UNIX_EPOCH_OFFSET_SECONDS.checked_add(seconds)
 }
 
 fn unix_nanos_to_dotnet_seconds_ceil(value: u64) -> Option<u64> {
-    let ticks = unix_nanos_to_dotnet_ticks(value)?;
+    let ticks = unix_nanos_to_dotnet_ticks(value);
     let seconds = ticks / DOTNET_TICKS_PER_SECOND;
-    let round_up = u64::from(ticks % DOTNET_TICKS_PER_SECOND != 0);
+    let round_up = u64::from(!ticks.is_multiple_of(DOTNET_TICKS_PER_SECOND));
     DOTNET_UNIX_EPOCH_OFFSET_SECONDS
         .checked_add(seconds)?
         .checked_add(round_up)
 }
 
-fn unix_nanos_to_dotnet_ticks(value: u64) -> Option<u64> {
-    (value <= i64::MAX as u64).then_some(value / NANOS_PER_DOTNET_TICK)
+fn unix_nanos_to_dotnet_ticks(value: u64) -> u64 {
+    value / NANOS_PER_DOTNET_TICK
 }
 
 #[cfg(test)]
@@ -1281,8 +1280,6 @@ mod tests {
             unix_nanos_to_dotnet_seconds_floor(fractional),
             Some(DOTNET_UNIX_EPOCH_OFFSET_SECONDS + 45)
         );
-        assert_eq!(unix_nanos_to_dotnet_seconds_ceil(i64::MAX as u64 + 1), None);
-
         let scope = scope_with_metrics(vec![gauge_metric(
             "fractional",
             NumberDataPoint {
@@ -1301,6 +1298,35 @@ mod tests {
             mapped.packet.metrics[0].time_bucket,
             (DOTNET_UNIX_EPOCH_OFFSET_SECONDS + 46) as i64
         );
+    }
+
+    /// Scenario: A data point reports a timestamp beyond `i64::MAX` nanoseconds, which OTLP's
+    /// unsigned wire format allows but OTAP's signed internal representation cannot hold.
+    /// Guarantees: The point is still mapped to the correct bucket instead of being rejected,
+    /// since converting to 100ns ticks keeps every value in range far below `u64::MAX`.
+    #[test]
+    fn maps_timestamps_beyond_signed_nanosecond_range() {
+        assert_eq!(
+            unix_nanos_to_dotnet_seconds_floor(u64::MAX),
+            Some(80_582_340_873)
+        );
+        assert_eq!(
+            unix_nanos_to_dotnet_seconds_ceil(u64::MAX),
+            Some(80_582_340_874)
+        );
+
+        let scope = scope_with_metrics(vec![gauge_metric(
+            "far-future",
+            NumberDataPoint {
+                time_unix_nano: i64::MAX as u64 + 1,
+                ..gauge_point(Vec::new())
+            },
+        )]);
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 1);
     }
 
     /// Scenario: An explicit histogram reports only scalar count and sum without a bucket distribution.
