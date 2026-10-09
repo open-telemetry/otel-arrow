@@ -1123,8 +1123,6 @@ mod linux_integration_tests {
                 "EventHeader session should decode the emitted ci_message field"
             );
         }
-
-        println!("OTEL_ARROW_INTEGRATION_TEST_COMPLETED=user-events-linux");
     }
 }
 

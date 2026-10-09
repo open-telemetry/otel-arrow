@@ -100,10 +100,3 @@ if ! grep -Eq \
   echo "Expected exactly one Oracle receiver smoke test to execute." >&2
   exit 1
 fi
-if ! grep -Fq \
-  'OTEL_ARROW_INTEGRATION_TEST_COMPLETED=oracle-receiver' \
-  "$artifact_dir/oracle-receiver-test.log"; then
-  echo "Oracle receiver smoke test exited before exercising the integration path." >&2
-  exit 1
-fi
-

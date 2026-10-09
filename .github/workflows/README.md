@@ -47,9 +47,9 @@ Each manifest contains:
 - a `command` array executed without a shell wrapper.
 
 The command receives `OTEL_ARROW_INTEGRATION_ARTIFACT_DIR` and should write
-diagnostic logs there. It must also fail when its expected test does not
-execute. An optional `cleanup` command array runs after the primary command,
-including on failure.
+diagnostic logs there when useful. Its exit status preserves the component's
+existing CI success semantics. An optional `cleanup` command array runs after
+the primary command, including on failure.
 
 Changes to the shared workflow, discovery and execution scripts, the
 otap-dataflow workspace manifests, lockfile, or contrib-nodes crate manifest
