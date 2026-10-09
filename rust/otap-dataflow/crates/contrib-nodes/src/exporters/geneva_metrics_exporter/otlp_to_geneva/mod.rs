@@ -299,9 +299,7 @@ where
     let Some(value) = point.value() else {
         return Ok(MapPointResult::rejected(None));
     };
-    if matches!(value, Value::Integer(value) if value < 0) {
-        return Ok(MapPointResult::rejected(None));
-    }
+    // Negative integers can't be represented as unsigned; fall back to `Double` instead of rejecting.
     let values = match value {
         Value::Double(value) => MetricValues::Double(NumericValues {
             min: None,
@@ -311,14 +309,24 @@ where
             milliseconds: None,
             histogram: None,
         }),
-        Value::Integer(value) => MetricValues::Unsigned(NumericValues {
-            min: None,
-            max: None,
-            sum: Some(value as u64),
-            count: Some(1),
-            milliseconds: None,
-            histogram: None,
-        }),
+        Value::Integer(value) => match u64::try_from(value) {
+            Ok(value) => MetricValues::Unsigned(NumericValues {
+                min: None,
+                max: None,
+                sum: Some(value),
+                count: Some(1),
+                milliseconds: None,
+                histogram: None,
+            }),
+            Err(_) => MetricValues::Double(NumericValues {
+                min: None,
+                max: None,
+                sum: Some(value as f64),
+                count: Some(1),
+                milliseconds: None,
+                histogram: None,
+            }),
+        },
     };
     let sampling_type = SUM | COUNT | metric_type | METRIC_ORIGIN_OPEN_TELEMETRY;
     map_point(
@@ -397,6 +405,8 @@ where
 {
     if point.flags().no_recorded_value()
         || !(MIN_EXPONENTIAL_SCALE..=MAX_EXPONENTIAL_SCALE).contains(&point.scale())
+        // Geneva's model only carries `zero_count`, which can't represent a nonzero threshold.
+        || point.zero_threshold() != 0.0
     {
         return Ok(MapPointResult::rejected(None));
     }
@@ -532,6 +542,8 @@ fn is_banned_metric_namespace(namespace: &str) -> bool {
     BANNED_METRIC_NAMESPACES.contains(&namespace)
 }
 
+// Non-Delta (including Unspecified) maps to Cumulative,
+// and non-monotonic Delta sums are rejected rather than mapped to an up-down counter.
 fn sum_metric_type(is_monotonic: bool, temporality: AggregationTemporality) -> Option<u32> {
     let is_delta = temporality == AggregationTemporality::Delta;
     match (is_monotonic, is_delta) {
@@ -975,10 +987,12 @@ mod tests {
         );
     }
 
-    /// Scenario: OTLP number points omit their value or contain a negative integer unsupported by the Geneva unsigned integer representation.
-    /// Guarantees: Invalid points are rejected instead of being published as zero or a wrapped unsigned value.
+    /// Scenario: OTLP number points omit their value, or contain a negative integer that the Geneva
+    /// unsigned integer representation cannot hold.
+    /// Guarantees: Points with no value are rejected; negative integers fall back to the `Double`
+    /// representation instead of being dropped.
     #[test]
-    fn rejects_missing_and_negative_integer_number_values() {
+    fn rejects_missing_and_maps_negative_integer_number_values() {
         let scope = scope_with_metrics(vec![
             gauge_metric("valid", gauge_point(Vec::new())),
             gauge_metric(
@@ -1002,9 +1016,21 @@ mod tests {
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
-        assert_eq!(mapped.rejected_data_points, 2);
-        assert_eq!(mapped.packet.metrics.len(), 1);
+        assert_eq!(mapped.rejected_data_points, 1);
+        assert_eq!(mapped.packet.metrics.len(), 2);
         assert_eq!(mapped.packet.metrics[0].name, "valid");
+        assert_eq!(mapped.packet.metrics[1].name, "negative");
+        assert_eq!(
+            mapped.packet.metrics[1].values,
+            MetricValues::Double(NumericValues {
+                min: None,
+                max: None,
+                sum: Some(-1.0),
+                count: Some(1),
+                milliseconds: None,
+                histogram: None,
+            })
+        );
     }
 
     /// Scenario: OTLP explicit and exponential histograms contain valid distributions.
@@ -1087,7 +1113,7 @@ mod tests {
                 histogram: Some(MetricHistogram::Explicit(vec![
                     (1.0, 1),
                     (2.0, 2),
-                    (3.0, 3),
+                    (2.0_f64.next_up(), 3),
                 ])),
             })
         );
@@ -1161,7 +1187,37 @@ mod tests {
         assert_eq!(mapped.packet.metrics[0].name, "valid");
     }
 
-    /// Scenario: Explicit and exponential histogram scalar counts exceed the Geneva u32 wire field.
+    /// Scenario: An exponential histogram data point sets a nonzero `zero_threshold`.
+    /// Guarantees: The point is rejected, since Geneva's exponential-histogram model only carries
+    /// `zero_count` and cannot represent the OTLP zero-threshold interval without changing the
+    /// distribution's semantics.
+    #[test]
+    fn rejects_nonzero_zero_threshold() {
+        let scope = scope_with_metrics(vec![
+            gauge_metric("valid", gauge_point(Vec::new())),
+            otlp_metric(
+                "exponential",
+                metric::Data::ExponentialHistogram(ExponentialHistogram {
+                    data_points: vec![ExponentialHistogramDataPoint {
+                        time_unix_nano: TEST_TIME_NANOS,
+                        count: 1,
+                        sum: Some(1.0),
+                        zero_count: 1,
+                        zero_threshold: 0.5,
+                        ..Default::default()
+                    }],
+                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                }),
+            ),
+        ]);
+
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 1);
+        assert_eq!(mapped.packet.metrics.len(), 1);
+        assert_eq!(mapped.packet.metrics[0].name, "valid");
+    }
     /// Guarantees: Oversized counts are rejected instead of wrapping while other valid metrics remain publishable.
     #[test]
     fn rejects_large_histogram_scalar_counts() {

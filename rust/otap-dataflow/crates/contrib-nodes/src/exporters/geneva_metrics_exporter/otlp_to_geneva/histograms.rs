@@ -33,6 +33,7 @@ where
     let mut buckets = Vec::with_capacity(bounds.size_hint().0 + 1);
     let mut bound_count = 0_usize;
     let mut overflow_bound = 1.0;
+    let mut total = 0_u64;
     for bound in bounds {
         if bound.is_nan() {
             return ExplicitHistogram::Invalid;
@@ -41,22 +42,37 @@ where
         let Some(count) = current_count else {
             return ExplicitHistogram::Invalid;
         };
+        let Some(running_total) = total.checked_add(count) else {
+            return ExplicitHistogram::Invalid;
+        };
+        total = running_total;
         buckets.push((bound, clamp_bucket_count(count)));
-        overflow_bound = bound + 1.0;
+        // `bound + 1.0` can round back to `bound` for large bounds; use the next representable value instead.
+        let next_bound = bound.next_up();
+        if next_bound <= bound {
+            return ExplicitHistogram::Invalid;
+        }
+        overflow_bound = next_bound;
         current_count = counts.next();
     }
     if bound_count == 0 {
         return match current_count {
-            Some(count) => ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![(
-                overflow_bound,
-                clamp_bucket_count(count),
-            )])),
+            Some(count) if count == point.count() => ExplicitHistogram::Buckets(
+                MetricHistogram::Explicit(vec![(overflow_bound, clamp_bucket_count(count))]),
+            ),
+            Some(_) => ExplicitHistogram::Invalid,
             None => ExplicitHistogram::Empty,
         };
     }
     let Some(overflow_count) = current_count else {
         return ExplicitHistogram::Invalid;
     };
+    let Some(total) = total.checked_add(overflow_count) else {
+        return ExplicitHistogram::Invalid;
+    };
+    if total != point.count() {
+        return ExplicitHistogram::Invalid;
+    }
     buckets.push((overflow_bound, clamp_bucket_count(overflow_count)));
     normalize_explicit_buckets(&mut buckets);
     ExplicitHistogram::Buckets(MetricHistogram::Explicit(buckets))
@@ -76,6 +92,7 @@ fn normalize_explicit_buckets(buckets: &mut Vec<(f64, u32)>) {
     for read_index in 0..buckets.len() {
         let (bound, count) = buckets[read_index];
         if write_index > 0 && buckets[write_index - 1].0 == bound {
+            // Matches ME's unguarded `uint32_t +=` merge (wraps on overflow).
             buckets[write_index - 1].1 = buckets[write_index - 1].1.wrapping_add(count);
         } else {
             buckets[write_index] = (bound, count);
@@ -160,10 +177,11 @@ mod tests {
         super::sparse_buckets(buckets.map(ObjBuckets::new))
     }
 
-    fn explicit_point(bounds: Vec<f64>, counts: Vec<u64>) -> HistogramDataPoint {
+    fn explicit_point(bounds: Vec<f64>, counts: Vec<u64>, count: u64) -> HistogramDataPoint {
         HistogramDataPoint {
             explicit_bounds: bounds,
             bucket_counts: counts,
+            count,
             ..Default::default()
         }
     }
@@ -183,40 +201,24 @@ mod tests {
     #[test]
     fn validates_explicit_histogram_bucket_shape() {
         assert_eq!(
-            explicit_histogram(&explicit_point(vec![1.0, 2.0], vec![3, 4])),
+            explicit_histogram(&explicit_point(vec![1.0, 2.0], vec![3, 4], 7)),
             ExplicitHistogram::Invalid
         );
         assert_eq!(
-            explicit_histogram(&explicit_point(vec![1.0, 2.0], vec![3, 4, 5])),
+            explicit_histogram(&explicit_point(vec![1.0, 2.0], vec![3, 4, 5], 12)),
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, 3),
                 (2.0, 4),
-                (3.0, 5),
+                (2.0_f64.next_up(), 5),
             ]))
         );
-        let extra_counts = explicit_point(vec![1.0, 2.0], vec![3, 4, 5, 999]);
+        let extra_counts = explicit_point(vec![1.0, 2.0], vec![3, 4, 5, 999], 12);
         assert_eq!(
             explicit_histogram(&extra_counts),
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, 3),
                 (2.0, 4),
-                (3.0, 5),
-            ]))
-        );
-    }
-
-    /// Scenario: An explicit histogram contains finite bounds and an overflow bucket.
-    /// Guarantees: Bounds and counts map in order and the overflow bucket receives a synthetic final bound.
-    #[test]
-    fn maps_explicit_histogram_with_overflow_bucket() {
-        let histogram = explicit_histogram(&explicit_point(vec![1.0, 2.0], vec![3, 4, 5]));
-
-        assert_eq!(
-            histogram,
-            ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
-                (1.0, 3),
-                (2.0, 4),
-                (3.0, 5),
+                (2.0_f64.next_up(), 5),
             ]))
         );
     }
@@ -228,6 +230,7 @@ mod tests {
         let histogram = explicit_histogram(&explicit_point(
             vec![3.0, 1.0, 1.0, f64::MAX],
             vec![1, 2, 3, 4, 5],
+            15,
         ));
 
         assert_eq!(
@@ -235,7 +238,8 @@ mod tests {
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, 5),
                 (3.0, 1),
-                (f64::MAX, 9),
+                (f64::MAX, 4),
+                (f64::INFINITY, 5),
             ]))
         );
     }
@@ -244,7 +248,7 @@ mod tests {
     /// Guarantees: Malformed input is rejected before the quadratic insertion fallback can run.
     #[test]
     fn rejects_nan_explicit_histogram_bounds() {
-        let point = explicit_point(vec![1.0, f64::NAN, 2.0], vec![1, 2, 3, 4]);
+        let point = explicit_point(vec![1.0, f64::NAN, 2.0], vec![1, 2, 3, 4], 10);
 
         assert_eq!(explicit_histogram(&point), ExplicitHistogram::Invalid);
     }
@@ -254,15 +258,28 @@ mod tests {
     #[test]
     fn clamps_explicit_histogram_bucket_counts() {
         let oversized = u64::from(u32::MAX) + 1;
-        let histogram = explicit_histogram(&explicit_point(vec![1.0], vec![oversized, u64::MAX]));
+        let histogram = explicit_histogram(&explicit_point(
+            vec![1.0],
+            vec![oversized, oversized],
+            oversized * 2,
+        ));
 
         assert_eq!(
             histogram,
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, u32::MAX),
-                (2.0, u32::MAX),
+                (1.0_f64.next_up(), u32::MAX),
             ]))
         );
+    }
+
+    /// Scenario: Explicit histogram bucket counts sum to more than a u64 can represent.
+    /// Guarantees: The data point is rejected rather than silently wrapping the running total.
+    #[test]
+    fn rejects_explicit_bucket_total_overflow() {
+        let histogram = explicit_histogram(&explicit_point(vec![1.0], vec![u64::MAX, 1], u64::MAX));
+
+        assert_eq!(histogram, ExplicitHistogram::Invalid);
     }
 
     /// Scenario: An explicit histogram data point contains no bucket counts.
@@ -270,7 +287,7 @@ mod tests {
     #[test]
     fn omits_empty_explicit_histogram() {
         assert_eq!(
-            explicit_histogram(&explicit_point(Vec::new(), Vec::new())),
+            explicit_histogram(&explicit_point(Vec::new(), Vec::new(), 0)),
             ExplicitHistogram::Empty
         );
     }
@@ -280,7 +297,7 @@ mod tests {
     #[test]
     fn maps_unbounded_explicit_histogram_single_bucket() {
         assert_eq!(
-            explicit_histogram(&explicit_point(Vec::new(), vec![7])),
+            explicit_histogram(&explicit_point(Vec::new(), vec![7], 7)),
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![(1.0, 7)]))
         );
     }
