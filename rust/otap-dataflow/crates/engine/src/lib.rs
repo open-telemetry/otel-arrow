@@ -721,6 +721,7 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
     extension_factories: &'static [ExtensionFactory],
+    context_materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -741,7 +742,18 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             processor_factories,
             exporter_factories,
             extension_factories,
+            context_materializer: None,
         }
+    }
+
+    /// Installs the data-type-specific runtime context materializer.
+    #[must_use]
+    pub const fn with_context_materializer(
+        mut self,
+        materialize: fn(&mut PData, &context_declaration::ContextMaterializationPlan),
+    ) -> Self {
+        self.context_materializer = Some(materialize);
+        self
     }
 
     /// Gets the receiver factory map, initializing it if necessary.
@@ -1977,6 +1989,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .compiled_context_bindings()
             .authorized_identity_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
             .cloned();
+        let context_materialization_plan = pipeline_ctx
+            .compiled_context_bindings()
+            .context_materialization_plan(&pipeline_ctx.pipeline_key())
+            .cloned();
+        if context_materialization_plan.is_some() && self.context_materializer.is_none() {
+            return Err(Error::ConfigError(Box::new(
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: "pipeline data type does not support context materialization".to_owned(),
+                },
+            )));
+        }
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -1987,7 +2010,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy)
-        .with_authorized_identity_policy(authorized_identity_policy);
+        .with_authorized_identity_policy(authorized_identity_policy)
+        .with_context_materialization(context_materialization_plan, self.context_materializer);
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())

@@ -12,6 +12,7 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metrics};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
+use crate::context_declaration::ContextMaterializationPlan;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
 };
@@ -35,6 +36,34 @@ use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Data-type-specific materialization installed on receiver effect handlers.
+pub struct ReceiverContextMaterialization<PData> {
+    plan: ContextMaterializationPlan,
+    materialize: fn(&mut PData, &ContextMaterializationPlan),
+}
+
+impl<PData> Clone for ReceiverContextMaterialization<PData> {
+    fn clone(&self) -> Self {
+        Self {
+            plan: self.plan.clone(),
+            materialize: self.materialize,
+        }
+    }
+}
+
+impl<PData> ReceiverContextMaterialization<PData> {
+    pub(crate) fn new(
+        plan: ContextMaterializationPlan,
+        materialize: fn(&mut PData, &ContextMaterializationPlan),
+    ) -> Self {
+        Self { plan, materialize }
+    }
+
+    pub(crate) fn apply(&self, data: &mut PData) {
+        (self.materialize)(data, &self.plan);
+    }
+}
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -69,6 +98,8 @@ pub enum ReceiverWrapper<PData> {
         capture_policy: Option<CompiledHeaderCapturePolicy>,
         /// Pre-resolved authorized identity claim projection policy.
         authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
+        /// Pipeline plan for materializing selected constant/randomness composites.
+        context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -97,6 +128,8 @@ pub enum ReceiverWrapper<PData> {
         capture_policy: Option<CompiledHeaderCapturePolicy>,
         /// Pre-resolved authorized identity claim projection policy.
         authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
+        /// Pipeline plan for materializing selected constant/randomness composites.
+        context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     },
 }
 
@@ -140,6 +173,7 @@ impl<PData> ReceiverWrapper<PData> {
             source_tag: SourceTagging::Disabled,
             capture_policy: None,
             authorized_identity_policy: None,
+            context_materialization_plan: None,
         }
     }
 
@@ -169,6 +203,7 @@ impl<PData> ReceiverWrapper<PData> {
             source_tag: SourceTagging::Disabled,
             capture_policy: None,
             authorized_identity_policy: None,
+            context_materialization_plan: None,
         }
     }
 
@@ -186,6 +221,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy,
+                context_materialization_plan,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -200,6 +236,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy,
+                context_materialization_plan,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -213,6 +250,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy,
+                context_materialization_plan,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -227,6 +265,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy,
+                context_materialization_plan,
             },
         }
     }
@@ -258,6 +297,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy,
+                context_materialization_plan,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -284,6 +324,7 @@ impl<PData> ReceiverWrapper<PData> {
                     source_tag,
                     capture_policy,
                     authorized_identity_policy,
+                    context_materialization_plan,
                 }
             }
             ReceiverWrapper::Shared {
@@ -299,6 +340,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy,
+                context_materialization_plan,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -325,6 +367,7 @@ impl<PData> ReceiverWrapper<PData> {
                     source_tag,
                     capture_policy,
                     authorized_identity_policy,
+                    context_materialization_plan,
                 }
             }
         }
@@ -351,6 +394,7 @@ impl<PData> ReceiverWrapper<PData> {
                     source_tag,
                     capture_policy,
                     authorized_identity_policy,
+                    context_materialization_plan,
                     ..
                 },
                 metrics_reporter,
@@ -378,6 +422,7 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
                 effect_handler.set_authorized_identity_policy(authorized_identity_policy);
+                effect_handler.set_context_materialization(context_materialization_plan);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -394,6 +439,7 @@ impl<PData> ReceiverWrapper<PData> {
                     source_tag,
                     capture_policy,
                     authorized_identity_policy,
+                    context_materialization_plan,
                     ..
                 },
                 metrics_reporter,
@@ -421,6 +467,7 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
                 effect_handler.set_authorized_identity_policy(authorized_identity_policy);
+                effect_handler.set_context_materialization(context_materialization_plan);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -534,6 +581,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 authorized_identity_policy,
+                context_materialization_plan,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -548,6 +596,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy: policy,
                 authorized_identity_policy,
+                context_materialization_plan,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -561,6 +610,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 authorized_identity_policy,
+                context_materialization_plan,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -575,6 +625,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy: policy,
                 authorized_identity_policy,
+                context_materialization_plan,
             },
         }
     }
@@ -597,6 +648,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy,
+                context_materialization_plan,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -611,6 +663,7 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy: policy,
+                context_materialization_plan,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -624,6 +677,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy,
+                context_materialization_plan,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -638,6 +692,78 @@ impl<PData> ReceiverWrapper<PData> {
                 source_tag,
                 capture_policy,
                 authorized_identity_policy: policy,
+                context_materialization_plan,
+            },
+        }
+    }
+
+    /// Returns the wrapper with the pipeline's context materialization plan.
+    pub(crate) fn with_context_materialization(
+        self,
+        plan: Option<ContextMaterializationPlan>,
+        materialize: Option<fn(&mut PData, &ContextMaterializationPlan)>,
+    ) -> Self {
+        let context_materialization_plan = plan
+            .zip(materialize)
+            .map(|(plan, materialize)| ReceiverContextMaterialization::new(plan, materialize));
+        match self {
+            ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                authorized_identity_policy,
+                ..
+            } => ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                authorized_identity_policy,
+                context_materialization_plan,
+            },
+            ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                authorized_identity_policy,
+                ..
+            } => ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                authorized_identity_policy,
+                context_materialization_plan,
             },
         }
     }

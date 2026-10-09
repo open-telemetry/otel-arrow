@@ -266,10 +266,12 @@ configured member names but no source domain or original wire name. They add
 no presence requirement, so referenced fields and conditions still determine
 whether the composite entry is present.
 
-When runtime materialization is implemented, each random value is generated
-once when its context is materialized and retained for that context's lifetime.
-The current logical model records the generator kind; runtime value generation
-and propagation remain separate integration work.
+Each selected random value is generated once when its context is materialized
+at the receiver boundary and retained for that context's lifetime. Materialized
+values are preserved by detached context clones. Runtime projection reads use
+the existing logical projection model; general consumer bindings, optimized
+lookups, projector transforms, and propagation remain separate integration
+work.
 
 UUID v7 values expose their generation time and are not secrets. They must not
 be used as authentication tokens, secret values, or cryptographic anti-replay
@@ -292,6 +294,8 @@ have configured member names but no source domain or original wire name.
 Constants are always available, so only referenced fields and conditions
 determine whether a composite entry is present. Configuration values are not
 secret storage and must not contain credentials or other sensitive data.
+Selected constants are copied into the materialized context when the enclosing
+composite is present.
 
 #### Composite context entry dimensions
 

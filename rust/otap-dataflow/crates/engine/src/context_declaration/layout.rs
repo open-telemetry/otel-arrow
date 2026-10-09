@@ -5,10 +5,11 @@
 //!
 //! A projection identifies selected values and the enclosing composite whose
 //! presence a consumer must establish. This module compiles and resolves that
-//! model; it does not evaluate message values or change header propagation.
+//! model; runtime materialization is implemented by the sibling
+//! `materialization` module, while header propagation remains separate.
 //!
-//! Layout-local IDs are not offsets into message storage. Runtime presence
-//! evaluation, consumer integration, and precomputed hashes are separate work.
+//! Layout-local IDs are not offsets into message storage. General consumer
+//! bindings and precomputed hashes remain separate work.
 
 use std::collections::{BTreeMap, BTreeSet};
 
