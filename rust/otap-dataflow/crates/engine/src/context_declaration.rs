@@ -5,10 +5,11 @@
 //!
 //! Primitive reads, writes, and all-stored selections always specify a source domain.
 //! Composite selections instead name the composite and optionally its member; the
-//! definition supplies each member's domain and the entire entry's presence gate.
+//! definition supplies each member's value source (a domain-backed field, configured
+//! constant, or random generator) and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
 
-/// Compiles logical context layouts and resolves field projections.
+/// Compiles logical context layouts and resolves member projections.
 mod layout;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
@@ -20,7 +21,9 @@ use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::context_policy::ContextEntryDeclaration as ConfigContextEntryDeclaration;
+use otel_arrow_dfe_config::context_policy::{
+    ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
+};
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
@@ -55,6 +58,34 @@ pub enum ContextEntryTarget {
     },
 }
 
+/// One selected value source after resolving a primitive or composite target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectedSource<'a> {
+    /// Value supplied by a domain-backed primitive field.
+    Field(ContextDomain, &'a ContextEntryName),
+    /// Inline configured value with no source domain or wire name.
+    Constant(&'a ContextEntryName),
+    /// Generated random value with no source domain or wire name.
+    Randomness(&'a ContextEntryName),
+}
+
+impl<'a> SelectedSource<'a> {
+    /// Resolves one value-bearing composite part, excluding conditions.
+    fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
+        match part {
+            ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
+            ContextEntryPart::Randomness { name, .. } => Some(Self::Randomness(name)),
+            ContextEntryPart::TransportHeader { name, .. } => {
+                Some(Self::Field(ContextDomain::TransportHeader, name))
+            }
+            ContextEntryPart::AuthorizedIdentity { name, .. } => {
+                Some(Self::Field(ContextDomain::AuthorizedIdentity, name))
+            }
+            ContextEntryPart::TransportHeaderMatch { .. } => None,
+        }
+    }
+}
+
 impl ContextEntryTarget {
     /// Returns the enclosing composite name, or none for a primitive.
     fn composite_name(&self) -> Option<&ContextEntryName> {
@@ -65,14 +96,14 @@ impl ContextEntryTarget {
         }
     }
 
-    /// Visits selected value sources with their domains, excluding condition-only fields.
-    fn visit_sources(
-        &self,
-        composites: &[ConfigContextEntryDeclaration],
-        mut visit: impl FnMut(ContextDomain, &ContextEntryName) -> Result<(), Error>,
+    /// Visits selected values, excluding condition-only fields.
+    fn visit_selected_sources<'a>(
+        &'a self,
+        composites: &'a [ConfigContextEntryDeclaration],
+        mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => visit(*domain, name),
+            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -83,14 +114,20 @@ impl ContextEntryTarget {
                     .ok_or_else(|| {
                         invalid_context(format!("unknown context member `{composite}:{member}`"))
                     })?;
-                visit(part.domain(), part.reference().name())
+                visit(
+                    SelectedSource::from_part(part)
+                        .expect("selected composite member is value-bearing"),
+                )
             }
             Self::Composite { name } => {
                 let declaration = composite_declaration(name, composites)?;
-                for part in &declaration.definition.0 {
-                    if part.member_name().is_some() {
-                        visit(part.domain(), part.reference().name())?;
-                    }
+                for source in declaration
+                    .definition
+                    .0
+                    .iter()
+                    .filter_map(SelectedSource::from_part)
+                {
+                    visit(source)?;
                 }
                 Ok(())
             }
@@ -206,17 +243,32 @@ impl ContextDeclaration {
                 selector: ContextConsumerSelector::Entries { entries },
             } => {
                 for entry in entries {
-                    entry.target.visit_sources(composites, |domain, name| {
-                        if entry.form == ContextEntrySelectorForm::OriginalKeyValue {
-                            if domain != ContextDomain::TransportHeader {
+                    entry.target.visit_selected_sources(composites, |source| {
+                        if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
+                            return Ok(());
+                        }
+                        match source {
+                            SelectedSource::Field(ContextDomain::TransportHeader, name) => {
+                                _ = requirements
+                                    .original_name_retention
+                                    .overrides
+                                    .insert(original_name_key(name), true);
+                            }
+                            SelectedSource::Field(domain, name) => {
                                 return Err(invalid_context(format!(
                                     "original wire name requested for {domain:?} context entry `{name}`; only transport headers have original wire names"
                                 )));
                             }
-                            _ = requirements
-                                .original_name_retention
-                                .overrides
-                                .insert(original_name_key(name), true);
+                            SelectedSource::Constant(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for constant context entry `{name}`; constants have no original wire names"
+                                )));
+                            }
+                            SelectedSource::Randomness(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for randomness context entry `{name}`; generated values have no original wire names"
+                                )));
+                            }
                         }
                         Ok(())
                     })?;
@@ -988,6 +1040,21 @@ mod tests {
         name.try_into().expect("valid test context entry name")
     }
 
+    /// Collects selected sources for assertions over visitor traversal.
+    fn collect_selected_sources<'a>(
+        target: &'a ContextEntryTarget,
+        composites: &'a [ConfigContextEntryDeclaration],
+    ) -> Vec<SelectedSource<'a>> {
+        let mut sources = Vec::new();
+        target
+            .visit_selected_sources(composites, |source| {
+                sources.push(source);
+                Ok(())
+            })
+            .expect("selected sources");
+        sources
+    }
+
     /// Fails if context compilation unexpectedly constructs a receiver.
     fn unused_test_receiver(
         _: crate::context::PipelineContext,
@@ -1210,6 +1277,35 @@ groups:
         }
     }
 
+    /// Builds a test composite containing one constant and one header member.
+    fn constant_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("route"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "constant", "name": "route_name", "value": "otlp-http-json"},
+                {"type": "transport_header", "name": "workspace"}
+            ]))
+            .expect("valid constant composite"),
+        }
+    }
+
+    /// Builds a test composite containing one randomness member.
+    fn randomness_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("idempotency"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "randomness", "name": "id", "value": "uuid7"}
+            ]))
+            .expect("valid randomness composite"),
+        }
+    }
+
     /// Scenario: same-name sources are declared in different domains for reads, writes, and all-stored.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
@@ -1312,18 +1408,12 @@ groups:
         let whole = ContextEntryTarget::Composite {
             name: context_name("tenant"),
         };
-        let mut sources = Vec::new();
-        whole
-            .visit_sources(&context, |domain, name| {
-                sources.push((domain, name.clone()));
-                Ok(())
-            })
-            .expect("whole composite sources");
+        let source_name = context_name("id");
         assert_eq!(
-            sources,
+            collect_selected_sources(&whole, &context),
             [
-                (ContextDomain::TransportHeader, context_name("id")),
-                (ContextDomain::AuthorizedIdentity, context_name("id")),
+                SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
+                SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
             ]
         );
         let prepared = PreparedNodeContextDeclarations::new(
@@ -1354,6 +1444,83 @@ groups:
                 .requirements
                 .preserves_original_name(&context_name("environment"))
         );
+    }
+
+    /// Scenario: a consumer selects constant and field members or their entire composite.
+    /// Guarantees: constants add no external source requirements and reject original wire names.
+    #[test]
+    fn constant_members_have_no_external_or_original_name_requirements() {
+        let context = [constant_composite()];
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("route"),
+        };
+        let constant_name = context_name("route_name");
+        let header_name = context_name("workspace");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [
+                SelectedSource::Constant(&constant_name),
+                SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
+            ]
+        );
+
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(
+                member_target("route", "route_name"),
+                ContextEntrySelectorForm::Value,
+            ),
+            &context,
+        )
+        .expect("constant value selection");
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
+        for target in [member_target("route", "route_name"), whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("constant has no original wire name");
+            assert!(
+                error.to_string().contains(
+                    "original wire name requested for constant context entry `route_name`"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    /// Scenario: a consumer selects a generated randomness member.
+    /// Guarantees: randomness adds no external requirements and rejects original wire names.
+    #[test]
+    fn randomness_members_have_no_external_or_original_name_requirements() {
+        let context = [randomness_composite()];
+        let member = member_target("idempotency", "id");
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("idempotency"),
+        };
+        let randomness_name = context_name("id");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [SelectedSource::Randomness(&randomness_name)]
+        );
+
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(member.clone(), ContextEntrySelectorForm::Value),
+            &context,
+        )
+        .expect("randomness value selection");
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
+        for target in [member, whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("randomness has no original wire name");
+            assert!(
+                error
+                    .to_string()
+                    .contains("original wire name requested for randomness context entry `id`")
+            );
+        }
     }
 
     /// Scenario: consumer targets are missing, select conditions as values, or request identity wire names.

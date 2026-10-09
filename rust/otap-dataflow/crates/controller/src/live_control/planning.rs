@@ -1007,9 +1007,7 @@ impl<
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
         let active_runtime_state = current_deployment
             .as_ref()
-            .map(|record| {
-                self.active_runtime_core_state(&pipeline_key, record.create_or_replace_generation)
-            })
+            .map(|record| self.active_runtime_core_state(&pipeline_key, record.baseline_generation))
             .unwrap_or(ActiveRuntimeCoreState {
                 current_generation_cores: Vec::new(),
                 has_foreign_active_generations: false,
@@ -1077,7 +1075,7 @@ impl<
         };
         let previous_generation = current_deployment
             .as_ref()
-            .map(|record| record.create_or_replace_generation);
+            .map(|record| record.baseline_generation);
 
         let (rollout_id, target_generation, placement_generation) = {
             let mut state = self
@@ -1220,7 +1218,7 @@ impl<
             target_generation,
             current_deployment
                 .as_ref()
-                .map(|record| record.create_or_replace_generation),
+                .map(|record| record.baseline_generation),
             drain_timeout_secs,
             target_deployment
                 .resolved
@@ -1455,7 +1453,7 @@ impl<
         );
         self.observed_state_store.set_pipeline_active_generation(
             plan.pipeline_key.clone(),
-            plan.target_deployment.create_or_replace_generation,
+            plan.target_deployment.baseline_generation,
         );
     }
 
@@ -1695,7 +1693,7 @@ impl<
         Ok(Some(PipelineDetails {
             pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
             pipeline_id: pipeline_key.pipeline_id().clone(),
-            active_generation: Some(record.create_or_replace_generation),
+            active_generation: Some(record.baseline_generation),
             pipeline: record.resolved.pipeline.clone(),
             rollout,
         }))

@@ -118,7 +118,6 @@ impl<
             core_id,
             deployment_generation,
         };
-        let live_config = self.engine_config_snapshot();
         let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -129,8 +128,8 @@ impl<
             core_placement.numa_node_id,
         );
         let topic_set = Controller::<PData>::build_pipeline_topic_set(
-            &live_config,
             &self.declared_topics,
+            &deployment.resolved.topic_scope,
             &pipeline_key.pipeline_group_id,
             &pipeline_key.pipeline_id,
             pipeline_key.core_id,
@@ -860,7 +859,7 @@ impl<
                 .runtime_recoveries
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
-                    serving_generation: current_deployment.create_or_replace_generation,
+                    serving_generation: current_deployment.baseline_generation,
                     context_bindings: Arc::clone(&context_bindings),
                     restart_count: 0,
                     ready_since: None,

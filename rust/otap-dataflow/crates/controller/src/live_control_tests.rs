@@ -1462,14 +1462,7 @@ fn launch_committed_test_pipeline(
     let placement = runtime
         .pipeline_placement_for_resolved(&resolved)
         .expect("test pipeline placement should resolve");
-    let inherited_extensions =
-        runtime.inherited_extensions_for_pipeline(&resolved.pipeline_group_id, &resolved.pipeline);
-    runtime.register_committed_pipeline_with_inherited(
-        resolved.clone(),
-        inherited_extensions,
-        placement,
-        0,
-    );
+    register_committed_pipeline(runtime, resolved.clone(), placement, 0);
     let deployment = runtime
         .state
         .lock()
@@ -2103,7 +2096,36 @@ fn register_pipeline(
     let placement = runtime
         .pipeline_placement_for_resolved(&resolved)
         .expect("resolved pipeline placement should exist");
-    runtime.register_committed_pipeline(resolved, placement, 0);
+    register_committed_pipeline(runtime, resolved, placement, 0);
+}
+
+fn register_committed_pipeline(
+    runtime: &ControllerRuntime<()>,
+    resolved: ResolvedPipelineConfig,
+    placement: PipelinePlacement,
+    generation: u64,
+) {
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+    let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+        &resolved, &placement, 0,
+    ));
+    let inherited_extensions =
+        runtime.inherited_extensions_for_pipeline(&resolved.pipeline_group_id, &resolved.pipeline);
+    let deployment = LogicalPipelineDeployment::new(
+        resolved,
+        inherited_extensions,
+        context_bindings,
+        generation,
+        placement,
+        listener_group_snapshot,
+    );
+    runtime.register_committed_pipeline(&deployment);
 }
 
 fn register_runtime_instance(
@@ -2494,7 +2516,7 @@ connections:
     assert!(plan.removed_assigned_cores.is_empty());
     assert_eq!(plan.resize_start_cores, vec![1]);
     assert!(plan.resize_stop_cores.is_empty());
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
     assert_eq!(
         plan.rollout
@@ -2560,7 +2582,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
     for core_id in 4..=7 {
         let _receiver = register_runtime_instance(
@@ -2663,7 +2685,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
     for core_id in 0..=1 {
         let _receiver = register_runtime_instance(
@@ -2836,7 +2858,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
     for core_id in 2..=3 {
         let _receiver = register_runtime_instance(
@@ -2979,7 +3001,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
 
     let p2_resize = PipelineConfig::from_yaml(
@@ -3116,7 +3138,7 @@ groups:
     .expect("startup placement should resolve");
 
     for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
-        runtime.register_committed_pipeline(pipeline, placement, 0);
+        register_committed_pipeline(&runtime, pipeline, placement, 0);
     }
 
     let p2_resize = PipelineConfig::from_yaml(
@@ -3303,7 +3325,8 @@ connections:
                 && pipeline.pipeline_id.as_ref() == "p3"
         })
         .expect("p3 should resolve");
-    runtime.register_committed_pipeline(
+    register_committed_pipeline(
+        &runtime,
         p3_resolved,
         PipelinePlacement {
             pipeline_group_id: "g1".to_owned().into(),
@@ -3710,7 +3733,7 @@ connections:
         .expect("resize should be planned");
 
     assert_eq!(plan.action, RolloutAction::Replace);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 1);
+    assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
@@ -3795,7 +3818,7 @@ connections:
         .expect("listener scale-down should be planned");
 
     assert_eq!(plan.action, RolloutAction::Replace);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 1);
+    assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert_eq!(plan.current_assigned_cores, vec![0, 1, 2]);
     assert_eq!(plan.target_assigned_cores, vec![0, 1]);
     assert_eq!(plan.removed_assigned_cores, vec![2]);
@@ -3888,7 +3911,7 @@ connections:
     assert_eq!(plan.removed_assigned_cores, vec![1]);
     assert!(plan.resize_start_cores.is_empty());
     assert_eq!(plan.resize_stop_cores, vec![1]);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
     assert_eq!(
         plan.rollout
@@ -3966,7 +3989,7 @@ connections:
         .expect("identical updates should be planned");
 
     assert_eq!(plan.action, RolloutAction::NoOp);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 0);
     assert!(plan.rollout.cores.is_empty());
     assert!(plan.resize_start_cores.is_empty());
@@ -4140,7 +4163,7 @@ connections:
         .expect("scope-only limiter change should be planned");
 
     assert_eq!(plan.action, RolloutAction::NoOp);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 0);
+    assert_eq!(plan.target_deployment.baseline_generation, 0);
     assert!(plan.rollout.cores.is_empty());
 }
 
@@ -4299,7 +4322,7 @@ connections:
         .expect("runtime shape changes should still be planned");
 
     assert_eq!(plan.action, RolloutAction::Replace);
-    assert_eq!(plan.target_deployment.create_or_replace_generation, 1);
+    assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert_eq!(plan.common_assigned_cores, vec![0]);
     assert_eq!(plan.added_assigned_cores, vec![1]);
     assert!(plan.resize_start_cores.is_empty());
@@ -4737,18 +4760,13 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
-    let candidate_key = deployed_key(
-        "g1",
-        "p1",
-        0,
-        plan.target_deployment.create_or_replace_generation,
-    );
+    let candidate_key = deployed_key("g1", "p1", 0, plan.target_deployment.baseline_generation);
     let mut candidate_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         0,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
 
@@ -4828,7 +4846,7 @@ connections:
         "g1",
         "p1",
         0,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
 
@@ -4912,18 +4930,13 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
-    let started_key = deployed_key(
-        "g1",
-        "p1",
-        1,
-        plan.target_deployment.create_or_replace_generation,
-    );
+    let started_key = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
     let started_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         1,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
     let exit_thread = complete_instance_exit_on_shutdown(
@@ -5015,18 +5028,13 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
-    let added_key = deployed_key(
-        "g1",
-        "p1",
-        1,
-        plan.target_deployment.create_or_replace_generation,
-    );
+    let added_key = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
     let added_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         1,
-        plan.target_deployment.create_or_replace_generation,
+        plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
     let exit_thread = complete_instance_exit_on_shutdown(
@@ -5635,7 +5643,7 @@ async fn live_rollouts_and_recovery_preserve_inherited_provider_state() {
                         .logical_pipelines
                         .get(&pipeline_key)
                         .expect("committed record");
-                    assert_eq!(record.create_or_replace_generation, generation);
+                    assert_eq!(record.baseline_generation, generation);
                     assert!(!record.inherited_extensions.is_empty());
                     assert_eq!(state.active_instances, 2);
                     assert!(state.first_error.is_none());
@@ -6004,7 +6012,7 @@ fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
     let placement = runtime
         .pipeline_placement_for_resolved(&resolved)
         .expect("resolved pipeline placement should exist");
-    runtime.register_committed_pipeline(resolved.clone(), placement, 0);
+    register_committed_pipeline(&runtime, resolved.clone(), placement, 0);
     let deployment = runtime
         .state
         .lock()
@@ -6824,7 +6832,7 @@ fn reconcile_engine_config_preserves_generation_for_context_declaration_changes(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
         assert_eq!(
-            state.logical_pipelines[&pipeline_key].create_or_replace_generation,
+            state.logical_pipelines[&pipeline_key].baseline_generation,
             0
         );
         assert_eq!(state.generation_counters[&pipeline_key], 1);
@@ -7741,7 +7749,7 @@ groups:
         };
         let group_id = resolved.pipeline_group_id.as_ref().to_owned();
         let pipeline_id = resolved.pipeline_id.as_ref().to_owned();
-        runtime.register_committed_pipeline(resolved, placement, 0);
+        register_committed_pipeline(&runtime, resolved, placement, 0);
         for core_id in assigned_cores {
             let _rx = register_runtime_instance(
                 &runtime,

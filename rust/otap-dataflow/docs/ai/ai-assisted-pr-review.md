@@ -217,6 +217,13 @@ Check dependency and feature hygiene:
 - optional functionality should not expand the default build without
   justification
 - target-specific dependencies should be feature- or platform-gated
+- crypto-related dependencies should not silently select a provider through
+  default features
+- provider-specific code should preserve the workspace `crypto-*` feature
+  selection model
+- new direct `ring`, `aws-lc-rs`, `openssl`, or `symcrypt` dependencies should
+  implement the corresponding selectable backend or include a clear
+  justification
 - unreleased commit pins should be temporary, explained, and preferred only when
   a release tag cannot satisfy the requirement
 

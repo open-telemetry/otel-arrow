@@ -531,9 +531,10 @@ oauth2-client-auth = [
 ]
 
 # Assertion-signing backend, mirroring the workspace `crypto-*` selection.
-crypto-ring = ["dep:ring"]
-crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
-crypto-openssl = ["dep:openssl"]
+crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "dep:rustls"]
+crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "dep:rustls"]
+crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "dep:rustls"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "dep:rustls"]
 ```
 
 **Crypto provider prerequisite.** The `reqwest`/`rustls` HTTP client requires a
@@ -553,22 +554,23 @@ provider picks the signing backend, so a build links one cryptographic library
 rather than two - which matters where the choice of library is a compliance
 requirement rather than a preference.
 
-| Feature | Assertion-signing backend |
+| Feature | Selected Rustls provider |
 | --- | --- |
 | `crypto-ring` | `ring` |
-| `crypto-aws-lc` | `aws-lc-rs`, through `jsonwebtoken`'s bundled provider |
-| `crypto-openssl` | `openssl` |
-| `crypto-symcrypt` | none |
+| `crypto-aws-lc` | `aws-lc-rs` |
+| `crypto-openssl` | `rustls-openssl` |
+| `crypto-symcrypt` | `rustls-symcrypt` |
 
-SymCrypt has no entry because its Rust bindings import an RSA key only as raw
-(modulus, exponent, prime) components, while `jsonwebtoken` hands a provider a
-PKCS#1 DER blob. A build with no signing backend - `crypto-symcrypt`, or no
-`crypto-*` feature at all - rejects the JWT-bearer grant when the extension is
-constructed, rather than panicking at the first signature. The
-client-credentials grant needs no signing and is unaffected.
+All four features install the same provider-neutral `jsonwebtoken`
+`CryptoProvider`. It loads private keys and signs or verifies assertions through
+the selected Rustls provider's public `KeyProvider`, `SigningKey`, `Signer`, and
+signature-verification interfaces. A build with no `crypto-*` feature rejects
+the JWT-bearer grant when the extension is constructed, rather than panicking at
+the first signature. The client-credentials grant needs no signing and is
+unaffected.
 
-The providers implement only the RSA PKCS#1 v1.5 algorithms the grant accepts
-(RS256, RS384, RS512) and do not support JWKs. `jsonwebtoken` has no other
+The adapter implements only the RSA PKCS#1 v1.5 algorithms the grant accepts
+(RS256, RS384, RS512) and does not support JWKs. `jsonwebtoken` has no other
 consumer in the collector, so the narrower algorithm set is not observable
 elsewhere.
 

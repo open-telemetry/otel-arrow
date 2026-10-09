@@ -70,5 +70,13 @@ required-features = ["bench"]
 name = "scale_metric"
 harness = false
 
+[[bench]]
+name = "conditional"
+harness = false
+
+[[bench]]
+name = "data_point_parent_attrs"
+harness = false
+
 [lints]
 workspace = true
