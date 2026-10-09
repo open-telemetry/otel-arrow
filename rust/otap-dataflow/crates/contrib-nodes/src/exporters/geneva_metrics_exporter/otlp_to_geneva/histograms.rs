@@ -57,9 +57,12 @@ where
     }
     if bound_count == 0 {
         return match current_count {
-            Some(count) if count == point.count() => ExplicitHistogram::Buckets(
-                MetricHistogram::Explicit(vec![(overflow_bound, clamp_bucket_count(count))]),
-            ),
+            Some(count) if count == point.count() && counts.next().is_none() => {
+                ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![(
+                    overflow_bound,
+                    clamp_bucket_count(count),
+                )]))
+            }
             Some(_) => ExplicitHistogram::Invalid,
             None => ExplicitHistogram::Empty,
         };
@@ -70,7 +73,9 @@ where
     let Some(total) = total.checked_add(overflow_count) else {
         return ExplicitHistogram::Invalid;
     };
-    if total != point.count() {
+    // The bucket-count array must be exactly one longer than the bounds array; any counts
+    // remaining after the overflow bucket mean the point's shape is malformed.
+    if total != point.count() || counts.next().is_some() {
         return ExplicitHistogram::Invalid;
     }
     buckets.push((overflow_bound, clamp_bucket_count(overflow_count)));
@@ -196,8 +201,9 @@ mod tests {
         }
     }
 
-    /// Scenario: Explicit histogram bucket counts omit, include, or exceed the required overflow bucket.
-    /// Guarantees: Missing overflow counts are rejected, and counts beyond the first overflow bucket are ignored.
+    /// Scenario: Explicit histogram bucket counts omit, exactly match, or exceed the required overflow bucket.
+    /// Guarantees: Missing overflow counts are rejected, a correctly sized count array is mapped, and counts
+    /// beyond the required overflow bucket are rejected rather than silently ignored.
     #[test]
     fn validates_explicit_histogram_bucket_shape() {
         assert_eq!(
@@ -215,11 +221,7 @@ mod tests {
         let extra_counts = explicit_point(vec![1.0, 2.0], vec![3, 4, 5, 999], 12);
         assert_eq!(
             explicit_histogram(&extra_counts),
-            ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
-                (1.0, 3),
-                (2.0, 4),
-                (2.0_f64.next_up(), 5),
-            ]))
+            ExplicitHistogram::Invalid
         );
     }
 
@@ -299,6 +301,16 @@ mod tests {
         assert_eq!(
             explicit_histogram(&explicit_point(Vec::new(), vec![7], 7)),
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![(1.0, 7)]))
+        );
+    }
+
+    /// Scenario: An explicit histogram data point has no configured bounds but reports more than one bucket count.
+    /// Guarantees: The trailing count is rejected rather than silently ignored.
+    #[test]
+    fn rejects_unbounded_explicit_histogram_trailing_counts() {
+        assert_eq!(
+            explicit_histogram(&explicit_point(Vec::new(), vec![7, 1], 8)),
+            ExplicitHistogram::Invalid
         );
     }
 
