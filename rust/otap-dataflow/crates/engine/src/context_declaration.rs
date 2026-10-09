@@ -430,7 +430,7 @@ impl PreparedPipelineContext {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let layout = Arc::new(ContextLayout::compile_selected(
+        let layout = Arc::new(ContextLayout::compile(
             nodes
                 .values()
                 .flat_map(PreparedNodeContextDeclarations::primitive_fields),

@@ -88,7 +88,7 @@ impl CompiledHeaderPropagationPolicy {
             .map(|name| super::composite_declaration(name, declarations).cloned())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
-        let layout = ContextLayout::compile_selected(primitive_fields(&policy), &selected)
+        let layout = ContextLayout::compile(primitive_fields(&policy), &selected)
             .map_err(|error| error.to_string())?;
         Self::bind(policy, Arc::new(layout))
     }

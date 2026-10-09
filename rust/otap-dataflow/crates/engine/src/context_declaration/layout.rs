@@ -170,11 +170,11 @@ pub(super) fn validate_definition(declaration: &ContextEntryDeclaration) -> Resu
 impl ContextLayout {
     /// Gathers explicit primitives and all sources of selected composites before assigning IDs.
     /// Header source names are canonicalized; identity names retain exact spelling.
-    pub(super) fn compile_selected(
+    pub fn compile(
         fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, Error> {
-        let fields = fields
+        let fields: Box<[_]> = fields
             .into_iter()
             .chain(
                 declarations
@@ -192,17 +192,7 @@ impl ContextLayout {
                     field.name = field.name.to_ascii_lowercase();
                 }
                 field
-            });
-        Self::compile(fields, declarations)
-    }
-
-    /// Compiles a binding's fields and entry declarations into a logical layout.
-    pub fn compile(
-        fields: impl IntoIterator<Item = ContextFieldLayout>,
-        declarations: &[ContextEntryDeclaration],
-    ) -> Result<Self, Error> {
-        let fields: Box<[_]> = fields
-            .into_iter()
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -247,25 +237,11 @@ impl ContextLayout {
                 let source_name = part
                     .source_name()
                     .expect("referenced context part has a source name");
-                let mut matching = fields
+                let field = fields
                     .iter()
-                    .enumerate()
-                    .filter(|(_, field)| field.domain == domain && field.matches_name(source_name));
-                let field = matching
-                    .next()
-                    .map(|(index, _)| ContextFieldId(index))
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "context entry `{}` requires unavailable {:?} domain `{source_name}`",
-                            declaration.name, domain
-                        ))
-                    })?;
-                if matching.next().is_some() {
-                    return Err(invalid(format!(
-                        "context entry `{}` has ambiguous {:?} reference `{source_name}`",
-                        declaration.name, domain
-                    )));
-                }
+                    .position(|field| field.domain == domain && field.matches_name(source_name))
+                    .map(ContextFieldId)
+                    .expect("referenced fields were collected before assigning IDs");
                 if let ContextEntryPart::TransportHeaderMatch { value, .. } = part {
                     let condition = ContextCondition {
                         field,
@@ -596,14 +572,24 @@ mod tests {
         );
     }
 
-    /// Scenario: a grouping references a name in the wrong source domain.
-    /// Guarantees: compilation fails rather than interpreting a trusted claim as a header.
+    /// Scenario: a composite requires an identity whose name is also an explicit header field.
+    /// Guarantees: compilation gathers dependencies in their declared domains without substitution.
     #[test]
-    fn provenance_mismatch_is_rejected() {
-        assert_compile_error(
+    fn referenced_fields_are_collected_in_their_domains() {
+        let layout = compile(
             [field("customer", ContextDomain::TransportHeader)],
             &[entry()],
-            "requires unavailable AuthorizedIdentity domain `customer`",
+        );
+        assert_eq!(layout.fields().len(), 3);
+        let projection = layout
+            .resolve_member(&name("product_user"), &name("customer_id"))
+            .expect("identity member");
+        let identity = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("customer"))
+            .expect("inferred identity");
+        assert_eq!(
+            projection_sources(&projection),
+            projection_sources(&identity)
         );
     }
 
@@ -776,7 +762,7 @@ mod tests {
     }
 
     /// Scenario: a header reference varies in case while an identity reference does not.
-    /// Guarantees: transport matching preserves stored spelling without folding identity names.
+    /// Guarantees: header sources are canonicalized without folding identity names or member aliases.
     #[test]
     fn reference_matching_respects_source_domains() {
         let mut declaration = entry();
@@ -793,16 +779,23 @@ mod tests {
             name: name("CUSTOMER"),
             store_as: None,
         };
-        assert_compile_error(fields(), &[declaration], "unavailable AuthorizedIdentity");
+        let layout = compile(fields(), &[declaration]);
+        let lower = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("customer"))
+            .expect("explicit identity");
+        let upper = layout
+            .resolve_primitive(ContextDomain::AuthorizedIdentity, &name("CUSTOMER"))
+            .expect("inferred identity");
+        assert_ne!(lower, upper);
     }
 
-    /// Scenario: distinct stored header names differ only by ASCII case.
-    /// Guarantees: a case-insensitive composite reference reports ambiguity rather than picking one.
+    /// Scenario: multiple declarations refer to the same header with different ASCII casing.
+    /// Guarantees: compilation assigns one canonical field regardless of duplicate requirements.
     #[test]
-    fn ambiguous_transport_reference_is_rejected() {
+    fn repeated_transport_fields_share_one_id() {
         let mut sources = fields();
         sources.push(field("WORKSPACE", ContextDomain::TransportHeader));
-        assert_compile_error(sources, &[entry()], "ambiguous TransportHeader reference");
+        assert_eq!(compile(sources, &[entry()]), compile(fields(), &[entry()]));
     }
 
     /// Scenario: a constant-only entry compiles without any primitive fields.
