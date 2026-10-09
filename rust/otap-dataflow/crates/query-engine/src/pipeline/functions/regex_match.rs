@@ -13,10 +13,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayAccessor, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, StringArrayType,
+    Array, ArrayAccessor, ArrayRef, AsArray, BooleanArray, StringArrayType,
     downcast_dictionary_array,
 };
-use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::DataType;
 use datafusion::common::exec_err;
 use datafusion::error::Result;
@@ -47,7 +47,7 @@ impl RegexMatchFunc {
 
 impl PartialEq for RegexMatchFunc {
     fn eq(&self, other: &Self) -> bool {
-        self.regex.as_str() == other.regex.as_str()
+        std::ptr::eq(self, other)
     }
 }
 
@@ -55,7 +55,7 @@ impl Eq for RegexMatchFunc {}
 
 impl Hash for RegexMatchFunc {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.regex.as_str().hash(state);
+        (self as *const Self).hash(state);
     }
 }
 
