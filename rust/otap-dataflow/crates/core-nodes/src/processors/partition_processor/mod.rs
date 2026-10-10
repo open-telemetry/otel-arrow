@@ -574,6 +574,7 @@ mod test {
             opentelemetry::{
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
             },
         },
@@ -947,6 +948,79 @@ mod test {
                     vec![("success".to_string(), 1)]
                 );
             });
+    }
+
+    #[test]
+    fn test_treats_non_configured_batch_types_as_passthrough() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": "instrumentation_scope.name" },
+                "signal_type": "Logs",
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .expect("create partition processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let logs_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![
+                            ScopeLogs::new(
+                                InstrumentationScope::build().name("scope1").finish(),
+                                vec![LogRecord::build().event_name("hello1").finish()],
+                            ),
+                            ScopeLogs::new(
+                                InstrumentationScope::build().name("scope2").finish(),
+                                vec![LogRecord::build().event_name("hello2").finish()],
+                            ),
+                        ],
+                    )],
+                }));
+
+                let metrics_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![
+                            ScopeMetrics::new(
+                                InstrumentationScope::build().name("scope1").finish(),
+                                vec![Metric::build().name("hello1").finish()],
+                            ),
+                            ScopeMetrics::new(
+                                InstrumentationScope::build().name("scope2").finish(),
+                                vec![Metric::build().name("hello2").finish()],
+                            ),
+                        ],
+                    )],
+                }));
+
+                ctx.process(Message::PData(OtapPdata::new_default(logs_batch.into())))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(OtapPdata::new_default(metrics_batch.into())))
+                    .await
+                    .unwrap();
+
+                let output_batches = ctx.drain_pdata().await;
+
+                let mut logs_count = 0;
+                let mut metrics_count = 0;
+                for batch in output_batches {
+                    match batch.signal_type() {
+                        SignalType::Logs => logs_count += 1,
+                        SignalType::Metrics => metrics_count += 1,
+                        SignalType::Traces => panic!("unexpected signal type"),
+                    }
+                }
+
+                assert_eq!(logs_count, 2);
+                assert_eq!(metrics_count, 1);
+            })
+            .validate(move |_ctx| async move {})
     }
 
     /// Scenario: A partition expression divides by zero while processing a PData message.
