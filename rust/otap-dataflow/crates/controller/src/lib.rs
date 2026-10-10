@@ -1898,6 +1898,17 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
+        let shutdown_signal_listener =
+            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
+                // Register before reconciliation starts regular pipelines so a termination signal
+                // can trigger graceful shutdown throughout startup.
+                Some(Self::spawn_shutdown_signal_listener(Arc::clone(
+                    &control_plane,
+                ))?)
+            } else {
+                None
+            };
+
         let config = &engine_config.engine.controller;
         let step_timeout_secs = cap_timeout_secs(config.startup_step_timeout_secs);
         let drain_timeout_secs = cap_timeout_secs(config.startup_failure_drain_timeout_secs);
@@ -1965,7 +1976,6 @@ impl<
             }
         };
 
-        let signal_control_plane = Arc::clone(&control_plane);
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
@@ -1991,15 +2001,6 @@ impl<
         // In standard engine mode, keep the main thread blocked until an explicit
         // engine-wide shutdown drains every pipeline. An empty engine, or one whose
         // last pipeline stops independently, must remain available for live control.
-        let shutdown_signal_listener =
-            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
-                // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
-                // control plane.
-                Some(Self::spawn_shutdown_signal_listener(signal_control_plane)?)
-            } else {
-                None
-            };
-
         if run_mode == RunMode::ParkMainThread {
             runtime.wait_until_global_shutdown_drains_or_released();
         }
