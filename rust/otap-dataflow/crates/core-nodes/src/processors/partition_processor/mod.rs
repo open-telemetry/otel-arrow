@@ -559,6 +559,7 @@ mod test {
     ) -> TransportHeader {
         TransportHeader::new(context_name(name.as_ref()), value_kind, value)
     }
+    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_otap::{
         OTAP_PIPELINE_FACTORY,
         pdata::Context,
@@ -584,7 +585,7 @@ mod test {
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
-    ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
+    ) -> Result<ProcessorWrapper<OtapPdata>, EngineError> {
         let mut node_config = NodeUserConfig::new_processor_config(PARTITION_PROCESSOR_URN);
         node_config.config = config;
 
@@ -606,21 +607,23 @@ mod test {
             &mut pipeline_context,
             &OTAP_PIPELINE_FACTORY,
             pipeline_config,
-        )
-        .expect("test context bindings should compile");
+        )?;
         let pipeline_context = pipeline_context.with_node_context(
             "partition_processor".into(),
             node_config.r#type.clone(),
             node_config.kind(),
             HashMap::new(),
         );
-        create_partition_processor(
+        let processor = create_partition_processor(
             pipeline_context,
             node_id,
             Arc::new(node_config),
             runtime.config(),
             &Capabilities::empty(),
         )
+        .map_err(|config_err| EngineError::ConfigError(Box::new(config_err)))?;
+
+        Ok(processor)
     }
 
     fn partition_operation_counts(
@@ -948,6 +951,8 @@ mod test {
             });
     }
 
+    /// Scenario: batches where only some will be partitioned because of configured signal type
+    /// Guarantees: only the selected batches are partitioned
     #[test]
     fn test_treats_non_configured_batch_types_as_passthrough() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -2080,5 +2085,28 @@ mod test {
                 entry: context_name("x-partition"),
             }
         );
+    }
+
+    /// Scenario: the config partition expression references a field that is not valid for the
+    /// configured signal type
+    /// Guarantees: an error is returned when validating the config which explains the problem.
+    #[test]
+    fn test_invalid_field_name_is_config_error() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let config = serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "x-partition",
+            "signal_type": "Logs"
+        });
+
+        let Err(error) = create_processor_with_config(config, &runtime) else {
+            panic!("expected error, got Ok")
+        };
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("unknown field name for signal type Single"),
+            "unexpected error {}",
+            error_message
+        )
     }
 }

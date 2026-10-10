@@ -131,6 +131,24 @@ mod test {
     }
 
     #[test]
+    fn test_deserialize_with_signal_type_configured() {
+        for (config_sig_type, expected) in [
+            ("Logs", SignalType::Logs),
+            ("Traces", SignalType::Traces),
+            ("Metrics", SignalType::Metrics),
+        ] {
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "partition_by": { "opl_expression": "instrumentation_scope.name" },
+                "partition_header_name": "part.name",
+                "signal_type": config_sig_type,
+            }))
+            .unwrap();
+
+            assert_eq!(config.signal_type, Some(expected))
+        }
+    }
+
+    #[test]
     fn test_choose_partition_serialization_strategy_json() {
         let config: Config = serde_json::from_value(serde_json::json!({
             "partition_by": { "opl_expression": "name" },
