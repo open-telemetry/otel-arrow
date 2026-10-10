@@ -747,3 +747,83 @@ fn tiny_raw_bounds_cover_source() {
         }
     }
 }
+
+/// Scenario: A text pattern matches a malformed preserve-raw physical line.
+/// Guarantees: The pattern sees a replacement scalar while the record retains exact invalid bytes.
+#[test]
+fn preserve_raw_pattern_matches_replacement_shadow() {
+    let (mut f, mut m) = make(config(GroupingMode::End), "^a.b$", RecordStart::NewStream);
+    let mut out = vec![];
+    feed(&mut f, &mut m, b"prefix\na\xffb\n", &mut out).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].ending, RecordEnding::EndPattern);
+    assert_eq!(out[0].body, LineBody::Bytes(b"prefix\na\xffb".to_vec()));
+    assert_eq!(out[0].malformed_units, 1);
+}
+
+/// Scenario: A known-end split completed by idle or permanent EOF is recovered after its first fragment.
+/// Guarantees: Body and coordinates are reproduced without inventing the unpersisted completion reason.
+#[test]
+fn recovered_completion_evidence() {
+    let mut c = config(GroupingMode::End);
+    c.line.max_record_bytes = 4;
+    let source = b"ab\ncde";
+    for reason in [PartialCompletion::Idle, PartialCompletion::PermanentEof] {
+        let (mut f, mut m) = make(c, "END", RecordStart::NewStream);
+        let mut original = vec![];
+        feed(&mut f, &mut m, source, &mut original).unwrap();
+        complete(&mut f, &mut m, reason, &mut original).unwrap();
+        assert_eq!(original.len(), 2);
+        assert_eq!(
+            original[1].ending,
+            if reason == PartialCompletion::Idle {
+                RecordEnding::Idle
+            } else {
+                RecordEnding::PermanentEof
+            }
+        );
+        let continuation = original[0].continuation.unwrap();
+        let offset = original[0].frame_range.end;
+        let (mut f, mut m) = make(
+            c,
+            "END",
+            RecordStart::Continuation {
+                offset,
+                continuation,
+            },
+        );
+        let mut recovered = vec![];
+        feed(&mut f, &mut m, &source[offset as usize..], &mut recovered).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].body, original[1].body);
+        assert_eq!(recovered[0].frame_range, original[1].frame_range);
+        assert_eq!(recovered[0].body_range, original[1].body_range);
+        assert_eq!(recovered[0].fragment, original[1].fragment);
+        assert_eq!(recovered[0].ending, RecordEnding::Continuation);
+    }
+}
+
+/// Scenario: An oversized physical line resumes from an acknowledged fragment and reaches LF.
+/// Guarantees: Recovery preserves the oversized-line ending rather than replacing it with a generic reason.
+#[test]
+fn recovered_oversized_line_reason() {
+    let mut c = config(GroupingMode::End);
+    c.line.max_line_bytes = 4;
+    let source = b"abcdef\n";
+    let (mut f, mut m) = make(c, "END", RecordStart::NewStream);
+    let mut original = vec![];
+    feed(&mut f, &mut m, source, &mut original).unwrap();
+    let offset = original[0].frame_range.end;
+    let (mut f, mut m) = make(
+        c,
+        "END",
+        RecordStart::Continuation {
+            offset,
+            continuation: original[0].continuation.unwrap(),
+        },
+    );
+    let mut recovered = vec![];
+    feed(&mut f, &mut m, &source[offset as usize..], &mut recovered).unwrap();
+    assert_eq!(recovered, original[1..]);
+    assert_eq!(recovered[0].ending, RecordEnding::OversizeLine);
+}

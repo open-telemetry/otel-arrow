@@ -1700,7 +1700,11 @@ Every source offset counts original bytes. The processing order is:
 6. construct an OTAP record or fragment; and
 7. attach a progress delta owning the complete frame range.
 
-Text newline and regex framing always follow decoding. Raw mode performs no decoding.
+Text newline and regex framing always follow decoding. With `preserve_raw`, text
+patterns see the decoded line with U+FFFD for malformed units, even when the
+emitted record uses exact source bytes. With `replace`, patterns see that same
+replacement text. With `fail`, malformed input stops decoding before matching.
+Raw-mode patterns inspect source bytes directly, without decoding.
 
 ### Encoding behavior
 
@@ -1907,7 +1911,8 @@ End-pattern mode begins buffering with the first physical line.
 - Perl classes `\d`, `\s`, `\w`, their negations, and word boundaries use RE2's
   ASCII semantics.
 - Counted repetition limits are at most 1,000.
-- Text patterns run over validated decoded UTF-8.
+- Text patterns run over decoded UTF-8, including U+FFFD replacements for
+  malformed units under `preserve_raw` or `replace`.
 - Raw patterns use non-Unicode byte semantics. Fixed and braced hex escapes
   denote bytes (`\xFF` and `\x{FF}` both denote byte `FF`); values above `FF`
   are rejected in raw mode, including in classes and range endpoints.
@@ -2105,6 +2110,18 @@ that end. For the zero-ended scan-to-LF form, source framing establishes the
 boundary at runtime; a nonzero-delta update preserves the same start and mode
 until that proof exists, and any later continuation starts at or after the
 prior committed frontier. Zero-delta updates remain bit-for-bit preserving.
+
+Continuation stores no completion reason. For a recovered known-end sequence,
+the stored boundary makes the final fragment eligible; the original idle or
+permanent-EOF reason is not reconstructed. Do not infer
+`terminal_unterminated` from a stored end alone. This follows the
+[record-reproduction contract](#crash-recovery-and-record-reproduction):
+stored continuation coordinates remain authoritative, but completion metadata
+can change
+across a crash. In-process retries still preserve the retained batch unchanged.
+A scan-to-LF continuation that reaches LF retains its oversized-line reason;
+new idle or permanent-EOF authority is reported only when it actually completes
+that recovered pending frame.
 
 The committed prefix is neither reread nor re-emitted. For a nonzero stored end,
 a current source size below `record_end_offset` is detected truncation and
