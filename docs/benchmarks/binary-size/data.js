@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791590421741,
+  "lastUpdate": 1791592155043,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -58940,6 +58940,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2eba9fcabecee800def8e94c0f473c31201f2a12",
+          "message": "perf: Add a UDF for evaluating regular expressions in the query engine to avoid constant recompiling (#4330)\n\n# Change summary\n\nThis PR is trying to address #4329 for the query engine. As explained\nthere, the underlying function for regex match in arrow-rs takes a\nstring instead of a Regex and so recompiles the full regex matcher on\nevery invocation. This dominates runtime for smaller batch sizes\nespecially.\n\nThis PR adds a UDF for evaluating regular expressions instead. The perf\nresults are very good:\n\n| Benchmark | Batch size | Before (time/batch) | After (time/batch) |\nTime change | Before (logs/s) | After (logs/s) |\n|---|---:|---:|---:|---:|---:|---:|\n| `regex_filter_body` | 8 | 85.3 µs | 4.60 µs | -94.6% | 93.8K | 1.74M |\n| `regex_filter_body` | 128 | 93.5 µs | 6.06 µs | -93.5% | 1.37M | 21.1M\n|\n| `regex_filter_body` | 1024 | 94.3 µs | 9.57 µs | -89.9% | 10.9M |\n107.0M |\n| `regex_filter_attr` | 8 | 88.2 µs | 5.08 µs | -94.3% | 90.7K | 1.57M |\n| `regex_filter_attr` | 128 | 91.5 µs | 6.86 µs | -92.5% | 1.40M | 18.6M\n|\n| `regex_filter_attr` | 1024 | 101.0 µs | 13.5 µs | -86.6% | 10.1M |\n75.9M |\n| `regex_conditional_set` | 8 | 101.2 µs | 15.7 µs | -84.5% | 79.1K |\n508K |\n| `regex_conditional_set` | 128 | 108.2 µs | 17.6 µs | -83.9% | 1.18M |\n7.28M |\n| `regex_conditional_set` | 1024 | 122.6 µs | 29.7 µs | -75.9% | 8.36M |\n34.4M |\n\n## Related issue\n\n* Part of #4329\n\n## Validation\n\n- Benchmarks and tests\n\n## User-facing changes\n\nNone.",
+          "timestamp": "2026-10-09T23:08:22Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2eba9fcabecee800def8e94c0f473c31201f2a12"
+        },
+        "date": 1791592134872,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
             "unit": "MB"
           },
           {
