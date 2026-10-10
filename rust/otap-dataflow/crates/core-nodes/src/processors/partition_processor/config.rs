@@ -3,13 +3,18 @@
 
 use std::num::NonZeroUsize;
 
-use otel_arrow_dfe_config::ContextEntryName;
+use otel_arrow_dfe_config::{ContextEntryName, SignalType};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct Config {
     /// configuration for how to compute the partition
     pub partition_by: PartitionByConfig,
+
+    /// The signal type that will be partitioned. If this config value is present then only
+    /// batches containing signals of the configured type will be partitioned. Other batches
+    /// will be forwarded un-modified.
+    pub signal_type: Option<SignalType>,
 
     /// name of the transport header to which the partition value will be written
     pub partition_header_name: ContextEntryName,
@@ -114,6 +119,7 @@ mod test {
             config,
             Config {
                 partition_by: PartitionByConfig::OplExpression("name".to_string()),
+                signal_type: None,
                 partition_header_name: context_name("part.name"),
                 header_serialization_strategy: PartitionValueSerializeStrategy::ToBytesLossy {
                     text_as_binary_header: false,
