@@ -2368,15 +2368,28 @@ impl<
                 step_timeout_secs,
                 drain_timeout_secs,
             };
-            let mut plan = self.prepare_rollout_plan_for_engine_operation(
-                pipeline_key.pipeline_group_id(),
-                pipeline_key.pipeline_id(),
-                &reconfigure_request,
-                Some(&candidate_config),
-                Some(Arc::clone(&candidate_context_bindings)),
-                Some(guard.operation_id()),
-                Some(&projected_exclusive_core_ids),
-            )?;
+            let mut plan = self
+                .prepare_rollout_plan_for_engine_operation(
+                    pipeline_key.pipeline_group_id(),
+                    pipeline_key.pipeline_id(),
+                    &reconfigure_request,
+                    Some(&candidate_config),
+                    Some(Arc::clone(&candidate_context_bindings)),
+                    Some(guard.operation_id()),
+                    Some(&projected_exclusive_core_ids),
+                )
+                .map_err(|error| match error {
+                    ControlPlaneError::InvalidRequest { message } => {
+                        ControlPlaneError::InvalidRequest {
+                            message: format!(
+                                "pipeline '{}:{}': {message}",
+                                pipeline_key.pipeline_group_id().as_ref(),
+                                pipeline_key.pipeline_id().as_ref()
+                            ),
+                        }
+                    }
+                    other => other,
+                })?;
             plan.rollback_failed_candidate = rollback_failed_candidate;
             plan.rollout.rollback_failed_candidate = rollback_failed_candidate;
             let action = Self::rollout_change_action(plan.action);
@@ -2450,8 +2463,13 @@ impl<
             status.updated_at = timestamp_now();
             if !succeeded {
                 status.state = EngineConfigReconcileState::Failed;
-                status.failure_reason = failure_reason
-                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
+                let reason = failure_reason
+                    .unwrap_or_else(|| "pipeline rollout did not complete successfully".to_owned());
+                status.failure_reason = Some(format!(
+                    "pipeline '{}:{}': {reason}",
+                    pipeline_key.pipeline_group_id().as_ref(),
+                    pipeline_key.pipeline_id().as_ref()
+                ));
                 return Ok(status);
             }
         }

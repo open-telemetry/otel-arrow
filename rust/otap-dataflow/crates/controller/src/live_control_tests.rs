@@ -4043,10 +4043,10 @@ fn startup_create_rollout_failure_defers_candidate_rollback() {
 
     assert_eq!(status.state, EngineConfigReconcileState::Failed);
     assert!(
-        status
-            .failure_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("timed out waiting for admitted+ready")),
+        status.failure_reason.as_deref().is_some_and(|reason| {
+            reason.contains("pipeline 'g1:p1'")
+                && reason.contains("timed out waiting for admitted+ready")
+        }),
         "unexpected startup reconciliation failure: {:?}",
         status.failure_reason
     );
@@ -6444,7 +6444,8 @@ groups:
     assert!(matches!(
         err,
         ControlPlaneError::InvalidRequest { message }
-            if message.contains("Core ID 999 exceeds available cores")
+            if message.contains("pipeline 'g1:p2'")
+                && message.contains("Core ID 999 exceeds available cores")
     ));
     let state = runtime
         .state
