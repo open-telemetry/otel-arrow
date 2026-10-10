@@ -741,6 +741,7 @@ where
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
+    use otel_arrow_dfe_test_tls_certs as tls_certs;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -1108,14 +1109,17 @@ mod tests {
         assert!(tls.is_none());
     }
 
+    /// Scenario: insecure mode is combined with an explicitly configured valid
+    /// custom CA.
+    /// Guarantees: custom trust material still causes a TLS configuration to be
+    /// built even when the endpoint uses an HTTP scheme.
     #[tokio::test]
     async fn client_tls_insecure_true_with_custom_ca_still_builds_tls_config() {
         crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_self_signed_cert("ca", Some("ca"), true);
         let cfg = TlsClientConfig {
             insecure: Some(true),
-            ca_pem: Some(
-                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
-            ),
+            ca_pem: Some(ca.cert_pem),
             include_system_ca_certs_pool: Some(false),
             ..TlsClientConfig::default()
         };
@@ -1143,17 +1147,20 @@ mod tests {
         );
     }
 
+    /// Scenario: client TLS is explicitly configured for an endpoint using the
+    /// HTTP URI scheme.
+    /// Guarantees: valid TLS settings are applied regardless of the endpoint
+    /// scheme instead of silently downgrading to plaintext.
     #[tokio::test]
     async fn build_endpoint_with_tls_allows_http_when_tls_is_configured() {
         crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_self_signed_cert("ca", Some("ca"), true);
         let settings = GrpcClientSettings {
             grpc_endpoint: "http://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
                 config: TlsConfig::default(),
                 ca_file: None,
-                ca_pem: Some(
-                    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
-                ),
+                ca_pem: Some(ca.cert_pem),
                 include_system_ca_certs_pool: Some(false),
                 server_name: Some("localhost".to_string()),
                 ..TlsClientConfig::default()
