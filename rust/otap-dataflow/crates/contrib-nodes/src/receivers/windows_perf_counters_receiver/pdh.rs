@@ -14,11 +14,11 @@ use std::ptr::{null, null_mut};
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::System::Performance::{
     PDH_CALC_NEGATIVE_DENOMINATOR, PDH_CALC_NEGATIVE_TIMEBASE, PDH_CALC_NEGATIVE_VALUE,
-    PDH_COUNTER_INFO_W, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE,
-    PDH_FMT_DOUBLE, PDH_FMT_LARGE, PDH_HCOUNTER, PDH_HQUERY, PDH_INVALID_DATA, PDH_MORE_DATA,
-    PDH_NO_DATA, PDH_RAW_COUNTER, PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData,
-    PdhGetCounterInfoW, PdhGetFormattedCounterValue, PdhGetRawCounterValue, PdhOpenQueryW,
-    PdhRemoveCounter,
+    PDH_COUNTER_INFO_W, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA,
+    PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_FMT_LARGE, PDH_HCOUNTER, PDH_HQUERY,
+    PDH_INVALID_DATA, PDH_MORE_DATA, PDH_NO_DATA, PDH_RAW_COUNTER, PdhAddEnglishCounterW,
+    PdhCloseQuery, PdhCollectQueryData, PdhGetCounterInfoW, PdhGetFormattedCounterValue,
+    PdhGetRawCounterValue, PdhOpenQueryW, PdhRemoveCounter,
 };
 
 // These flags are not exposed by windows-sys 0.61.2.
@@ -90,6 +90,17 @@ fn is_no_observation_status(status: u32) -> bool {
     matches!(
         status,
         PDH_INVALID_DATA
+            | PDH_NO_DATA
+            | PDH_CALC_NEGATIVE_DENOMINATOR
+            | PDH_CALC_NEGATIVE_TIMEBASE
+            | PDH_CALC_NEGATIVE_VALUE
+    )
+}
+
+fn is_no_observation_data_status(status: u32) -> bool {
+    matches!(
+        status,
+        PDH_CSTATUS_INVALID_DATA
             | PDH_NO_DATA
             | PDH_CALC_NEGATIVE_DENOMINATOR
             | PDH_CALC_NEGATIVE_TIMEBASE
@@ -240,10 +251,7 @@ impl CounterHandle {
 
     fn read(&mut self, api: &mut impl PdhApi) -> Result<SampleValue, Error> {
         if self.kind != CounterKind::Direct {
-            let raw = match api.raw(self.handle, &self.path).and_then(|raw| {
-                check_data("raw counter CStatus", &self.path, raw.CStatus)?;
-                Ok(raw)
-            }) {
+            let raw = match api.raw(self.handle, &self.path) {
                 Ok(raw) => raw,
                 Err(error) => {
                     self.reset_readiness();
@@ -254,6 +262,14 @@ impl CounterHandle {
                     };
                 }
             };
+            if is_no_observation_data_status(raw.CStatus) {
+                self.reset_readiness();
+                return Ok(SampleValue::NoObservation);
+            }
+            if let Err(error) = check_data("raw counter CStatus", &self.path, raw.CStatus) {
+                self.reset_readiness();
+                return Err(error);
+            }
             if self.kind == CounterKind::RawFraction {
                 if raw.SecondValue <= 0 {
                     return Err(Error::Calculation {
@@ -291,14 +307,26 @@ impl CounterHandle {
             PDH_FMT_DOUBLE | PDH_FMT_NOSCALE | PDH_FMT_NOCAP100
         };
         let (status, value) = api.formatted(self.handle, format);
-        if is_no_observation_status(status)
-            || (status == 0 && is_no_observation_status(value.CStatus))
-        {
+        if status != 0 && status != PDH_INVALID_DATA {
+            if is_no_observation_status(status) {
+                self.reset_readiness();
+                return Ok(SampleValue::NoObservation);
+            }
+            check("PdhGetFormattedCounterValue", &self.path, status)?;
+        }
+        // PDH_INVALID_DATA can carry a more specific failure in CStatus.
+        if is_no_observation_data_status(value.CStatus) {
             self.reset_readiness();
             return Ok(SampleValue::NoObservation);
         }
-        check("PdhGetFormattedCounterValue", &self.path, status)?;
-        check_data("formatted counter CStatus", &self.path, value.CStatus)?;
+        if let Err(error) = check_data("formatted counter CStatus", &self.path, value.CStatus) {
+            self.reset_readiness();
+            return Err(error);
+        }
+        if status == PDH_INVALID_DATA {
+            self.reset_readiness();
+            return Ok(SampleValue::NoObservation);
+        }
         let number = if self.kind == CounterKind::Direct {
             // SAFETY: A successful PDH_FMT_LARGE request initialized largeValue.
             scale_integer(unsafe { value.Anonymous.largeValue }, self.scale_power10)

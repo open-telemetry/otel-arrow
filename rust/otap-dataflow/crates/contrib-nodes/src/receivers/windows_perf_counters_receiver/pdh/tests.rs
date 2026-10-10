@@ -9,10 +9,20 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use windows_sys::Win32::System::Performance::{PDH_INVALID_ARGUMENT, PdhFormatFromRawValue};
+use windows_sys::Win32::System::Performance::{
+    PDH_CSTATUS_NO_INSTANCE, PDH_INVALID_ARGUMENT, PdhFormatFromRawValue,
+};
 
 const OMISSION_STATUSES: [u32; 5] = [
     PDH_INVALID_DATA,
+    PDH_NO_DATA,
+    PDH_CALC_NEGATIVE_VALUE,
+    PDH_CALC_NEGATIVE_DENOMINATOR,
+    PDH_CALC_NEGATIVE_TIMEBASE,
+];
+
+const DATA_OMISSION_STATUSES: [u32; 5] = [
+    PDH_CSTATUS_INVALID_DATA,
     PDH_NO_DATA,
     PDH_CALC_NEGATIVE_VALUE,
     PDH_CALC_NEGATIVE_DENOMINATOR,
@@ -491,11 +501,11 @@ fn formatted_statuses_omit_and_reset_readiness() {
             Number::Double(3.0)
         };
         let needs_warmup = matches!(native_type, 0x1041_0400 | 0x4002_0500);
-        for omission in OMISSION_STATUSES {
+        for (omission, data_omission) in OMISSION_STATUSES.into_iter().zip(DATA_OMISSION_STATUSES) {
             for (status, cstatus) in [
                 (omission, PDH_CSTATUS_VALID_DATA),
-                (0, omission),
-                (PDH_INVALID_DATA, omission),
+                (0, data_omission),
+                (PDH_INVALID_DATA, data_omission),
             ] {
                 let (api, state, configs) = fake(vec![
                     CounterFixture::new(native_type, number),
@@ -555,7 +565,7 @@ fn formatted_statuses_omit_and_reset_readiness() {
 fn real_formatted_errors_remain_failures() {
     for (status, cstatus) in [
         (PDH_INVALID_ARGUMENT, PDH_CSTATUS_VALID_DATA),
-        (PDH_INVALID_ARGUMENT, PDH_INVALID_DATA),
+        (PDH_INVALID_ARGUMENT, PDH_CSTATUS_INVALID_DATA),
         (PDH_INVALID_ARGUMENT, PDH_NO_DATA),
         (PDH_INVALID_ARGUMENT, PDH_CALC_NEGATIVE_VALUE),
     ] {
@@ -627,7 +637,7 @@ fn counter_failures_preserve_peers_and_retry_existing_handles() {
 /// Guarantees: All expected statuses omit locally and re-warm without stale bases, failures, or handle recreation.
 #[test]
 fn raw_statuses_omit_and_clear_base_readiness() {
-    for omission in OMISSION_STATUSES {
+    for (omission, data_omission) in OMISSION_STATUSES.into_iter().zip(DATA_OMISSION_STATUSES) {
         for fail_status in [false, true] {
             let (api, state, configs) = fake(vec![
                 CounterFixture::new(0x20C2_0400, Number::Double(50.0)),
@@ -645,7 +655,7 @@ fn raw_statuses_omit_and_clear_base_readiness() {
                 if fail_status {
                     state.counters[0].raw_status = omission;
                 } else {
-                    state.counters[0].raw_cstatus = omission;
+                    state.counters[0].raw_cstatus = data_omission;
                 }
             }
             let omitted = query.collect().unwrap();
@@ -678,14 +688,72 @@ fn raw_statuses_omit_and_clear_base_readiness() {
     }
 }
 
+/// Scenario: Formatted invalid-data returns carry a missing-instance or unexpected data status.
+/// Guarantees: Specific counter failures are reported, healthy peers survive, and calculated counters re-warm on recovery.
+#[test]
+fn formatted_invalid_data_preserves_specific_failures() {
+    for status in [0, PDH_INVALID_DATA] {
+        for cstatus in [PDH_CSTATUS_NO_INSTANCE, PDH_INVALID_DATA] {
+            let (api, state, configs) = fake(vec![
+                CounterFixture::new(0x1041_0400, Number::Double(3.0)),
+                CounterFixture::new(0, Number::Integer(7)),
+            ]);
+            let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+            let _ = query.collect().unwrap();
+            {
+                let mut state = state.borrow_mut();
+                state.counters[0].format_status = status;
+                state.counters[0].format_cstatus = cstatus;
+            }
+            let sample = query.collect().unwrap();
+            assert_eq!(sample.failures.len(), 1);
+            assert_eq!(sample.failures[0].counter_index, 0);
+            assert!(
+                sample.failures[0]
+                    .error
+                    .contains("formatted counter CStatus")
+            );
+            assert!(
+                sample.failures[0]
+                    .error
+                    .contains(&format!("0x{cstatus:08X}"))
+            );
+            assert_eq!(sample.points.len(), 1);
+            assert_eq!(sample.points[0].counter_index, 1);
+            assert_eq!(
+                sample.points[0].value,
+                SampleValue::Value(Number::Integer(7))
+            );
+            {
+                let mut state = state.borrow_mut();
+                state.counters[0].format_status = 0;
+                state.counters[0].format_cstatus = PDH_CSTATUS_VALID_DATA;
+            }
+            let warming = query.collect().unwrap();
+            assert!(warming.failures.is_empty());
+            assert_eq!(warming.points[0].value, SampleValue::NoObservation);
+            let recovered = query.collect().unwrap();
+            assert!(recovered.failures.is_empty());
+            assert_eq!(
+                recovered.points[0].value,
+                SampleValue::Value(Number::Double(3.0))
+            );
+            assert_eq!(recovered.start_time_unix_nano, 100);
+        }
+    }
+}
+
 /// Scenario: A raw API or data status reports an unrelated error beside a healthy direct counter.
 /// Guarantees: Real raw errors remain local failures and cannot be masked by an expected-omission data status.
 #[test]
 fn real_raw_errors_remain_failures() {
     for (status, cstatus) in [
         (PDH_INVALID_ARGUMENT, PDH_CSTATUS_VALID_DATA),
+        (PDH_INVALID_ARGUMENT, PDH_CSTATUS_INVALID_DATA),
         (PDH_INVALID_ARGUMENT, PDH_NO_DATA),
         (0, PDH_INVALID_ARGUMENT),
+        (0, PDH_CSTATUS_NO_INSTANCE),
+        (0, PDH_INVALID_DATA),
     ] {
         let (api, state, configs) = fake(vec![
             CounterFixture::new(0x1041_0400, Number::Double(3.0)),
