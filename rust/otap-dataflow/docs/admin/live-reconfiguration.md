@@ -92,6 +92,9 @@ traffic flip across the whole pipeline.
 
 ## Boundaries and Current Limits
 
+- The admin server, including its health endpoints, becomes available only
+  after startup reconciliation succeeds. If startup reconciliation fails or
+  times out, the process exits without making the admin API available.
 - Updates are in-memory only. The startup YAML file is not rewritten.
 - The target pipeline group must already exist for per-pipeline
   reconfiguration.
@@ -451,6 +454,8 @@ Behavior:
 - Placement-sensitive rollouts are planned before they start. Desired
   `core_set` pipelines are considered before desired `core_count` pipelines so
   controller-selected `core_count` placements avoid explicit core requests.
+- Pipelines connected through topics are rolled out in consumer-first order so
+  topic receivers are ready before their producers begin sending.
 - `core_count` placements avoid both committed `core_set` cores and other
   committed or in-flight `core_count` cores. Explicit `core_set` pipelines may
   still overlap other explicit `core_set` pipelines as operator intent.
@@ -482,6 +487,8 @@ Response body is an `EngineConfigReconcileStatus` with:
 Each `changes` entry identifies the affected group and optional pipeline, the
 selected action (`create`, `noop`, `replace`, `resize`, or `delete`), the
 terminal state, and the rollout or shutdown status when applicable.
+Planning errors and terminal rollout failure reasons identify the affected
+pipeline group and pipeline ID.
 
 Status codes:
 
