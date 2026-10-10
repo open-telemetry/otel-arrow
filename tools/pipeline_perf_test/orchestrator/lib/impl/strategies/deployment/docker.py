@@ -289,7 +289,7 @@ components:
         if self.config.extra_hosts:
             run_kwargs["extra_hosts"] = dict(self.config.extra_hosts)
 
-        # Merge configured ulimits on top of the defaults so every
+        # Merge configured ulimits on top of the defaults
         run_kwargs["ulimits"] = build_ulimits(
             {**DEFAULT_ULIMITS, **(self.config.ulimits or {})}
         )
