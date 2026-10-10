@@ -1170,6 +1170,7 @@ impl<
             .collect();
         let step_timeout_secs = request.step_timeout_secs.max(1);
         let drain_timeout_secs = request.drain_timeout_secs.max(1);
+        let rollback_failed_candidate = true;
         let rollout = RolloutRecord::new(
             rollout_id,
             pipeline_group_id.clone(),
@@ -1180,6 +1181,7 @@ impl<
                 .as_ref()
                 .map(|record| record.baseline_generation),
             drain_timeout_secs,
+            rollback_failed_candidate,
             target_deployment
                 .resolved
                 .policies
@@ -1210,6 +1212,7 @@ impl<
             rollout,
             step_timeout_secs,
             drain_timeout_secs,
+            rollback_failed_candidate: true,
         })
     }
 
@@ -2220,6 +2223,34 @@ impl<
         self: &Arc<Self>,
         request: EngineConfigReconcileRequest,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.reconcile_engine_config_core(
+            request.config,
+            request.step_timeout_secs,
+            request.drain_timeout_secs,
+            request.delete_timeout_secs,
+            request.delete_missing,
+            true,
+        )
+    }
+
+    /// Reconciles initial startup state while deferring failed candidates to global shutdown.
+    pub(crate) fn reconcile_engine_config_startup(
+        self: &Arc<Self>,
+        config: OtelDataflowSpec,
+        step_timeout_secs: u64,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.reconcile_engine_config_core(config, step_timeout_secs, 0, 0, true, false)
+    }
+
+    fn reconcile_engine_config_core(
+        self: &Arc<Self>,
+        desired_config: OtelDataflowSpec,
+        step_timeout_secs: u64,
+        drain_timeout_secs: u64,
+        delete_timeout_secs: u64,
+        delete_missing: bool,
+        rollback_failed_candidate: bool,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
         let (reconcile_id, guard) = self.begin_reconcile_operation()?;
         let started_at = timestamp_now();
         let mut status = EngineConfigReconcileStatus::new(
@@ -2230,13 +2261,8 @@ impl<
         );
 
         let live_config = self.engine_config_snapshot();
-        let desired_config = request.config;
         let mut candidate_config = live_config.clone();
-        Self::merge_reconcile_config(
-            &mut candidate_config,
-            &desired_config,
-            request.delete_missing,
-        );
+        Self::merge_reconcile_config(&mut candidate_config, &desired_config, delete_missing);
         Self::validate_live_state_dir_unchanged(&live_config, &candidate_config)?;
         candidate_config
             .validate()
@@ -2339,10 +2365,10 @@ impl<
         for (pipeline_key, pipeline) in desired_keys {
             let reconfigure_request = ReconfigureRequest {
                 pipeline,
-                step_timeout_secs: request.step_timeout_secs,
-                drain_timeout_secs: request.drain_timeout_secs,
+                step_timeout_secs,
+                drain_timeout_secs,
             };
-            let plan = self.prepare_rollout_plan_for_engine_operation(
+            let mut plan = self.prepare_rollout_plan_for_engine_operation(
                 pipeline_key.pipeline_group_id(),
                 pipeline_key.pipeline_id(),
                 &reconfigure_request,
@@ -2351,6 +2377,8 @@ impl<
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;
+            plan.rollback_failed_candidate = rollback_failed_candidate;
+            plan.rollout.rollback_failed_candidate = rollback_failed_candidate;
             let action = Self::rollout_change_action(plan.action);
             let current_conflicting_core_ids =
                 self.current_reserved_conflicting_core_ids(&pipeline_key, &plan.rollout);
@@ -2428,7 +2456,7 @@ impl<
             }
         }
 
-        if request.delete_missing {
+        if delete_missing {
             for pipeline_key in self.live_pipeline_keys() {
                 if desired_key_set.contains(&pipeline_key) {
                     continue;
@@ -2436,7 +2464,7 @@ impl<
                 let delete = self.request_delete_pipeline_for_engine_operation(
                     pipeline_key.pipeline_group_id(),
                     pipeline_key.pipeline_id(),
-                    request.delete_timeout_secs,
+                    delete_timeout_secs,
                     Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";
@@ -2466,7 +2494,7 @@ impl<
                 }
                 let delete = self.request_delete_group_for_engine_operation(
                     &pipeline_group_id,
-                    request.delete_timeout_secs,
+                    delete_timeout_secs,
                     Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";
@@ -2490,7 +2518,7 @@ impl<
             }
         }
 
-        self.apply_reconcile_success(&desired_config, request.delete_missing);
+        self.apply_reconcile_success(&desired_config, delete_missing);
         status.state = EngineConfigReconcileState::Succeeded;
         status.updated_at = timestamp_now();
         Ok(status)

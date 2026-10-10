@@ -1539,6 +1539,7 @@ fn terminal_rollout_record(
     pipeline_id: &str,
     rollout_id: &str,
 ) -> RolloutRecord {
+    let rollback_failed_candidate = true;
     let mut rollout = RolloutRecord::new(
         rollout_id.to_owned(),
         pipeline_group_id.to_owned().into(),
@@ -1547,6 +1548,7 @@ fn terminal_rollout_record(
         1,
         Some(0),
         60,
+        rollback_failed_candidate,
         CoreAllocationStrategy::CoreCount,
         PipelinePlacement {
             pipeline_group_id: pipeline_group_id.to_owned().into(),
@@ -3881,6 +3883,85 @@ connections:
     assert!(!state.active_rollouts.contains_key(&plan.pipeline_key));
 }
 
+/// Scenario: candidate rollback is disabled when a rollout worker panics before commit.
+/// Guarantees: panic handling leaves the uncommitted candidate active for caller-owned cleanup.
+#[test]
+fn rollout_worker_panic_can_skip_failed_candidate_rollback() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let mut plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("rollout plan should be accepted");
+    plan.rollback_failed_candidate = false;
+    plan.rollout.rollback_failed_candidate = false;
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollout should register");
+
+    let candidate_key = deployed_key("g1", "p1", 0, plan.target_deployment.baseline_generation);
+    let mut candidate_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        plan.target_deployment.baseline_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime.handle_rollout_worker_panic(
+        &plan.pipeline_key,
+        &plan.rollout.rollout_id,
+        "rollout-g1-p1".to_owned(),
+        Box::new("boom"),
+    );
+
+    assert!(
+        candidate_rx.try_recv().is_err(),
+        "disabled rollback must not send candidate shutdown"
+    );
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&candidate_key)
+            .expect("candidate instance should remain tracked for global shutdown")
+            .control_sender
+            .is_some(),
+        "caller-owned cleanup must retain a sender for the failed candidate"
+    );
+    assert!(!state.active_rollouts.contains_key(&plan.pipeline_key));
+}
+
 /// Scenario: a rollout worker panics after the target generation was already
 /// committed as serving.
 /// Guarantees: panic cleanup does not shut down the committed generation,
@@ -3944,6 +4025,60 @@ connections:
         candidate_rx.try_recv().is_err(),
         "committed target generation must not receive panic-cleanup shutdown"
     );
+}
+
+/// Scenario: startup reconciliation launches a create candidate but times out waiting for
+/// readiness without panicking.
+/// Guarantees: startup defers failed-candidate rollback, leaving the candidate active and
+/// uncommitted until global shutdown cleans it up.
+#[test]
+fn startup_create_rollout_failure_defers_candidate_rollback() {
+    let desired = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime =
+        test_runtime_with_factory(&empty_engine_config(), &RECOVERY_TEST_PIPELINE_FACTORY);
+
+    let status = runtime
+        .reconcile_engine_config_startup(desired, 1)
+        .expect("startup reconciliation should report rollout failure");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Failed);
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("timed out waiting for admitted+ready")),
+        "unexpected startup reconciliation failure: {:?}",
+        status.failure_reason
+    );
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+        assert!(!state.logical_pipelines.contains_key(&pipeline_key));
+        let candidate = state
+            .runtime_instances
+            .iter()
+            .find(|(key, _)| {
+                key.pipeline_group_id.as_ref() == "g1" && key.pipeline_id.as_ref() == "p1"
+            })
+            .map(|(_, candidate)| candidate)
+            .expect("failed startup candidate should remain active");
+        assert!(matches!(
+            candidate.lifecycle,
+            RuntimeInstanceLifecycle::Active
+        ));
+        assert!(
+            candidate.control_sender.is_some(),
+            "deferred rollback should leave candidate shutdown to global cleanup"
+        );
+    }
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("global cleanup should accept candidate shutdown");
+    assert!(runtime.wait_for_global_shutdown_completion());
 }
 
 /// Scenario: a receiver returns a non-panic runtime error before signaling startup readiness.
