@@ -41,16 +41,16 @@ pub struct ParquetExporterFileAttributes {
 }
 
 /// Parquet exporter file IO metrics.
-/// Grouped under `exporter.parquet.files`.
+/// Grouped under `exporter.parquet.file`.
 #[metric_set(
-    name = "exporter.parquet.files",
+    name = "exporter.parquet.file",
     measurement_attributes = ParquetExporterFileAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ParquetExporterFileMetrics {
     /// Number of Parquet file lifecycle and flush operations.
-    #[metric(unit = "{file}")]
-    pub count: Counter<u64>,
+    #[metric(unit = "{operation}")]
+    pub operations: Counter<u64>,
 }
 
 /// Parquet exporter row IO metrics.
@@ -128,49 +128,49 @@ mod tests {
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::Created,
             })
-            .count
+            .operations
             .add(3);
         metrics
             .files
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::Closed,
             })
-            .count
+            .operations
             .add(2);
         metrics
             .files
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::FlushAttempts,
             })
-            .count
+            .operations
             .add(5);
         metrics
             .files
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::FlushSuccesses,
             })
-            .count
+            .operations
             .add(4);
         metrics
             .files
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::FlushFailures,
             })
-            .count
+            .operations
             .inc();
         metrics
             .files
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::FlushScheduledMaxRows,
             })
-            .count
+            .operations
             .add(6);
         metrics
             .files
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::FlushScheduledMaxAge,
             })
-            .count
+            .operations
             .add(7);
 
         assert_eq!(
@@ -179,7 +179,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::Created,
                 })
-                .count
+                .operations
                 .get(),
             3
         );
@@ -189,7 +189,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::Closed,
                 })
-                .count
+                .operations
                 .get(),
             2
         );
@@ -199,7 +199,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::FlushAttempts,
                 })
-                .count
+                .operations
                 .get(),
             5
         );
@@ -209,7 +209,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::FlushSuccesses,
                 })
-                .count
+                .operations
                 .get(),
             4
         );
@@ -219,7 +219,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::FlushFailures,
                 })
-                .count
+                .operations
                 .get(),
             1
         );
@@ -229,7 +229,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::FlushScheduledMaxRows,
                 })
-                .count
+                .operations
                 .get(),
             6
         );
@@ -239,7 +239,7 @@ mod tests {
                 .get(ParquetExporterFileAttributes {
                     operation: FileOperation::FlushScheduledMaxAge,
                 })
-                .count
+                .operations
                 .get(),
             7
         );
@@ -270,7 +270,7 @@ mod tests {
             .with(ParquetExporterFileAttributes {
                 operation: FileOperation::Created,
             })
-            .count
+            .operations
             .inc();
         metrics.rows.written.add(42);
 
@@ -280,10 +280,10 @@ mod tests {
 
         let file_snapshot = snapshots
             .iter()
-            .find(|s| s.descriptor().name == "exporter.parquet.files")
+            .find(|s| s.descriptor().name == "exporter.parquet.file")
             .expect("expected file metrics snapshot");
-        assert_eq!(file_snapshot.descriptor().metrics[0].name, "count");
-        assert_eq!(file_snapshot.descriptor().metrics[0].unit, "{file}");
+        assert_eq!(file_snapshot.descriptor().metrics[0].name, "operations");
+        assert_eq!(file_snapshot.descriptor().metrics[0].unit, "{operation}");
         assert_eq!(
             file_snapshot.measurement_attribute_value("operation"),
             Some("created")

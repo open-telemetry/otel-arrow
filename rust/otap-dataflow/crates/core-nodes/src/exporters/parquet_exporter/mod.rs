@@ -414,7 +414,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::Created,
             })
-            .count
+            .operations
             .add(stats.files_created);
     }
     if stats.files_closed > 0 {
@@ -422,7 +422,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::Closed,
             })
-            .count
+            .operations
             .add(stats.files_closed);
     }
     if stats.rows_written > 0 {
@@ -433,7 +433,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::FlushScheduledMaxRows,
             })
-            .count
+            .operations
             .add(stats.flush_scheduled_max_rows);
     }
     if stats.flush_scheduled_max_age > 0 {
@@ -441,7 +441,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::FlushScheduledMaxAge,
             })
-            .count
+            .operations
             .add(stats.flush_scheduled_max_age);
     }
     if stats.flush_attempts > 0 {
@@ -449,7 +449,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::FlushAttempts,
             })
-            .count
+            .operations
             .add(stats.flush_attempts);
     }
     if stats.flush_successes > 0 {
@@ -457,7 +457,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::FlushSuccesses,
             })
-            .count
+            .operations
             .add(stats.flush_successes);
     }
     if stats.flush_failures > 0 {
@@ -465,7 +465,7 @@ fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::Wr
             .with(metrics::ParquetExporterFileAttributes {
                 operation: metrics::FileOperation::FlushFailures,
             })
-            .count
+            .operations
             .add(stats.flush_failures);
     }
 }
@@ -1784,7 +1784,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::Created,
                 })
-                .count
+                .operations
                 .get(),
             2
         );
@@ -1793,7 +1793,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::Closed,
                 })
-                .count
+                .operations
                 .get(),
             1
         );
@@ -1803,7 +1803,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::FlushScheduledMaxRows,
                 })
-                .count
+                .operations
                 .get(),
             3
         );
@@ -1812,7 +1812,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::FlushScheduledMaxAge,
                 })
-                .count
+                .operations
                 .get(),
             4
         );
@@ -1821,7 +1821,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::FlushAttempts,
                 })
-                .count
+                .operations
                 .get(),
             5
         );
@@ -1830,7 +1830,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::FlushSuccesses,
                 })
-                .count
+                .operations
                 .get(),
             4
         );
@@ -1839,7 +1839,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::FlushFailures,
                 })
-                .count
+                .operations
                 .get(),
             1
         );
@@ -1866,7 +1866,7 @@ mod test {
                 .get(metrics::ParquetExporterFileAttributes {
                     operation: metrics::FileOperation::Created,
                 })
-                .count
+                .operations
                 .get(),
             0
         );

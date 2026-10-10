@@ -120,7 +120,7 @@ channel and is not duplicated by the exporter.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.parquet.files.count` | `{file}` | `operation` | Number of Parquet file lifecycle and flush operations performed. `operation` indicates the lifecycle event (e.g. `Created`, `Closed`, `FlushAttempts`, `FlushScheduledMaxRows`). |
+| `exporter.parquet.file.operations` | `{operation}` | `operation` | Number of Parquet file lifecycle and flush operations performed. `operation` indicates the lifecycle event (e.g. `Created`, `Closed`, `FlushAttempts`, `FlushScheduledMaxRows`). |
 | `exporter.parquet.rows.written` | `{row}` | | Total number of rows written into Parquet writers (appended, not necessarily flushed yet). |
 
 ### Events
