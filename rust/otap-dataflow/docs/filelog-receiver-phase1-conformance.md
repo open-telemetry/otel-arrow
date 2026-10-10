@@ -57,20 +57,25 @@ maps, vectors, locators, allocation metadata, and removal-heavy event state.
 ### Framer payload
 
 ```text
-copies = 2 for non-raw preserve_raw
-copies = 1 otherwise
+line_source = max_line_bytes + 8 for raw or preserve_raw
+line_source = 2 * max_line_bytes + 8 otherwise
+line_text = 0 for raw; max_line_bytes otherwise
+record_copies = 2 for non-raw preserve_raw; 1 otherwise
 
 framer_peak_payload =
-  4 * copies *
-    (min(max_line_bytes, max_record_bytes) + max_record_bytes)
-  + 16 * copies
-  + 16
+  4 * (line_source + line_text + record_copies * max_record_bytes)
 ```
 
-The factor four models old and new vector allocations coexisting during growth. Fixed
-terms cover delimiter lookahead and a pending decoded/source unit. Regex program/cache,
-decoder objects, allocator metadata, and library overhead remain separate bounded or
-measured terms.
+Grouping retains a complete bounded physical line independently of the record
+limit. Exact source bytes support safe-unit replay and source offsets, including
+UTF-16 replacement output. UTF-16 source can use two bytes per decoded ASCII
+byte; the eight-byte allowance covers BOM and delimiter storage. Preserve-raw
+prospective sizing already bounds exact body bytes by the line limit.
+
+The factor four conservatively covers old/new buffer growth. Regex storage,
+decoder objects, other inline state, and allocator overhead are separate charges.
+The primitive exposes this payload estimate and its actual retained capacities;
+receiver admission must account for all simultaneously retained storage.
 
 ### Regex construction and worker scratch
 
@@ -150,7 +155,7 @@ slots can remain held indefinitely by boundary-less input with idle flush
 disabled. Only reservation/accounting violations use the partial-state terminal
 failure path; capacity saturation does not permit discard-and-rewind.
 
-At the proposed defaults, the payload-only framer formula is 16,777,264 bytes
+At the proposed defaults, the payload-only framer formula is 16,777,248 bytes
 per worst-case text/preserve-raw reader. A 256 MiB budget therefore admits at most
 15 worst-case slots before other mutable state is included, even when actual
 records are short. This is a conservative payload estimate, not the final slot

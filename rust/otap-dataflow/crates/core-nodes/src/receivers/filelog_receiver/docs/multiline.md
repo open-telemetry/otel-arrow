@@ -158,10 +158,9 @@ budget. A numeric receiver control-latency target and integrated Linux
 qualification remain later gates. No fixture's observed maximum is a bound on
 all supported programs.
 
-Grouping must resolve the existing `LineFramer` use of
-`min(max_line_bytes, max_record_bytes)` and retain an appropriate decoded shadow
-for preserve-raw text matching. The worker owns EOF, time, and cancellation;
-the framer accepts explicit completion authority. Grouping is separate work.
+The [grouping primitive](multiline-grouping.md) keeps physical-line and record
+limits independent and retains a decoded shadow for preserve-raw text matching.
+Workers still own EOF, time, cancellation, and memory admission.
 
 [spec]: ../../../../../../docs/filelog-receiver-phase1-spec.md#executable-re2-v1-subset
 [bench]: ../../../../benches/filelog_multiline/README.md

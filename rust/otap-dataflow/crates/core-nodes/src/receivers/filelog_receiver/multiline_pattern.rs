@@ -154,6 +154,12 @@ pub struct BoundaryPattern {
 }
 
 impl BoundaryPattern {
+    /// Text or raw input representation selected at compilation.
+    #[must_use]
+    pub fn mode(&self) -> PatternMode {
+        self.program.mode
+    }
+
     /// Compile using the same bounded path as explicit limits.
     /// Receiver-wide construction and activation funding remain caller responsibilities.
     pub fn compile(pattern: &str, mode: PatternMode) -> Result<Self, PatternError> {
@@ -387,6 +393,10 @@ pub struct BoundaryMatcher {
 }
 
 impl BoundaryMatcher {
+    pub(crate) fn is_for(&self, pattern: &BoundaryPattern) -> bool {
+        Arc::ptr_eq(&self.program, &pattern.program)
+    }
+
     /// Search without retaining input. A memory-model violation latches a terminal error.
     /// The diagnostic runs after allocation and is not an allocator-level limit.
     pub fn is_match(&mut self, body: PatternInput<'_>) -> Result<bool, PatternError> {
