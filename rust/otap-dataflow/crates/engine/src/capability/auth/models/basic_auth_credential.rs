@@ -46,29 +46,10 @@ impl BasicAuthCredential {
         password: impl Into<SecretString>,
     ) -> Result<Self, BasicAuthCredentialError> {
         let username: SecretString = username.into();
+        Self::validate_username(&username)?;
+
         let password: SecretString = password.into();
-
-        for c in username.expose_secret().chars() {
-            match c {
-                ':' => {
-                    return Err(BasicAuthCredentialError::InvalidUsername {
-                        reason: "Username cannot contain the ':' character",
-                    });
-                }
-                c if c.is_control() => {
-                    return Err(BasicAuthCredentialError::InvalidUsername {
-                        reason: "Username cannot contain control characters",
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        if password.expose_secret().chars().any(char::is_control) {
-            return Err(BasicAuthCredentialError::InvalidPassword {
-                reason: "Password cannot contain control characters",
-            });
-        }
+        Self::validate_password(&password)?;
 
         Ok(Self {
             username: Arc::new(username),
@@ -108,5 +89,52 @@ impl BasicAuthCredential {
     #[must_use]
     pub const fn expires_on(&self) -> Option<Instant> {
         self.expires_on
+    }
+
+    /// Validate a username.
+    pub fn validate_username(username: &SecretString) -> Result<(), BasicAuthCredentialError> {
+        let username_str = username.expose_secret();
+        if username_str.is_empty() {
+            return Err(BasicAuthCredentialError::InvalidUsername {
+                reason: "Username cannot be empty",
+            });
+        }
+
+        for c in username_str.chars() {
+            match c {
+                ':' => {
+                    return Err(BasicAuthCredentialError::InvalidUsername {
+                        reason: "Username cannot contain the ':' character",
+                    });
+                }
+                c if c.is_control() => {
+                    return Err(BasicAuthCredentialError::InvalidUsername {
+                        reason: "Username cannot contain control characters",
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate a password.
+    pub fn validate_password(password: &SecretString) -> Result<(), BasicAuthCredentialError> {
+        let password_str = password.expose_secret();
+
+        if password_str.is_empty() {
+            return Err(BasicAuthCredentialError::InvalidPassword {
+                reason: "Password cannot be empty",
+            });
+        }
+
+        if password_str.chars().any(char::is_control) {
+            return Err(BasicAuthCredentialError::InvalidPassword {
+                reason: "Password cannot contain control characters",
+            });
+        }
+
+        Ok(())
     }
 }

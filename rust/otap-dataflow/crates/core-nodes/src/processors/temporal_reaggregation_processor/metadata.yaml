@@ -1,0 +1,6 @@
+type: temporal_reaggregation
+status:
+  class: processor
+  codeowners:
+    active:
+      - JakeDern

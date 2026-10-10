@@ -8,7 +8,7 @@ use futures::stream::FuturesUnordered;
 use http::HeaderValue;
 use tokio::time::Duration;
 
-use super::client::LogsIngestionClient;
+use super::client::{ExportAttemptMetadata, LogsIngestionClient};
 use super::error::Error;
 
 pub struct CompletedExport {
@@ -16,8 +16,9 @@ pub struct CompletedExport {
     pub client: LogsIngestionClient,
     pub result: Result<Duration, Error>,
     pub row_count: u64,
-    pub body_size_bytes: u64,
     pub token_generation: u64,
+    pub compressed_size: u64,
+    pub uncompressed_size: u64,
 }
 
 pub struct InFlightExports {
@@ -93,6 +94,8 @@ impl InFlightExports {
         body: Bytes,
         auth_header: HeaderValue,
         token_generation: u64,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) {
         let fut = Self::make_export_future(
             client,
@@ -101,6 +104,8 @@ impl InFlightExports {
             body,
             auth_header,
             token_generation,
+            compressed_size,
+            uncompressed_size,
         );
         self.queued_rows = self.queued_rows.saturating_add(row_count);
         self.push(fut);
@@ -119,17 +124,25 @@ impl InFlightExports {
         body: Bytes,
         auth_header: HeaderValue,
         token_generation: u64,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
-            let body_size_bytes = body.len() as u64;
-            let result = client.export(body, &auth_header).await;
+            let result = client
+                .export(
+                    body,
+                    &auth_header,
+                    ExportAttemptMetadata { items: row_count },
+                )
+                .await;
             CompletedExport {
                 batch_id,
                 client,
                 result,
                 row_count,
-                body_size_bytes,
                 token_generation,
+                compressed_size,
+                uncompressed_size,
             }
         })
     }
@@ -206,8 +219,9 @@ mod tests {
                 client: create_test_client(),
                 result,
                 row_count,
-                body_size_bytes: 0,
                 token_generation: 1,
+                compressed_size: 0,
+                uncompressed_size: 0,
             }
         })
     }
@@ -337,6 +351,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
 
         assert_eq!(exports.len(), 1);
@@ -356,6 +372,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 100);
 
@@ -367,6 +385,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 150);
     }
@@ -393,6 +413,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 25);
     }
@@ -427,6 +449,8 @@ mod tests {
             Bytes::from_static(b"payload"),
             HeaderValue::from_static("Bearer gen-7"),
             42,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 3);
 
@@ -435,7 +459,6 @@ mod tests {
         assert_eq!(completed.batch_id, 7);
         assert_eq!(completed.token_generation, 42);
         assert_eq!(completed.row_count, 3);
-        assert_eq!(completed.body_size_bytes, 7);
         assert!(
             completed.result.is_ok(),
             "expected success, got {:?}",

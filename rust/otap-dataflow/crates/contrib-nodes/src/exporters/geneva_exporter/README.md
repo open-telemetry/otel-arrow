@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `urn:microsoft:exporter:geneva`
-- Feature gate: `geneva-exporter`
+- Feature gate: `geneva`
 - Optional certificate authentication: `geneva-certificate-auth` (disabled by default)
 - Stability: Alpha; supports logs and traces
 
@@ -114,7 +114,7 @@ source.
 From the `otap-dataflow` directory:
 
 ```bash
-cargo build --release --features geneva-exporter
+cargo build --release --features geneva
 ```
 
 Password-protected PKCS#12 certificate authentication is excluded by default.

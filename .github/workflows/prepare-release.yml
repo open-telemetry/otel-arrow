@@ -1,19 +1,26 @@
 name: Prepare Release
 
 on:
+  schedule:
+    - cron: "0 15 * * 1"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (e.g., 0.40.0)"
+      target:
+        description: "Components to release"
         required: true
-        type: string
+        type: choice
+        options:
+          - rust
+          - go
+          - both
+        default: rust
       dry_run:
         description: "Dry run mode (just show what would happen)"
         required: true
         type: boolean
         default: true
       include_pdata_views:
-        description: "Bump pdata-views too (requires dependent crates to support the new version)"
+        description: "Bump pdata-views in a Rust release"
         required: true
         type: boolean
         default: false
@@ -22,340 +29,414 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
 jobs:
   prepare-release:
     permissions:
       contents: read
+      issues: read
       pull-requests: read
     runs-on: ubuntu-latest
+    env:
+      DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+      INCLUDE_PDATA_VIEWS: ${{ github.event_name == 'schedule' && 'false' || inputs.include_pdata_views }}
+      RELEASE_TARGET: ${{ github.event_name == 'schedule' && 'both' || inputs.target }}
     steps:
-      - name: Validate dispatch ref
-        if: "!inputs.dry_run && github.ref != 'refs/heads/main'"
-        run: |
-          echo "Non-dry-run release preparation must run from main"
-          exit 1
-
       - name: Checkout (dry run)
-        if: inputs.dry_run
+        if: env.DRY_RUN == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
+          persist-credentials: false
 
       - name: Create GitHub App token
-        if: "!inputs.dry_run"
+        if: env.DRY_RUN == 'false'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
           client-id: ${{ vars.OTELBOT_ARROW_CLIENT_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
 
-      - name: Get GitHub App User ID
-        if: "!inputs.dry_run"
+      - name: Get GitHub App user ID
+        if: env.DRY_RUN == 'false'
         id: get-user-id
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-        run: echo "user-id=$(gh api "/users/${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: echo "user-id=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout (release preparation)
-        if: "!inputs.dry_run"
+        if: env.DRY_RUN == 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ github.ref }}
+          ref: main
           token: ${{ steps.app-token.outputs.token }}
+          # zizmor: ignore[artipacked] Credentials are required by the release branch push below.
+          persist-credentials: true
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache-dependency-path: "**/*.sum"
 
-      - name: Validate inputs
-        run: ./.github/workflows/scripts/validate-version.sh "${INPUTS_VERSION}"
-        env:
-          INPUTS_VERSION: ${{ inputs.version }}
+      - name: Validate trigger
+        run: |
+          if [[ "$RELEASE_TARGET" != "go" && "$RELEASE_TARGET" != "rust" && "$RELEASE_TARGET" != "both" ]]; then
+            echo "Error: release target must be go, rust, or both"
+            exit 1
+          fi
+          if [ "$DRY_RUN" = "false" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Error: non-dry-run preparation must run from main"
+            exit 1
+          fi
 
       - name: Record release base commit
-        id: release_base
+        id: release-base
         run: |
           git fetch --quiet origin main
           echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
-      - name: Get last released version
-        id: last_version
-        run: |
-          LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh)
-          echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
-          echo "Last released version: $LAST_VERSION"
-          echo "New version: ${INPUTS_VERSION}"
-        env:
-          INPUTS_VERSION: ${{ inputs.version }}
 
-      - name: Validate version increment
-        run: ./.github/workflows/scripts/validate-version-increment.sh "${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}" "${INPUTS_VERSION}"
+      - name: Ensure the previous release plan completed
         env:
-          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
-          INPUTS_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ env.DRY_RUN == 'false' && steps.app-token.outputs.token || github.token }}
+        run: |
+          PLAN=.github/release-plan.json
+          if [ ! -f "$PLAN" ]; then
+            exit 0
+          fi
+
+          check_completed() {
+            local target="$1"
+            local tag_prefix="$2"
+            local release
+            local version
+            release=$(jq -r ".${target}.has_changes" "$PLAN")
+            version=$(jq -r ".${target}.next_version // \"\"" "$PLAN")
+            if [ "$release" = "true" ]; then
+              tag="${tag_prefix}${version}"
+              if ! git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+                echo "Error: ${target} release ${version} from the previous plan has not been tagged."
+                echo "Approve or recover Push Release before preparing another release."
+                exit 1
+              fi
+              is_draft=$(gh release view "$tag" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json isDraft \
+                --jq '.isDraft' 2>/dev/null || true)
+              if [ -z "$is_draft" ]; then
+                echo "Error: ${target} release ${version} has no GitHub release."
+                echo "Recover Push Release before preparing another release."
+                exit 1
+              fi
+              if [ "$is_draft" = "true" ]; then
+                echo "Error: ${target} release ${version} is still a draft."
+                echo "Recover Push Release before preparing another release."
+                exit 1
+              fi
+            fi
+          }
+
+          check_completed go go/v
+          check_completed rust rust/otap-dataflow/v
 
       - name: Generate dependency-bot changelog entries
         run: |
-          # Renovate and Dependabot do not author chloggen entries on their
-          # own PRs. Synthesize one umbrella entry per tree summarizing
-          # their merged PRs since the last release tag. The script
-          # silently skips a tree if it has no qualifying commits.
-          ./.github/workflows/scripts/generate-dependency-changelog.sh \
-            go Go go/.chloggen/auto-dependency-updates.yaml
-          ./.github/workflows/scripts/generate-dependency-changelog.sh \
-            rust/otap-dataflow Rust \
-            rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml
+          if [[ "$RELEASE_TARGET" == "go" || "$RELEASE_TARGET" == "both" ]]; then
+            ./.github/workflows/scripts/generate-dependency-changelog.sh \
+              go Go go/.chloggen/auto-dependency-updates.yaml \
+              'go/v[0-9]*.[0-9]*.[0-9]*'
+          fi
+          if [[ "$RELEASE_TARGET" == "rust" || "$RELEASE_TARGET" == "both" ]]; then
+            ./.github/workflows/scripts/generate-dependency-changelog.sh \
+              rust/otap-dataflow Rust \
+              rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml \
+              'rust/otap-dataflow/v[0-9]*.[0-9]*.[0-9]*'
+          fi
 
-      - name: Render chloggen entries into CHANGELOG files
+      - name: Calculate release plan
+        id: plan
         run: |
-          # Renders pending entries from go/.chloggen/ and
-          # rust/otap-dataflow/.chloggen/ into their respective CHANGELOG.md
-          # files under the new `## v${INPUTS_VERSION}` heading, then
-          # deletes the consumed .yaml entry files. If a tree has no entries,
-          # its summary template records that the version is for repo parity.
-          make chlog-install
-          make chlog-update VERSION="v${INPUTS_VERSION}"
+          EMPTY_PLAN='{"has_changes":false,"impact":null,"entry_count":0,"last_tag":"","last_version":"","next_version":null}'
+          GO_PLAN="$EMPTY_PLAN"
+          RUST_PLAN="$EMPTY_PLAN"
+
+          if [[ "$RELEASE_TARGET" == "go" || "$RELEASE_TARGET" == "both" ]]; then
+            GO_PLAN=$(./.github/workflows/scripts/plan-release.sh go)
+          fi
+          if [[ "$RELEASE_TARGET" == "rust" || "$RELEASE_TARGET" == "both" ]]; then
+            RUST_PLAN=$(./.github/workflows/scripts/plan-release.sh rust)
+          fi
+
+          GO_RELEASE=$(jq -r '.has_changes' <<< "$GO_PLAN")
+          RUST_RELEASE=$(jq -r '.has_changes' <<< "$RUST_PLAN")
+          if [[ "$GO_RELEASE" == "true" || "$RUST_RELEASE" == "true" ]]; then
+            HAS_CHANGES=true
+          else
+            HAS_CHANGES=false
+          fi
+
+          echo "go=$(jq -c . <<< "$GO_PLAN")" >> "$GITHUB_OUTPUT"
+          echo "go_release=$GO_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "go_version=$(jq -r '.next_version // ""' <<< "$GO_PLAN")" >> "$GITHUB_OUTPUT"
+          echo "has_changes=$HAS_CHANGES" >> "$GITHUB_OUTPUT"
+          echo "rust=$(jq -c . <<< "$RUST_PLAN")" >> "$GITHUB_OUTPUT"
+          echo "rust_release=$RUST_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "rust_version=$(jq -r '.next_version // ""' <<< "$RUST_PLAN")" >> "$GITHUB_OUTPUT"
+
+          echo "Go plan: $(jq -c . <<< "$GO_PLAN")"
+          echo "Rust plan: $(jq -c . <<< "$RUST_PLAN")"
+
+      - name: Stop when no release is pending
+        if: steps.plan.outputs.has_changes != 'true'
+        run: |
+          echo "No pending ${RELEASE_TARGET} changelog entries; no release PR is needed."
+          {
+            echo "# Release preparation"
+            echo ""
+            echo "No pending ${RELEASE_TARGET} changes were found."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install chloggen
+        if: steps.plan.outputs.has_changes == 'true'
+        run: make chlog-install
+
+      - name: Render selected changelogs
+        if: steps.plan.outputs.has_changes == 'true'
         env:
-          INPUTS_VERSION: ${{ inputs.version }}
+          GO_RELEASE: ${{ steps.plan.outputs.go_release }}
+          GO_VERSION: ${{ steps.plan.outputs.go_version }}
+          RUST_RELEASE: ${{ steps.plan.outputs.rust_release }}
+          RUST_VERSION: ${{ steps.plan.outputs.rust_version }}
+        run: |
+          if [ "$GO_RELEASE" = "true" ]; then
+            make chlog-update-go VERSION="v${GO_VERSION}"
+          fi
+          if [ "$RUST_RELEASE" = "true" ]; then
+            make chlog-update-rust VERSION="v${RUST_VERSION}"
+          fi
 
       - name: Bump Rust crate versions
+        if: steps.plan.outputs.rust_release == 'true'
+        env:
+          RUST_VERSION: ${{ steps.plan.outputs.rust_version }}
         run: |
-          # Rust crates generally track the same release version as Go.
-          # pdata-views is independently versioned because it is a stable,
-          # dependency-free compatibility boundary.
           CURRENT_VERSION=$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' rust/otap-dataflow/Cargo.toml | head -1)
           PDATA_VIEWS_VERSION=$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' rust/otap-dataflow/crates/pdata-views/Cargo.toml | head -1)
           CURRENT_VERSION_PATTERN=$(printf '%s' "${CURRENT_VERSION}" | sed 's/\./\\./g')
-          sed -i "s/${CURRENT_VERSION_PATTERN}/${INPUTS_VERSION}/g" rust/otap-dataflow/Cargo.toml
+          sed -i "s/${CURRENT_VERSION_PATTERN}/${RUST_VERSION}/g" rust/otap-dataflow/Cargo.toml
 
-          if [ "${INPUTS_INCLUDE_PDATA_VIEWS}" = "true" ]; then
+          if [ "$INCLUDE_PDATA_VIEWS" = "true" ]; then
             sed -i \
-              "s/^version = \"${PDATA_VIEWS_VERSION}\"/version = \"${INPUTS_VERSION}\"/" \
+              "s/^version = \"${PDATA_VIEWS_VERSION}\"/version = \"${RUST_VERSION}\"/" \
               rust/otap-dataflow/crates/pdata-views/Cargo.toml
             sed -i \
-              '/^otel-arrow-dfe-pdata-views = / s/version = "[^"]*"/version = "'"${INPUTS_VERSION}"'"/' \
+              '/^otel-arrow-dfe-pdata-views = / s/version = "[^"]*"/version = "'"${RUST_VERSION}"'"/' \
               rust/otap-dataflow/Cargo.toml
-            echo "Included pdata-views in release ${INPUTS_VERSION}"
           else
             sed -i \
               '/^otel-arrow-dfe-pdata-views = / s/version = "[^"]*"/version = "'"${PDATA_VIEWS_VERSION}"'"/' \
               rust/otap-dataflow/Cargo.toml
-            echo "Kept pdata-views at independent version ${PDATA_VIEWS_VERSION}"
           fi
 
-          echo "Updated rust/otap-dataflow/Cargo.toml to ${INPUTS_VERSION}"
-        env:
-          INPUTS_VERSION: ${{ inputs.version }}
-          INPUTS_INCLUDE_PDATA_VIEWS: ${{ inputs.include_pdata_views }}
-
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        if: steps.plan.outputs.rust_release == 'true'
         with:
           toolchain: 1.98.0
 
       - name: Update Rust lockfile
+        if: steps.plan.outputs.rust_release == 'true'
         run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
 
       - name: Validate Rust crates.io publish plan
+        if: steps.plan.outputs.rust_release == 'true'
         run: cargo xtask crates-publish check
         working-directory: rust/otap-dataflow
 
-      - name: Extract release notes for PR body
-        id: changelog
+      - name: Create release plan artifact
+        if: steps.plan.outputs.has_changes == 'true'
+        id: release-plan
+        env:
+          BASE_SHA: ${{ steps.release-base.outputs.sha }}
+          GO_PLAN: ${{ steps.plan.outputs.go }}
+          GO_RELEASE: ${{ steps.plan.outputs.go_release }}
+          GO_VERSION: ${{ steps.plan.outputs.go_version }}
+          RUST_PLAN: ${{ steps.plan.outputs.rust }}
+          RUST_RELEASE: ${{ steps.plan.outputs.rust_release }}
+          RUST_VERSION: ${{ steps.plan.outputs.rust_version }}
         run: |
-          # Pull the freshly-rendered section from each CHANGELOG and
-          # combine them under per-language `## What's Changed (...)`
-          # headings for embedding in the PR body. The changelog retains
-          # entry subtext; the PR body includes only concise entry summaries.
-          # --allow-missing keeps the workflow working if one side had no
-          # chloggen entries this release.
-          ./.github/workflows/scripts/extract-changelog.sh \
-            --version "${INPUTS_VERSION}" \
-            --file go/CHANGELOG.md \
-            --allow-missing \
-            --omit-subtext \
-            /tmp/go_release_content.txt
-          ./.github/workflows/scripts/extract-changelog.sh \
-            --version "${INPUTS_VERSION}" \
-            --file rust/otap-dataflow/CHANGELOG.md \
-            --allow-missing \
-            --omit-subtext \
-            /tmp/rust_release_content.txt
+          if [[ "$GO_RELEASE" == "true" && "$RUST_RELEASE" == "true" ]]; then
+            BRANCH="otelbot/release-go-v${GO_VERSION}-rust-v${RUST_VERSION}"
+            SUMMARY="Go v${GO_VERSION} and Rust v${RUST_VERSION}"
+          elif [ "$GO_RELEASE" = "true" ]; then
+            BRANCH="otelbot/release-go-v${GO_VERSION}"
+            SUMMARY="Go v${GO_VERSION}"
+          else
+            BRANCH="otelbot/release-rust-v${RUST_VERSION}"
+            SUMMARY="Rust v${RUST_VERSION}"
+          fi
 
-          {
-            echo "## What's Changed (Go :hamster:)"
-            echo ""
-            if [ -s /tmp/go_release_content.txt ]; then
+          jq -n \
+            --arg base_sha "$BASE_SHA" \
+            --arg branch "$BRANCH" \
+            --arg summary "$SUMMARY" \
+            --argjson go "$GO_PLAN" \
+            --argjson rust "$RUST_PLAN" \
+            '{
+              schema_version: 1,
+              base_sha: $base_sha,
+              branch: $branch,
+              summary: $summary,
+              go: $go,
+              rust: $rust
+            }' > .github/release-plan.json
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+          cat .github/release-plan.json
+
+      - name: Extract selected release notes
+        if: steps.plan.outputs.has_changes == 'true'
+        env:
+          GO_RELEASE: ${{ steps.plan.outputs.go_release }}
+          GO_VERSION: ${{ steps.plan.outputs.go_version }}
+          RUST_RELEASE: ${{ steps.plan.outputs.rust_release }}
+          RUST_VERSION: ${{ steps.plan.outputs.rust_version }}
+        run: |
+          : > /tmp/combined_release_content.txt
+          if [ "$GO_RELEASE" = "true" ]; then
+            ./.github/workflows/scripts/extract-changelog.sh \
+              --version "${GO_VERSION}" \
+              --file go/CHANGELOG.md \
+              --omit-subtext \
+              /tmp/go_release_content.txt
+            {
+              echo "## What's Changed (Go :hamster:)"
+              echo ""
               cat /tmp/go_release_content.txt
-            else
-              echo "_No Go changes in this release._"
-            fi
-            echo ""
-            echo "## What's Changed (Rust :crab:)"
-            echo ""
-            if [ -s /tmp/rust_release_content.txt ]; then
+              echo ""
+            } >> /tmp/combined_release_content.txt
+          fi
+          if [ "$RUST_RELEASE" = "true" ]; then
+            ./.github/workflows/scripts/extract-changelog.sh \
+              --version "${RUST_VERSION}" \
+              --file rust/otap-dataflow/CHANGELOG.md \
+              --omit-subtext \
+              /tmp/rust_release_content.txt
+            {
+              echo "## What's Changed (Rust :crab:)"
+              echo ""
               cat /tmp/rust_release_content.txt
-            else
-              echo "_No Rust changes in this release._"
-            fi
-          } > /tmp/combined_release_content.txt
+              echo ""
+            } >> /tmp/combined_release_content.txt
+          fi
 
-          echo "Combined release notes preview:"
-          echo "----------------------------------------"
-          cat /tmp/combined_release_content.txt
-          echo "----------------------------------------"
+      - name: Show dry-run plan
+        if: steps.plan.outputs.has_changes == 'true' && env.DRY_RUN == 'true'
         env:
-          INPUTS_VERSION: ${{ inputs.version }}
-
-      - name: Dry run - Show planned changes
-        if: inputs.dry_run
+          BRANCH: ${{ steps.release-plan.outputs.branch }}
+          SUMMARY: ${{ steps.release-plan.outputs.summary }}
         run: |
-          # Write to GitHub Step Summary
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          # :clipboard: Release Preparation Dry Run
-
-          ## Summary
-          **DRY RUN MODE** - No changes will be made to the repository
-
-          ## Planned Changes
-          - **New version**: \`${INPUTS_VERSION}\`
-          - **Last version**: \`${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}\`
-          - **Include pdata-views**: \`${INPUTS_INCLUDE_PDATA_VIEWS}\`
-
-          ## Git Operations
-          - Create branch: \`otelbot/release-v${INPUTS_VERSION}\`
-          - Commit version updates
-          - Create pull request
-
-          ## File Changes
-          The following files would be modified:
-          - \`go/.chloggen/auto-dependency-updates.yaml\`, \`rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml\` - Auto-generated entries aggregating renovate[bot]/dependabot[bot] PRs (created only when such commits exist for the tree)
-          - \`go/CHANGELOG.md\` - Render pending \`go/.chloggen/*.yaml\` entries, or a repository parity note when empty, under \`## v${INPUTS_VERSION}\`
-          - \`rust/otap-dataflow/CHANGELOG.md\` - Render pending \`rust/otap-dataflow/.chloggen/*.yaml\` entries, or a repository parity note when empty, under \`## v${INPUTS_VERSION}\`
-          - \`go/.chloggen/*.yaml\`, \`rust/otap-dataflow/.chloggen/*.yaml\` - Consumed entries deleted
-          - \`rust/otap-dataflow/Cargo.toml\` - Bump workspace, root package, and same-release dependency versions to ${INPUTS_VERSION}
-
-          ## Release Notes Preview
-          \`\`\`
-          EOF
-          cat /tmp/combined_release_content.txt >> $GITHUB_STEP_SUMMARY
-          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          ```
-
-          ## Next Steps
-          1. Review the planned changes above
-          2. Run again without dry-run when ready
-          3. After merging the PR, run the **Push Release** workflow to create git tags and GitHub release
-
-          ---
-          **Note**: This is a dry run. To execute the actual release preparation, set `dry_run` to `false`.
-          EOF
-        env:
-          INPUTS_VERSION: ${{ inputs.version }}
-          INPUTS_INCLUDE_PDATA_VIEWS: ${{ inputs.include_pdata_views }}
-          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
+          {
+            echo "# Release preparation dry run"
+            echo ""
+            echo "**Release:** ${SUMMARY}"
+            echo ""
+            echo "**Branch:** \`${BRANCH}\`"
+            echo ""
+            echo "## Release plan"
+            echo ""
+            echo '```json'
+            cat .github/release-plan.json
+            echo '```'
+            echo ""
+            echo "## Release notes"
+            echo ""
+            cat /tmp/combined_release_content.txt
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create release branch and commit changes
-        if: "!inputs.dry_run"
+        if: steps.plan.outputs.has_changes == 'true' && env.DRY_RUN == 'false'
         env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BRANCH: ${{ steps.release-plan.outputs.branch }}
           GH_TOKEN: ${{ github.token }}
-          STEPS_RELEASE_BASE_OUTPUTS_SHA: ${{ steps.release_base.outputs.sha }}
-          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          STEPS_GET_USER_ID_OUTPUTS_USER_ID: ${{ steps.get-user-id.outputs.user-id }}
-          INPUTS_VERSION: ${{ inputs.version }}
+          RELEASE_BASE_SHA: ${{ steps.release-base.outputs.sha }}
+          SUMMARY: ${{ steps.release-plan.outputs.summary }}
+          USER_ID: ${{ steps.get-user-id.outputs.user-id }}
         run: |
-          ./.github/workflows/scripts/verify-release-window.sh \
-            "${STEPS_RELEASE_BASE_OUTPUTS_SHA}"
-
-          # Configure git for otelbot
-          git config user.name "${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]"
-          git config user.email "${STEPS_GET_USER_ID_OUTPUTS_USER_ID}+${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]@users.noreply.github.com"
-
-          # Use script to create branch and commit
-          ./.github/workflows/scripts/create-release-branch.sh "${INPUTS_VERSION}" --push
+          ./.github/workflows/scripts/verify-release-window.sh "$RELEASE_BASE_SHA"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          ./.github/workflows/scripts/create-release-branch.sh "$BRANCH" "$SUMMARY" --push
 
       - name: Create or update pull request
-        if: "!inputs.dry_run"
+        if: steps.plan.outputs.has_changes == 'true' && env.DRY_RUN == 'false'
         env:
-          # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
+          BRANCH: ${{ steps.release-plan.outputs.branch }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          INPUTS_INCLUDE_PDATA_VIEWS: ${{ inputs.include_pdata_views }}
-          INPUTS_VERSION: ${{ inputs.version }}
+          GO_RELEASE: ${{ steps.plan.outputs.go_release }}
+          RUST_RELEASE: ${{ steps.plan.outputs.rust_release }}
+          SUMMARY: ${{ steps.release-plan.outputs.summary }}
         run: |
-          # Read combined changelog content for PR body
-          CHANGELOG_CONTENT=$(cat /tmp/combined_release_content.txt)
+          {
+            echo "## ${SUMMARY}"
+            echo ""
+            echo "This PR contains the automatically calculated release plan."
+            echo ""
+            echo '```json'
+            cat .github/release-plan.json
+            echo '```'
+            echo ""
+            cat /tmp/combined_release_content.txt
+            echo ""
+            echo "After this PR merges, Push Release starts automatically and waits for approval from the protected \`release\` environment."
+          } > /tmp/pr_body.md
 
-          # Create PR body content
-          cat > /tmp/pr_body.md << EOF
-          ## Release v${INPUTS_VERSION}
+          CREATE_LABEL_ARGS=(--label release)
+          EDIT_LABEL_ARGS=(--add-label release)
+          if [ "$GO_RELEASE" = "true" ]; then
+            gh label create release-go --repo "$GITHUB_REPOSITORY" \
+              --color 0E8A16 --description "Includes a Go release" --force
+            CREATE_LABEL_ARGS+=(--label release-go)
+            EDIT_LABEL_ARGS+=(--add-label release-go)
+          fi
+          if [ "$RUST_RELEASE" = "true" ]; then
+            gh label create release-rust --repo "$GITHUB_REPOSITORY" \
+              --color D93F0B --description "Includes a Rust OTAP Dataflow release" --force
+            CREATE_LABEL_ARGS+=(--label release-rust)
+            EDIT_LABEL_ARGS+=(--add-label release-rust)
+          fi
 
-          This PR prepares the repository for release v${INPUTS_VERSION}.
-
-          ### Changes included:
-          - Rendered pending chloggen entries into \`go/CHANGELOG.md\` and \`rust/otap-dataflow/CHANGELOG.md\`
-          - Bumped Rust workspace crates to ${INPUTS_VERSION}
-          - Include \`otel-arrow-dfe-pdata-views\` in this release: ${INPUTS_INCLUDE_PDATA_VIEWS}
-
-          ${CHANGELOG_CONTENT}
-
-          ### Checklist:
-          - [ ] Verify both CHANGELOG.md files render the expected entries
-          - [ ] Verify Rust crate versions updated
-          - [ ] Confirm all tests pass
-          - [ ] Ready to merge and tag release
-
-          After merging this PR, run the **Push Release** workflow to create git tags and publish the GitHub release.
-          EOF
-
-          BRANCH="otelbot/release-v${INPUTS_VERSION}"
-          TITLE="chore(release) Prepare Release v${INPUTS_VERSION}"
-
-          # Check if a PR already exists for this branch
           EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-
+          TITLE="chore(release): Prepare ${SUMMARY}"
           if [ -n "$EXISTING_PR" ]; then
-            echo "Updating existing PR #$EXISTING_PR"
             gh pr edit "$EXISTING_PR" \
               --title "$TITLE" \
               --body-file /tmp/pr_body.md \
               --base main \
-              --add-label release
+              "${EDIT_LABEL_ARGS[@]}"
           else
             gh pr create \
               --title "$TITLE" \
               --body-file /tmp/pr_body.md \
               --head "$BRANCH" \
               --base main \
-              --label release
+              "${CREATE_LABEL_ARGS[@]}"
           fi
 
       - name: Verify release window remains stable
-        if: "!inputs.dry_run"
+        if: steps.plan.outputs.has_changes == 'true' && env.DRY_RUN == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          STEPS_RELEASE_BASE_OUTPUTS_SHA: ${{ steps.release_base.outputs.sha }}
-        run: |
-          ./.github/workflows/scripts/verify-release-window.sh \
-            "${STEPS_RELEASE_BASE_OUTPUTS_SHA}"
-
-      - name: Summary
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo ":heavy_check_mark: Dry run completed successfully"
-            echo "No changes were made to the repository"
-            echo "Review the planned changes above and run again without dry-run when ready"
-          else
-            echo ":heavy_check_mark: Release preparation completed successfully"
-            echo ""
-            echo "Next steps:"
-            echo "1. Review and merge the pull request: https://github.com/open-telemetry/otel-arrow/pulls"
-            echo "2. After merging, run the 'Push Release' workflow to create git tags and GitHub release"
-            echo ""
-            echo "Release branch: otelbot/release-v${INPUTS_VERSION}"
-            echo "Release version: v${INPUTS_VERSION}"
-          fi
-        env:
-          INPUTS_VERSION: ${{ inputs.version }}
+          RELEASE_BASE_SHA: ${{ steps.release-base.outputs.sha }}
+        run: ./.github/workflows/scripts/verify-release-window.sh "$RELEASE_BASE_SHA"

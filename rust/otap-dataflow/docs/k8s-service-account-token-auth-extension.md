@@ -81,7 +81,7 @@ its first production implementation.
 ### Capability and execution model
 
 The extension registers into `OTAP_EXTENSION_FACTORIES` via `linkme` when the
-`k8s-service-account-token-auth-extension` feature is enabled, and advertises the
+`k8s-service-account-token-auth` feature is enabled, and advertises the
 `bearer_token_authorizer` capability as a **dual variant** -- a `Send + Sync` shared
 variant and a `!Send` local variant -- sharing one common implementation:
 

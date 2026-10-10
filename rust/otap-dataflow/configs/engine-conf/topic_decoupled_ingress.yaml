@@ -6,6 +6,12 @@ version: otel_dataflow/v1
 # - processing pipeline drains that topic, routes/retries logs, and exports OTLP downstream
 # - backend pipeline receives that OTLP stream for local end-to-end validation
 # Goal: show how a topic can absorb ingress bursts and decouple OTLP receive from downstream processing/export latency.
+#
+# The observability pipeline prints only shared receiver/exporter boundary
+# metrics and topic-specific metrics.
+#
+# Run from rust/otap-dataflow:
+#   cargo run --bin df_engine -- --config configs/engine-conf/topic_decoupled_ingress.yaml
 
 policies:
   channel_capacity:
@@ -31,15 +37,119 @@ engine:
 
   observability:
     pipeline:
+      policies:
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          runtime_metrics: none
       nodes:
         internal_telemetry_receiver:
           type: receiver:internal_telemetry
-          config: {}
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+              views:
+                - selector:
+                    scope_name: receiver.received
+                    instrument_name: messages
+                  stream:
+                    name: receiver_received_messages
+                - selector:
+                    scope_name: receiver.processing
+                    instrument_name: duration
+                  stream:
+                    name: receiver_processing_duration
+                - selector:
+                    scope_name: receiver.topic.lag
+                    instrument_name: events
+                  stream:
+                    name: receiver_topic_lag_events
+                - selector:
+                    scope_name: receiver.topic.bridge
+                    instrument_name: controls
+                  stream:
+                    name: receiver_topic_bridge_controls
+                - selector:
+                    scope_name: receiver.topic
+                    instrument_name: lagged.messages
+                  stream:
+                    name: receiver_topic_lagged_messages
+                - selector:
+                    scope_name: receiver.topic
+                    instrument_name: downstream.backpressure.events
+                  stream:
+                    name: receiver_topic_downstream_backpressure_events
+                - selector:
+                    scope_name: receiver.topic.downstream.blocked
+                    instrument_name: duration
+                  stream:
+                    name: receiver_topic_downstream_blocked_duration
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: messages
+                  stream:
+                    name: exporter_attempted_messages
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: duration
+                  stream:
+                    name: exporter_attempted_duration
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: items
+                  stream:
+                    name: exporter_attempted_items
+                - selector:
+                    scope_name: exporter.topic.rejections
+                    instrument_name: messages
+                  stream:
+                    name: exporter_topic_rejections_messages
+                - selector:
+                    scope_name: exporter.topic.tracked
+                    instrument_name: messages
+                  stream:
+                    name: exporter_topic_tracked_messages
+                - selector:
+                    scope_name: exporter.topic
+                    instrument_name: tracked_in_flight
+                  stream:
+                    name: exporter_topic_tracked_in_flight
+        topic_metrics:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - receiver_received_messages
+                  - receiver_processing_duration
+                  - receiver_topic_lag_events
+                  - receiver_topic_bridge_controls
+                  - receiver_topic_lagged_messages
+                  - receiver_topic_downstream_backpressure_events
+                  - receiver_topic_downstream_blocked_duration
+                  - exporter_attempted_messages
+                  - exporter_attempted_duration
+                  - exporter_attempted_items
+                  - exporter_topic_rejections_messages
+                  - exporter_topic_tracked_messages
+                  - exporter_topic_tracked_in_flight
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: normal
+            mode: batch
+            signals: [metrics]
         internal_telemetry_sink:
           type: exporter:noop
           config: null
       connections:
         - from: internal_telemetry_receiver
+          to: topic_metrics
+        - from: topic_metrics
+          to: metrics_debug
+        - from: metrics_debug
           to: internal_telemetry_sink
 
 groups:
@@ -103,6 +213,12 @@ groups:
 
           ingress_exporter:
             type: exporter:topic
+            policies:
+              telemetry:
+                messages: true
+                item_counts: true
+                duration: true
+                duration_distribution: detailed
             config:
               topic: ingress
               queue_on_full: block
@@ -121,6 +237,11 @@ groups:
         nodes:
           ingress_receiver:
             type: receiver:topic
+            policies:
+              telemetry:
+                messages: true
+                duration: true
+                duration_distribution: detailed
             config:
               topic: ingress
               subscription:

@@ -210,6 +210,30 @@ pub enum GrpcEndpointError {
     },
 }
 
+/// Validates an ASCII gRPC metadata key and rejects protocol-owned names.
+pub fn validate_grpc_metadata_key(
+    name: &str,
+) -> Result<MetadataKey<tonic::metadata::Ascii>, String> {
+    let key = name
+        .parse::<MetadataKey<tonic::metadata::Ascii>>()
+        .map_err(|_| {
+            format!(
+                "header name \"{name}\" is not a valid gRPC metadata key (expected an HTTP/2 \
+                 token: ASCII letters, digits, or `-_.`; the key is sent lowercased and must not \
+                 end with `-bin`, which is reserved for binary metadata)"
+            )
+        })?;
+    if matches!(key.as_str(), "content-type" | "te" | "user-agent")
+        || key.as_str().starts_with("grpc-")
+    {
+        return Err(format!(
+            "header \"{name}\" is reserved by the gRPC protocol and cannot be set; it is managed \
+             by the exporter"
+        ));
+    }
+    Ok(key)
+}
+
 /// Validates that a gRPC endpoint string is a well-formed URI.
 ///
 /// When no scheme is present the endpoint is validated as if `http://` were prepended.
@@ -339,31 +363,7 @@ impl GrpcClientSettings {
 
         let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
-            let key = name
-                .parse::<MetadataKey<tonic::metadata::Ascii>>()
-                .map_err(|_| {
-                    GrpcEndpointError::InvalidConfig(format!(
-                        "header name \"{name}\" is not a valid gRPC metadata key (expected an \
-                         HTTP/2 token: ASCII letters, digits, or `-_.`; the key is sent \
-                         lowercased and must not end with `-bin`, which is reserved for \
-                         binary metadata)"
-                    ))
-                })?;
-            // Reject metadata the gRPC protocol/transport manages itself, mirroring
-            // the OTLP/HTTP exporter's reserved-header check. `content-type`, `te`,
-            // and `user-agent` are set by the transport (a dedicated `user_agent`
-            // config field already exists), and the `grpc-` prefix is reserved by
-            // the gRPC spec (e.g. `grpc-timeout`, `grpc-encoding`), so user-supplied
-            // values could otherwise alter call semantics such as the server-side
-            // deadline.
-            if matches!(key.as_str(), "content-type" | "te" | "user-agent")
-                || key.as_str().starts_with("grpc-")
-            {
-                return Err(GrpcEndpointError::InvalidConfig(format!(
-                    "header \"{name}\" is reserved by the gRPC protocol and cannot be set via \
-                     `headers`; it is managed by the exporter"
-                )));
-            }
+            let key = validate_grpc_metadata_key(name).map_err(GrpcEndpointError::InvalidConfig)?;
             if MetadataValue::try_from(value.expose_secret()).is_err() {
                 return Err(GrpcEndpointError::InvalidConfig(format!(
                     "header \"{name}\" has a value that cannot be represented as ASCII gRPC \
@@ -741,6 +741,7 @@ where
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
+    use otel_arrow_dfe_test_tls_certs as tls_certs;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -1108,14 +1109,17 @@ mod tests {
         assert!(tls.is_none());
     }
 
+    /// Scenario: insecure mode is combined with an explicitly configured valid
+    /// custom CA.
+    /// Guarantees: custom trust material still causes a TLS configuration to be
+    /// built even when the endpoint uses an HTTP scheme.
     #[tokio::test]
     async fn client_tls_insecure_true_with_custom_ca_still_builds_tls_config() {
         crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_self_signed_cert("ca", Some("ca"), true);
         let cfg = TlsClientConfig {
             insecure: Some(true),
-            ca_pem: Some(
-                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
-            ),
+            ca_pem: Some(ca.cert_pem),
             include_system_ca_certs_pool: Some(false),
             ..TlsClientConfig::default()
         };
@@ -1143,17 +1147,20 @@ mod tests {
         );
     }
 
+    /// Scenario: client TLS is explicitly configured for an endpoint using the
+    /// HTTP URI scheme.
+    /// Guarantees: valid TLS settings are applied regardless of the endpoint
+    /// scheme instead of silently downgrading to plaintext.
     #[tokio::test]
     async fn build_endpoint_with_tls_allows_http_when_tls_is_configured() {
         crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_self_signed_cert("ca", Some("ca"), true);
         let settings = GrpcClientSettings {
             grpc_endpoint: "http://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
                 config: TlsConfig::default(),
                 ca_file: None,
-                ca_pem: Some(
-                    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
-                ),
+                ca_pem: Some(ca.cert_pem),
                 include_system_ca_certs_pool: Some(false),
                 server_name: Some("localhost".to_string()),
                 ..TlsClientConfig::default()

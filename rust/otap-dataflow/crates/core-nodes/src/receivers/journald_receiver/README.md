@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:journald` (`urn:otel:receiver:journald`)
-- Feature gate: Default
+- Feature gate: `journald`
 - Stability: Experimental
 
 ## Overview

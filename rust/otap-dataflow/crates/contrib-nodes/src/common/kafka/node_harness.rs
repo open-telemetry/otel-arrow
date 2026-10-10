@@ -14,22 +14,22 @@
 //! Each wrapper is gated by its node feature so it only compiles when that node
 //! (and its `rdkafka`) is present.
 
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 use otel_arrow_dfe_engine::context::ControllerContext;
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 use otel_arrow_dfe_engine::context::PipelineContext;
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
 /// Builds a deterministic single-core pipeline context for the wrappers.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 fn test_pipeline_context() -> PipelineContext {
     test_pipeline_context_with_generation(0)
 }
 
 /// Builds a deterministic single-core pipeline context at an explicit deployment
 /// generation, so a cutover test can model an old vs new pipeline instance.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 fn test_pipeline_context_with_generation(deployment_generation: u64) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
@@ -56,7 +56,7 @@ fn test_pipeline_context_with_generation(deployment_generation: u64) -> Pipeline
 /// `_` to `.` before lookup.
 // Consumed by the Kafka validation test branch; helpers may be unused on the
 // branch that only finalizes the test suite.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 #[allow(dead_code)]
 pub(crate) mod node_metrics {
     use std::collections::HashMap;
@@ -221,7 +221,7 @@ pub(crate) mod node_metrics {
 // Exporter wrapper
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 mod exporter_harness {
     use super::test_pipeline_context;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
@@ -501,14 +501,14 @@ mod exporter_harness {
     }
 }
 
-#[cfg(feature = "kafka-exporter")]
+#[cfg(feature = "kafka")]
 pub(crate) use exporter_harness::KafkaExporterHarness;
 
 // ---------------------------------------------------------------------------
 // Receiver wrapper
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 mod receiver_harness {
     use super::test_pipeline_context_with_generation;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
@@ -872,7 +872,7 @@ mod receiver_harness {
     }
 }
 
-#[cfg(feature = "kafka-receiver")]
+#[cfg(feature = "kafka")]
 pub(crate) use receiver_harness::KafkaReceiverHarness;
 
 // ---------------------------------------------------------------------------
@@ -880,7 +880,7 @@ pub(crate) use receiver_harness::KafkaReceiverHarness;
 // ---------------------------------------------------------------------------
 
 /// Per-signal topic/format layout used by the `start_for` wrapper variants.
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct KafkaTopics {
     /// Optional traces topic + encoding.
@@ -891,7 +891,7 @@ pub(crate) struct KafkaTopics {
     pub(crate) logs: Option<(String, crate::common::kafka::MessageFormat)>,
 }
 
-#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+#[cfg(feature = "kafka")]
 impl KafkaTopics {
     /// A logs-only layout.
     pub(crate) fn logs(topic: impl Into<String>, fmt: crate::common::kafka::MessageFormat) -> Self {

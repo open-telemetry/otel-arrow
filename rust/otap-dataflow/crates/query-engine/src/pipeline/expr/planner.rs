@@ -22,7 +22,7 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::logical_expr::{ScalarUDFImpl, cast};
-use datafusion::prelude::{binary_expr, lit_timestamp_nano};
+use datafusion::scalar::ScalarValue;
 use otel_arrow_contrib_data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
     CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression,
@@ -34,7 +34,8 @@ use otel_arrow_contrib_data_engine_expressions::{
 };
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
-use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
+use regex::Regex;
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -46,25 +47,25 @@ use crate::consts::{
     XXH128_FUNC_NAME,
 };
 use crate::error::{Error, Result};
-use crate::pipeline::assign::leaf_requires_dict_downcast;
 use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
     ExprLogicalType, cast_expr, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
 use crate::pipeline::expr::{
-    LeafEval, RootParentStruct, ScopedExpr, ShortCircuitStrategy, SignalTypePredicate,
+    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr,
+    ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
+use crate::pipeline::functions::regex_match::RegexMatchFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
     arity_range, fnv_hash, murmur3_hash, now, regexp_substr, substring, uuidv7, xxh3_hash,
     xxh128_hash,
 };
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 /// Planner that converts AST expressions into `ScopedExpr` execution trees.
@@ -73,9 +74,9 @@ pub(crate) struct ExprPlanner {
     /// When `false`, attribute key filtering uses case-insensitive comparison.
     attr_key_case_sensitive: bool,
 
-    /// When `true`, the planner is producing `ScopedExpr` trees for evaluation on an attributes
-    /// `RecordBatch` (i.e., inside an `apply attributes { ... }` pipeline).
-    plan_for_attributes: bool,
+    /// Which type within the OTel data-model hierarchy should be treated as the root record
+    /// the expression that is being planned.
+    record_type: RecordType,
 }
 
 /// Intermediate planning result that carries type information alongside the `ScopedExpr`
@@ -86,27 +87,25 @@ pub(crate) struct PlannedOp {
 }
 
 impl ExprPlanner {
-    /// Creates a new `ExprPlanner` with case-sensitive attribute key matching
-    pub fn new() -> Self {
+    /// Creates a new `ExprPlanner`
+    pub fn new(attr_key_case_sensitive: bool, record_type: RecordType) -> Self {
         Self {
-            attr_key_case_sensitive: true,
-            plan_for_attributes: false,
+            attr_key_case_sensitive,
+            record_type,
         }
     }
 
-    /// Creates a new `ExprPlanner` with the specified attribute key case sensitivity
-    pub fn with_attr_key_case_sensitive(attr_key_case_sensitive: bool) -> Self {
-        Self {
-            attr_key_case_sensitive,
-            plan_for_attributes: false,
-        }
-    }
-
-    /// Creates a new `ExprPlanner` configured for attribute record batch evaluation
-    pub fn for_attributes(attr_key_case_sensitive: bool) -> Self {
-        Self {
-            attr_key_case_sensitive,
-            plan_for_attributes: true,
+    /// Return the scope of the record for which the expression is being planned.
+    ///
+    /// e.g. if this expression is being planned to evaluate on logs, metrics, spans
+    /// this should return Root. If it is being planned to evaluate on data points, it
+    /// should return the record scope identifying this data.
+    fn record_scope(&self) -> RecordScope {
+        match &self.record_type {
+            RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
+            // In attributes mode the attributes batch IS the "root" for evaluation,
+            // so we use Signal scope -- same as the top-level signal case.
+            _ => RecordScope::Signal,
         }
     }
 
@@ -119,7 +118,8 @@ impl ExprPlanner {
         match expr {
             ScalarExpression::Source(source_scalar_expr) => {
                 let value_accessor = source_scalar_expr.get_value_accessor();
-                let column_accessor = ColumnAccessor::try_from(value_accessor)?;
+                let column_accessor =
+                    ColumnAccessor::try_from_value_accessor(value_accessor, &self.record_type)?;
 
                 match column_accessor {
                     ColumnAccessor::ColumnName(column_name) => {
@@ -133,7 +133,7 @@ impl ExprPlanner {
                         })?;
                         Ok(PlannedOp {
                             expr: ScopedExpr::Eval {
-                                scope: DataScope::Root,
+                                scope: DataScope::Record(self.record_scope()),
                                 eval: LeafEval::new_df_expr(col(column_name), false)?,
                             },
                             expr_type: field_type,
@@ -153,7 +153,7 @@ impl ExprPlanner {
                         let data_scope = match column_name {
                             consts::RESOURCE => DataScope::RootParent(RootParentStruct::Resource),
                             consts::SCOPE => DataScope::RootParent(RootParentStruct::Scope),
-                            _ => DataScope::Root,
+                            _ => DataScope::Record(self.record_scope()),
                         };
                         Ok(PlannedOp {
                             expr: ScopedExpr::Eval {
@@ -169,7 +169,7 @@ impl ExprPlanner {
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => Ok(PlannedOp {
                         expr: ScopedExpr::Eval {
-                            scope: DataScope::Attribute(attrs_id, key),
+                            scope: DataScope::Attribute(attrs_id, key, Vec::new()),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 col(VALUE_COLUMN_NAME),
                                 false,
@@ -179,9 +179,17 @@ impl ExprPlanner {
                         expr_type: ExprLogicalType::AnyValue,
                         requires_dict_downcast: false,
                     }),
-                    ColumnAccessor::NestedAttribute(_, _, _) => Err(Error::NotYetSupportedError {
-                        message: "reading nested serialized attribute paths is not yet supported"
-                            .into(),
+                    ColumnAccessor::NestedAttribute(attrs_id, key, path) => Ok(PlannedOp {
+                        expr: ScopedExpr::Eval {
+                            scope: DataScope::Attribute(attrs_id, key, path),
+                            eval: LeafEval::new_df_expr_with_key_case(
+                                col(VALUE_COLUMN_NAME),
+                                false,
+                                self.attr_key_case_sensitive,
+                            )?,
+                        },
+                        expr_type: ExprLogicalType::AnyValue,
+                        requires_dict_downcast: false,
                     }),
                 }
             }
@@ -210,8 +218,13 @@ impl ExprPlanner {
                                 ),
                             }
                         })?;
+                        // Tag the literal with UTC so it compares against
+                        // OTAP timestamp columns, which are always UTC.
                         (
-                            lit_timestamp_nano(val),
+                            lit(ScalarValue::TimestampNanosecond(
+                                Some(val),
+                                Some(UTC_TIME_ZONE.into()),
+                            )),
                             ExprLogicalType::TimestampNanosecond,
                         )
                     }
@@ -400,8 +413,8 @@ impl ExprPlanner {
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
                     ) = (
-                        left.effective_value_scope()?.as_ref(),
-                        right.effective_value_scope()?.as_ref(),
+                        left.effective_value_scope(&self.record_type)?.as_ref(),
+                        right.effective_value_scope(&self.record_type)?.as_ref(),
                     ) {
                         if left_attrs_id == right_attrs_id {
                             // most performant way to "and" the results of the children exprs
@@ -424,7 +437,7 @@ impl ExprPlanner {
                             col(arg_column_name(0)).and(col(arg_column_name(1))),
                             false,
                         )?,
-                        align_children_to_root,
+                        align_children_to_record: align_children_to_root,
                         default_null_children: false,
                         short_circuit: Some(ShortCircuitStrategy::And),
                     })
@@ -471,8 +484,8 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.or(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    let left_scope = left.effective_value_scope()?;
-                    let right_scope = right.effective_value_scope()?;
+                    let left_scope = left.effective_value_scope(&self.record_type)?;
+                    let right_scope = right.effective_value_scope(&self.record_type)?;
 
                     // If both sides are AttributesAll with the same ID, the most
                     // performant path is a bitmap OR over parent_ids.
@@ -497,7 +510,7 @@ impl ExprPlanner {
                             col(arg_column_name(0)).or(col(arg_column_name(1))),
                             false,
                         )?,
-                        align_children_to_root,
+                        align_children_to_record: align_children_to_root,
                         default_null_children: false,
                         short_circuit: Some(ShortCircuitStrategy::Or),
                     })
@@ -533,7 +546,7 @@ impl ExprPlanner {
 
                 let inner = self.plan_logical(inner_expr, functions)?;
                 let is_attrs_all_scope = matches!(
-                    inner.effective_value_scope()?.as_ref(),
+                    inner.effective_value_scope(&self.record_type)?.as_ref(),
                     DataScope::AttributesAll(_)
                 );
                 Ok(match inner {
@@ -564,7 +577,7 @@ impl ExprPlanner {
                         children,
                         eval,
                         default_null_children,
-                        align_children_to_root,
+                        align_children_to_record,
                         short_circuit,
                     } if !is_attrs_all_scope => match eval {
                         LeafEval::DatafusionExpr {
@@ -578,7 +591,7 @@ impl ExprPlanner {
                         } => ScopedExpr::JoinAndEval {
                             children,
                             default_null_children,
-                            align_children_to_root,
+                            align_children_to_record,
                             short_circuit: short_circuit.map(|s| s.invert()),
                             eval: LeafEval::DatafusionExpr {
                                 logical_expr: not(logical_expr),
@@ -594,7 +607,7 @@ impl ExprPlanner {
                             children,
                             eval,
                             default_null_children,
-                            align_children_to_root,
+                            align_children_to_record,
                             short_circuit,
                         })),
                     },
@@ -688,7 +701,7 @@ impl ExprPlanner {
 
         let mut expr = self.build_eval_or_join(case_expr, args_scope, data_scope, true)?;
         if let ScopedExpr::JoinAndEval {
-            ref mut align_children_to_root,
+            align_children_to_record: ref mut align_children_to_root,
             ..
         } = expr
         {
@@ -758,8 +771,8 @@ impl ExprPlanner {
             // scalar that gets broadcast across rows.
             (
                 Vec::new(),
-                FunctionArgScope::Combined(DataScope::Root),
-                Some(DataScope::Root),
+                FunctionArgScope::Combined(DataScope::Record(self.record_scope())),
+                Some(DataScope::Record(self.record_scope())),
                 false,
             )
         } else {
@@ -1084,7 +1097,7 @@ impl ExprPlanner {
         // Try fused attribute comparison optimization: when one side is an attribute
         // access and the other is a typed literal, skip the expensive key-filter +
         // value-projection materialization step.
-        if !self.plan_for_attributes
+        if !self.record_type.is_attribute()
             && let Some(fused) = self.try_plan_fused_attr_comparison(
                 &mut left,
                 operator,
@@ -1120,6 +1133,9 @@ impl ExprPlanner {
 
         let requires_dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
 
+        if self.record_type.is_attribute() {
+            resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
+        }
         let mut expr = self.build_binary_expr(left, operator, right, requires_dict_downcast)?;
         if !either_side_literal {
             // if we're here, it means both sides of the comparison are not literals. For
@@ -1176,7 +1192,7 @@ impl ExprPlanner {
             ScopedExpr::JoinAndEval { children, eval, .. } => ScopedExpr::JoinAndEval {
                 children,
                 default_null_children: true,
-                align_children_to_root: op == Operator::Eq,
+                align_children_to_record: op == Operator::Eq,
                 short_circuit: None,
                 eval: transform_leaf(eval),
             },
@@ -1194,7 +1210,9 @@ impl ExprPlanner {
         // try to resolve the expression as a column accessor
         if let ScalarExpression::Source(source_expr) = value_expr {
             let value_accessor = source_expr.get_value_accessor();
-            if let Ok(column_accessor) = ColumnAccessor::try_from(value_accessor) {
+            if let Ok(column_accessor) =
+                ColumnAccessor::try_from_value_accessor(value_accessor, &self.record_type)
+            {
                 return match column_accessor {
                     ColumnAccessor::ColumnName(col_name) => {
                         let is_null_expr = if col_name == crate::consts::BODY_FIELD_NAME {
@@ -1204,13 +1222,13 @@ impl ExprPlanner {
                             col(col_name).is_null()
                         };
                         Ok(Some(ScopedExpr::Eval {
-                            scope: DataScope::Root,
+                            scope: DataScope::Record(self.record_scope()),
                             eval: LeafEval::new_df_expr(is_null_expr, false)?,
                         }))
                     }
                     ColumnAccessor::StructCol(struct_name, field_name) => {
                         Ok(Some(ScopedExpr::Eval {
-                            scope: DataScope::Root,
+                            scope: DataScope::Record(self.record_scope()),
                             eval: LeafEval::new_df_expr(
                                 col(struct_name).field(field_name).is_null(),
                                 false,
@@ -1231,7 +1249,7 @@ impl ExprPlanner {
                         // We use a trivial "true" predicate in the attribute scope to
                         // check for key existence (key filtering is done at the scope level).
                         Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
-                            scope: DataScope::Attribute(attrs_id, key),
+                            scope: DataScope::Attribute(attrs_id, key, Vec::new()),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 lit(true),
                                 false,
@@ -1239,7 +1257,17 @@ impl ExprPlanner {
                             )?,
                         }))))
                     }
-                    ColumnAccessor::NestedAttribute(_, _, _) => Ok(None),
+                    // Unresolved paths and null leaves are omitted during projection.
+                    ColumnAccessor::NestedAttribute(attrs_id, key, path) => {
+                        Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
+                            scope: DataScope::Attribute(attrs_id, key, path),
+                            eval: LeafEval::new_df_expr_with_key_case(
+                                lit(true),
+                                false,
+                                self.attr_key_case_sensitive,
+                            )?,
+                        }))))
+                    }
                 };
             }
         }
@@ -1267,10 +1295,14 @@ impl ExprPlanner {
         // Identify which side is the attribute access and which is the literal.
         let (attrs_op, literal_op, attrs_on_left) =
             match (left.expr.eval_scope(), right.expr.eval_scope()) {
-                (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
+                (Some(DataScope::Attribute(_, _, path)), Some(DataScope::StaticScalar))
+                    if path.is_empty() =>
+                {
                     (left, right, true)
                 }
-                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _))) => {
+                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _, path)))
+                    if path.is_empty() =>
+                {
                     (right, left, false)
                 }
                 _ => return Ok(None),
@@ -1289,7 +1321,7 @@ impl ExprPlanner {
 
         // Extract the attribute key and attrs_id
         let (attrs_id, key) = match attrs_op.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1350,7 +1382,7 @@ impl ExprPlanner {
         let mut needle = self.plan_scalar(contains_expr.get_needle(), functions)?;
         // Try fused attribute contains optimization: when haystack is attributes["key"]
         // and needle is a string literal.
-        if !self.plan_for_attributes
+        if !self.record_type.is_attribute()
             && let Some(fused) = self.try_plan_fused_attr_contains(&haystack, &needle)?
         {
             return Ok(fused);
@@ -1368,7 +1400,7 @@ impl ExprPlanner {
 
         // for attribute-level mode, resolve col("value") to col("str") since
         // contains always operates on string columns
-        if self.plan_for_attributes {
+        if self.record_type.is_attribute() {
             if is_attr_value_column(&haystack) {
                 rewrite_attr_value_column(&mut haystack, consts::ATTRIBUTE_STR);
             }
@@ -1417,7 +1449,7 @@ impl ExprPlanner {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![haystack.expr, needle.expr],
                 default_null_children: false,
-                align_children_to_root: false,
+                align_children_to_record: false,
                 short_circuit: None,
                 eval: LeafEval::new_df_expr(
                     contains(col(arg_column_name(0)), col(arg_column_name(1))),
@@ -1438,7 +1470,7 @@ impl ExprPlanner {
     ) -> Result<Option<ScopedExpr>> {
         // Haystack must be an attribute access, needle must be a static string literal
         let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1481,9 +1513,7 @@ impl ExprPlanner {
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let pattern = match matches_expr.get_pattern() {
-            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
-                lit(regex.get_value().as_str().to_string())
-            }
+            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => regex.get_value(),
             _ => {
                 return Err(Error::InvalidPipelineError {
                     cause: "expected pattern to be a static regex".into(),
@@ -1495,8 +1525,8 @@ impl ExprPlanner {
         let mut haystack = self.plan_scalar(matches_expr.get_haystack(), functions)?;
         // Try fused attribute matches optimization: when haystack is attributes["key"]
         // and pattern is a static regex.
-        if !self.plan_for_attributes
-            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, &pattern)?
+        if !self.record_type.is_attribute()
+            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, pattern)?
         {
             return Ok(fused);
         }
@@ -1509,14 +1539,14 @@ impl ExprPlanner {
 
         // for attribute-level mode, resolve col("value") to col("str") since regex
         // matching always operates on string columns
-        if self.plan_for_attributes && is_attr_value_column(&haystack) {
+        if self.record_type.is_attribute() && is_attr_value_column(&haystack) {
             rewrite_attr_value_column(&mut haystack, consts::ATTRIBUTE_STR);
         }
         let scope = haystack
             .expr
             .eval_scope()
             .cloned()
-            .unwrap_or(DataScope::Root);
+            .unwrap_or(DataScope::Record(self.record_scope()));
         let haystack_expr =
             haystack
                 .expr
@@ -1528,12 +1558,12 @@ impl ExprPlanner {
 
         let eval = if has_body_field {
             LeafEval::new_df_expr_anyval_as_struct(
-                binary_expr(haystack_expr, Operator::RegexMatch, pattern),
+                regex_match_expr(pattern, haystack_expr),
                 haystack.requires_dict_downcast,
             )?
         } else {
             LeafEval::new_df_expr_with_key_case(
-                binary_expr(haystack_expr, Operator::RegexMatch, pattern),
+                regex_match_expr(pattern, haystack_expr),
                 haystack.requires_dict_downcast,
                 self.attr_key_case_sensitive,
             )?
@@ -1549,10 +1579,10 @@ impl ExprPlanner {
     fn try_plan_fused_attr_matches(
         &self,
         haystack: &PlannedOp,
-        pattern: &Expr,
+        pattern: &Regex,
     ) -> Result<Option<ScopedExpr>> {
         let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
             _ => return Ok(None),
         };
 
@@ -1566,11 +1596,7 @@ impl ExprPlanner {
             col(consts::ATTRIBUTE_KEY).ilike(lit(escape_like_pattern(&key)))
         };
 
-        let value_regex = binary_expr(
-            col(consts::ATTRIBUTE_STR),
-            Operator::RegexMatch,
-            pattern.clone(),
-        );
+        let value_regex = regex_match_expr(pattern, col(consts::ATTRIBUTE_STR));
 
         let fused_expr = key_filter.and(value_regex);
 
@@ -1594,6 +1620,12 @@ impl ExprPlanner {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
+                if let RecordType::DataPoint(_) = &self.record_type {
+                    return Err(Error::NotYetSupportedError {
+                        message: "Checking record type for data points not yet supported".into(),
+                    });
+                }
+
                 let type_name = typename_expr.get_value();
                 let signal_type = match type_name {
                     "Log" => SignalType::Logs,
@@ -1606,7 +1638,7 @@ impl ExprPlanner {
                         // find such a column and the result will  be interpreted as `false` in a
                         // filtering scenario
                         return Ok(Some(ScopedExpr::Eval {
-                            scope: DataScope::Root,
+                            scope: DataScope::Record(RecordScope::Signal),
                             eval: LeafEval::new_df_expr(
                                 col(consts::METRIC_TYPE).eq(lit(metric_type as u8)),
                                 false,
@@ -1622,7 +1654,7 @@ impl ExprPlanner {
                 };
 
                 Ok(Some(ScopedExpr::Eval {
-                    scope: DataScope::Root,
+                    scope: DataScope::Record(RecordScope::Signal),
                     eval: LeafEval::BatchPredicate(Box::new(SignalTypePredicate::new(signal_type))),
                 }))
             }
@@ -1669,11 +1701,12 @@ impl ExprPlanner {
                         _ => unreachable!(),
                     };
 
+                    // TODO - need to test this kind of expression on data point fields
                     let scope = expr_source
                         .expr
                         .eval_scope()
                         .cloned()
-                        .unwrap_or(DataScope::Root);
+                        .unwrap_or(DataScope::Record(self.record_scope()));
                     let source_expr = expr_source.expr.into_df_eval_expr().ok_or_else(|| {
                         Error::InvalidPipelineError {
                             cause: "invalid input to match".into(),
@@ -1733,7 +1766,7 @@ impl ExprPlanner {
                     .expr
                     .eval_scope()
                     .cloned()
-                    .unwrap_or(DataScope::Root);
+                    .unwrap_or(DataScope::Record(self.record_scope()));
                 let source_expr = expr_source.expr.into_df_eval_expr().ok_or_else(|| {
                     Error::InvalidPipelineError {
                         cause: "invalid input to type check".into(),
@@ -1844,7 +1877,7 @@ impl ExprPlanner {
                     children: vec![source.expr],
                     eval,
                     default_null_children: false,
-                    align_children_to_root: false,
+                    align_children_to_record: false,
                     short_circuit: None,
                 };
             }
@@ -1860,14 +1893,11 @@ impl ExprPlanner {
     /// (cross-scope).
     fn build_binary_expr(
         &self,
-        mut left: PlannedOp,
+        left: PlannedOp,
         operator: Operator,
-        mut right: PlannedOp,
+        right: PlannedOp,
         dict_downcast: bool,
     ) -> Result<ScopedExpr> {
-        if self.plan_for_attributes {
-            resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
-        }
         let possible_scope = try_combine_scopes(&left, &right);
 
         if let Some(scope) = possible_scope {
@@ -1896,7 +1926,7 @@ impl ExprPlanner {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![left.expr, right.expr],
                 default_null_children: false,
-                align_children_to_root: false,
+                align_children_to_record: false,
                 short_circuit: None,
                 eval: LeafEval::new_df_expr(
                     Expr::BinaryExpr(BinaryExpr::new(
@@ -1930,7 +1960,7 @@ impl ExprPlanner {
             FunctionArgScope::Join(children) => Ok(ScopedExpr::JoinAndEval {
                 children,
                 default_null_children: false,
-                align_children_to_root: false,
+                align_children_to_record: false,
                 short_circuit: None,
                 eval: LeafEval::new_df_expr(expr, dict_downcast)?,
             }),
@@ -2016,12 +2046,18 @@ impl ScopedExpr {
 
     /// returns the scope of the data that would be produced if this Expr was evaluated to
     /// produce a scoped value
-    pub(crate) fn effective_value_scope(&self) -> Result<Cow<'_, DataScope>> {
+    ///
+    /// # Arguments
+    /// - `record_type` - the root record type for which the expression would be evaluated.
+    pub(crate) fn effective_value_scope(
+        &self,
+        record_type: &RecordType,
+    ) -> Result<Cow<'_, DataScope>> {
         match self {
             Self::Eval { scope, .. } => Ok(Cow::Borrowed(scope)),
             Self::JoinAndEval {
                 children,
-                align_children_to_root,
+                align_children_to_record,
                 ..
             } => {
                 if children.is_empty() {
@@ -2033,21 +2069,25 @@ impl ScopedExpr {
                     });
                 }
 
-                if *align_children_to_root {
-                    return Ok(Cow::Owned(DataScope::Root));
+                if *align_children_to_record {
+                    let record_scope = match record_type {
+                        RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
+                        _ => RecordScope::Signal,
+                    };
+                    return Ok(Cow::Owned(DataScope::Record(record_scope)));
                 }
 
-                let mut curr_scope = children[0].effective_value_scope()?;
+                let mut curr_scope = children[0].effective_value_scope(record_type)?;
 
                 // compute the data scope of what will be produced when the children are join:
                 for child in children.iter().skip(1) {
-                    let next_scope = child.effective_value_scope()?;
+                    let next_scope = child.effective_value_scope(record_type)?;
                     curr_scope = match (curr_scope.as_ref(), next_scope.as_ref()) {
                         (_, DataScope::StaticScalar | DataScope::AttributesAll(_)) => curr_scope,
                         (DataScope::StaticScalar | DataScope::AttributesAll(_), _) => next_scope,
                         (
-                            DataScope::Attribute(left_attrs_id, _),
-                            DataScope::Attribute(right_attrs_id, _),
+                            DataScope::Attribute(left_attrs_id, _, _),
+                            DataScope::Attribute(right_attrs_id, _, _),
                         ) => {
                             if left_attrs_id == right_attrs_id {
                                 curr_scope
@@ -2058,21 +2098,21 @@ impl ScopedExpr {
                             }
                         }
                         (
-                            DataScope::Root | DataScope::RootParent(_),
-                            DataScope::Attribute(_, _),
+                            DataScope::Record(_) | DataScope::RootParent(_),
+                            DataScope::Attribute(_, _, _),
                         ) => curr_scope,
                         (
-                            DataScope::Attribute(attr_id, _),
-                            DataScope::Root | DataScope::RootParent(_),
+                            DataScope::Attribute(attr_id, _, _),
+                            DataScope::Record(_) | DataScope::RootParent(_),
                         ) => match attr_id {
-                            AttributesIdentifier::Root => curr_scope,
-                            AttributesIdentifier::NonRoot(_) => next_scope,
+                            AttributesIdentifier::Record(_) => curr_scope,
+                            AttributesIdentifier::NonRecord(_) => next_scope,
                         },
 
-                        // rest always have root alignment
-                        (DataScope::Root, DataScope::Root) => curr_scope,
-                        (DataScope::RootParent(_), DataScope::Root) => curr_scope,
-                        (DataScope::Root, DataScope::RootParent(_)) => curr_scope,
+                        // rest always have record alignment
+                        (DataScope::Record(_), DataScope::Record(_)) => curr_scope,
+                        (DataScope::RootParent(_), DataScope::Record(_)) => curr_scope,
+                        (DataScope::Record(_), DataScope::RootParent(_)) => curr_scope,
                         (DataScope::RootParent(_), DataScope::RootParent(_)) => curr_scope,
                     }
                 }
@@ -2080,7 +2120,11 @@ impl ScopedExpr {
                 Ok(curr_scope)
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
-                Ok(Cow::Owned(DataScope::Root))
+                let record_scope = match record_type {
+                    RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
+                    _ => RecordScope::Signal,
+                };
+                Ok(Cow::Owned(DataScope::Record(record_scope)))
             }
         }
     }
@@ -2108,6 +2152,17 @@ impl ScopedExpr {
             _ => None,
         }
     }
+}
+
+/// Build `regex_match(haystack)` with the pattern compiled once here rather than per batch
+/// (DataFusion's `Operator::RegexMatch` recompiles a scalar pattern on every evaluation).
+fn regex_match_expr(pattern: &Regex, haystack: Expr) -> Expr {
+    Expr::ScalarFunction(ScalarFunction::new_udf(
+        Arc::new(ScalarUDF::new_from_impl(RegexMatchFunc::new(
+            pattern.clone(),
+        ))),
+        vec![haystack],
+    ))
 }
 
 fn is_literal_eval(plan: &PlannedOp) -> bool {
@@ -2175,7 +2230,7 @@ fn escape_like_literals(planned: &mut PlannedOp) {
     if let ScopedExpr::Eval {
         eval:
             LeafEval::DatafusionExpr {
-                logical_expr: Expr::Literal(datafusion::scalar::ScalarValue::Utf8(Some(s)), _),
+                logical_expr: Expr::Literal(ScalarValue::Utf8(Some(s)), _),
                 ..
             },
         ..
@@ -2218,7 +2273,7 @@ fn is_body_planned_op(planned: &PlannedOp) -> bool {
         && matches!(
             &planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Root,
+                scope: DataScope::Record(RecordScope::Signal),
                 eval: LeafEval::DatafusionExpr { logical_expr: Expr::Column(c), .. },
             } if c.name() == crate::consts::BODY_FIELD_NAME
         )
@@ -2236,7 +2291,7 @@ fn is_simple_attr_value_column(planned: &PlannedOp) -> bool {
     matches!(
         &planned.expr,
         ScopedExpr::Eval {
-            scope: DataScope::Attribute(_, _),
+            scope: DataScope::Attribute(_, _, _),
             eval: LeafEval::DatafusionExpr { logical_expr: Expr::Column(c), .. },
         } if c.name() == VALUE_COLUMN_NAME
     )
@@ -2403,6 +2458,20 @@ fn rewrite_body_expr(planned: &mut PlannedOp, field_name: &str) {
     }
 }
 
+/// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
+/// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
+pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
+    match expr {
+        ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr {
+                projection_opts, ..
+            },
+            ..
+        } => projection_opts.downcast_dicts,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2422,9 +2491,10 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
+    use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
-    use crate::pipeline::planner::AttributesIdentifier;
+    use crate::pipeline::planner::{AttributesIdentifier, SignalContext};
 
     fn ql() -> QueryLocation {
         QueryLocation::new_fake()
@@ -2493,7 +2563,7 @@ mod test {
 
     #[test]
     fn test_plan_column_reference() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_column_expr("severity_text");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2501,7 +2571,7 @@ mod test {
         assert!(matches!(
             planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Root,
+                scope: DataScope::Record(RecordScope::Signal),
                 ..
             }
         ));
@@ -2511,8 +2581,11 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
-        assert_eq!(result.scope, DataScope::Root);
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
 
         // should have 3 string values
         match &result.values {
@@ -2523,14 +2596,18 @@ mod test {
 
     #[test]
     fn test_plan_attribute_access() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_attr_expr("x");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
         assert!(matches!(
             planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Attribute(AttributesIdentifier::Root, _),
+                scope: DataScope::Attribute(
+                    AttributesIdentifier::Record(RecordScope::Signal),
+                    _,
+                    _
+                ),
                 ..
             }
         ));
@@ -2540,10 +2617,13 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             result.scope,
-            DataScope::Attribute(AttributesIdentifier::Root, _)
+            DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _, _)
         ));
         // 3 attribute rows (one per log record, each has key "x")
         match &result.values {
@@ -2554,7 +2634,7 @@ mod test {
 
     #[test]
     fn test_plan_static_literal() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_int_literal(42);
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2570,7 +2650,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(42))) => {}
             other => panic!("expected Int64(42), got {other:?}"),
@@ -2583,7 +2666,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_number");
         let right = make_int_literal(2);
         let binary = BinaryMathematicalScalarExpression::new(ql(), left, right);
@@ -2595,7 +2678,7 @@ mod test {
         assert!(matches!(
             planned.expr,
             ScopedExpr::Eval {
-                scope: DataScope::Root,
+                scope: DataScope::Record(RecordScope::Signal),
                 ..
             }
         ));
@@ -2604,7 +2687,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Array(arr) => {
                 assert_eq!(arr.len(), 3);
@@ -2623,7 +2709,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_number");
         let right = make_attr_expr("x");
         let binary = BinaryMathematicalScalarExpression::new(ql(), left, right);
@@ -2637,7 +2723,7 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_comparison() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_text");
         let right = make_string_literal("WARN");
 
@@ -2650,7 +2736,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::Root,
+                scope: DataScope::Record(RecordScope::Signal),
                 ..
             }
         ));
@@ -2659,7 +2745,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = op;
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         let bool_arr = as_boolean_array(match &result.values {
             ColumnarValue::Array(arr) => arr,
             other => panic!("expected array, got {other:?}"),
@@ -2672,7 +2761,7 @@ mod test {
 
     #[test]
     fn test_plan_and_two_root_predicates() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" AND severity_number > 10
         let left_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -2706,7 +2795,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -2721,7 +2810,7 @@ mod test {
 
     #[test]
     fn test_plan_signal_type_check() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let get_record_type =
             ScalarExpression::GetRecordType(GetRecordTypeScalarExpression::new(ql()));
@@ -2746,14 +2835,14 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
         assert_eq!(result.mask, IdMask::All);
     }
 
     #[test]
     fn test_plan_scalar_logical() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // Logical(severity_text == "WARN") as a scalar expression
         let inner = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -2771,7 +2860,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // the value should be a boolean array
         let bool_arr = as_boolean_array(match &result.values {
@@ -2786,7 +2878,7 @@ mod test {
 
     #[test]
     fn test_plan_not() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let inner = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -2807,7 +2899,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         // not(Some({0, 2})) = matches everything except 0 and 2 = matches 1
@@ -2823,7 +2915,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_string() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["x"] == "a"
         let attr_expr = make_attr_expr("x");
@@ -2837,7 +2929,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2848,7 +2940,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -2863,7 +2955,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_literal_on_left() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // "a" == attributes["x"] (literal on left)
         let literal_expr = make_string_literal("a");
@@ -2877,7 +2969,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2888,7 +2980,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -2922,7 +3014,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["count"] > 7
         let attr_expr = make_attr_expr("count");
@@ -2936,7 +3028,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                scope: DataScope::AttributesAll(AttributesIdentifier::Root),
+                scope: DataScope::AttributesAll(AttributesIdentifier::Record(RecordScope::Signal)),
                 ..
             }
         ));
@@ -2945,7 +3037,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -2963,7 +3055,7 @@ mod test {
         // attributes["x"] == "a" AND attributes["x"] == "a" (same key, same value)
         // Both should use fused paths and then BitmapAnd combines them
 
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let left = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -2995,7 +3087,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         match &result.mask {
@@ -3025,7 +3117,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["num"] + 2 > 5
         let attr_expr = make_attr_expr("num");
@@ -3058,7 +3150,7 @@ mod test {
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op
-            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
             .unwrap();
 
         // 10 + 2 = 12 > 5 -> should pass
@@ -3078,7 +3170,7 @@ mod test {
     /// the left child is all-false.
     #[test]
     fn test_plan_cross_scope_and_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" AND attributes["x"] == "a"
         // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
@@ -3122,7 +3214,7 @@ mod test {
     /// the left child is all-true.
     #[test]
     fn test_plan_cross_scope_or_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" OR attributes["x"] == "a"
         // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
@@ -3169,7 +3261,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new();
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_number + attributes["x"]
         let binary = BinaryMathematicalScalarExpression::new(

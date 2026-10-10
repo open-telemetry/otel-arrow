@@ -19,14 +19,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanArray, DictionaryArray, PrimitiveArray,
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
-use arrow::buffer::BooleanBuffer;
-use arrow::compute::kernels::cmp::{eq, neq};
+use arrow::buffer::{BooleanBuffer, ScalarBuffer};
+use arrow::compute::kernels::cmp::eq;
 use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
-use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
+use arrow::datatypes::{
+    ArrowNativeType, DataType, Field, Fields, Schema, UInt8Type, UInt16Type, UInt32Type,
+};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
@@ -42,12 +44,12 @@ use otel_arrow_dfe_pdata::encode::record::array::{
 };
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otap::Logs;
-use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 use otel_arrow_dfe_pdata::otap::transform::concatenate::{
     Cardinality, FieldInfo, estimate_cardinality,
 };
 use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::{
-    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
+    AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, EMPTY_U32_ATTRS_RECORD_BATCH, upsert_attributes,
 };
 use otel_arrow_dfe_pdata::otlp::attributes::{
     AttributeValueType,
@@ -61,28 +63,27 @@ use otel_arrow_dfe_pdata::schema::consts::metadata;
 use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
-use crate::pipeline::expr::eval::scoped_value_to_join_input;
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_record, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
-    AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
-    RootToAttributesJoin,
+    AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec,
+    RecordAttrsToRecordJoin, RecordToAttributesJoin,
 };
 use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, nested_struct_field_type, root_field_supports_dict_encoding, root_field_type,
+    ExprLogicalType, MetricDataPointType, nested_struct_field_type,
+    root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, LeafEval, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue,
-    VALUE_COLUMN_NAME,
+    ChildRecordKind, DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
 };
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
     is_any_value_data_type, wrap_as_any_value_struct,
 };
-use crate::pipeline::project::{ProjectedSchemaColumn, Projection};
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
@@ -115,11 +116,6 @@ pub(crate) struct AssignPipelineStage {
     /// Unified execution trees that produce the data to be assigned to the destination.
     sources: Vec<ScopedExpr>,
 
-    /// When this pipeline stage is used in a nested pipeline that processes attributes, it may be
-    /// applying an expression that references the virtual "value" column. This flag will be set if
-    /// the expression references this column.
-    projection_contains_value_column: bool,
-
     /// This is used when assigning attributes to keep track of ID/parent ID membership as we
     /// determine which attributes must be updated or inserted
     id_bitmap_pool: IdBitmapPool,
@@ -127,7 +123,10 @@ pub(crate) struct AssignPipelineStage {
 
 impl AssignPipelineStage {
     /// Create a new instance of [`AssignPipelineStage`]
-    pub fn try_new(assignments: &mut Vec<Assignment<'_>>) -> Result<Self> {
+    pub fn try_new(
+        assignments: &mut Vec<Assignment<'_>>,
+        record_type: &RecordType,
+    ) -> Result<Self> {
         if assignments.is_empty() {
             return Err(Error::InvalidPipelineError {
                 cause: "assignments cannot be empty".into(),
@@ -170,28 +169,21 @@ impl AssignPipelineStage {
                 &assignment.dest_column,
                 assignment.dest_query_location,
                 &assignment.source,
+                record_type,
             )?;
 
             dest_columns.push(assignment.dest_column);
             source_exprs.push(assignment.source.expr);
         }
 
-        // determine, in the case that we're doing assignment on a nested pipeline for attributes,
-        // whether we need to project the virtual "value" column. We only look at the first expr
-        // because for these nested pipelines, the planner shouldn't be combining multiple
-        // set expressions together due to them all having the same destination.
-        let projection_contains_value_column =
-            projection_references_column(&source_exprs[0], VALUE_COLUMN_NAME);
-
         Ok(Self {
             dest_scopes: dest_columns
                 .iter()
-                .map(DataScope::from)
+                .map(|col| DataScope::from_record_column(col, record_type))
                 .map(Rc::new)
                 .collect(),
             dest_columns,
             sources: source_exprs,
-            projection_contains_value_column,
             id_bitmap_pool: IdBitmapPool::new(),
         })
     }
@@ -302,7 +294,7 @@ impl AssignPipelineStage {
             // computed from attributes. We'll need to join the result's values column to the root
             // column to get the values in the correct order ...
 
-            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
+            let DataScope::Attribute(attrs_id, _, _) = &scoped_value.scope else {
                 // safety: if the data_scope were anything other than attributes, we'd have taken
                 // the if branch (not the else branch) above when we checked if the data was
                 // already aligned
@@ -311,7 +303,7 @@ impl AssignPipelineStage {
 
             // create a JoinExec implementation that computes joined indices of values to root on
             // `root.id == attrs.parent_id` and use this to take rows from the result in order.
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RecordToAttributesJoin::new(*attrs_id);
             let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
@@ -355,11 +347,11 @@ impl AssignPipelineStage {
         let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
 
         if !already_aligned {
-            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
+            let DataScope::Attribute(attrs_id, _, _) = &scoped_value.scope else {
                 unreachable!("unexpected data_scope for non-aligned result")
             };
 
-            let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let join_exec = RecordToAttributesJoin::new(*attrs_id);
 
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
@@ -554,15 +546,15 @@ impl AssignPipelineStage {
             || &scoped_value.scope == dest_scope.as_ref()
             || matches!(
                 scoped_value.scope,
-                DataScope::Root | DataScope::RootParent(_)
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_)
             );
 
         if !already_aligned {
-            let DataScope::Attribute(attrs_id, _) = scoped_value.scope else {
+            let DataScope::Attribute(attrs_id, _, _) = scoped_value.scope else {
                 unreachable!("unexpected data_scope")
             };
 
-            let join_exec = RootToAttributesJoin::new(attrs_id);
+            let join_exec = RecordToAttributesJoin::new(attrs_id);
             let vals_take_indices = join_exec.rows_to_take(
                 &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null),
@@ -584,86 +576,26 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
-    fn assign_to_attributes(
+    fn assign_to_attributes<T: ArrowPrimitiveType>(
         &mut self,
-        mut otap_batch: OtapArrowRecords,
+        otap_batch: &OtapArrowRecords,
+        id_col: Option<ArrayRef>,
+        attrs_record_batch: Cow<'_, RecordBatch>,
         eval_results: &mut [Option<ScopedValue>],
         dest_attrs_id: AttributesIdentifier,
-    ) -> Result<OtapArrowRecords> {
-        let root_record_batch = match otap_batch.root_record_batch() {
-            Some(root_rb) => root_rb,
-            None => {
-                // nothing to do
-                return Ok(otap_batch);
-            }
-        };
-
-        let (attrs_payload_type, id_col) = match dest_attrs_id {
-            AttributesIdentifier::Root => {
-                let attrs_payload_type = match otap_batch {
-                    OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
-                    OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
-                    OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
-                };
-                let id_col = root_record_batch.column_by_name(consts::ID);
-                (attrs_payload_type, id_col)
-            }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let struct_col_name = match payload_type {
-                    ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
-                    ArrowPayloadType::ScopeAttrs => consts::SCOPE,
-                    other => {
-                        return Err(Error::InvalidPipelineError {
-                            cause: format!("Unsupported attributes payload type {other:?}"),
-                            query_location: None,
-                        });
-                    }
-                };
-
-                // access the ID column from the nested Resource/Scope struct
-                let id_col = root_record_batch
-                    .column_by_name(struct_col_name)
-                    .map(|s| {
-                        s.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
-                            Error::ExecutionError {
-                                cause: format!(
-                                    "invalid struct column. found type {:?}",
-                                    s.data_type()
-                                ),
-                            }
-                        })
-                    })
-                    .transpose()?
-                    .and_then(|s| s.column_by_name(consts::ID));
-                (payload_type, id_col)
-            }
-        };
-
-        let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
-            Some(attrs_batch) => Cow::Borrowed(attrs_batch),
-            None => {
-                // add an indicator to the parent id column that it is not transport/delta encoded.
-                // the upsert_attrs function assumes that transport/delta encoding has already been
-                // removed from the parent ID.
-                let batch = EMPTY_U16_ATTRS_RECORD_BATCH.deref();
-                let schema = batch.schema_ref();
-                Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
-                    schema,
-                    consts::PARENT_ID,
-                    metadata::COLUMN_ENCODING,
-                    metadata::encodings::PLAIN,
-                ))))
-            }
-        };
-
+    ) -> Result<RecordBatch>
+    where
+        u32: From<<T as ArrowPrimitiveType>::Native>,
+    {
         let mut parent_id_set = self.id_bitmap_pool.acquire();
         if let Some(id_col) = id_col {
             let id_col = id_col
                 .as_any()
-                .downcast_ref::<UInt16Array>()
+                .downcast_ref::<PrimitiveArray<T>>()
                 .ok_or_else(|| Error::ExecutionError {
                     cause: format!(
-                        "invalid ID column. expected u16 type, found {:?}",
+                        "invalid ID column. expected {:?} type, found {:?}",
+                        T::DATA_TYPE,
                         id_col.data_type()
                     ),
                 })?;
@@ -713,35 +645,12 @@ impl AssignPipelineStage {
             //
             let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
             let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
-            let update_parent_ids_u16 = update_parent_ids
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "invalid ID column. expected u16 type, found {:?}",
-                        update_parent_ids.data_type()
-                    ),
-                })?;
-            let mut update_parent_id_set = self.id_bitmap_pool.acquire();
-            update_parent_id_set.populate(update_parent_ids_u16.iter().flatten().map(|i| i.into()));
 
-            let total = parent_id_set.len() as usize;
-            let mut parent_ids = vec![0u16; total];
-            let mut curr_idx = 0;
-            for id in update_parent_ids_u16.iter().flatten() {
-                parent_ids[curr_idx] = id;
-                curr_idx += 1;
-            }
-            // now put in all the IDS for which we need to insert
-            for id in parent_id_set.iter() {
-                if update_parent_id_set.contains(id) {
-                    continue;
-                }
-                parent_ids[curr_idx] = id as u16;
-                curr_idx += 1;
-            }
-            self.id_bitmap_pool.release(update_parent_id_set);
-            let parent_ids = UInt16Array::from(parent_ids);
+            let parent_ids: PrimitiveArray<T> = create_upsert_attrs_parent_id_array(
+                &mut self.id_bitmap_pool,
+                &parent_id_set,
+                &update_parent_ids,
+            )?;
 
             // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
             // optimization: this makes the join faster because we can take fewer columns, and it
@@ -763,7 +672,7 @@ impl AssignPipelineStage {
                 //
                 // the ScopedValue converted to a JoinInput below. The conversion consumes the it,
                 // so extract the values array first
-                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let eval_result = scoped_value_to_join_input(scoped_value, otap_batch)?;
                 let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
@@ -771,25 +680,30 @@ impl AssignPipelineStage {
                 let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
                     Rc::clone(&self.dest_scopes[i]),
-                    &parent_ids,
+                    Arc::new(parent_ids.clone()),
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
-                    DataScope::Attribute(result_attrs_id, _)
+                    DataScope::Attribute(result_attrs_id, _, _)
                     | DataScope::AttributesAll(result_attrs_id) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
                                 &eval_result,
-                                &otap_batch,
+                                otap_batch,
                             )?
                         } else {
                             AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
-                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
+                                .rows_to_take(left_join_input, &eval_result, otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(_) | DataScope::RootParent(_) => {
+                        RecordAttrsToRecordJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            otap_batch,
+                        )?
+                    }
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
                         // Scalar which would have been handled above where we checked the
@@ -828,36 +742,17 @@ impl AssignPipelineStage {
 
         self.id_bitmap_pool.release(parent_id_set);
 
-        // replace attributes batch
         let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
-        otap_batch.set(attrs_payload_type, new_attrs)?;
-
-        Ok(otap_batch)
+        Ok(new_attrs)
     }
 
     fn assign_to_nested_attributes(
         &mut self,
-        mut otap_batch: OtapArrowRecords,
+        otap_batch: &OtapArrowRecords,
+        attrs_record_batch: Cow<'_, RecordBatch>,
         eval_results: &mut [Option<ScopedValue>],
         dest_attrs_id: AttributesIdentifier,
-    ) -> Result<OtapArrowRecords> {
-        if otap_batch.root_record_batch().is_none() {
-            return Ok(otap_batch);
-        }
-
-        let attrs_payload_type = match dest_attrs_id {
-            AttributesIdentifier::Root => match otap_batch {
-                OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
-                OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
-                OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
-            },
-            AttributesIdentifier::NonRoot(payload_type) => payload_type,
-        };
-
-        let Some(mut attrs_record_batch) = otap_batch.get(attrs_payload_type).cloned() else {
-            return Ok(otap_batch);
-        };
-
+    ) -> Result<RecordBatch> {
         let key_column = attrs_record_batch
             .column_by_name(consts::ATTRIBUTE_KEY)
             .ok_or_else(|| Error::ExecutionError {
@@ -893,15 +788,6 @@ impl AssignPipelineStage {
                     );
                     (existing_key_mask, update_parent_ids)
                 };
-            let update_parent_ids_u16 = update_parent_ids
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "invalid ID column. expected u16 type, found {:?}",
-                        update_parent_ids.data_type()
-                    ),
-                })?;
 
             let mut scoped_value = eval_result
                 .take()
@@ -918,7 +804,7 @@ impl AssignPipelineStage {
             let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
                 ColumnarValue::Scalar(s)
             } else {
-                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let eval_result = scoped_value_to_join_input(scoped_value, otap_batch)?;
                 let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
@@ -926,25 +812,30 @@ impl AssignPipelineStage {
                 let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null),
                     Rc::clone(&self.dest_scopes[i]),
-                    update_parent_ids_u16,
+                    Arc::clone(&update_parent_ids),
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
-                    DataScope::Attribute(result_attrs_id, _)
+                    DataScope::Attribute(result_attrs_id, _, _)
                     | DataScope::AttributesAll(result_attrs_id) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
                                 &eval_result,
-                                &otap_batch,
+                                otap_batch,
                             )?
                         } else {
                             AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
-                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
+                                .rows_to_take(left_join_input, &eval_result, otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(_) | DataScope::RootParent(_) => {
+                        RecordAttrsToRecordJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            otap_batch,
+                        )?
+                    }
                     DataScope::StaticScalar => unreachable!("unexpected array for scalar scope"),
                 };
 
@@ -965,10 +856,8 @@ impl AssignPipelineStage {
             });
         }
 
-        attrs_record_batch = mutate_serialized_attribute_values(&attrs_record_batch, &updates)?;
-        otap_batch.set(attrs_payload_type, attrs_record_batch)?;
-
-        Ok(otap_batch)
+        let new_attrs = mutate_serialized_attribute_values(&attrs_record_batch, &updates)?;
+        Ok(new_attrs)
     }
 
     /// Fills in any nulls in the root batch's ID column with newly assigned IDs.
@@ -1087,37 +976,151 @@ impl PipelineStage for AssignPipelineStage {
     ) -> Result<OtapArrowRecords> {
         // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
-            if *attrs_id == AttributesIdentifier::Root {
+            if matches!(attrs_id, AttributesIdentifier::Record(_)) {
                 self.fill_root_id_column_nulls(&mut otap_batch, exec_state)?;
             }
 
+            let root_record_batch = match otap_batch.root_record_batch() {
+                Some(root_rb) => root_rb,
+                None => {
+                    // nothing to do
+                    return Ok(otap_batch);
+                }
+            };
+
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
-            let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
 
-            return Ok(result);
+            let (attrs_payload_type, id_column) = match *attrs_id {
+                AttributesIdentifier::Record(RecordScope::Signal) => {
+                    let attrs_payload_type = match otap_batch {
+                        OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                        OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                        OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+                    };
+                    let id_col = root_record_batch.column_by_name(consts::ID);
+                    (attrs_payload_type, id_col)
+                }
+                AttributesIdentifier::Record(RecordScope::Child(child)) => {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "Cannot assign attribute of child {child:?} when executing pipeline on signal"
+                        ),
+                        query_location: Default::default(),
+                    });
+                }
+                AttributesIdentifier::NonRecord(payload_type) => {
+                    let struct_col_name = match payload_type {
+                        ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+                        ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+                        other => {
+                            return Err(Error::InvalidPipelineError {
+                                cause: format!("Unsupported attributes payload type {other:?}"),
+                                query_location: None,
+                            });
+                        }
+                    };
+
+                    // access the ID column from the nested Resource/Scope struct
+                    let id_col = root_record_batch
+                        .column_by_name(struct_col_name)
+                        .map(|s| {
+                            s.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+                                Error::ExecutionError {
+                                    cause: format!(
+                                        "invalid struct column. found type {:?}",
+                                        s.data_type()
+                                    ),
+                                }
+                            })
+                        })
+                        .transpose()?
+                        .and_then(|s| s.column_by_name(consts::ID));
+                    (payload_type, id_col)
+                }
+            };
+
+            let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
+                Some(attrs_batch) => Cow::Borrowed(attrs_batch),
+                None => {
+                    // TODO - avoid record batch clone here
+                    // https://github.com/open-telemetry/otel-arrow/issues/3988
+                    //
+                    // add an indicator to the parent id column that it is not transport/delta encoded.
+                    // the upsert_attrs function assumes that transport/delta encoding has already been
+                    // removed from the parent ID.
+                    let batch = EMPTY_U16_ATTRS_RECORD_BATCH.deref();
+                    let schema = batch.schema_ref();
+                    Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
+                        schema,
+                        consts::PARENT_ID,
+                        metadata::COLUMN_ENCODING,
+                        metadata::encodings::PLAIN,
+                    ))))
+                }
+            };
+
+            let new_attrs = self.assign_to_attributes::<UInt16Type>(
+                &otap_batch,
+                id_column.cloned(),
+                attrs_record_batch,
+                &mut eval_results,
+                *attrs_id,
+            )?;
+
+            otap_batch.set(attrs_payload_type, new_attrs)?;
+            return Ok(otap_batch);
         }
 
         if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
-            let result =
-                self.assign_to_nested_attributes(otap_batch, &mut eval_results, *attrs_id)?;
 
-            return Ok(result);
+            let attrs_payload_type = match *attrs_id {
+                AttributesIdentifier::Record(RecordScope::Signal) => match otap_batch {
+                    OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                    OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                    OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+                },
+                AttributesIdentifier::NonRecord(payload_type) => payload_type,
+                AttributesIdentifier::Record(RecordScope::Child(child)) => {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "Cannot assign nested attribute of child {child:?} when executing pipeline on signal"
+                        ),
+                        query_location: Default::default(),
+                    });
+                }
+            };
+
+            let Some(attrs_record_batch) = otap_batch.get(attrs_payload_type) else {
+                return Ok(otap_batch);
+            };
+
+            let new_attrs = self.assign_to_nested_attributes(
+                &otap_batch,
+                Cow::Borrowed(attrs_record_batch),
+                &mut eval_results,
+                *attrs_id,
+            )?;
+            otap_batch.set(attrs_payload_type, new_attrs)?;
+            return Ok(otap_batch);
         }
 
         // Assigning to the root batch.. Unlike attribute assignment this does not currently
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_result = self.sources[i].execute_as_value(&otap_batch, session_context)?;
+            let eval_result = self.sources[i]
+                .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
@@ -1237,115 +1240,9 @@ impl PipelineStage for AssignPipelineStage {
             });
         }
 
-        // safety: we've already checked the batch is not empty, and that there aren't any nulls
-        // in this column, which means we should be safe to expect at least one non-null type
-        let input_attr_type = type_column
-            .iter()
-            .flatten()
-            .next()
-            .expect("non-empty batch");
-
-        let input_attr_type =
-            AttributeValueType::try_from(input_attr_type).map_err(|e| Error::ExecutionError {
-                cause: format!("invalid attribute type {input_attr_type}: {e}"),
-            })?;
-
-        // check if every value is the same type - if not, we may have problems evaluating the
-        // expression (if the value is used in the expression).
-        let all_rows_same_attr_type =
-            neq(type_column, &UInt8Array::new_scalar(input_attr_type as u8))?.true_count() == 0;
-
-        // create the record batch that will be the input to the datafusion physical expression..
-        // if the expression involves the attribute value (e.g. `value + 2`), we produce a record
-        // batch with a single column which is the "value", otherwise, the input is an empty record
-        // batch. We do this because we are currently assuming the only types of expressions we
-        // support are those involving the attribute values (referenced as the virtual "value")
-        // column, or expressions involving static constants which don't need input columns.
-        let projected_rb = if self.projection_contains_value_column {
-            if !all_rows_same_attr_type {
-                // if not all the attribute types are the same, we can't determine a single value
-                // column to use in the projection, so return an error. In practice, the batch
-                // should be split apart before this pipeline stage using other operators to ensure
-                // we only have one value type.
-                return Err(Error::ExecutionError {
-                    cause: "All input rows for attribute assignment must have the same type \
-                        if value used in expression"
-                        .into(),
-                });
-            }
-
-            // try to access the values column
-            let values_column_name = match input_attr_type {
-                AttributeValueType::Bool => Some(consts::ATTRIBUTE_BOOL),
-                AttributeValueType::Double => Some(consts::ATTRIBUTE_DOUBLE),
-                AttributeValueType::Int => Some(consts::ATTRIBUTE_INT),
-                AttributeValueType::Str => Some(consts::ATTRIBUTE_STR),
-                AttributeValueType::Empty => None,
-                other => {
-                    return Err(Error::NotYetSupportedError {
-                        message: format!(
-                            "Setting attributes of type {:?} in nested pipeline not yet supported",
-                            other
-                        ),
-                    });
-                }
-            };
-
-            let values_column =
-                values_column_name.and_then(|col| attrs_record_batch.column_by_name(col));
-
-            let values_column: ArrayRef = match values_column {
-                Some(col) => Arc::clone(col),
-                None => {
-                    // here the values column is missing, which basically means the attributes
-                    // were all null. We'll create an all null array as a placeholder column.
-                    let len = attrs_record_batch.num_rows();
-                    match input_attr_type {
-                        AttributeValueType::Bool => Arc::new(BooleanArray::new_null(len)),
-                        AttributeValueType::Double => Arc::new(Float64Array::new_null(len)),
-                        AttributeValueType::Int => Arc::new(Int64Array::new_null(len)),
-                        AttributeValueType::Str => Arc::new(StringArray::new_null(len)),
-                        AttributeValueType::Empty => Arc::new(NullArray::new(len)),
-                        other => {
-                            return Err(Error::NotYetSupportedError {
-                                message: format!(
-                                    "Setting attributes of type {:?} in nested pipeline not yet supported",
-                                    other
-                                ),
-                            });
-                        }
-                    }
-                }
-            };
-
-            // create the input record batch
-            let mut fields = vec![Arc::new(Field::new(
-                VALUE_COLUMN_NAME,
-                values_column.data_type().clone(),
-                true,
-            ))];
-            let mut columns = vec![values_column];
-
-            // remove dict encoding if necessary. This would be needed for certain expressions such
-            // as arithmetic
-            if leaf_requires_dict_downcast(&self.sources[0]) {
-                Projection::try_downcast_dicts(&mut fields, &mut columns)?
-            }
-
-            Cow::Owned(RecordBatch::try_new(
-                Arc::new(Schema::new(fields)),
-                columns,
-            )?)
-        } else {
-            // since the expression does not require the "value" column, we assume that it is an
-            // expression involving only static literals, in which case the input can just be an
-            // empty record batch
-            Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())
-        };
-
         // evaluate the expression
         let mut result = self.sources[0]
-            .evaluate_on_batch(session_context, &projected_rb)?
+            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?
             .to_array(attrs_record_batch.num_rows())?;
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
@@ -1449,7 +1346,12 @@ impl PipelineStage for AssignPipelineStage {
         }
 
         // replace the type column if the result may have changed the type for some row
-        if result_attr_type != input_attr_type || !all_rows_same_attr_type {
+        let type_mismatch = type_column
+            .values()
+            .iter()
+            .any(|val| *val != result_attr_type as u8);
+
+        if type_mismatch {
             let new_type_column = UInt8Array::from_iter_values(std::iter::repeat_n(
                 result_attr_type as u8,
                 attrs_record_batch.num_rows(),
@@ -1463,8 +1365,141 @@ impl PipelineStage for AssignPipelineStage {
         )?)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_ctx: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for data_point_type in MetricDataPointType::all() {
+            let dp_payload_type = data_point_type.payload_type();
+            let Some(metrics_dp_rb) = otap_batch.get(dp_payload_type) else {
+                // nothing to do
+                continue;
+            };
+
+            let eval_ctx = EvalContext::new_for_metrics_data_points(data_point_type, session_ctx);
+
+            // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
+            if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
+                let mut eval_results = Vec::new();
+                for source in &mut self.sources {
+                    let eval_result = source.execute_as_value(&otap_batch, &eval_ctx)?;
+                    // If the result came from a non-record attribute (resource/scope), align
+                    // it to data-point row order before the attribute upsert. The upsert join
+                    // strategies only handle same-kind parent_id relationships.
+                    eval_results.push(align_non_record_attrs_to_data_point(
+                        eval_result,
+                        metrics_dp_rb,
+                        &otap_batch,
+                    )?);
+                }
+
+                let attrs_payload_type = data_point_type.dp_attrs_payload_type();
+                let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
+                    Some(dp_attrs) => Cow::Borrowed(dp_attrs),
+                    None => {
+                        // TODO - avoid the record batch clone here
+                        // https://github.com/open-telemetry/otel-arrow/issues/3988
+                        //
+                        // add an indicator to the parent id column that it is not transport/delta encoded.
+                        // the upsert_attrs function assumes that transport/delta encoding has already been
+                        // removed from the parent ID.
+                        let batch = EMPTY_U32_ATTRS_RECORD_BATCH.deref();
+                        let schema = batch.schema_ref();
+                        Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
+                            schema,
+                            consts::PARENT_ID,
+                            metadata::COLUMN_ENCODING,
+                            metadata::encodings::PLAIN,
+                        ))))
+                    }
+                };
+
+                let id_col = metrics_dp_rb.column_by_name(consts::ID);
+
+                let new_attrs = self.assign_to_attributes::<UInt32Type>(
+                    &otap_batch,
+                    id_col.cloned(),
+                    attrs_record_batch,
+                    &mut eval_results,
+                    *attrs_id,
+                )?;
+
+                otap_batch.set(attrs_payload_type, new_attrs)?;
+                continue;
+            }
+
+            if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
+                let mut eval_results = Vec::new();
+                for source in &mut self.sources {
+                    let eval_result = source.execute_as_value(&otap_batch, &eval_ctx)?;
+                    eval_results.push(align_non_record_attrs_to_data_point(
+                        eval_result,
+                        metrics_dp_rb,
+                        &otap_batch,
+                    )?);
+                }
+
+                let attrs_payload_type = data_point_type.dp_attrs_payload_type();
+                let Some(attrs_record_batch) = otap_batch.get(attrs_payload_type) else {
+                    continue;
+                };
+
+                let new_attrs = self.assign_to_nested_attributes(
+                    &otap_batch,
+                    Cow::Borrowed(attrs_record_batch),
+                    &mut eval_results,
+                    *attrs_id,
+                )?;
+                otap_batch.set(attrs_payload_type, new_attrs)?;
+                continue;
+            }
+
+            // TODO support - add support for additional assignment targets for metric data points
+            return Err(match self.dest_columns[0] {
+                ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => {
+                    Error::NotYetSupportedError {
+                        message: "assigning metric data point columns not yet supported".into(),
+                    }
+                }
+                ColumnAccessor::NestedAttribute(_, _, _) | ColumnAccessor::Attributes(_, _) => {
+                    // safety: we've handled both of these in the blocks above
+                    unreachable!("already handled column accessor attributes and nested attributes")
+                }
+            });
+        }
+
+        Ok(otap_batch)
+    }
+
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(
+            record_type,
+            RecordType::Attributes | RecordType::Signal(_) | RecordType::DataPoint(_)
+        )
+    }
+
+    // Parent struct fields, scope schema URLs, and non-record attributes are shared metadata.
+    fn parent_behavior(&self) -> ParentBehavior {
+        let requires_reindex = self.dest_columns.iter().any(|dest| match dest {
+            ColumnAccessor::ColumnName(name) => name == consts::SCHEMA_URL,
+            ColumnAccessor::StructCol(struct_name, _) => {
+                matches!(*struct_name, consts::RESOURCE | consts::SCOPE)
+            }
+            ColumnAccessor::Attributes(AttributesIdentifier::NonRecord(_), _)
+            | ColumnAccessor::NestedAttribute(AttributesIdentifier::NonRecord(_), _, _) => true,
+            ColumnAccessor::Attributes(AttributesIdentifier::Record(_), _)
+            | ColumnAccessor::NestedAttribute(AttributesIdentifier::Record(_), _, _) => false,
+        });
+
+        if requires_reindex {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
     }
 
     fn init_state_for_conditional_branch(
@@ -1478,7 +1513,7 @@ impl PipelineStage for AssignPipelineStage {
         // to ensure the IDs that are assigned are not duplicated across branches. That is why we
         // add this extension.
         if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0]
-            && *attrs_id == AttributesIdentifier::Root
+            && matches!(attrs_id, AttributesIdentifier::Record(_))
             && exec_state.get_extension::<NextIdTracker>().is_none()
         {
             let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
@@ -1498,6 +1533,33 @@ impl PipelineStage for AssignPipelineStage {
         _ = exec_state.remove_extension::<NextIdTracker>();
         Ok(())
     }
+}
+
+/// If the eval result has a non-record attribute scope (resource/scope attrs), align it to
+/// data-point row order. The attribute-to-attribute join strategies in `assign_to_attributes`
+/// assume both sides share a direct parent-child ID relationship, which does not hold for the
+/// grandparent relationship between resource/scope attributes and data points.
+fn align_non_record_attrs_to_data_point(
+    eval_result: Option<ScopedValue>,
+    data_points_rb: &RecordBatch,
+    otap_batch: &OtapArrowRecords,
+) -> Result<Option<ScopedValue>> {
+    let Some(sv) = eval_result else {
+        return Ok(None);
+    };
+
+    if let DataScope::Attribute(AttributesIdentifier::NonRecord(_), _, _) = &sv.scope
+        && matches!(sv.values, ColumnarValue::Array(_))
+    {
+        return Ok(Some(align_value_to_record(
+            sv,
+            RecordScope::Child(ChildRecordKind::DataPoint),
+            data_points_rb,
+            otap_batch,
+        )?));
+    }
+
+    Ok(Some(sv))
 }
 
 struct SerializedAttributeUpdate<'a> {
@@ -1697,6 +1759,117 @@ impl NextIdTracker {
     }
 }
 
+/// Creates a primitive array containing the `parent_id`s which is an argument to
+/// `upsert_attributes`. This is supposed to contain the `parent_id` for the attributes that will
+/// be created/updated, in a specific order where all the updates are followed by all the inserts.
+///
+///
+/// # Arguments:
+///
+/// - `id_bitmap_pool` - mutable ID bitmap pool (for access to reusable scratch id bitmap)
+/// - `all_parent_id_set` - bitmap containing all parent IDs that should contain the attribute
+/// - `update_parent_ids` - array containing that already contain the attribute and hence should
+///   have their attribute value updated.
+///
+/// This returns an error if column type which is passed is not a valid ID column.
+fn create_upsert_attrs_parent_id_array<T: ArrowPrimitiveType>(
+    id_bitmap_pool: &mut IdBitmapPool,
+    all_parent_id_set: &IdBitmap,
+    update_parent_ids: &ArrayRef,
+) -> Result<PrimitiveArray<T>>
+where
+    u32: From<<T as ArrowPrimitiveType>::Native>,
+{
+    let mut update_parent_id_set = id_bitmap_pool.acquire();
+    let upsert_parent_ids_values_buffer = if let Some(parent_id_col_primitive) =
+        update_parent_ids.as_primitive_opt::<T>()
+    {
+        update_parent_id_set.populate(parent_id_col_primitive.iter().flatten().map(|i| i.into()));
+        create_upsert_attrs_values_buffer_from_iter::<T, _>(
+            parent_id_col_primitive.iter(),
+            all_parent_id_set,
+            &update_parent_id_set,
+        )
+    } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt8Type>() {
+        if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
+            update_parent_id_set.populate(typed_dict.into_iter().flatten().map(|i| i.into()));
+            create_upsert_attrs_values_buffer_from_iter::<T, _>(
+                typed_dict.into_iter(),
+                all_parent_id_set,
+                &update_parent_id_set,
+            )
+        } else {
+            return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: update_parent_ids.data_type().clone(),
+            }
+            .into());
+        }
+    } else if let Some(parent_id_col_dict) = update_parent_ids.as_dictionary_opt::<UInt16Type>() {
+        if let Some(typed_dict) = parent_id_col_dict.downcast_dict::<PrimitiveArray<T>>() {
+            update_parent_id_set.populate(typed_dict.into_iter().flatten().map(|i| i.into()));
+            create_upsert_attrs_values_buffer_from_iter::<T, _>(
+                typed_dict.into_iter(),
+                all_parent_id_set,
+                &update_parent_id_set,
+            )
+        } else {
+            return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: update_parent_ids.data_type().clone(),
+            }
+            .into());
+        }
+    } else {
+        // invalid type column
+        return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: update_parent_ids.data_type().clone(),
+        }
+        .into());
+    };
+
+    id_bitmap_pool.release(update_parent_id_set);
+    Ok(PrimitiveArray::new(upsert_parent_ids_values_buffer, None))
+}
+
+/// Creates a values buffer for the `parent_id`s which is an argument to `upsert_attributes`. This
+/// is supposed containing the `parent_id` for the attributes that will be created/updated, in a
+/// specific order where all the updates are followed by all the inserts.
+fn create_upsert_attrs_values_buffer_from_iter<
+    T: ArrowPrimitiveType,
+    I: ExactSizeIterator<Item = Option<T::Native>>,
+>(
+    update_parent_id_col: I,
+    all_parent_id_set: &IdBitmap,
+    update_parent_id_set: &IdBitmap,
+) -> ScalarBuffer<T::Native>
+where
+    u32: From<T::Native>,
+{
+    let mut upsert_attr_parent_ids = vec![
+        T::Native::default();
+        update_parent_id_col.len()
+            + (all_parent_id_set.len() - update_parent_id_set.len())
+                as usize
+    ];
+    let mut curr_idx = 0;
+
+    // insert all the IDs to upsert first, which will be those from the existing parent_id column
+    for id in update_parent_id_col.flatten() {
+        upsert_attr_parent_ids[curr_idx] = id;
+        curr_idx += 1
+    }
+
+    for id in all_parent_id_set.iter() {
+        if update_parent_id_set.contains(id) {
+            continue;
+        }
+
+        upsert_attr_parent_ids[curr_idx] = T::Native::usize_as(id as usize);
+        curr_idx += 1;
+    }
+
+    ScalarBuffer::from(upsert_attr_parent_ids)
+}
+
 /// Decompose an AnyValue struct result into one [`AttributeUpsert`] per distinct value type.
 ///
 /// When an expression produces an AnyValue struct (because different rows had different input
@@ -1713,12 +1886,12 @@ impl NextIdTracker {
 ///
 /// 3. Extract the concrete value column for this type from the struct.
 ///
-fn decompose_any_value_upsert<'a>(
+fn decompose_any_value_upsert<'a, T: ArrowPrimitiveType>(
     attrs_key: &'a str,
     existing_key_mask: &BooleanArray,
     any_value_arr: &ArrayRef,
-    parent_ids: &UInt16Array,
-) -> Result<Vec<AttributeUpsert<'a, UInt16Type>>> {
+    parent_ids: &PrimitiveArray<T>,
+) -> Result<Vec<AttributeUpsert<'a, T>>> {
     let struct_arr = any_value_arr
         .as_any()
         .downcast_ref::<StructArray>()
@@ -1790,9 +1963,9 @@ fn decompose_any_value_upsert<'a>(
 
         let filtered_parent_ids = filtered_parent_ids
             .as_any()
-            .downcast_ref::<UInt16Array>()
+            .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "filtered parent_ids is not UInt16".into(),
+                cause: format!("filtered parent_ids is not {:?}", T::DATA_TYPE),
             })?
             .clone();
 
@@ -1844,9 +2017,9 @@ fn decompose_any_value_upsert<'a>(
         let filtered_parent_ids = filter(parent_ids, &empty)?;
         let filtered_parent_ids = filtered_parent_ids
             .as_any()
-            .downcast_ref::<UInt16Array>()
+            .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "filtered parent_ids is not UInt16".into(),
+                cause: format!("filtered parent_ids is not of type {:?}", T::DATA_TYPE),
             })?
             .clone();
 
@@ -1859,36 +2032,6 @@ fn decompose_any_value_upsert<'a>(
     }
 
     Ok(upserts)
-}
-
-/// Check if the top-level `Eval(DatafusionExpr)` node's projection references a given column.
-///
-/// Returns `true` if this is an `Eval(DatafusionExpr)` node whose projection includes the
-/// specified column name. For non-`Eval` nodes or `BatchPredicate` leaves, returns `false`.
-fn projection_references_column(expr: &ScopedExpr, col_name: &str) -> bool {
-    match expr {
-        ScopedExpr::Eval {
-            eval: LeafEval::DatafusionExpr { projection, ..  },
-            ..
-        } => projection.schema.iter().any(|projected_col| {
-            matches!(projected_col, ProjectedSchemaColumn::Root(name) if name == col_name)
-        }),
-        _ => false,
-    }
-}
-
-/// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
-/// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
-pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
-    match expr {
-        ScopedExpr::Eval {
-            eval: LeafEval::DatafusionExpr {
-                projection_opts, ..
-            },
-            ..
-        } => projection_opts.downcast_dicts,
-        _ => false,
-    }
 }
 
 /// Validate that the results of the passed expression can be assigned to the destination.
@@ -1922,6 +2065,7 @@ fn validate_assign(
     dest_column: &ColumnAccessor,
     dest_query_location: Option<&QueryLocation>,
     source_plan: &PlannedOp,
+    record_type: &RecordType,
 ) -> Result<()> {
     match dest_column {
         ColumnAccessor::ColumnName(col_name) => {
@@ -1980,6 +2124,17 @@ fn validate_assign(
         }
         ColumnAccessor::Attributes(dest_attrs_id, _)
         | ColumnAccessor::NestedAttribute(dest_attrs_id, _, _) => {
+            // Data point expressions cannot write to parent (resource/scope) attributes.
+            if matches!(record_type, RecordType::DataPoint(_))
+                && matches!(dest_attrs_id, AttributesIdentifier::NonRecord(_))
+            {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "assigning to resource or scope attributes from data points is not supported"
+                            .into(),
+                });
+            }
+
             if !can_assign_type(&ExprLogicalType::AnyValue, &source_plan.expr_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -2004,16 +2159,16 @@ fn validate_assign(
 /// there can be many logs with different events to a single resource, it is ambiguous what the
 /// actual value should be and os we consider this an invalid expression
 ///
-/// This walks the `ScopedExpr` tree and checks the `DataScope` at each `Eval` leaf. For non-root
-/// attribute destinations, root-scoped data and bitmap operations (which produce root-scoped
+/// This walks the `ScopedExpr` tree and checks the `DataScope` at each `Eval` leaf. For non-record
+/// attribute destinations, record-scoped data and bitmap operations (which produce root-scoped
 /// booleans) are invalid because of the one-to-many relationship.
 fn validate_expr_cardinality(
     dest_attrs_id: AttributesIdentifier,
     dest_query_location: Option<&QueryLocation>,
     expr: &ScopedExpr,
 ) -> Result<()> {
-    if dest_attrs_id == AttributesIdentifier::Root {
-        // root attributes have no 1:many relations
+    if matches!(dest_attrs_id, AttributesIdentifier::Record(_)) {
+        // record attributes have no 1:many relations
         return Ok(());
     }
 
@@ -2023,20 +2178,30 @@ fn validate_expr_cardinality(
                 // always valid to assign a scalar
                 DataScope::StaticScalar => true,
 
-                // we've already determined we're not assigning to a root attribute, so the
+                // we've already determined we're not assigning to a record attribute, so the
                 // destination must be something that has a one:many relationship with root like
                 // resource or scope
-                DataScope::Root | DataScope::RootParent(_) => false,
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => false,
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource attribute or scope attribute from the value of some nested child
+                    // record like a metric data point. The planner shouldn't be creating plans like
+                    // this, but we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: "Cannot assign non-record attribute from non-signal record".into(),
+                        query_location: dest_query_location.cloned(),
+                    });
+                }
 
-                DataScope::Attribute(source_attrs_id, _)
+                DataScope::Attribute(source_attrs_id, _, _)
                 | DataScope::AttributesAll(source_attrs_id) => {
                     dest_attrs_id == *source_attrs_id
                         || matches!(
                             dest_attrs_id,
-                            AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                            AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs)
                         ) && matches!(
                             source_attrs_id,
-                            AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                            AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs)
                         )
                 }
             };
@@ -2108,7 +2273,17 @@ fn validate_struct_col_assign_cardinality(
             let is_valid = match scope {
                 DataScope::StaticScalar => true,
                 // root (log/span/metric level) is always lower than resource or scope
-                DataScope::Root => false,
+                DataScope::Record(RecordScope::Signal) => false,
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource or scope field from the value of some nested child record like
+                    // a metric data point. The planner shouldn't be creating plans like this, but
+                    // we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: "Cannot assign struct column from non-signal record".into(),
+                        query_location: dest_query_location.cloned(),
+                    });
+                }
                 DataScope::RootParent(source_parent) => match dest_struct_name {
                     consts::RESOURCE => {
                         matches!(source_parent, RootParentStruct::Resource)
@@ -2119,16 +2294,16 @@ fn validate_struct_col_assign_cardinality(
                     ),
                     _ => false,
                 },
-                DataScope::Attribute(source_attrs_id, _)
+                DataScope::Attribute(source_attrs_id, _, _)
                 | DataScope::AttributesAll(source_attrs_id) => match dest_struct_name {
                     consts::RESOURCE => matches!(
                         source_attrs_id,
-                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                        AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs)
                     ),
                     consts::SCOPE => matches!(
                         source_attrs_id,
-                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
-                            | AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                        AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs)
+                            | AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs)
                     ),
                     _ => false,
                 },
@@ -2490,7 +2665,11 @@ mod test {
 
     use crate::{
         parser::default_parser_options,
-        pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline},
+        pipeline::{
+            Pipeline, SignalContext, SignalKind,
+            planner::{PipelinePlanner, RecordType},
+            test::exec_logs_pipeline,
+        },
     };
 
     async fn test_insert_root_column_from_scalar<P: Parser>() {
@@ -2792,7 +2971,7 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::All));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2822,7 +3001,8 @@ mod test {
         let pipeline = P::parse("logs | extend bad_column = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2855,7 +3035,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2878,7 +3059,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -2910,7 +3092,7 @@ mod test {
             .unwrap()
             .pipeline;
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await;
 
         match result {
@@ -2945,7 +3127,7 @@ mod test {
             .unwrap()
             .pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
     }
@@ -2956,7 +3138,7 @@ mod test {
             .unwrap()
             .pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
     }
@@ -2968,7 +3150,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend event_name = \"event\"")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -2984,7 +3166,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend dropped_attributes_count = 1")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3008,7 +3190,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = event_name")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3038,7 +3220,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3077,7 +3259,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3120,7 +3302,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3163,7 +3345,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | extend severity_text = attributes[\"attr1\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(
@@ -3185,7 +3367,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | set severity_text = attributes[\"x\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         let logs = result.get(ArrowPayloadType::Logs).unwrap();
@@ -3206,7 +3388,7 @@ mod test {
         let pipeline_expr = OplParser::parse("logs | set body = severity_text")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(otap_batch).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -3244,7 +3426,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         for input_any_val in sources {
             let logs_data = to_logs_data(vec![
@@ -3313,7 +3495,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3393,7 +3575,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3452,7 +3634,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3505,7 +3687,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = body";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3556,7 +3738,7 @@ mod test {
 
         let query = "logs | extend body = body + body";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3596,7 +3778,7 @@ mod test {
 
         let query = "logs | extend body = severity_text";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3664,7 +3846,7 @@ mod test {
 
         let query = "logs | extend body = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -3700,7 +3882,7 @@ mod test {
         let pipeline_expr = OplParser::parse("traces | set name = attributes[\"x\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         match pipeline.execute(otap_batch).await {
             Err(e) => {
@@ -3725,7 +3907,7 @@ mod test {
         let pipeline_expr = OplParser::parse("traces | set name = attributes[\"x\"]")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         match pipeline.execute(otap_batch).await {
             Err(e) => {
@@ -3763,7 +3945,7 @@ mod test {
         let pipeline_expr = P::parse("logs | extend instrumentation_scope.name = \"new_name\"")
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input_batch).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -3821,7 +4003,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = resource.schema_url";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -3867,7 +4049,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = instrumentation_scope.name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
@@ -3884,11 +4066,11 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = event_name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("cannot assign data scope Root to struct column scope"),
+                .contains("cannot assign data scope Record(Signal) to struct column scope"),
             "unexpected error: {}",
             err
         );
@@ -3918,7 +4100,7 @@ mod test {
         let query =
             "logs | extend instrumentation_scope.name = instrumentation_scope.attributes[\"key\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -3963,11 +4145,11 @@ mod test {
 
         let query = "logs | extend resource.schema_url = instrumentation_scope.attributes[\"key\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains(
-                "cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"key\") to struct column resource"
+                "cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"key\", []) to struct column resource"
             ),
             "unexpected error: {}",
             err
@@ -4010,7 +4192,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = resource.attributes[\"name\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4055,7 +4237,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = 42";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
@@ -4093,7 +4275,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.dropped_attributes_count = 42";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4148,7 +4330,7 @@ mod test {
         // which triggers assign_null_struct_field for the nullable schema_url field
         let query = "logs | extend resource.schema_url = resource.attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4175,7 +4357,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = substring(instrumentation_scope.name, 0, 6)";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4260,7 +4442,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = \"new_url\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4298,7 +4480,7 @@ mod test {
 
         let query = "logs | extend resource.schema_url = \"new_url\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4333,7 +4515,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = \"new_name\", resource.schema_url = \"new_url\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -4395,7 +4577,7 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.name = resource.attributes[\"url\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4446,7 +4628,7 @@ mod test {
         let query = "logs | extend instrumentation_scope.name = \"new_name\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let input = OtapArrowRecords::Logs(Logs::default());
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
     }
@@ -4465,7 +4647,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4515,7 +4697,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = attributes[\"y\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4565,7 +4747,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = attributes[\"x\"] * 2";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4617,7 +4799,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -4677,7 +4859,7 @@ mod test {
         ]);
         let query = "traces | extend attributes[\"x\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4721,7 +4903,7 @@ mod test {
         ]);
         let query = "metrics | extend attributes[\"x\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4770,7 +4952,7 @@ mod test {
         // there is no attribute z
         let query = "logs | extend attributes[\"y\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4807,7 +4989,7 @@ mod test {
         // there is no attribute z
         let query = "logs | extend attributes[\"y\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4847,7 +5029,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = attributes[\"x\"] * 2";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4919,7 +5101,7 @@ mod test {
         // there is no attribute z
         let query = "logs | extend attributes[\"x\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -4970,7 +5152,7 @@ mod test {
             attributes[\"k_double\"] = 4.0
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5049,7 +5231,7 @@ mod test {
             attributes[\"k_double2\"] = 6.0
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5128,7 +5310,7 @@ mod test {
                 attributes[\"k_double2\"] = attributes[\"k_double\"]
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5224,7 +5406,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = resource.attributes[\"x\"]";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5282,7 +5464,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5332,7 +5514,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5393,7 +5575,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5443,7 +5625,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"x\"] = resource.attributes[\"y\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5501,7 +5683,7 @@ mod test {
         let query =
             "logs | extend instrumentation_scope.attributes[\"x\"] = resource.attributes[\"y\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5553,7 +5735,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5594,7 +5776,7 @@ mod test {
             | extend attributes[\"z\"] = \"c\"
             ";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
         assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
 
@@ -5653,7 +5835,7 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::ResourceAttrs).is_none());
@@ -5692,7 +5874,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5736,7 +5918,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5781,7 +5963,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = event_name";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5828,7 +6010,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5883,7 +6065,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5917,7 +6099,8 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new();
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
 
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
@@ -5953,7 +6136,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].items[0].name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -5996,7 +6179,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = \"after\", attributes[\"complex\"].child.count = 2";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6030,7 +6213,7 @@ mod test {
 
         let query = "logs | extend attributes[\"missing\"].child = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6064,7 +6247,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].missing.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6110,7 +6293,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6162,7 +6345,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6231,7 +6414,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let err = pipeline.execute(input).await.expect_err("mixed RHS errors");
@@ -6255,7 +6438,7 @@ mod test {
 
         let query = "logs | extend attributes[\"complex\"].count = 0 - 1";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6283,7 +6466,7 @@ mod test {
 
         let query = "logs | extend attributes[\"raw\"].name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6321,7 +6504,7 @@ mod test {
 
         let query = "logs | set resource.attributes[\"complex\"].child.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6345,6 +6528,258 @@ mod test {
         );
     }
 
+    fn sorted_attributes(mut attributes: Vec<KeyValue>) -> Vec<KeyValue> {
+        attributes.sort_by(|left, right| left.key.cmp(&right.key));
+        attributes
+    }
+
+    /// Scenario: Assign every supported scalar type from nested map and array paths.
+    /// Guarantees: Nested scalar leaves retain their types and values during assignment.
+    #[tokio::test]
+    async fn test_read_nested_scalar_attribute_paths() {
+        let complex = AnyValue::new_kvlist(vec![
+            KeyValue::new("text", AnyValue::new_string("value")),
+            KeyValue::new("int", AnyValue::new_int(7)),
+            KeyValue::new("double", AnyValue::new_double(1.5)),
+            KeyValue::new("bool", AnyValue::new_bool(true)),
+            KeyValue::new("bytes", AnyValue::new_bytes(b"raw")),
+            KeyValue::new(
+                "items",
+                AnyValue::new_array(vec![AnyValue::new_string("first"), AnyValue::new_int(2)]),
+            ),
+        ]);
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("complex", complex.clone())])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend
+            attributes["text"] = attributes["complex"]["text"],
+            attributes["int"] = attributes["complex"]["int"],
+            attributes["double"] = attributes["complex"]["double"],
+            attributes["bool"] = attributes["complex"]["bool"],
+            attributes["bytes"] = attributes["complex"]["bytes"],
+            attributes["first"] = attributes["complex"]["items"][0],
+            attributes["second"] = attributes["complex"]["items"][1]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+
+        assert_eq!(
+            sorted_attributes(
+                result.resource_logs[0].scope_logs[0].log_records[0]
+                    .attributes
+                    .clone()
+            ),
+            vec![
+                KeyValue::new("bool", AnyValue::new_bool(true)),
+                KeyValue::new("bytes", AnyValue::new_bytes(b"raw")),
+                KeyValue::new("complex", complex),
+                KeyValue::new("double", AnyValue::new_double(1.5)),
+                KeyValue::new("first", AnyValue::new_string("first")),
+                KeyValue::new("int", AnyValue::new_int(7)),
+                KeyValue::new("second", AnyValue::new_int(2)),
+                KeyValue::new("text", AnyValue::new_string("value")),
+            ]
+        );
+    }
+
+    /// Scenario: Assign missing, container, null, mismatched and out-of-bounds nested paths.
+    /// Guarantees: Nested paths that do not resolve to a scalar leaf read as null.
+    #[tokio::test]
+    async fn test_read_unresolved_nested_attribute_paths_as_null() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("child", AnyValue::new_kvlist(vec![])),
+                        KeyValue::new("items", AnyValue::new_array(vec![])),
+                        KeyValue::new("empty", AnyValue::default()),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("complex", AnyValue::new_string("text"))])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend
+            attributes["missing"] = attributes["complex"]["missing"],
+            attributes["container"] = attributes["complex"]["child"],
+            attributes["null"] = attributes["complex"]["empty"],
+            attributes["wrong_container"] = attributes["complex"][0],
+            attributes["out_of_bounds"] = attributes["complex"]["items"][0]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+
+        for log_record in &result.resource_logs[0].scope_logs[0].log_records {
+            for key in [
+                "missing",
+                "container",
+                "null",
+                "wrong_container",
+                "out_of_bounds",
+            ] {
+                let attribute = log_record
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == key)
+                    .unwrap();
+                assert_eq!(attribute.value, Some(AnyValue::default()), "{key}");
+            }
+        }
+    }
+
+    /// Scenario: Combine two nested paths read from the same serialized attribute.
+    /// Guarantees: Each path resolves independently, and a missing leaf yields null.
+    #[tokio::test]
+    async fn test_read_multiple_nested_paths_from_same_attribute() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("x", AnyValue::new_int(2)),
+                        KeyValue::new("y", AnyValue::new_int(3)),
+                    ]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("x", AnyValue::new_int(5))]),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["sum"] = attributes["complex"]["x"] + attributes["complex"]["y"]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+
+        assert_eq!(
+            log_records[0].attributes[1],
+            KeyValue::new("sum", AnyValue::new_int(5))
+        );
+        assert_eq!(
+            log_records[1].attributes[1],
+            KeyValue::new("sum", AnyValue::default())
+        );
+    }
+
+    /// Scenario: Assign a nested path read from instrumentation scope attributes.
+    /// Guarantees: Each log receives the leaf from its own scope.
+    #[tokio::test]
+    async fn test_read_nested_scope_attribute_path() {
+        let scope = |name| {
+            InstrumentationScope::build()
+                .attributes(vec![KeyValue::new(
+                    "custom",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "componentName",
+                        AnyValue::new_string(name),
+                    )]),
+                )])
+                .finish()
+        };
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(scope("receiver"), vec![LogRecord::build().finish()]),
+                ScopeLogs::new(scope("exporter"), vec![LogRecord::build().finish()]),
+            ],
+        )]);
+
+        let query = r#"logs | extend attributes["componentName"] = instrumentation_scope.attributes["custom"]["componentName"]"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+
+        for (scope_logs, expected) in result.resource_logs[0]
+            .scope_logs
+            .iter()
+            .zip(["receiver", "exporter"])
+        {
+            assert_eq!(
+                scope_logs.log_records[0].attributes,
+                vec![KeyValue::new(
+                    "componentName",
+                    AnyValue::new_string(expected)
+                )]
+            );
+        }
+    }
+
+    /// Scenario: Assign a span attribute from a nested serialized span attribute leaf.
+    /// Guarantees: Each span receives the leaf from its own nested attribute.
+    #[tokio::test]
+    async fn test_read_nested_span_attribute_path() {
+        let complex = |name| {
+            KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string(name))]),
+            )
+        };
+        let traces_data = to_traces_data(vec![
+            Span::build().attributes(vec![complex("a")]).finish(),
+            Span::build().attributes(vec![complex("b")]).finish(),
+        ]);
+
+        let query = r#"traces | extend attributes["name"] = attributes["complex"]["name"]"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Traces(result_traces_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        for (span, expected) in result_traces_data.resource_spans[0].scope_spans[0]
+            .spans
+            .iter()
+            .zip(["a", "b"])
+        {
+            assert_eq!(
+                span.attributes,
+                vec![
+                    complex(expected),
+                    KeyValue::new("name", AnyValue::new_string(expected)),
+                ]
+            );
+        }
+    }
+
+    /// Scenario: Read a nested path from a serialized attribute holding invalid CBOR.
+    /// Guarantees: The pipeline returns an error naming the attribute key and path.
+    #[tokio::test]
+    async fn test_read_nested_path_from_invalid_cbor_returns_error() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("a"))]),
+                )])
+                .finish(),
+        ]);
+        let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        let log_attrs = super::try_upsert_column(
+            consts::ATTRIBUTE_SER,
+            std::sync::Arc::new(arrow::array::BinaryArray::from(vec![Some(
+                b"not cbor".as_slice(),
+            )])),
+            log_attrs,
+        )
+        .unwrap();
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+
+        let query = r#"logs | extend attributes["name"] = attributes["complex"]["name"]"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let err = pipeline.execute(input).await.unwrap_err().to_string();
+
+        assert!(
+            err.contains("failed to read serialized attribute \"complex\" at path [Key(\"name\")]"),
+            "unexpected error message: {err:?}"
+        );
+    }
+
     async fn test_upsert_multi_attribute_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -6359,7 +6794,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\", attributes[\"x\"] = \"world\"";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6404,7 +6839,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
@@ -6434,7 +6869,7 @@ mod test {
 
         let query = "logs | extend attributes[\"y\"] = \"hello\", attributes[\"x\"] = \"world\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
@@ -6471,11 +6906,13 @@ mod test {
 
         let query = "logs | extend resource.attributes[\"y\"] = event_name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRecord(ResourceAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
@@ -6483,11 +6920,11 @@ mod test {
         // ensure we can't assign from attributes
         let query = "logs | extend resource.attributes[\"y\"] = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"x\", []) to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6496,11 +6933,11 @@ mod test {
         let query =
             "logs | extend resource.attributes[\"y\"] = instrumentation_scope.attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(NonRecord(ScopeAttrs), \"x\", []) to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6509,11 +6946,11 @@ mod test {
         // expression requiring join
         let query = "logs | extend resource.attributes[\"y\"] = resource.attributes[\"x\"] * attributes[\"y\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attribute(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Record(Signal), \"y\", []) to attributes NonRecord(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -6529,11 +6966,13 @@ mod test {
 
         let query = "logs | extend instrumentation_scope.attributes[\"y\"] = event_name";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ScopeAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRecord(ScopeAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
@@ -6541,12 +6980,12 @@ mod test {
         // ensure we can't assign from attributes
         let query = "logs | extend instrumentation_scope.attributes[\"y\"] = attributes[\"x\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
             err_msg.contains(
-                "cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
+                "cannot assign data scope Attribute(Record(Signal), \"x\", []) to attributes NonRecord(ScopeAttrs)"
             ),
             "unexpected error message {}",
             err_msg
@@ -6563,7 +7002,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = \"a\", attributes[\"x\"] = \"b\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // assert the end result is from the 2nd assignment
@@ -6600,7 +7039,7 @@ mod test {
 
         for query in queries {
             let pipeline_expr = P::parse(query).unwrap().pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let result = pipeline.execute(input.clone()).await.unwrap();
 
             let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -6655,7 +7094,7 @@ mod test {
             set attributes["z"] = attributes["y"], attributes["w"] = attributes["y"]
         "#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
 
@@ -6741,7 +7180,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = 1.0";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -6773,7 +7212,7 @@ mod test {
 
         let query = "logs | extend attributes[\"x\"] = attributes[\"z\"]";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -6812,7 +7251,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -6869,7 +7308,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
@@ -6914,7 +7353,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -6949,7 +7388,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7007,7 +7446,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7051,7 +7490,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7094,7 +7533,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7137,7 +7576,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7178,7 +7617,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7233,7 +7672,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7283,7 +7722,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7331,7 +7770,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -7402,7 +7841,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7454,7 +7893,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7491,7 +7930,7 @@ mod test {
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7527,7 +7966,7 @@ mod test {
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7573,7 +8012,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7616,7 +8055,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7659,7 +8098,7 @@ mod test {
         let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7699,7 +8138,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7747,7 +8186,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7791,7 +8230,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7847,7 +8286,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7917,7 +8356,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(&query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -7975,7 +8414,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8009,7 +8448,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8048,7 +8487,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8105,7 +8544,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8175,7 +8614,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8231,7 +8670,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
@@ -8269,7 +8708,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8308,7 +8747,7 @@ mod test {
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
@@ -8432,7 +8871,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline
             .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
@@ -8501,11 +8940,13 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
         assert_result(result, AnyValue::new_double(5.0));
 
+        // Timestamp columns are UTC, so the string rendering carries the "Z"
+        // zone designator.
         let query = r#"logs | set attributes["result"] = time_unix_nano as String"#;
         let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
         assert_result(
             result,
-            AnyValue::new_string("1970-01-01T00:00:00.000000005"),
+            AnyValue::new_string("1970-01-01T00:00:00.000000005Z"),
         );
 
         // test cast from result of function call
@@ -8654,7 +9095,7 @@ mod test {
             let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline;
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
             let err = pipeline
                 .execute(otlp_to_otap(&OtlpProtoMessage::Logs(logs_data)))
                 .await

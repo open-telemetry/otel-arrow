@@ -3,12 +3,13 @@
 
 //! Resolution phase for [`OtelDataflowSpec`].
 
+use crate::context_policy::ContextEntryDeclaration;
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
 use crate::policy::{
     Policies, RateLimiterDeclarationScope, ResolvedPolicies, ResolvedResourcesPolicy,
 };
-use crate::topic::TopicSpec;
+use crate::topic::{TopicScope, TopicSpec};
 use crate::{PipelineGroupId, PipelineId, TopicName};
 
 /// System pipeline-group id used by the engine to group internal telemetry pipelines.
@@ -72,6 +73,8 @@ pub struct ResolvedPipelineConfig {
     pub pipeline_id: PipelineId,
     /// Pipeline definition.
     pub pipeline: PipelineConfig,
+    /// Resolved topic namespace visible to this pipeline.
+    pub topic_scope: TopicScope,
     /// Resolved policies after hierarchy resolution.
     pub policies: ResolvedPolicies,
     /// Pipeline role.
@@ -90,6 +93,7 @@ impl ResolvedPipelineConfig {
             pipeline_group_id: _,
             pipeline_id: _,
             pipeline: self_pipeline,
+            topic_scope: self_topic_scope,
             policies: self_policies,
             role: self_role,
         } = self;
@@ -97,11 +101,13 @@ impl ResolvedPipelineConfig {
             pipeline_group_id: _,
             pipeline_id: _,
             pipeline: other_pipeline,
+            topic_scope: other_topic_scope,
             policies: other_policies,
             role: other_role,
         } = other;
 
         self_role == other_role
+            && self_topic_scope == other_topic_scope
             // Policy effects are compared through the resolved snapshot below.
             // Comparing their declaration placement here would redeploy for a
             // scope-only move whose effective runtime policy is unchanged.
@@ -117,6 +123,7 @@ impl ResolvedPipelineConfig {
             pipeline_group_id: _,
             pipeline_id: _,
             pipeline: self_pipeline,
+            topic_scope: self_topic_scope,
             policies: self_policies,
             role: self_role,
         } = self;
@@ -124,17 +131,34 @@ impl ResolvedPipelineConfig {
             pipeline_group_id: _,
             pipeline_id: _,
             pipeline: other_pipeline,
+            topic_scope: other_topic_scope,
             policies: other_policies,
             role: other_role,
         } = other;
 
         self_role == other_role
+            && self_topic_scope == other_topic_scope
             && self_pipeline.eq_ignoring_policies(other_pipeline)
             && self_policies.eq_ignoring_resources(other_policies)
     }
 }
 
 impl OtelDataflowSpec {
+    /// Resolves the topic scope visible to pipelines in a group.
+    #[must_use]
+    pub fn resolve_topic_scope(&self, pipeline_group_id: &PipelineGroupId) -> Option<TopicScope> {
+        // Control-plane validation ensures that non-empty group topics still match the
+        // declarations for that group ID in the startup configuration. Supporting dynamically
+        // created topic scopes will require explicit scope allocation.
+        self.groups.get(pipeline_group_id).map(|pipeline_group| {
+            if pipeline_group.topics.is_empty() {
+                TopicScope::GLOBAL
+            } else {
+                TopicScope::startup_group(pipeline_group_id.clone())
+            }
+        })
+    }
+
     /// Resolves and materializes policies once for all pipelines.
     ///
     /// The returned snapshot is deterministic: pipelines are ordered by
@@ -160,6 +184,9 @@ impl OtelDataflowSpec {
                     .groups
                     .get(&pipeline_group_id)
                     .expect("pipeline group collected during resolve must still exist in map");
+                let topic_scope = self
+                    .resolve_topic_scope(&pipeline_group_id)
+                    .expect("pipeline group collected during resolve must still resolve");
                 let pipeline = pipeline_group
                     .pipelines
                     .get(&pipeline_id)
@@ -174,6 +201,23 @@ impl OtelDataflowSpec {
                 .flatten()
                 .collect();
                 let mut policies = Policies::resolve(scopes);
+                policies.context = self
+                    .context_policy_layers(&pipeline_group_id, Some(&pipeline_id))
+                    .into_iter()
+                    .flat_map(|layer| {
+                        let scope = layer.scope;
+                        layer.context.into_iter().flat_map(move |context| {
+                            let scope = scope.clone();
+                            context.entries.iter().map(move |(name, definition)| {
+                                ContextEntryDeclaration {
+                                    scope: scope.clone(),
+                                    name: name.clone(),
+                                    definition: definition.clone(),
+                                }
+                            })
+                        })
+                    })
+                    .collect();
                 policies.rate_limiter_scope = if pipeline
                     .policies()
                     .and_then(Policies::resources)
@@ -205,6 +249,7 @@ impl OtelDataflowSpec {
                     None
                 };
                 ResolvedPipelineConfig {
+                    topic_scope,
                     pipeline_group_id,
                     pipeline_id,
                     pipeline,
@@ -226,12 +271,14 @@ impl OtelDataflowSpec {
         policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
         policies.authorized_identity = None;
+        policies.context.clear();
         policies.rate_limiters.clear();
         policies.rate_limiter_scope = None;
         pipelines.push(ResolvedPipelineConfig {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
             pipeline: obs_pipeline.into_pipeline_config(),
+            topic_scope: TopicScope::GLOBAL,
             policies,
             role: ResolvedPipelineRole::ObservabilityInternal,
         });
@@ -271,6 +318,7 @@ mod tests {
     use crate::policy::{
         CoreAllocation, ResolvedPolicies, ResolvedResourcesPolicy, TelemetryPolicy,
     };
+    use crate::topic::TopicScope;
 
     #[test]
     fn runtime_shape_matches_ignoring_resources_ignores_resource_only_changes() {
@@ -299,6 +347,7 @@ connections:
 "#,
             )
             .expect("current pipeline should parse"),
+            topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies {
                 resources: ResolvedResourcesPolicy {
                     core_allocation: CoreAllocation::core_count(1),
@@ -333,6 +382,7 @@ connections:
 "#,
             )
             .expect("candidate pipeline should parse"),
+            topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies {
                 resources: ResolvedResourcesPolicy {
                     core_allocation: CoreAllocation::core_count(2),
@@ -345,6 +395,11 @@ connections:
 
         assert!(!current.runtime_matches(&candidate));
         assert!(current.runtime_shape_matches_ignoring_resources(&candidate));
+
+        let mut different_scope = current.clone();
+        different_scope.topic_scope = TopicScope::startup_group("g1".into());
+        assert!(!current.runtime_matches(&different_scope));
+        assert!(!current.runtime_shape_matches_ignoring_resources(&different_scope));
     }
 
     #[test]
@@ -369,6 +424,7 @@ connections:
 "#,
             )
             .expect("current pipeline should parse"),
+            topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies::default(),
             role: ResolvedPipelineRole::Regular,
         };
@@ -376,6 +432,7 @@ connections:
             pipeline_group_id: "g1".into(),
             pipeline_id: "p1".into(),
             pipeline: current.pipeline.clone(),
+            topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies {
                 telemetry: TelemetryPolicy {
                     pipeline_metrics: false,

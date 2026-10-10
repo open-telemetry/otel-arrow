@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:otlp_grpc` (`urn:otel:exporter:otlp_grpc`)
-- Feature gate: Default
+- Feature gate: `otlp`
 - Stability: Experimental
 
 ## Overview
@@ -63,10 +63,10 @@ keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
 
 `headers` is a map of metadata name to value added to every outbound request
 (multi-tenant routing IDs, tracing-vendor metadata, and similar). For request
-authentication, prefer the `bearer_token_provider` capability (see
-[Authentication](#authentication)) rather than hard-coding an `authorization`
-entry here. Values are sent verbatim, so treat any secret in the rendered config
-as sensitive.
+authentication, prefer one of the provider capabilities described in
+[Authentication](#authentication) rather than hard-coding credentials here.
+Values are sent verbatim, so treat any secret in the rendered config as
+sensitive.
 
 Validation at config load rejects:
 
@@ -85,19 +85,47 @@ whose key matches a configured one is dropped, so a configured routing header
 
 ## Authentication
 
-The exporter can inject an OAuth `authorization: Bearer <token>` on every
-outbound request by consuming the `bearer_token_provider` capability. Binding is
-optional and additive: without it the exporter sends no `authorization` metadata
-(the default); with it, the bound extension acquires and refreshes the token in
-the background so credentials rotate without restarting the exporter.
+By default the exporter sends requests without any authentication.
+Authentication can be enabled by binding a
+[provider extension](../../../../contrib-extensions/README.md) to the exporter
+node via its `capabilities` map. The following providers are supported:
 
-Declare a provider extension -- for example
+- [`BearerTokenProvider`](#bearertokenprovider): Provides OAuth bearer
+  authorization metadata.
+- [`ApiKeyProvider`](#apikeyprovider): Provides an API key through custom
+  metadata in the form `<header_name>: <optional_scheme> <api_key>`.
+- [`BasicAuthProvider`](#basicauthprovider): Provides HTTP Basic authorization
+  metadata from a username and password.
+- [`AgentFedCredentialProvider`](#agentfedcredentialprovider): Provides bearer
+  authorization metadata from a credential snapshot published by the embedding
+  host.
+
+> [!IMPORTANT]
+> Only one authentication provider can be bound to the exporter node at a time.
+> If multiple providers are bound, the exporter will reject the configuration.
+
+<!-- Separate consecutive admonitions. -->
+
+> [!NOTE]
+> Static authentication metadata can be registered via `headers`, but this is
+> NOT recommended because the credential remains embedded in the rendered
+> configuration and cannot be refreshed by a provider.
+
+### BearerTokenProvider
+
+The exporter can inject an OAuth `authorization: Bearer <token>` on every
+outbound request by consuming the `bearer_token_provider` capability. The bound
+extension acquires and refreshes the token in the background so credentials
+rotate without restarting the exporter.
+
+Declare a provider extension in the pipeline's `extensions:` section and bind it
+on the exporter node via the node's `capabilities:` map. Any provider works and
+the exporter cannot tell them apart; today the available ones are
 [`oauth2_client_auth`](../../../../contrib-extensions/src/oauth2_client_auth/README.md)
-(any OAuth 2.0 token endpoint), or any other extension exposing
-`bearer_token_provider` whose tokens are accepted by a gRPC OTLP endpoint -- in
-the pipeline's `extensions:` section and bind it on the exporter node via the
-node's `capabilities:` map. See the chosen extension's README for its
-configuration reference; only the binding is documented here.
+(any OAuth 2.0 token endpoint) and
+[`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+(Azure identities). See the chosen extension's README for its configuration
+reference; only the binding is documented here.
 
 ```yaml
 groups:
@@ -124,26 +152,134 @@ groups:
               grpc_endpoint: "https://otlp.example.com:4317"
 ```
 
-The bearer token is applied per request, so it takes precedence over both a
-statically configured `authorization` entry and any propagated `authorization`
-transport header; exactly one `authorization` value is sent. The exporter
-subscribes to the provider's token stream and caches the built metadata value,
-rebuilding it only when the provider refreshes the token, so credential work
-stays off the per-request path. The value is marked sensitive, which keeps the
-credential out of the HTTP/2 HPACK dynamic table.
+The provider-generated authorization metadata takes precedence over both a
+statically configured entry and propagated metadata of the same name; exactly
+one value is sent. Ensure that the provider's configured resource or scopes
+match the OTLP destination; a mismatch is reported by the destination as an
+authentication failure rather than detected at startup. The metadata value is
+marked sensitive, which keeps the credential out of the HTTP/2 HPACK dynamic
+table.
 
-When no usable token is cached yet -- before the provider's first publish, in a
-degraded window where a refresh is failing and the cached token is within a small
-safety margin of expiring, or after the server rejects the cached token -- the
-exporter **stops accepting new batches** (back-pressures upstream) rather than
-sending an unauthenticated or soon-to-lapse request. It resumes when the provider
-publishes a usable token; nothing is dropped. Note that a rejection only drops
-the exporter's own copy -- it does not make the provider refresh early -- so
-recovery waits for that provider's next scheduled publication. (If
-buffered batches are force-drained during shutdown while no token is available,
-they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
-the bound extension holds data-path startup until its first token publish, and
-its token stream stays live for the exporter's lifetime.
+### ApiKeyProvider
+
+The `api_key_provider` capability supplies an API key together with the metadata
+name and an optional authentication scheme. The exporter sends either
+`<header_name>: <api_key>` or
+`<header_name>: <header_scheme> <api_key>`, depending on whether the provider
+sets `http.header_scheme`.
+
+The [`flat_file_api_key_auth`](../../../../contrib-extensions/src/flat_file_api_key_auth/README.md)
+extension can load the key from a file and poll for rotations. The
+`http.header_name` attribute is required for OTLP/gRPC; `http.header_scheme` is
+optional. The header name must also satisfy the gRPC metadata restrictions
+described under [Static request headers](#static-request-headers).
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          api_key:
+            type: "urn:otel:extension:flat_file_api_key_auth"
+            config:
+              key_secret_file: "/etc/secrets/otlp_api_key"
+              key_secret_file_refresh: 30m
+              attributes:
+                http.header_name: "x-api-key"
+                http.header_scheme: "ApiKey"
+
+        nodes:
+          otlp-grpc-exporter:
+            type: "urn:otel:exporter:otlp_grpc"
+            capabilities:
+              api_key_provider: api_key
+            config:
+              grpc_endpoint: "https://otlp.example.com:4317"
+```
+
+Omit `http.header_scheme` when the destination expects the raw key, such as
+`x-api-key: <api_key>`. See the extension README for inline-key configuration
+and the complete field reference.
+
+### BasicAuthProvider
+
+The `basic_auth_provider` capability supplies a username and password. The
+exporter constructs the HTTP Basic authorization metadata from the current
+credential; the encoded value is not configured directly.
+
+The [`flat_file_user_pass_auth`](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
+extension accepts a configured username and can load the password from a file
+that is polled for rotations.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          basic_auth:
+            type: "urn:otel:extension:flat_file_user_pass_auth"
+            config:
+              username: "otlp-client"
+              password_secret_file: "/etc/secrets/otlp_password"
+              password_secret_file_refresh: 30m
+
+        nodes:
+          otlp-grpc-exporter:
+            type: "urn:otel:exporter:otlp_grpc"
+            capabilities:
+              basic_auth_provider: basic_auth
+            config:
+              grpc_endpoint: "https://otlp.example.com:4317"
+```
+
+See the extension README for inline-password configuration, credential
+validation rules, and the complete field reference.
+
+### AgentFedCredentialProvider
+
+`agent_fed_credential_provider` is intended for deployments where the embedding
+host supplies a bearer token and vendor attributes as one credential snapshot.
+The exporter uses the snapshot's token for the authorization metadata. Vendor
+attributes are ignored because the configured OTLP endpoint and metadata remain
+authoritative.
+
+```yaml
+nodes:
+  otlp-grpc-exporter:
+    type: "urn:otel:exporter:otlp_grpc"
+    capabilities:
+      # "agent_auth" is an embedding-host extension instance that provides
+      # agent_fed_credential_provider.
+      agent_fed_credential_provider: agent_auth
+    config:
+      grpc_endpoint: "https://otlp.example.com:4317"
+```
+
+There is no agent-fed token field in the exporter configuration. The embedding
+host must register an extension instance that provides the capability and
+publish credential updates through that provider.
+
+### Credential refresh and failures
+
+For every provider type, the exporter subscribes to the provider's credential
+stream and caches the prepared gRPC metadata. Credential acquisition and
+encoding therefore stay off the per-request path. Credential metadata values
+are marked sensitive so they are not indexed in the HTTP/2 HPACK dynamic table.
+
+The exporter stops accepting new batches when no usable credential is cached,
+including before the first credential arrives, when a credential is malformed,
+or when an expiring credential reaches its safety margin. This back-pressures
+upstream instead of sending an unauthenticated request. It resumes when the
+provider publishes a usable credential; buffered batches force-drained during
+shutdown are NACK'd as retryable.
+
+gRPC `UNAUTHENTICATED` responses invalidate the exact credential generation
+used by the rejected request and are treated as retryable. The exporter does not
+reuse that generation and resumes after the provider publishes a replacement. A
+delayed response for an older generation does not invalidate a newer
+credential.
 
 ## Examples
 
@@ -187,6 +323,15 @@ channel and is not duplicated by the exporter.
 or `other`. Successful exports and Ack/Nack notification failures do not emit
 this metric.
 
+#### `exporter.otlp_grpc.authentication`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_grpc.authentication.ready` | `{1}` | `source` | Whether authenticated progress is currently possible (`0` for not ready, `1` for ready). |
+
+Authentication `source` is the name of the HTTP client auth implementation (ex:
+`BearerAuth`) selected based on the auth capability configured.
+
 ### Events
 
 | Event | Severity | Description |
@@ -197,8 +342,8 @@ this metric.
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
 | `otlp.exporter.grpc.export_error` | `warn` | A gRPC export request did not complete successfully. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
-| `otlp.exporter.grpc.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `authorization` header. |
-| `otlp.exporter.grpc.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
+| `otlp.exporter.grpc.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.grpc.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 ## Limits
 

@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, NullArray, RecordBatch, RecordBatchOptions, StructArray};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema};
+
+use arrow::datatypes::{DataType, Field, FieldRef, Schema};
+use arrow::error::ArrowError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{HashMap, HashSet};
 use datafusion::error::DataFusionError;
@@ -15,6 +17,8 @@ use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::Expr;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::arrays::sanitize::sanitize_column;
+
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::Result;
 
@@ -46,7 +50,7 @@ pub struct ProjectionOptions {
 /// Projection helper that can project a RecordBatch to only the columns needed by an expression
 #[derive(Debug)]
 pub struct Projection {
-    pub schema: ProjectedSchema,
+    schema: ProjectedSchema,
 }
 
 impl From<Vec<String>> for Projection {
@@ -66,111 +70,131 @@ impl Projection {
     pub(crate) fn try_new(logical_expr: &Expr) -> Result<Self> {
         let mut visitor = ProjectedSchemaExprVisitor::default();
         _ = logical_expr.visit(&mut visitor)?;
+
         Ok(Self {
             schema: visitor.into(),
         })
     }
 
-    pub fn project_with_options(
+    pub(crate) fn references_column(&self, col_name: &str) -> bool {
+        self.schema.iter().any(|col| {
+            if let ProjectedSchemaColumn::Root(schema_col_name) = col {
+                schema_col_name.as_str() == col_name
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Apply this projection to a record batch containing OTAP attributes.
+    ///
+    /// This is most appropriately invoked during evaluation of a nested pipeline applied to
+    /// attributes such as in the OPL query `logs | apply attributes { where <expr> }`. In this
+    /// case, we'd evaluate the expression (which would be planned as a datafusion expression) on
+    /// the attributes record batch. This evaluation requires special treatment because there is a
+    /// virtual "value" column that can be used in expressions, which must be replaced with the
+    /// actual column that contains the attribute values.
+    ///
+    pub fn project_attrs_record_batch(
         &self,
-        record_batch: &RecordBatch,
+        attrs_record_batch: &RecordBatch,
         options: &ProjectionOptions,
     ) -> Result<Option<RecordBatch>> {
-        let (mut fields, mut columns) =
-            match self.project_columns(record_batch, options.default_null_columns) {
-                Some(projection) => projection,
-                None => return Ok(None),
-            };
+        let mut projection_cols = ProjectionColumns::from(attrs_record_batch);
+
+        let empty_projection = self.schema.is_empty();
+        let keys_only = self.schema.len() == 1 && self.references_column(consts::ATTRIBUTE_KEY);
+        if !empty_projection && !keys_only {
+            self.ensure_attrs_value_column_present(&mut projection_cols)?;
+        }
+
+        self.project_with_options(projection_cols, options)
+    }
+
+    pub fn project_with_options<T: Into<ProjectionColumns>>(
+        &self,
+        input: T,
+        options: &ProjectionOptions,
+    ) -> Result<Option<RecordBatch>> {
+        let mut projection_cols = input.into();
+        if !self.apply_to_columns(&mut projection_cols, options.default_null_columns) {
+            return Ok(None);
+        }
 
         if options.downcast_dicts {
-            Self::try_downcast_dicts(&mut fields, &mut columns)?;
+            Self::try_downcast_dicts(&mut projection_cols.fields, &mut projection_cols.columns)?;
         }
 
         if options.sanitize_dicts {
-            Self::try_sanitize_columns(&mut columns)?;
+            Self::try_sanitize_columns(&mut projection_cols.columns)?;
         }
 
-        // safety: `try_new` should not return an error here unless the columns do not match the
-        // fields in the schema, or if the columns are different lengths. Based on how we've
-        // constructed the inputs, this should not happen because we've taken them from the input
-        let rb = RecordBatch::try_new_with_options(
-            Arc::new(Schema::new(fields)),
-            columns,
-            &RecordBatchOptions::new().with_row_count(Some(record_batch.num_rows())),
-        )
-        .expect("can project record batch");
-
-        Ok(Some(rb))
+        Ok(Some(projection_cols.try_into()?))
     }
 
-    fn project_columns(
+    /// Apply the projection, keeping only the columns specified by this projection, and having
+    /// them organized in the specific column order.
+    ///
+    /// This returns `true` if the projection was successfully applied. Otherwise it returns
+    /// `false` indicating that some desired column was not present.
+    fn apply_to_columns(
         &self,
-        record_batch: &RecordBatch,
+        projection_cols: &mut ProjectionColumns,
         default_nulls: bool,
-    ) -> Option<(Vec<Arc<Field>>, Vec<ArrayRef>)> {
-        let original_schema = record_batch.schema_ref();
-
-        // TODO - if the heap allocations here have significant perf overhead, we could try reusing
-        // these arrays between batches.
-        let mut columns = Vec::new();
-        let mut fields = Vec::new();
-
-        for projected_col in &self.schema {
+    ) -> bool {
+        for (expected_idx, projected_col) in self.schema.iter().enumerate() {
             match projected_col {
                 ProjectedSchemaColumn::Root(desired_col_name) => {
-                    let (column, field) =
-                        if let Ok(index) = original_schema.index_of(desired_col_name) {
-                            // original column
-                            Some((
-                                record_batch.column(index).clone(),
-                                original_schema.fields[index].clone(),
-                            ))
-                        } else if default_nulls {
-                            // default nulls
-                            Some((
-                                Arc::new(NullArray::new(record_batch.num_rows())) as ArrayRef,
-                                Arc::new(Field::new(desired_col_name, DataType::Null, true)),
-                            ))
-                        } else {
-                            // column could not be projected
-                            None
-                        }?;
-                    columns.push(column);
-                    fields.push(field);
+                    if let Some((found_idx, _)) = projection_cols.find(desired_col_name) {
+                        projection_cols.swap(found_idx, expected_idx);
+                    } else if default_nulls {
+                        // default nulls
+                        let last_idx = projection_cols.fields.len();
+                        projection_cols.append_column(
+                            Field::new(desired_col_name, DataType::Null, true),
+                            Arc::new(NullArray::new(projection_cols.num_rows())),
+                        );
+                        projection_cols.swap(last_idx, expected_idx);
+                    } else {
+                        return false;
+                    };
                 }
                 ProjectedSchemaColumn::Struct(desired_struct_name, desired_struct_fields) => {
-                    let struct_index = original_schema.index_of(desired_struct_name).ok();
+                    let struct_index = projection_cols.find(desired_struct_name).map(|(i, _)| i);
                     if struct_index.is_none() && !default_nulls {
-                        return None;
+                        return false;
                     }
 
-                    let struct_col = struct_index.and_then(|i| {
-                        record_batch
-                            .column(i)
-                            .as_any()
-                            .downcast_ref::<StructArray>()
-                    });
+                    let struct_col = struct_index
+                        .and_then(|i| projection_cols.columns.get(i))
+                        .and_then(|col| col.as_any().downcast_ref::<StructArray>());
 
                     let mut struct_fields = Vec::new();
                     let mut struct_field_defs = Vec::new();
 
                     for field_name in desired_struct_fields {
-                        let (struct_field, field_def) = struct_col
+                        let Some((struct_field, field_def)) = struct_col
                             .and_then(|struct_col| struct_col.fields().find(field_name))
                             .map(|(field_index, field)| {
                                 (
+                                    // safety: we know struct_col is not none here because
+                                    // otherwise this callback would not be invoked
                                     struct_col.expect("not none").column(field_index).clone(),
                                     field.clone(),
                                 )
                             })
                             .or(if default_nulls {
                                 Some((
-                                    Arc::new(NullArray::new(record_batch.num_rows())) as ArrayRef,
+                                    Arc::new(NullArray::new(projection_cols.num_rows()))
+                                        as ArrayRef,
                                     Arc::new(Field::new(field_name, DataType::Null, true)),
                                 ))
                             } else {
                                 None
-                            })?;
+                            })
+                        else {
+                            return false;
+                        };
 
                         struct_fields.push(struct_field);
                         struct_field_defs.push(field_def)
@@ -180,32 +204,38 @@ impl Projection {
                     // for the fields do not match the field definitions, or if the arrays have
                     // different lengths. Based on the way we've constructed inputs, this should
                     // not happen because we've taken them from the input struct column in order
-                    let projected_struct_arr = StructArray::try_new(
-                        struct_field_defs.into(),
-                        struct_fields,
-                        struct_col.map(|arr| arr.nulls().cloned()).unwrap_or(None),
-                    )
-                    .expect("can init StructArray");
-
-                    let projected_field = if let Some(struct_index) = struct_index {
-                        original_schema.fields[struct_index]
-                            .as_ref()
-                            .clone()
-                            .with_data_type(projected_struct_arr.data_type().clone())
-                    } else {
-                        Field::new(
-                            desired_struct_name,
-                            projected_struct_arr.data_type().clone(),
-                            true,
+                    let projected_struct_arr = Arc::new(
+                        StructArray::try_new(
+                            struct_field_defs.into(),
+                            struct_fields,
+                            struct_col.map(|arr| arr.nulls().cloned()).unwrap_or(None),
                         )
+                        .expect("can init StructArray"),
+                    );
+
+                    if let Some(struct_index) = struct_index {
+                        projection_cols.replace_column_at_index(struct_index, projected_struct_arr);
+                        projection_cols.swap(struct_index, expected_idx);
+                    } else {
+                        let last_idx = projection_cols.fields.len();
+                        projection_cols.append_column(
+                            Field::new(
+                                desired_struct_name,
+                                projected_struct_arr.data_type().clone(),
+                                true,
+                            ),
+                            projected_struct_arr,
+                        );
+                        projection_cols.swap(last_idx, expected_idx);
                     };
-                    fields.push(Arc::new(projected_field));
-                    columns.push(Arc::new(projected_struct_arr));
                 }
             }
         }
 
-        Some((fields, columns))
+        projection_cols.fields.truncate(self.schema.len());
+        projection_cols.columns.truncate(self.schema.len());
+
+        true
     }
 
     pub fn try_downcast_dicts(fields: &mut [Arc<Field>], columns: &mut [ArrayRef]) -> Result<()> {
@@ -230,6 +260,95 @@ impl Projection {
         }
 
         Ok(())
+    }
+}
+
+/// Columns and fields that will be operated by [`Projection`].
+///
+/// This provides a wrapper around mutable vecs of Field and ArrayRef with a variety of helper
+/// methods for organizing projected columns.
+pub(crate) struct ProjectionColumns {
+    num_rows: usize,
+    fields: Vec<FieldRef>,
+    columns: Vec<ArrayRef>,
+}
+
+impl From<&RecordBatch> for ProjectionColumns {
+    fn from(rb: &RecordBatch) -> Self {
+        let num_rows = rb.num_rows();
+        let fields = rb.schema_ref().fields().to_vec();
+        let columns = rb.columns().to_vec();
+        Self {
+            fields,
+            columns,
+            num_rows,
+        }
+    }
+}
+
+impl TryFrom<ProjectionColumns> for RecordBatch {
+    type Error = ArrowError;
+
+    fn try_from(columns: ProjectionColumns) -> std::result::Result<Self, Self::Error> {
+        RecordBatch::try_new_with_options(
+            Arc::new(Schema::new(columns.fields)),
+            columns.columns,
+            &RecordBatchOptions::new().with_row_count(Some(columns.num_rows)),
+        )
+    }
+}
+
+impl ProjectionColumns {
+    pub(crate) fn columns(&self) -> &[ArrayRef] {
+        &self.columns
+    }
+
+    /// append a new column
+    pub(crate) fn append_column(&mut self, field: Field, column: ArrayRef) {
+        self.fields.push(FieldRef::new(field));
+        self.columns.push(column);
+    }
+
+    /// swap the location of two columns. If either index is out of bounds, this does nothing.
+    pub(crate) fn swap(&mut self, pos_1: usize, pos_2: usize) {
+        if pos_1 < self.fields.len() && pos_2 < self.fields.len() {
+            self.fields.swap(pos_1, pos_2);
+            self.columns.swap(pos_1, pos_2);
+        }
+    }
+
+    /// find the index and definition of a column/field by name. returns None if no field exists
+    /// with the passed name.
+    pub(crate) fn find(&self, column_name: &str) -> Option<(usize, &FieldRef)> {
+        self.fields
+            .iter()
+            .enumerate()
+            .find(|(_, b)| b.name() == column_name)
+    }
+
+    /// replace the column at a given index with the passed array. The field at this index will
+    /// also have its datatype updated. If the index is out of bounds, this does nothing.
+    fn replace_column_at_index(&mut self, index: usize, new_column: ArrayRef) {
+        if let Some(field) = self.fields.get(index) {
+            let new_field = field
+                .as_ref()
+                .clone()
+                .with_data_type(new_column.data_type().clone());
+            self.fields[index] = FieldRef::new(new_field);
+            self.columns[index] = new_column;
+        }
+    }
+
+    /// change the name of a column at the given index. noop if index is out of bounds.
+    pub(crate) fn rename_column_at_index(&mut self, index: usize, new_column_name: &str) {
+        if let Some(field) = self.fields.get(index) {
+            let new_field = field.as_ref().clone().with_name(new_column_name);
+            self.fields[index] = FieldRef::new(new_field);
+        }
+    }
+
+    fn num_rows(&self) -> usize {
+        self.num_rows
     }
 }
 
@@ -277,12 +396,7 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
         // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
         // `GetFieldFunc` function with arguments ("scope", "name").
         if let Expr::ScalarFunction(scalar_udf) = node
-            && scalar_udf
-                .func
-                .as_ref()
-                .inner()
-                .as_any()
-                .is::<GetFieldFunc>()
+            && scalar_udf.func.as_ref().inner().is::<GetFieldFunc>()
         {
             let source = scalar_udf.args.first();
             let field = scalar_udf.args.get(1);
@@ -337,5 +451,116 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
         }
 
         schema
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use arrow::array::{Float64Array, Int64Array, StringArray};
+
+    /// Scenario: projection references columns in a different order than they appear in the
+    /// input batch.
+    /// Guarantees: result has columns in the projection's declared order.
+    #[test]
+    fn test_projection_reorders_columns_to_match_schema() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, false),
+                Field::new("c", DataType::Float64, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0])),
+            ],
+        )
+        .unwrap();
+
+        let projection = Projection::from(vec!["c".into(), "a".into()]);
+        let result = projection
+            .project_with_options(&batch, &ProjectionOptions::default())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.num_columns(), 2);
+        assert_eq!(result.schema().field(0).name(), "c");
+        assert_eq!(result.schema().field(1).name(), "a");
+
+        // verify actual data came along correctly
+        let c_col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert_eq!(c_col.values(), &[10.0, 20.0]);
+
+        let a_col = result
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(a_col.values(), &[1, 2]);
+    }
+
+    /// Scenario: apply projection to two input batches have the same columns but in different order
+    /// Guarantees: Both projected batches have identical columns order (same column names at the
+    /// same expected indices),
+    #[test]
+    fn test_projection_produces_stable_schema_across_batches_with_different_column_order() {
+        let projection = Projection::from(vec!["b".into(), "a".into()]);
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["x"])),
+            ],
+        )
+        .unwrap();
+        let batch2 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("b", DataType::Utf8, false),
+                Field::new("a", DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["y"])),
+                Arc::new(Int64Array::from(vec![2])),
+            ],
+        )
+        .unwrap();
+
+        let result1 = projection
+            .project_with_options(&batch1, &ProjectionOptions::default())
+            .unwrap()
+            .unwrap();
+        let result2 = projection
+            .project_with_options(&batch2, &ProjectionOptions::default())
+            .unwrap()
+            .unwrap();
+
+        // both must have schema ["b", "a"] regardless of input order
+        assert_eq!(result1.schema().field(0).name(), "b");
+        assert_eq!(result1.schema().field(1).name(), "a");
+        assert_eq!(result2.schema().field(0).name(), "b");
+        assert_eq!(result2.schema().field(1).name(), "a");
+
+        // verify data is correct in each
+        let b1 = result1
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(b1.value(0), "x");
+
+        let b2 = result2
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(b2.value(0), "y");
     }
 }

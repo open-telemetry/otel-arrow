@@ -10,6 +10,7 @@ mod tests {
         HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector, PropagationSelectorType,
     };
+    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
 
     // -- Helper functions for tests ------------------------------------------
 
@@ -32,7 +33,8 @@ mod tests {
 
     // -- End-to-end integration tests (depend on OtapPdata) ------------------
 
-    /// End-to-end test demonstrating the full transport header lifecycle:
+    /// Scenario: capture, pdata attachment, and processor pass-through precede propagation.
+    /// Guarantees: retained headers preserve names and values, while an override drops authorization.
     ///
     /// 1. **Receiver extraction** -- Simulate a receiver capturing headers from
     ///    inbound gRPC metadata using `HeaderCapturePolicy`.
@@ -71,14 +73,26 @@ mod tests {
             3,
             "should capture exactly 3 matching headers"
         );
-        assert_eq!(captured.as_slice()[0].name.as_str(), "tenant_id");
-        assert_eq!(captured.as_slice()[0].wire_name(), "X-Tenant-Id");
         assert_eq!(
-            captured.as_slice()[0].value.bytes.as_ref(),
+            captured.get(0).expect("tenant header").name.as_str(),
+            "tenant_id"
+        );
+        assert_eq!(
+            captured.get(0).expect("tenant header").wire_name(),
+            "X-Tenant-Id"
+        );
+        assert_eq!(
+            captured.get(0).expect("tenant header").value.bytes,
             b"tenant-abc-123"
         );
-        assert_eq!(captured.as_slice()[1].name.as_str(), "x-request-id");
-        assert_eq!(captured.as_slice()[2].name.as_str(), "authorization");
+        assert_eq!(
+            captured.get(1).expect("request header").name.as_str(),
+            "x-request-id"
+        );
+        assert_eq!(
+            captured.get(2).expect("authorization header").name.as_str(),
+            "authorization"
+        );
 
         // ========== Step 2: Attach to OtapPdata context ==========
 
@@ -97,9 +111,22 @@ mod tests {
         );
         let headers_after = pdata_after_processor.transport_headers().unwrap();
         assert_eq!(headers_after.len(), 3);
-        assert_eq!(headers_after.as_slice()[0].name.as_str(), "tenant_id");
-        assert_eq!(headers_after.as_slice()[1].name.as_str(), "x-request-id");
-        assert_eq!(headers_after.as_slice()[2].name.as_str(), "authorization");
+        assert_eq!(
+            headers_after.get(0).expect("tenant header").name.as_str(),
+            "tenant_id"
+        );
+        assert_eq!(
+            headers_after.get(1).expect("request header").name.as_str(),
+            "x-request-id"
+        );
+        assert_eq!(
+            headers_after
+                .get(2)
+                .expect("authorization header")
+                .name
+                .as_str(),
+            "authorization"
+        );
 
         // ========== Step 4: Simulate exporter propagation ==========
 
@@ -120,6 +147,8 @@ mod tests {
                 on_error: None,
             }],
         );
+        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
+            .expect("propagation policy compiles");
 
         let propagated: Vec<_> = propagation_policy.propagate(headers_after).collect();
 
@@ -139,8 +168,8 @@ mod tests {
         );
     }
 
-    /// Test that demonstrates duplicate header names are preserved throughout
-    /// the entire pipeline flow (a key semantic requirement).
+    /// Scenario: capture and processor pass-through preserve repeated header names.
+    /// Guarantees: propagation emits every duplicate value in its original order.
     #[test]
     fn end_to_end_duplicate_headers_preserved() {
         let capture_policy = make_capture_policy(vec![rule(&["x-forwarded-for"], None)]);
@@ -180,6 +209,8 @@ mod tests {
             },
             vec![],
         );
+        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
+            .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
@@ -188,7 +219,8 @@ mod tests {
         assert_eq!(values, expected);
     }
 
-    /// Test binary header preservation through the entire flow.
+    /// Scenario: a captured binary header passes through pdata before propagation.
+    /// Guarantees: propagation retains its binary kind and exact bytes.
     #[test]
     fn end_to_end_binary_headers_preserved() {
         let capture_policy = make_capture_policy(vec![rule(&["trace-context-bin"], None)]);
@@ -200,8 +232,14 @@ mod tests {
         let stats = capture_policy.capture_from_pairs(inbound.into_iter(), &mut captured);
         assert!(stats.is_none());
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured.as_slice()[0].value.value_kind, ValueKind::Binary);
-        assert_eq!(captured.as_slice()[0].value.bytes.as_ref(), binary_value);
+        assert_eq!(
+            captured.get(0).expect("binary header").value.value_kind,
+            ValueKind::Binary
+        );
+        assert_eq!(
+            captured.get(0).expect("binary header").value.bytes,
+            binary_value
+        );
 
         let pdata = crate::testing::create_test_pdata().with_transport_headers(captured);
         let pdata_after = pdata.clone_without_context();
@@ -217,9 +255,11 @@ mod tests {
             },
             vec![],
         );
+        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
+            .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
 
-        assert_eq!(*propagated[0].value_kind, ValueKind::Binary);
+        assert_eq!(propagated[0].value_kind, ValueKind::Binary);
         assert_eq!(propagated[0].value, binary_value.as_slice());
     }
 }

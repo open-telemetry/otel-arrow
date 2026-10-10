@@ -5,7 +5,7 @@
 # session_name and provider, feeding separate console exporters.
 #
 # Usage (run as Administrator for ETW access):
-#   cargo run --features etw-receiver -- -c configs/etw-multi-session.yaml
+#   cargo run --features etw -- -c configs/etw-multi-session.yaml
 #
 # Each receiver creates its own kernel ETW session.  The per-session-name
 # registry ensures they operate independently.
@@ -53,4 +53,3 @@ groups:
         connections:
           - from: etw_powershell
             to: console_powershell
-

@@ -21,9 +21,7 @@ enum RecoveryReadyError {
 struct RuntimeRecoveryAttempt {
     attempt: usize,
     target_key: DeployedPipelineKey,
-    resolved: ResolvedPipelineConfig,
-    context_bindings: Arc<CompiledContextBindings>,
-    placement: LivePipelinePlacement,
+    deployment: LogicalPipelineDeployment,
     backoff: Duration,
 }
 
@@ -74,59 +72,163 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
-    /// Launches one regular pipeline instance on a specific core and generation.
-    pub(super) fn launch_regular_pipeline_instance(
+    /// Launches one pipeline OS thread and wires its terminal exit back into the controller.
+    ///
+    /// The deployment supplies all pipeline-wide configuration. Core id, runtime generation,
+    /// thread id, and internal telemetry remain per-instance launch properties.
+    /// The spawned thread receives only a weak reference to the controller runtime so it can
+    /// report its exit without extending the runtime's lifetime during shutdown.
+    pub(crate) fn launch_pipeline_thread(
         self: &Arc<Self>,
-        resolved_pipeline: &ResolvedPipelineConfig,
-        context_bindings: Arc<CompiledContextBindings>,
-        placement: &LivePipelinePlacement,
+        deployment: &LogicalPipelineDeployment,
         core_id: usize,
         deployment_generation: u64,
-    ) -> Result<DeployedPipelineKey, Error> {
-        let thread_id = self.next_thread_id();
+        thread_id: usize,
+        tracing_setup: TracingSetup,
+        internal_telemetry: Option<(
+            InternalTelemetrySettings,
+            std_mpsc::SyncSender<Result<(), EngineError>>,
+        )>,
+    ) -> Result<LaunchedPipelineThread<PData>, Error> {
         let core_placement =
-            placement
+            deployment
                 .core(core_id)
                 .ok_or_else(|| Error::PipelineRuntimeError {
                     source: Box::new(io::Error::other(format!(
                         "core {core_id} is not present in resolved placement for {}:{}",
-                        resolved_pipeline.pipeline_group_id.as_ref(),
-                        resolved_pipeline.pipeline_id.as_ref()
+                        deployment.resolved.pipeline_group_id.as_ref(),
+                        deployment.resolved.pipeline_id.as_ref()
                     ))),
                 })?;
-        let num_cores = placement.placement.core_count();
-        let live_config = self.engine_config_snapshot();
-        let deployed_key = DeployedPipelineKey {
-            pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
-            pipeline_id: resolved_pipeline.pipeline_id.clone(),
+        let pipeline_key = DeployedPipelineKey {
+            pipeline_group_id: deployment.resolved.pipeline_group_id.clone(),
+            pipeline_id: deployment.resolved.pipeline_id.clone(),
             core_id,
             deployment_generation,
         };
-        let launched = Controller::<PData>::launch_pipeline_thread(
-            self.pipeline_factory,
-            deployed_key.clone(),
-            CoreId { id: core_id },
-            core_placement.numa_node_id,
-            Arc::clone(&placement.listener_group_snapshot),
-            context_bindings,
-            num_cores,
-            resolved_pipeline.pipeline.clone(),
-            resolved_pipeline.policies.channel_capacity.clone(),
-            resolved_pipeline.policies.telemetry.clone(),
-            resolved_pipeline.policies.rate_limiters.clone(),
-            resolved_pipeline.policies.rate_limiter_scope.clone(),
-            self.controller_context.clone(),
-            self.metrics_reporter.clone(),
-            self.engine_event_reporter.clone(),
-            self.engine_tracing_setup.clone(),
-            self.telemetry_reporting_interval,
-            self.memory_pressure_tx.clone(),
-            &live_config,
-            &self.declared_topics,
-            Arc::downgrade(self),
+        let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
+            pipeline_key.pipeline_group_id.clone(),
+            pipeline_key.pipeline_id.clone(),
+            pipeline_key.core_id,
+            deployment.placement.core_count(),
             thread_id,
+            pipeline_key.deployment_generation,
+            core_placement.numa_node_id,
+        );
+        let topic_set = Controller::<PData>::build_pipeline_topic_set(
+            &self.declared_topics,
+            &deployment.resolved.topic_scope,
+            &pipeline_key.pipeline_group_id,
+            &pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+        )?;
+        pipeline_ctx.set_topic_set(topic_set);
+        pipeline_ctx
+            .set_listener_group_snapshot_arc(Arc::clone(&deployment.listener_group_snapshot));
+        pipeline_ctx.set_compiled_context_bindings(Arc::clone(&deployment.context_bindings));
+
+        let channel_capacity_policy = deployment.resolved.policies.channel_capacity.clone();
+        let telemetry_policy = deployment.resolved.policies.telemetry.clone();
+        let rate_limiter_policies = deployment.resolved.policies.rate_limiters.clone();
+        let rate_limiter_scope = deployment.resolved.policies.rate_limiter_scope.clone();
+        let pipeline_config = deployment.resolved.pipeline.clone();
+        let context_bindings = Arc::clone(&deployment.context_bindings);
+        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
+            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(runtime_ctrl_msg_tx.clone());
+        let memory_pressure_rx = self.memory_pressure_tx.subscribe();
+        let thread_name = format!(
+            "pipeline-{}-{}-core-{}-gen-{}",
+            pipeline_key.pipeline_group_id.as_ref(),
+            pipeline_key.pipeline_id.as_ref(),
+            pipeline_key.core_id,
+            pipeline_key.deployment_generation
+        );
+        let run_key = pipeline_key.clone();
+        let runtime_key = pipeline_key.clone();
+        let runtime_thread_name = thread_name.clone();
+        // The thread upgrades this only after it exits, when it reports the terminal result.
+        let runtime = Arc::downgrade(self);
+        let pipeline_factory = self.pipeline_factory;
+        let engine_event_reporter = self.engine_event_reporter.clone();
+        let metrics_reporter = self.metrics_reporter.clone();
+        let telemetry_reporting_interval = self.telemetry_reporting_interval;
+        let _handle = thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || {
+                let exit = match catch_unwind(AssertUnwindSafe(|| {
+                    Controller::<PData>::run_pipeline_thread(
+                        run_key,
+                        CoreId { id: core_id },
+                        pipeline_config,
+                        channel_capacity_policy,
+                        telemetry_policy,
+                        rate_limiter_policies,
+                        rate_limiter_scope,
+                        telemetry_reporting_interval,
+                        pipeline_factory,
+                        pipeline_ctx,
+                        engine_event_reporter,
+                        metrics_reporter,
+                        runtime_ctrl_msg_tx,
+                        runtime_ctrl_msg_rx,
+                        pipeline_completion_msg_tx,
+                        pipeline_completion_msg_rx,
+                        memory_pressure_rx,
+                        tracing_setup,
+                        internal_telemetry,
+                    )
+                })) {
+                    Ok(Ok(_)) => RuntimeInstanceExit::Success,
+                    Ok(Err(err)) => {
+                        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(err.to_string()))
+                    }
+                    Err(panic) => RuntimeInstanceExit::Error(RuntimeInstanceError::from_panic(
+                        PanicReport::capture(
+                            "runtime thread",
+                            panic,
+                            Some(runtime_thread_name),
+                            Some(thread_id),
+                            Some(runtime_key.core_id),
+                        ),
+                    )),
+                };
+                if let Some(runtime) = runtime.upgrade() {
+                    runtime.note_instance_exit(runtime_key, exit);
+                }
+            })
+            .map_err(|e| Error::ThreadSpawnError {
+                thread_name: thread_name.clone(),
+                source: e,
+            })?;
+
+        Ok(LaunchedPipelineThread {
+            pipeline_key,
+            control_sender,
+            context_bindings,
+            _marker: std::marker::PhantomData,
+        })
+    }
+
+    /// Launches one regular pipeline instance on a specific core and generation.
+    pub(super) fn launch_regular_pipeline_instance(
+        self: &Arc<Self>,
+        deployment: &LogicalPipelineDeployment,
+        core_id: usize,
+        deployment_generation: u64,
+    ) -> Result<DeployedPipelineKey, Error> {
+        let thread_id = self.next_thread_id();
+        let launched = self.launch_pipeline_thread(
+            deployment,
+            core_id,
+            deployment_generation,
+            thread_id,
+            self.engine_tracing_setup.clone(),
             None,
         )?;
+        let deployed_key = launched.pipeline_key.clone();
         self.register_launched_instance(launched);
         Ok(deployed_key)
     }
@@ -141,15 +243,19 @@ impl<
         launched: LaunchedPipelineThread<PData>,
     ) {
         let context_bindings = Arc::clone(&launched.context_bindings);
-        let (should_compact, pending_exit) = {
+        let (should_compact, pending_exit, shutdown_sender, shutdown_deadline) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let should_shutdown = state.global_shutdown_requested;
+            let control_sender = Some(launched.control_sender.clone());
+
             _ = state.runtime_instances.insert(
                 launched.pipeline_key.clone(),
                 RuntimeInstanceRecord {
-                    control_sender: Some(launched.control_sender.clone()),
+                    control_sender,
                     context_bindings: launched.context_bindings,
                     lifecycle: RuntimeInstanceLifecycle::Active,
                 },
@@ -162,8 +268,41 @@ impl<
                 false
             };
             self.state_changed.notify_all();
-            (should_compact, pending_exit)
+
+            let shutdown_sender = if should_shutdown {
+                Some(launched.control_sender)
+            } else {
+                None
+            };
+            let shutdown_deadline = state.global_shutdown_deadline;
+
+            (
+                should_compact,
+                pending_exit,
+                shutdown_sender,
+                shutdown_deadline,
+            )
         };
+
+        if let Some(sender) = shutdown_sender {
+            // Send shutdown after releasing the state lock to avoid lock contention or deadlocks.
+            let deadline =
+                shutdown_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+            if let Err(err) =
+                sender.try_send_shutdown(deadline, "global shutdown (late registration)".to_owned())
+            {
+                otel_warn!(
+                    "otelcol.pipeline.shutdown.dispatch_failed",
+                    pipeline_group_id = %launched.pipeline_key.pipeline_group_id,
+                    pipeline_id = %launched.pipeline_key.pipeline_id,
+                    core_id = launched.pipeline_key.core_id,
+                    error = ?err,
+                    message = "Failed to dispatch global shutdown to pipeline instance.",
+                );
+            } else {
+                self.release_instance_control_sender(&launched.pipeline_key);
+            }
+        }
 
         if should_compact {
             let logical_pipeline_key = PipelineKey::new(
@@ -339,7 +478,7 @@ impl<
             failed_key.pipeline_group_id.clone(),
             failed_key.pipeline_id.clone(),
         );
-        let current_record = {
+        let current_deployment = {
             let mut state = self
                 .state
                 .lock()
@@ -366,7 +505,7 @@ impl<
             state.logical_pipelines.get(&pipeline_key).cloned()
         };
 
-        let Some(current_record) = current_record else {
+        let Some(current_deployment) = current_deployment else {
             let mut state = self
                 .state
                 .lock()
@@ -376,8 +515,12 @@ impl<
             }
             return;
         };
-        let policy = current_record.resolved.policies.runtime_recovery.clone();
-        let assigned_cores: Vec<_> = current_record
+        let policy = current_deployment
+            .resolved
+            .policies
+            .runtime_recovery
+            .clone();
+        let assigned_cores: Vec<_> = current_deployment
             .placement
             .cores
             .iter()
@@ -413,7 +556,7 @@ impl<
                 .runtime_recoveries
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
-                    serving_generation: current_record.active_generation,
+                    serving_generation: current_deployment.baseline_generation,
                     context_bindings: Arc::clone(&context_bindings),
                     restart_count: 0,
                     ready_since: None,
@@ -634,9 +777,7 @@ impl<
             }
 
             let target_key = match self.launch_regular_pipeline_instance(
-                &attempt.resolved,
-                Arc::clone(&attempt.context_bindings),
-                &attempt.placement,
+                &attempt.deployment,
                 core_id,
                 attempt.target_key.deployment_generation,
             ) {
@@ -814,20 +955,10 @@ impl<
             return RuntimeRecoveryAttemptDecision::Exhausted;
         }
 
-        let Some((resolved, placement, placement_generation)) =
-            state.logical_pipelines.get(pipeline_key).map(|record| {
-                (
-                    record.resolved.clone(),
-                    record.placement.clone(),
-                    record.placement_generation,
-                )
-            })
-        else {
+        let Some(mut deployment) = state.logical_pipelines.get(pipeline_key).cloned() else {
             return RuntimeRecoveryAttemptDecision::Exhausted;
         };
-        let context_bindings = Arc::clone(&recovery.context_bindings);
-        let placement =
-            self.live_pipeline_placement_from(&resolved, placement, placement_generation);
+        deployment.context_bindings = Arc::clone(&recovery.context_bindings);
         let attempt = recovery.restart_count + 1;
         let target_generation = {
             // Recovery and rollouts share this counter. Generations must remain
@@ -855,9 +986,7 @@ impl<
                 core_id,
                 deployment_generation: target_generation,
             },
-            resolved,
-            context_bindings,
-            placement,
+            deployment,
             backoff: runtime_recovery_backoff(policy, attempt),
         }))
     }
@@ -1543,6 +1672,9 @@ impl<
             let coordinator_reserved = !coordinator_active
                 && (!producer_keys.is_empty() || !observability_senders.is_empty());
             state.global_shutdown_requested = true;
+            if state.global_shutdown_deadline.is_none() {
+                state.global_shutdown_deadline = Some(deadline);
+            }
             if coordinator_reserved {
                 state.global_shutdown_coordinators += 1;
             }
@@ -1665,13 +1797,50 @@ impl<
     ) {
         let mut wait_failures = Vec::new();
         let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
+        let mut waited_keys = HashSet::new();
         for deployed_key in &producer_keys {
+            _ = waited_keys.insert(deployed_key.clone());
             if let Err(error) =
                 self.wait_for_global_shutdown_exit(deployed_key, producer_completion_deadline)
             {
                 wait_failures.push(error);
             }
         }
+
+        loop {
+            let late_keys = {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut keys = Vec::new();
+                for (key, instance) in &state.runtime_instances {
+                    if !waited_keys.contains(key)
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    {
+                        let is_observability = key.pipeline_group_id.as_ref()
+                            == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID;
+                        if !is_observability {
+                            keys.push(key.clone());
+                        }
+                    }
+                }
+                keys
+            };
+            if late_keys.is_empty() {
+                break;
+            }
+            for deployed_key in late_keys {
+                _ = waited_keys.insert(deployed_key.clone());
+                if let Err(error) =
+                    self.wait_for_global_shutdown_exit(&deployed_key, producer_completion_deadline)
+                {
+                    wait_failures.push(error);
+                }
+            }
+        }
+
         if !wait_failures.is_empty() {
             self.record_async_global_shutdown_failure(format!(
                 "producer shutdown failed before system observability shutdown: {}",
@@ -1684,18 +1853,15 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            producer_keys
+            state
+                .runtime_instances
                 .iter()
-                .filter(|deployed_key| {
-                    matches!(
-                        state.runtime_instances.get(*deployed_key),
-                        Some(RuntimeInstanceRecord {
-                            lifecycle: RuntimeInstanceLifecycle::Active,
-                            ..
-                        })
-                    )
+                .filter(|(key, instance)| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
                 })
-                .map(deployed_instance_label)
+                .map(|(key, _)| deployed_instance_label(key))
                 .collect::<Vec<_>>()
         };
         if !active_producers.is_empty() {
@@ -1704,6 +1870,18 @@ impl<
                 "system observability remains active because producer shutdown timed out: {}",
                 active_producers.join("; ")
             ));
+            return;
+        }
+
+        let controller_deadline =
+            pipeline_shutdown_completion_deadline(Instant::now() + shutdown_timeout);
+        if !self.wait_for_controller_telemetry(controller_deadline) {
+            // Not a run error: the controller retries this phase after it releases the guard.
+            self.restore_observability_senders(&observability_senders);
+            otel_warn!(
+                "controller.global_shutdown.controller_telemetry_timeout",
+                message = "Controller telemetry handoff missed the shutdown deadline; system observability shutdown is retried after the handoff"
+            );
             return;
         }
 
@@ -1803,6 +1981,28 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .active_instances
             == 0
+    }
+
+    /// Returns whether system observability is the only runtime instance still active.
+    pub(crate) fn only_observability_active(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut observability_active = false;
+        for (key, instance) in &state.runtime_instances {
+            if !matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active) {
+                continue;
+            }
+            if key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID
+            {
+                observability_active = true;
+            } else {
+                return false;
+            }
+        }
+        observability_active
     }
 
     /// Restores system observability senders if the coordinator could not start.
@@ -1934,8 +2134,38 @@ impl<
         }
     }
 
+    /// Holds the observability shutdown phase until controller reporting completes.
+    pub(crate) fn hold_controller_telemetry(&self) -> ControllerTelemetryGuard<'_, PData> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(!state.controller_telemetry_pending);
+        state.controller_telemetry_pending = true;
+        ControllerTelemetryGuard { runtime: self }
+    }
+
+    /// Waits at most until `deadline` for the controller's terminal metrics handoff.
+    pub(super) fn wait_for_controller_telemetry(&self, deadline: Instant) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.controller_telemetry_pending {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, _) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+        }
+        true
+    }
+
     /// Blocks until an explicit global shutdown has been requested and every
-    /// runtime instance has exited, or until the wait is released after a fatal
+    /// producer instance has exited, or until the wait is released after a fatal
     /// controller failure.
     ///
     /// Unlike [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit),
@@ -1948,7 +2178,12 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         while !state.instance_wait_released
-            && (!state.global_shutdown_requested || state.active_instances > 0)
+            && (!state.global_shutdown_requested
+                || state.runtime_instances.iter().any(|(key, instance)| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+                }))
         {
             state = self
                 .state_changed

@@ -3,60 +3,183 @@
 
 //! Collects and compiles context declarations before runtime construction.
 //!
-//! # Type map
-//!
-//! - `ContextEntrySelector`: one context entry name and the representation a consumer requests.
-//! - `ContextEntrySelectorForm`: the value, stored-name, or original-name representation.
-//! - `ContextConsumerSelector`: a named-entry or all-entry consumer selection.
-//! - `ContextDeclaration`: one component or engine declaration of context behavior.
-//! - `ContextDeclarationProvider`: a component factory's declaration callback registration.
-//! - `ContextDeclarationFn`: the signature implemented by declaration callbacks.
-//! - `ConfigNodeContextDeclaration`: typed component configs that derive and validate declarations.
-//! - `NodeContextDeclarations`: a sorted, deduplicated declaration set for one node.
-//! - `CompiledContextBindings`: compiled node bindings for every pipeline in a configuration.
-//! - `CompiledNodeBindings`: component declarations, transport-header behavior, and authorized
-//!   identity capture for one node.
-//! - `ContextDeclarationsByPipeline`: declarations indexed by pipeline and node.
-//! - `ContextRuntimeRequirements`: immutable engine-lifetime requirements for binding preparation.
-//! - `OriginalNameRetention`: the default and per-name original-header retention disposition.
-//! - `PreparedContext`: requirements and bindings prepared from one resolved configuration.
-//! - `TestDeclarationConfig`: test-only typed configuration used to verify declaration matching.
+//! Primitive reads, writes, and all-stored selections always specify a source domain.
+//! Composite selections instead name the composite and optionally its member; the
+//! definition supplies each member's value source (a domain-backed field, configured
+//! constant, or random generator) and the entire entry's presence gate.
+//! Original wire names are supported only for transport-header values.
+
+/// Compiles logical context layouts and resolves member projections.
+mod layout;
+/// Compiles and applies exporter transport-header propagation policies.
+mod propagation;
+
+pub use layout::*;
+pub use propagation::CompiledHeaderPropagationPolicy;
+use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context_policy::{
+    ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
+};
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
 use otel_arrow_dfe_config::transport_headers_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, HeaderPropagationPolicy,
-    TransportHeadersPolicy,
+    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-/// A context entry and its requested representation.
+/// Selects a domain-scoped primitive, a composite member, or a whole composite.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ContextEntryTarget {
+    /// A primitive stored name within its source domain.
+    Primitive {
+        /// Source authority domain.
+        domain: ContextDomain,
+        /// Stored primitive name.
+        name: ContextEntryName,
+    },
+    /// A member whose source domain is specified by its composite definition.
+    CompositeMember {
+        /// Composite entry name.
+        composite: ContextEntryName,
+        /// Member name, including any configured alias.
+        member: ContextEntryName,
+    },
+    /// All members of a composite, retaining their individual source domains.
+    Composite {
+        /// Composite entry name.
+        name: ContextEntryName,
+    },
+}
+
+/// One selected value source after resolving a primitive or composite target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectedSource<'a> {
+    /// Value supplied by a domain-backed primitive field.
+    Field(ContextDomain, &'a ContextEntryName),
+    /// Inline configured value with no source domain or wire name.
+    Constant(&'a ContextEntryName),
+    /// Generated random value with no source domain or wire name.
+    Randomness(&'a ContextEntryName),
+}
+
+impl<'a> SelectedSource<'a> {
+    /// Resolves one value-bearing composite part, excluding conditions.
+    fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
+        match part {
+            ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
+            ContextEntryPart::Randomness { name, .. } => Some(Self::Randomness(name)),
+            ContextEntryPart::TransportHeader { name, .. } => {
+                Some(Self::Field(ContextDomain::TransportHeader, name))
+            }
+            ContextEntryPart::AuthorizedIdentity { name, .. } => {
+                Some(Self::Field(ContextDomain::AuthorizedIdentity, name))
+            }
+            ContextEntryPart::TransportHeaderMatch { .. } => None,
+        }
+    }
+}
+
+impl ContextEntryTarget {
+    /// Returns the enclosing composite name, or none for a primitive.
+    fn composite_name(&self) -> Option<&ContextEntryName> {
+        match self {
+            Self::Primitive { .. } => None,
+            Self::CompositeMember { composite, .. } => Some(composite),
+            Self::Composite { name } => Some(name),
+        }
+    }
+
+    /// Visits selected values, excluding condition-only fields.
+    fn visit_selected_sources<'a>(
+        &'a self,
+        composites: &'a [ConfigContextEntryDeclaration],
+        mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
+            Self::CompositeMember { composite, member } => {
+                let declaration = composite_declaration(composite, composites)?;
+                let part = declaration
+                    .definition
+                    .0
+                    .iter()
+                    .find(|part| part.member_name() == Some(member))
+                    .ok_or_else(|| {
+                        invalid_context(format!("unknown context member `{composite}:{member}`"))
+                    })?;
+                visit(
+                    SelectedSource::from_part(part)
+                        .expect("selected composite member is value-bearing"),
+                )
+            }
+            Self::Composite { name } => {
+                let declaration = composite_declaration(name, composites)?;
+                for source in declaration
+                    .definition
+                    .0
+                    .iter()
+                    .filter_map(SelectedSource::from_part)
+                {
+                    visit(source)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Wraps a context compilation failure as an invalid user configuration.
+fn invalid_context(error: impl Into<String>) -> Error {
+    Error::InvalidUserConfig {
+        error: error.into(),
+    }
+}
+
+/// Finds exactly one composite declaration or reports a missing or duplicate name.
+fn composite_declaration<'a>(
+    name: &ContextEntryName,
+    declarations: &'a [ConfigContextEntryDeclaration],
+) -> Result<&'a ConfigContextEntryDeclaration, Error> {
+    let mut matching = declarations.iter().filter(|entry| &entry.name == name);
+    let declaration = matching
+        .next()
+        .ok_or_else(|| invalid_context(format!("unknown composite context entry `{name}`")))?;
+    if matching.next().is_some() {
+        return Err(invalid_context(format!(
+            "duplicate composite context entry `{name}`"
+        )));
+    }
+    Ok(declaration)
+}
+
+/// Pairs a target with its value representation without weakening composite presence requirements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContextEntrySelector {
-    /// Configured entry name.
-    pub name: ContextEntryName,
-    /// Requested representation.
+    /// Primitive source or explicitly qualified composite selection.
+    pub target: ContextEntryTarget,
+    /// Representation applied to selected value members, excluding condition-only fields.
     pub form: ContextEntrySelectorForm,
 }
 
-/// Context entry representation.
+/// Specifies whether a consumer needs values, stored names, or original wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextEntrySelectorForm {
     /// Value only.
     Value,
     /// Stored name and value, preserving configured spelling.
     StoredKeyValue,
-    /// Original name and value.
+    /// Original wire name and value for transport-header fields only.
     OriginalKeyValue,
 }
 
-/// Context entries read by a consumer.
+/// Selects named entries or all stored primitives within one source domain.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextConsumerSelector {
     /// Selects named context entries in order.
@@ -64,15 +187,20 @@ pub enum ContextConsumerSelector {
         /// Entries to read.
         entries: Box<[ContextEntrySelector]>,
     },
-    /// Selects every context entry using its stored name.
-    AllStored,
+    /// Selects every primitive in one domain using its stored name.
+    AllStored {
+        /// Source authority domain.
+        domain: ContextDomain,
+    },
 }
 
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
-    /// Declares a context entry produced by the node.
+    /// Declares a primitive produced by the node without granting write authority.
     Produces {
+        /// Source authority domain.
+        domain: ContextDomain,
         /// Produced entry name.
         entry: ContextEntryName,
     },
@@ -99,27 +227,55 @@ pub enum ContextDeclaration {
 }
 
 impl ContextDeclaration {
+    /// Returns whether the declaration describes component reads or writes.
     fn is_component_declaration(&self) -> bool {
         matches!(self, Self::Produces { .. } | Self::Consumes { .. })
     }
 
-    fn context_runtime_requirements(&self) -> ContextRuntimeRequirements {
+    /// Validates selected sources and computes their original-header-name retention needs.
+    fn context_runtime_requirements(
+        &self,
+        composites: &[ConfigContextEntryDeclaration],
+    ) -> Result<ContextRuntimeRequirements, Error> {
         let mut requirements = ContextRuntimeRequirements::none();
         match self {
             Self::Consumes {
                 selector: ContextConsumerSelector::Entries { entries },
             } => {
                 for entry in entries {
-                    if entry.form == ContextEntrySelectorForm::OriginalKeyValue {
-                        _ = requirements
-                            .original_name_retention
-                            .overrides
-                            .insert(original_name_key(&entry.name), true);
-                    }
+                    entry.target.visit_selected_sources(composites, |source| {
+                        if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
+                            return Ok(());
+                        }
+                        match source {
+                            SelectedSource::Field(ContextDomain::TransportHeader, name) => {
+                                _ = requirements
+                                    .original_name_retention
+                                    .overrides
+                                    .insert(original_name_key(name), true);
+                            }
+                            SelectedSource::Field(domain, name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for {domain:?} context entry `{name}`; only transport headers have original wire names"
+                                )));
+                            }
+                            SelectedSource::Constant(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for constant context entry `{name}`; constants have no original wire names"
+                                )));
+                            }
+                            SelectedSource::Randomness(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for randomness context entry `{name}`; generated values have no original wire names"
+                                )));
+                            }
+                        }
+                        Ok(())
+                    })?;
                 }
             }
             Self::Consumes {
-                selector: ContextConsumerSelector::AllStored,
+                selector: ContextConsumerSelector::AllStored { .. },
             }
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
@@ -143,21 +299,21 @@ impl ContextDeclaration {
                 });
             }
         }
-        requirements
+        Ok(requirements)
     }
 }
 
-/// Derives context declarations from component configuration.
+/// Registers a component factory's context declaration callback.
 #[derive(Clone, Copy)]
 pub struct ContextDeclarationProvider {
     /// Declaration callback.
     pub declarations: ContextDeclarationFn,
 }
 
-/// Derives deterministic context declarations from node configuration.
+/// Derives deterministic declarations from serialized node configuration.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<NodeContextDeclarations, Error>;
 
-/// Context declarations derived from typed node configuration.
+/// Derives and validates context declarations from typed node configuration.
 pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     /// Declares the context reads and writes for this configuration.
     fn context_declarations(&self) -> NodeContextDeclarations;
@@ -177,7 +333,7 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     }
 }
 
-/// Sorted, unique context declarations.
+/// Stores one node's declarations in sorted, deduplicated order.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeContextDeclarations {
     /// Sorted and deduplicated declarations.
@@ -185,6 +341,7 @@ pub struct NodeContextDeclarations {
 }
 
 impl FromIterator<ContextDeclaration> for NodeContextDeclarations {
+    /// Collects declarations into a sorted, deduplicated set.
     fn from_iter<T>(iter: T) -> Self
     where
         T: IntoIterator<Item = ContextDeclaration>,
@@ -199,9 +356,12 @@ impl FromIterator<ContextDeclaration> for NodeContextDeclarations {
 }
 
 impl IntoIterator for NodeContextDeclarations {
+    /// An owned context declaration.
     type Item = ContextDeclaration;
+    /// An owning iterator over declarations in sorted order.
     type IntoIter = std::vec::IntoIter<ContextDeclaration>;
 
+    /// Consumes the set and yields declarations in sorted order.
     fn into_iter(self) -> Self::IntoIter {
         self.declarations.into_vec().into_iter()
     }
@@ -239,6 +399,7 @@ impl ContextDeclarationProvider {
     }
 }
 
+/// Deserializes typed node configuration and derives its context declarations.
 fn typed_context_declarations<T>(
     config: &serde_json::Value,
 ) -> Result<NodeContextDeclarations, Error>
@@ -258,11 +419,13 @@ pub struct CompiledContextBindings {
     by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
 }
 
-/// Declarations and transport-header policies compiled for one node.
+/// Stores one node's component declarations, selected composites, and engine context policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledNodeBindings {
     /// Declarations supplied by the component factory.
     component_declarations: NodeContextDeclarations,
+    /// Selected composite definitions, including the whole presence gate for member selections.
+    composites: Box<[ConfigContextEntryDeclaration]>,
     /// Receiver header capture policy compiled for the engine requirements.
     header_capture: Option<CompiledHeaderCapturePolicy>,
     /// Exporter header propagation policy resolved from node or pipeline config.
@@ -273,7 +436,60 @@ struct CompiledNodeBindings {
 
 /// Declarations indexed by pipeline and node identifiers.
 type ContextDeclarationsByPipeline =
-    HashMap<PipelineKey, HashMap<ConfigNodeId, NodeContextDeclarations>>;
+    HashMap<PipelineKey, HashMap<ConfigNodeId, PreparedNodeContextDeclarations>>;
+
+/// Validated declarations with their selected definitions and capture requirements.
+#[derive(Debug)]
+struct PreparedNodeContextDeclarations {
+    /// Sorted component and engine declarations for the node.
+    declarations: NodeContextDeclarations,
+    /// Selected composite definitions in canonical order with their full presence gates.
+    composites: Box<[ConfigContextEntryDeclaration]>,
+    /// Original-header-name retention needs derived from the declarations.
+    requirements: ContextRuntimeRequirements,
+}
+
+impl PreparedNodeContextDeclarations {
+    /// Validates selections, canonicalizes composite definitions, and derives runtime requirements.
+    fn new(
+        declarations: NodeContextDeclarations,
+        context: &[ConfigContextEntryDeclaration],
+    ) -> Result<Self, Error> {
+        let composite_names = declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries { entries },
+                } => Some(entries.iter()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|entry| entry.target.composite_name())
+            .collect::<BTreeSet<_>>();
+        let composites = composite_names
+            .into_iter()
+            .map(|name| {
+                let mut declaration = composite_declaration(name, context)?.clone();
+                validate_definition(&declaration)?;
+                declaration.definition.0.sort_unstable();
+                Ok(declaration)
+            })
+            .collect::<Result<Box<[_]>, Error>>()?;
+        let requirements = declarations.iter().try_fold(
+            ContextRuntimeRequirements::none(),
+            |requirements, declaration| {
+                Ok::<_, Error>(
+                    requirements.union(declaration.context_runtime_requirements(&composites)?),
+                )
+            },
+        )?;
+        Ok(Self {
+            declarations,
+            composites,
+            requirements,
+        })
+    }
+}
 
 /// Immutable engine-wide requirements used to compile context bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,16 +517,17 @@ pub struct PreparedContext {
 }
 
 impl ContextRuntimeRequirements {
+    /// Combines runtime requirements from every node in every pipeline.
     fn compile(declarations: &ContextDeclarationsByPipeline) -> Self {
         declarations
             .values()
             .flat_map(HashMap::values)
-            .flat_map(NodeContextDeclarations::iter)
             .fold(Self::none(), |requirements, declaration| {
-                requirements.union(declaration.context_runtime_requirements())
+                requirements.union(declaration.requirements.clone())
             })
     }
 
+    /// Creates requirements that retain no original header names.
     fn none() -> Self {
         Self {
             original_name_retention: OriginalNameRetention {
@@ -320,6 +537,7 @@ impl ContextRuntimeRequirements {
         }
     }
 
+    /// Combines both sets of runtime requirements.
     fn union(self, other: Self) -> Self {
         Self {
             original_name_retention: self
@@ -343,6 +561,7 @@ impl ContextRuntimeRequirements {
 }
 
 impl OriginalNameRetention {
+    /// Combines retention policies and keeps only overrides that differ from the new default.
     fn union(self, other: Self) -> Self {
         let default_preserve_original =
             self.default_preserve_original || other.default_preserve_original;
@@ -369,6 +588,7 @@ impl OriginalNameRetention {
         }
     }
 
+    /// Returns whether this policy retains every name required by the candidate.
     fn can_satisfy(&self, candidate: &Self) -> bool {
         if candidate.default_preserve_original && !self.default_preserve_original {
             return false;
@@ -381,10 +601,12 @@ impl OriginalNameRetention {
             })
     }
 
+    /// Returns the retention disposition for a case-insensitive stored header name.
     fn preserves_original_name(&self, name: &ContextEntryName) -> bool {
         self.preserves_original_key(&original_name_key(name))
     }
 
+    /// Looks up a lowercase name's override or falls back to the default disposition.
     fn preserves_original_key(&self, name: &str) -> bool {
         self.overrides
             .get(name)
@@ -393,20 +615,22 @@ impl OriginalNameRetention {
     }
 }
 
+/// Converts a stored header name to its ASCII-lowercase retention key.
 fn original_name_key(name: &ContextEntryName) -> Box<str> {
     name.as_str().to_ascii_lowercase().into()
 }
 
 impl CompiledNodeBindings {
+    /// Compiles header capture and separates component declarations from engine policies.
     fn compile(
-        declarations: NodeContextDeclarations,
+        prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
     ) -> Self {
         let mut component_declarations = Vec::new();
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
-        for declaration in declarations {
+        for declaration in prepared.declarations {
             match declaration {
                 declaration @ (ContextDeclaration::Produces { .. }
                 | ContextDeclaration::Consumes { .. }) => {
@@ -427,12 +651,14 @@ impl CompiledNodeBindings {
 
         Self {
             component_declarations: component_declarations.into_iter().collect(),
+            composites: prepared.composites,
             header_capture,
             header_propagation,
             authorized_identity_capture,
         }
     }
 
+    /// Returns whether the node has no component declarations or engine context policies.
     fn is_empty(&self) -> bool {
         self.component_declarations.is_empty()
             && self.header_capture.is_none()
@@ -442,7 +668,7 @@ impl CompiledNodeBindings {
 }
 
 impl CompiledContextBindings {
-    /// Creates an empty binding set. Node validation always fails.
+    /// Creates an empty binding set that rejects all node declaration validation.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -450,6 +676,7 @@ impl CompiledContextBindings {
         }
     }
 
+    /// Compiles every node's bindings using the same engine-wide runtime requirements.
     fn compile(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
@@ -512,10 +739,7 @@ impl CompiledContextBindings {
             .as_ref()
     }
 
-    /// Returns whether two binding sets contain identical non-empty bindings for one pipeline.
-    ///
-    /// Nodes without context declarations do not affect compiled bindings and
-    /// may be added, removed, or renamed during an otherwise safe live update.
+    /// Compares one pipeline's bindings while ignoring nodes without context declarations.
     #[must_use]
     pub fn pipeline_bindings_match(&self, other: &Self, pipeline: &PipelineKey) -> bool {
         let current = self.by_pipeline.get(pipeline);
@@ -543,8 +767,7 @@ impl CompiledContextBindings {
                 })
     }
 
-    /// Checks component declarations against this node's compiled bindings.
-    /// Call after parsing the node configuration.
+    /// Checks declarations from parsed component configuration against the node's compiled bindings.
     pub fn validate_node_declarations(
         &self,
         pipeline: &PipelineKey,
@@ -577,7 +800,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         })
     }
 
-    /// Compiles candidate bindings using the immutable installed requirements.
+    /// Derives candidate requirements and compiles bindings using the installed runtime requirements.
     pub fn compile_candidate_context(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
@@ -592,6 +815,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         })
     }
 
+    /// Wraps compiled bindings in an immutable shared handle for pipeline runtimes.
     fn compile_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
@@ -599,6 +823,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Arc::new(CompiledContextBindings::compile(declarations, requirements))
     }
 
+    /// Collects and validates component and engine declarations for each resolved pipeline node.
     fn context_declarations(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
@@ -621,11 +846,15 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
-                );
+                    &pipeline.policies.context,
+                )?;
                 let declarations = component_declarations
                     .into_iter()
                     .chain(wrapper_declarations)
                     .collect();
+                let declarations =
+                    PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
+                        .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
             let _ = declarations.insert(pipeline_key, declarations_by_node);
@@ -634,12 +863,14 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(declarations)
     }
 
+    /// Derives engine declarations from node header overrides and resolved pipeline policies.
     fn wrapper_context_declarations(
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
-    ) -> NodeContextDeclarations {
-        match node.kind() {
+        context: &[ConfigContextEntryDeclaration],
+    ) -> Result<NodeContextDeclarations, EngineError> {
+        let declarations = match node.kind() {
             NodeKind::Receiver => node
                 .header_capture
                 .as_ref()
@@ -659,22 +890,33 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                         .map(|policy| ContextDeclaration::AuthorizedIdentityCapture { policy }),
                 )
                 .collect(),
-            NodeKind::Exporter => node
-                .header_propagation
-                .as_ref()
-                .or_else(|| {
+            NodeKind::Exporter => {
+                let policy = node.header_propagation.as_ref().or_else(|| {
                     pipeline_policy
                         .as_ref()
                         .map(|policy| &policy.header_propagation)
-                })
-                .cloned()
-                .map(|policy| ContextDeclaration::HeaderPropagation { policy })
-                .into_iter()
-                .collect(),
+                });
+                policy
+                    .cloned()
+                    .map(|policy| {
+                        HeaderPropagationPolicy::compile(policy, context)
+                            .map(|policy| ContextDeclaration::HeaderPropagation { policy })
+                            .map_err(|error| {
+                                EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
+                                    error,
+                                }))
+                            })
+                    })
+                    .transpose()?
+                    .into_iter()
+                    .collect()
+            }
             NodeKind::Processor => NodeContextDeclarations::default(),
-        }
+        };
+        Ok(declarations)
     }
 
+    /// Validates node configuration and rejects engine-owned factory declarations.
     fn node_context_declarations(
         &self,
         kind: NodeKind,
@@ -737,25 +979,48 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     }
 }
 
+/// Exercises declaration compilation, retention requirements, and live-update compatibility.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy as HeaderPropagationConfig;
     use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
 
     /// Typed component configuration used to exercise declaration validation.
     #[derive(serde::Deserialize)]
     struct TestDeclarationConfig {
+        /// Selected primitive or composite member name.
         entry: ContextEntryName,
+        /// Optional composite containing the selected member.
+        #[serde(default)]
+        composite: Option<ContextEntryName>,
+        /// Whether the consumer requests the original transport-header name.
+        #[serde(default)]
+        original: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestDeclarationConfig {
+        /// Declares one test consumer with the configured target and name representation.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
-                        name: self.entry.clone(),
-                        form: ContextEntrySelectorForm::Value,
+                        target: match &self.composite {
+                            Some(composite) => ContextEntryTarget::CompositeMember {
+                                composite: composite.clone(),
+                                member: self.entry.clone(),
+                            },
+                            None => ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name: self.entry.clone(),
+                            },
+                        },
+                        form: if self.original {
+                            ContextEntrySelectorForm::OriginalKeyValue
+                        } else {
+                            ContextEntrySelectorForm::Value
+                        },
                     }]
                     .into_boxed_slice(),
                 },
@@ -765,33 +1030,659 @@ mod tests {
         }
     }
 
+    /// Builds a pipeline key from test group and pipeline names.
     fn pipeline(group: &str, name: &str) -> PipelineKey {
         PipelineKey::new(group.to_owned().into(), name.to_owned().into())
     }
 
+    /// Parses a test context name and fails if it is invalid.
     fn context_name(name: &str) -> ContextEntryName {
         name.try_into().expect("valid test context entry name")
     }
 
+    /// Collects selected sources for assertions over visitor traversal.
+    fn collect_selected_sources<'a>(
+        target: &'a ContextEntryTarget,
+        composites: &'a [ConfigContextEntryDeclaration],
+    ) -> Vec<SelectedSource<'a>> {
+        let mut sources = Vec::new();
+        target
+            .visit_selected_sources(composites, |source| {
+                sources.push(source);
+                Ok(())
+            })
+            .expect("selected sources");
+        sources
+    }
+
+    /// Fails if context compilation unexpectedly constructs a receiver.
+    fn unused_test_receiver(
+        _: crate::context::PipelineContext,
+        _: crate::node::NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &crate::config::ReceiverConfig,
+        _: &crate::capability::registry::Capabilities,
+    ) -> Result<crate::receiver::ReceiverWrapper<()>, Error> {
+        unreachable!("context compilation does not construct test nodes")
+    }
+
+    /// Fails if context compilation unexpectedly constructs an exporter.
+    fn unused_test_exporter(
+        _: crate::context::PipelineContext,
+        _: crate::node::NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &crate::config::ExporterConfig,
+        _: &crate::capability::registry::Capabilities,
+    ) -> Result<crate::exporter::ExporterWrapper<()>, Error> {
+        unreachable!("context compilation does not construct test nodes")
+    }
+
+    /// Fails if context compilation unexpectedly constructs a processor.
+    fn unused_test_processor(
+        _: crate::context::PipelineContext,
+        _: crate::node::NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &crate::config::ProcessorConfig,
+        _: &crate::capability::registry::Capabilities,
+    ) -> Result<crate::processor::ProcessorWrapper<()>, Error> {
+        unreachable!("context compilation does not construct test nodes")
+    }
+
+    /// Accepts configuration for test factories that need no typed validation.
+    fn accept_test_config(_: &serde_json::Value) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Registers test receivers without constructing runtime nodes.
+    static TEST_RECEIVERS: [crate::ReceiverFactory<()>; 2] = [
+        crate::ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: unused_test_receiver,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: unused_test_receiver,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: accept_test_config,
+        },
+    ];
+
+    /// Registers ordinary exporters and a typed context consumer for compilation tests.
+    static TEST_EXPORTERS: [crate::ExporterFactory<()>; 4] = [
+        crate::ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: unused_test_exporter,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ExporterFactory {
+            name: "urn:otel:exporter:noop",
+            create: unused_test_exporter,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ExporterFactory {
+            name: "urn:otel:exporter:console",
+            create: unused_test_exporter,
+            context_declarations: None,
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ExporterFactory {
+            name: "urn:test:exporter:context",
+            create: unused_test_exporter,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                TestDeclarationConfig,
+            >()),
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                TestDeclarationConfig,
+            >,
+        },
+    ];
+
+    /// Registers the type router used by resolved test pipelines.
+    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 1] = [crate::ProcessorFactory {
+        name: "urn:otel:processor:type_router",
+        create: unused_test_processor,
+        context_declarations: None,
+        wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: accept_test_config,
+    }];
+
+    /// Builds a pipeline factory from the test node registrations.
+    fn test_pipeline_factory() -> PipelineFactory<()> {
+        PipelineFactory::new(&TEST_RECEIVERS, &TEST_PROCESSORS, &TEST_EXPORTERS, &[])
+    }
+
+    /// Builds pipeline YAML with a composite definition and an exporter propagation selector.
+    fn conditional_pipeline_yaml(composite: &str, selector: &str) -> String {
+        format!(
+            r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant: {composite}
+engine: {{}}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: {{}}
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: [{selector}]
+                name: stored_name
+            config: {{}}
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        )
+    }
+
+    /// Resolves test pipeline YAML containing a composite propagation selector.
+    fn resolve_conditional_pipeline(composite: &str, selector: &str) -> ResolvedOtelDataflowSpec {
+        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&conditional_pipeline_yaml(
+            composite, selector,
+        ))
+        .expect("conditional pipeline YAML is valid")
+        .resolve()
+    }
+
+    /// Prepares declarations for one test node without composite definitions.
     fn declarations_by_pipeline(
         effective: NodeContextDeclarations,
     ) -> ContextDeclarationsByPipeline {
         HashMap::from([(
             pipeline("group", "pipeline"),
-            HashMap::from([(ConfigNodeId::from("node"), effective)]),
+            HashMap::from([(
+                ConfigNodeId::from("node"),
+                PreparedNodeContextDeclarations::new(effective, &[]).expect("valid declarations"),
+            )]),
         )])
     }
 
+    /// Compiles one test node's bindings using its own runtime requirements.
     fn compiled_bindings(effective: NodeContextDeclarations) -> CompiledContextBindings {
         let declarations = declarations_by_pipeline(effective);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         CompiledContextBindings::compile(declarations, &requirements)
     }
 
+    /// Derives runtime requirements from one test node's declarations.
     fn context_runtime_requirements(
         effective: NodeContextDeclarations,
     ) -> ContextRuntimeRequirements {
         ContextRuntimeRequirements::compile(&declarations_by_pipeline(effective))
+    }
+
+    /// Builds a primitive test target in the specified source domain.
+    fn primitive_target(domain: ContextDomain, name: &str) -> ContextEntryTarget {
+        ContextEntryTarget::Primitive {
+            domain,
+            name: context_name(name),
+        }
+    }
+
+    /// Builds a test target for one qualified composite member.
+    fn member_target(composite: &str, member: &str) -> ContextEntryTarget {
+        ContextEntryTarget::CompositeMember {
+            composite: context_name(composite),
+            member: context_name(member),
+        }
+    }
+
+    /// Declares one test consumer for the given target and representation.
+    fn consumer(
+        target: ContextEntryTarget,
+        form: ContextEntrySelectorForm,
+    ) -> NodeContextDeclarations {
+        [ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: Box::new([ContextEntrySelector { target, form }]),
+            },
+        }]
+        .into_iter()
+        .collect()
+    }
+
+    /// Builds a conditional test composite with aliased header and identity members.
+    fn mixed_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("tenant"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "transport_header", "name": "id", "store_as": "header_id"},
+                {"type": "authorized_identity", "name": "id", "store_as": "identity_id"},
+                {"type": "transport_header_match", "name": "environment", "value": "production"}
+            ]))
+            .expect("valid composite"),
+        }
+    }
+
+    /// Builds a test composite containing one constant and one header member.
+    fn constant_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("route"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "constant", "name": "route_name", "value": "otlp-http-json"},
+                {"type": "transport_header", "name": "workspace"}
+            ]))
+            .expect("valid constant composite"),
+        }
+    }
+
+    /// Builds a test composite containing one randomness member.
+    fn randomness_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("idempotency"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "randomness", "name": "id", "value": "uuid7"}
+            ]))
+            .expect("valid randomness composite"),
+        }
+    }
+
+    /// Scenario: same-name sources are declared in different domains for reads, writes, and all-stored.
+    /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
+    #[test]
+    fn declaration_domains_are_part_of_binding_identity() {
+        let declarations = |domain| {
+            [
+                ContextDeclaration::Produces {
+                    domain,
+                    entry: context_name("id"),
+                },
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries {
+                        entries: Box::new([ContextEntrySelector {
+                            target: primitive_target(domain, "id"),
+                            form: ContextEntrySelectorForm::Value,
+                        }]),
+                    },
+                },
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::AllStored { domain },
+                },
+            ]
+        };
+        let header = declarations(ContextDomain::TransportHeader);
+        let identity = declarations(ContextDomain::AuthorizedIdentity);
+        let combined: NodeContextDeclarations =
+            header.clone().into_iter().chain(identity.clone()).collect();
+        assert_eq!(combined.len(), 6);
+        assert!(
+            !context_runtime_requirements(combined).preserves_original_name(&context_name("id"))
+        );
+
+        for (header, identity) in header.into_iter().zip(identity) {
+            let header: NodeContextDeclarations = [header].into_iter().collect();
+            let identity: NodeContextDeclarations = [identity].into_iter().collect();
+            let installed = compiled_bindings(header.clone());
+            let candidate = compiled_bindings(identity.clone());
+            let key = pipeline("group", "pipeline");
+            let node = ConfigNodeId::from("node");
+            assert!(
+                installed
+                    .validate_node_declarations(&key, &node, &header)
+                    .is_ok()
+            );
+            assert!(
+                installed
+                    .validate_node_declarations(&key, &node, &identity)
+                    .is_err()
+            );
+            assert!(!installed.pipeline_bindings_match(&candidate, &key));
+            assert!(!candidate.pipeline_bindings_match(&installed, &key));
+        }
+    }
+
+    /// Scenario: a consumer selects an aliased header member of a mixed, conditional composite.
+    /// Guarantees: retention uses the header source, not its alias or condition, and keeps the full gate.
+    #[test]
+    fn composite_member_requirements_preserve_source_domain_and_gate() {
+        let context = [mixed_composite()];
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(
+                member_target("tenant", "header_id"),
+                ContextEntrySelectorForm::OriginalKeyValue,
+            ),
+            &context,
+        )
+        .expect("header member supports original names");
+        assert!(
+            prepared
+                .requirements
+                .preserves_original_name(&context_name("id"))
+        );
+        assert!(
+            !prepared
+                .requirements
+                .preserves_original_name(&context_name("header_id"))
+        );
+        assert!(
+            !prepared
+                .requirements
+                .preserves_original_name(&context_name("environment"))
+        );
+        assert_eq!(prepared.composites[0].definition.0.len(), 3);
+
+        for form in [
+            ContextEntrySelectorForm::Value,
+            ContextEntrySelectorForm::StoredKeyValue,
+        ] {
+            let prepared = PreparedNodeContextDeclarations::new(
+                consumer(member_target("tenant", "identity_id"), form),
+                &context,
+            )
+            .expect("identity member");
+            assert!(
+                !prepared
+                    .requirements
+                    .preserves_original_name(&context_name("id"))
+            );
+        }
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("tenant"),
+        };
+        let source_name = context_name("id");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [
+                SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
+                SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
+            ]
+        );
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(whole.clone(), ContextEntrySelectorForm::StoredKeyValue),
+            &context,
+        )
+        .expect("mixed composite supports stored values");
+        assert!(
+            !prepared
+                .requirements
+                .preserves_original_name(&context_name("id"))
+        );
+
+        let mut headers_only = mixed_composite();
+        _ = headers_only.definition.0.remove(1);
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(whole, ContextEntrySelectorForm::OriginalKeyValue),
+            &[headers_only],
+        )
+        .expect("header-only composite supports original names");
+        assert!(
+            prepared
+                .requirements
+                .preserves_original_name(&context_name("id"))
+        );
+        assert!(
+            !prepared
+                .requirements
+                .preserves_original_name(&context_name("environment"))
+        );
+    }
+
+    /// Scenario: a consumer selects constant and field members or their entire composite.
+    /// Guarantees: constants add no external source requirements and reject original wire names.
+    #[test]
+    fn constant_members_have_no_external_or_original_name_requirements() {
+        let context = [constant_composite()];
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("route"),
+        };
+        let constant_name = context_name("route_name");
+        let header_name = context_name("workspace");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [
+                SelectedSource::Constant(&constant_name),
+                SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
+            ]
+        );
+
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(
+                member_target("route", "route_name"),
+                ContextEntrySelectorForm::Value,
+            ),
+            &context,
+        )
+        .expect("constant value selection");
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
+        for target in [member_target("route", "route_name"), whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("constant has no original wire name");
+            assert!(
+                error.to_string().contains(
+                    "original wire name requested for constant context entry `route_name`"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    /// Scenario: a consumer selects a generated randomness member.
+    /// Guarantees: randomness adds no external requirements and rejects original wire names.
+    #[test]
+    fn randomness_members_have_no_external_or_original_name_requirements() {
+        let context = [randomness_composite()];
+        let member = member_target("idempotency", "id");
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("idempotency"),
+        };
+        let randomness_name = context_name("id");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [SelectedSource::Randomness(&randomness_name)]
+        );
+
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(member.clone(), ContextEntrySelectorForm::Value),
+            &context,
+        )
+        .expect("randomness value selection");
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
+        for target in [member, whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("randomness has no original wire name");
+            assert!(
+                error
+                    .to_string()
+                    .contains("original wire name requested for randomness context entry `id`")
+            );
+        }
+    }
+
+    /// Scenario: consumer targets are missing, select conditions as values, or request identity wire names.
+    /// Guarantees: preparation fails explicitly instead of falling back to a same-named header.
+    #[test]
+    fn invalid_consumer_targets_and_representations_are_rejected() {
+        let context = [mixed_composite()];
+        for (target, form, expected) in [
+            (
+                member_target("missing", "header_id"),
+                ContextEntrySelectorForm::Value,
+                "unknown composite context entry `missing`",
+            ),
+            (
+                member_target("tenant", "missing"),
+                ContextEntrySelectorForm::Value,
+                "unknown context member `tenant:missing`",
+            ),
+            (
+                member_target("tenant", "environment"),
+                ContextEntrySelectorForm::Value,
+                "unknown context member `tenant:environment`",
+            ),
+            (
+                primitive_target(ContextDomain::AuthorizedIdentity, "id"),
+                ContextEntrySelectorForm::OriginalKeyValue,
+                "original wire name requested for AuthorizedIdentity context entry `id`",
+            ),
+            (
+                member_target("tenant", "identity_id"),
+                ContextEntrySelectorForm::OriginalKeyValue,
+                "original wire name requested for AuthorizedIdentity context entry `id`",
+            ),
+            (
+                ContextEntryTarget::Composite {
+                    name: context_name("tenant"),
+                },
+                ContextEntrySelectorForm::OriginalKeyValue,
+                "original wire name requested for AuthorizedIdentity context entry `id`",
+            ),
+        ] {
+            let error = PreparedNodeContextDeclarations::new(consumer(target, form), &context)
+                .expect_err("invalid selection must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    /// Resolves a test pipeline whose exporter consumes the specified composite member.
+    fn resolve_consumer_pipeline(
+        composite: &str,
+        member: &str,
+        original: bool,
+    ) -> ResolvedOtelDataflowSpec {
+        let yaml = format!(
+            r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant: {composite}
+engine: {{}}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: {{}}
+          exporter:
+            type: "urn:test:exporter:context"
+            config:
+              entry: {member}
+              composite: tenant
+              original: {original}
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        );
+        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&yaml)
+            .expect("consumer pipeline YAML")
+            .resolve()
+    }
+
+    /// Scenario: a component declares a missing member or asks for an identity member's wire name.
+    /// Guarantees: both startup and live-update preparation reject invalid consumer declarations.
+    #[test]
+    fn full_yaml_preparation_rejects_invalid_consumer_declarations() {
+        let composite = "[{type: authorized_identity, name: id}]";
+        let factory = test_pipeline_factory();
+        let current = factory
+            .compile_initial_context(&resolve_consumer_pipeline(composite, "id", false))
+            .expect("valid identity consumer");
+        for (member, original, expected) in [
+            ("missing", false, "unknown context member `tenant:missing`"),
+            (
+                "id",
+                true,
+                "original wire name requested for AuthorizedIdentity",
+            ),
+        ] {
+            let resolved = resolve_consumer_pipeline(composite, member, original);
+            for result in [
+                factory.compile_initial_context(&resolved),
+                factory.compile_candidate_context(&resolved, &current.runtime_requirements),
+            ] {
+                let error = result.expect_err("invalid consumer must fail preparation");
+                assert!(error.to_string().contains(expected), "{error}");
+            }
+        }
+    }
+
+    /// Scenario: a qualified consumer stays unchanged while its composite definition changes.
+    /// Guarantees: bindings detect source, domain, and presence-gate changes, but ignore definition order.
+    #[test]
+    fn full_yaml_bindings_track_selected_composite_definitions() {
+        let composite = "[{type: transport_header, name: id, store_as: key}, \
+            {type: authorized_identity, name: account}, \
+            {type: transport_header_match, name: environment, value: production}]";
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&resolve_consumer_pipeline(composite, "key", false))
+            .expect("initial consumer");
+        let key = pipeline("default", "main");
+        for changed in [
+            composite.replace("name: id", "name: other"),
+            composite.replace("type: transport_header,", "type: authorized_identity,"),
+            composite.replace("name: account", "name: other_account"),
+            composite.replace("value: production", "value: staging"),
+        ] {
+            let candidate = factory
+                .compile_candidate_context(
+                    &resolve_consumer_pipeline(&changed, "key", false),
+                    &installed.runtime_requirements,
+                )
+                .expect("changed consumer");
+            assert!(
+                !installed
+                    .bindings
+                    .pipeline_bindings_match(&candidate.bindings, &key)
+            );
+            assert!(
+                !candidate
+                    .bindings
+                    .pipeline_bindings_match(&installed.bindings, &key)
+            );
+        }
+        let reordered = "[{type: transport_header_match, name: environment, value: production}, \
+            {type: authorized_identity, name: account}, \
+            {type: transport_header, name: id, store_as: key}]";
+        let candidate = factory
+            .compile_candidate_context(
+                &resolve_consumer_pipeline(reordered, "key", false),
+                &installed.runtime_requirements,
+            )
+            .expect("reordered consumer");
+        assert!(
+            installed
+                .bindings
+                .pipeline_bindings_match(&candidate.bindings, &key)
+        );
     }
 
     /// Scenario: capture aliases share a stored name.
@@ -821,7 +1712,10 @@ mod tests {
                     selector: ContextConsumerSelector::Entries {
                         entries: ["x-first", "canonical"]
                             .map(|name| ContextEntrySelector {
-                                name: context_name(name),
+                                target: ContextEntryTarget::Primitive {
+                                    domain: ContextDomain::TransportHeader,
+                                    name: context_name(name),
+                                },
                                 form: ContextEntrySelectorForm::OriginalKeyValue,
                             })
                             .into(),
@@ -848,10 +1742,19 @@ mod tests {
             &mut headers,
         );
 
-        assert_eq!(headers.as_slice()[0].wire_name(), "X-First");
-        assert_eq!(headers.as_slice()[1].wire_name(), "x-second");
-        assert_eq!(headers.as_slice()[2].wire_name(), "X-Alias-A");
-        assert_eq!(headers.as_slice()[3].wire_name(), "X-Alias-B");
+        assert_eq!(headers.get(0).expect("first header").wire_name(), "X-First");
+        assert_eq!(
+            headers.get(1).expect("second header").wire_name(),
+            "x-second"
+        );
+        assert_eq!(
+            headers.get(2).expect("first alias").wire_name(),
+            "X-Alias-A"
+        );
+        assert_eq!(
+            headers.get(3).expect("second alias").wire_name(),
+            "X-Alias-B"
+        );
     }
 
     /// Scenario: consumers request different name representations.
@@ -862,7 +1765,10 @@ mod tests {
             ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
-                        name: context_name("original"),
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name: context_name("original"),
+                        },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
                     .into_boxed_slice(),
@@ -871,7 +1777,10 @@ mod tests {
             ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
-                        name: context_name("value"),
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name: context_name("value"),
+                        },
                         form: ContextEntrySelectorForm::Value,
                     }]
                     .into_boxed_slice(),
@@ -889,7 +1798,7 @@ mod tests {
     /// Guarantees: the profile uses a true default with one case-insensitive exception.
     #[test]
     fn requirements_canonicalize_default_and_overrides() {
-        let propagation: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+        let propagation: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {"type": "all_captured"},
                 "name": "preserve"
@@ -900,6 +1809,8 @@ mod tests {
             }]
         }))
         .expect("valid propagation policy");
+        let propagation = HeaderPropagationPolicy::compile(propagation, &[])
+            .expect("propagation policy compiles");
         let requirements = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
                 policy: propagation,
@@ -930,7 +1841,10 @@ mod tests {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries {
                         entries: vec![ContextEntrySelector {
-                            name: context_name("x-tenant"),
+                            target: ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name: context_name("x-tenant"),
+                            },
                             form: ContextEntrySelectorForm::OriginalKeyValue,
                         }]
                         .into_boxed_slice(),
@@ -939,7 +1853,10 @@ mod tests {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries {
                         entries: vec![ContextEntrySelector {
-                            name: context_name("authorization"),
+                            target: ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name: context_name("authorization"),
+                            },
                             form: ContextEntrySelectorForm::Value,
                         }]
                         .into_boxed_slice(),
@@ -954,7 +1871,10 @@ mod tests {
             [ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
-                        name: context_name("X-Tenant"),
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name: context_name("X-Tenant"),
+                        },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
                     .into_boxed_slice(),
@@ -967,7 +1887,10 @@ mod tests {
             [ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
-                        name: context_name("x-request-id"),
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name: context_name("x-request-id"),
+                        },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
                     .into_boxed_slice(),
@@ -978,13 +1901,17 @@ mod tests {
         );
         let unsupported_default = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
-                policy: serde_json::from_value(serde_json::json!({
-                    "default": {
-                        "selector": {"type": "all_captured"},
-                        "name": "preserve"
-                    }
-                }))
-                .expect("valid propagation policy"),
+                policy: HeaderPropagationPolicy::compile(
+                    serde_json::from_value(serde_json::json!({
+                        "default": {
+                            "selector": {"type": "all_captured"},
+                            "name": "preserve"
+                        }
+                    }))
+                    .expect("valid propagation policy"),
+                    &[],
+                )
+                .expect("propagation policy compiles"),
             }]
             .into_iter()
             .collect(),
@@ -1000,7 +1927,7 @@ mod tests {
     /// Guarantees: prepared bindings keep the policy and require only that original name.
     #[test]
     fn header_propagation_policy_is_a_context_declaration() {
-        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+        let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
                     "type": "named",
@@ -1010,6 +1937,8 @@ mod tests {
             }
         }))
         .expect("valid propagation policy");
+        let policy =
+            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
         let declarations: NodeContextDeclarations = [ContextDeclaration::HeaderPropagation {
             policy: policy.clone(),
         }]
@@ -1030,8 +1959,7 @@ mod tests {
     }
 
     /// Scenario: node and pipeline header policies and an identity policy are configured.
-    /// Guarantees: node header policies take precedence, pipeline headers provide the fallback,
-    /// and authorized identity capture is declared only for receivers.
+    /// Guarantees: node headers override pipeline defaults and only receivers declare identity capture.
     #[test]
     fn wrapper_declarations_resolve_policy_precedence() {
         let identity_policy: AuthorizedIdentityPolicy =
@@ -1066,7 +1994,9 @@ mod tests {
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [
                 ContextDeclaration::HeaderCapture {
                     policy: node_capture,
@@ -1085,7 +2015,9 @@ mod tests {
                 &receiver,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [
                 ContextDeclaration::HeaderCapture {
                     policy: pipeline_policy.header_capture.clone(),
@@ -1099,16 +2031,19 @@ mod tests {
         );
 
         let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
-        let node_propagation = HeaderPropagationPolicy::default();
+        let node_propagation = HeaderPropagationConfig::default();
         exporter.header_propagation = Some(node_propagation.clone());
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: node_propagation,
+                policy: HeaderPropagationPolicy::compile(node_propagation, &[])
+                    .expect("node propagation policy compiles"),
             }]
             .into_iter()
             .collect(),
@@ -1120,13 +2055,197 @@ mod tests {
                 &exporter,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
-            ),
+                &[],
+            )
+            .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: pipeline_policy.header_propagation,
+                policy: HeaderPropagationPolicy::compile(pipeline_policy.header_propagation, &[])
+                    .expect("pipeline propagation policy compiles"),
             }]
             .into_iter()
             .collect(),
         );
+    }
+
+    /// Scenario: an exporter selects a conditional composite transport-header member.
+    /// Guarantees: wrapper compilation resolves the visible declaration before installing policy.
+    #[test]
+    fn wrapper_compiles_conditional_composite_header_propagation() {
+        let context: otel_arrow_dfe_config::context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  tenant:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+    - type: transport_header_match
+      name: environment
+      value: production
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ConfigContextEntryDeclaration {
+            scope: otel_arrow_dfe_config::context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
+        exporter.header_propagation = Some(
+            serde_yaml::from_str(
+                r#"
+default:
+  selector:
+    type: named
+    named: [tenant:workspace_id]
+  name: stored_name
+"#,
+            )
+            .expect("valid propagation policy"),
+        );
+
+        let declarations = PipelineFactory::<()>::wrapper_context_declarations(
+            &exporter,
+            &None,
+            &None,
+            &[declaration],
+        )
+        .expect("wrapper declarations");
+        let ContextDeclaration::HeaderPropagation { policy } =
+            declarations.iter().next().expect("propagation declaration")
+        else {
+            panic!("expected header propagation declaration");
+        };
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
+        assert_eq!(policy.propagate(&headers).count(), 0);
+        headers.push(TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: complete YAML changes a composite condition or selected member during a live update.
+    /// Guarantees: resolution compiles an effective exporter binding and reconciliation detects both changes.
+    #[test]
+    fn full_yaml_compilation_tracks_conditional_composite_changes() {
+        let current_composite = "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+            {type: transport_header, name: account, store_as: account_id}, \
+            {type: transport_header_match, name: environment, value: production}]";
+        let factory = test_pipeline_factory();
+        let current = resolve_conditional_pipeline(current_composite, "tenant:workspace_id");
+        let installed = factory
+            .compile_initial_context(&current)
+            .expect("initial context compiles");
+        let pipeline = pipeline("default", "main");
+        let exporter = ConfigNodeId::from("exporter");
+        let policy = installed
+            .bindings
+            .header_propagation_policy(&pipeline, &exporter)
+            .expect("compiled exporter propagation policy");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
+        headers.push(TransportHeader::text(
+            context_name("environment"),
+            b"production",
+        ));
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+
+        let changed_condition = resolve_conditional_pipeline(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+             {type: transport_header, name: account, store_as: account_id}, \
+             {type: transport_header_match, name: environment, value: staging}]",
+            "tenant:workspace_id",
+        );
+        let condition_candidate = factory
+            .compile_candidate_context(&changed_condition, &installed.runtime_requirements)
+            .expect("condition candidate compiles");
+        assert!(
+            !installed
+                .bindings
+                .pipeline_bindings_match(&condition_candidate.bindings, &pipeline)
+        );
+
+        let changed_member = resolve_conditional_pipeline(current_composite, "tenant:account_id");
+        let member_candidate = factory
+            .compile_candidate_context(&changed_member, &installed.runtime_requirements)
+            .expect("member candidate compiles");
+        assert!(
+            !installed
+                .bindings
+                .pipeline_bindings_match(&member_candidate.bindings, &pipeline)
+        );
+    }
+
+    /// Scenario: a live update reorders the conditions of a composite context entry.
+    /// Guarantees: compilation canonicalizes condition order and preserves the installed binding.
+    #[test]
+    fn full_yaml_compilation_ignores_composite_condition_order() {
+        let current = resolve_conditional_pipeline(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+             {type: transport_header_match, name: environment, value: production}, \
+             {type: transport_header_match, name: region, value: us-east}]",
+            "tenant:workspace_id",
+        );
+        let reordered = resolve_conditional_pipeline(
+            "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+             {type: transport_header_match, name: region, value: us-east}, \
+             {type: transport_header_match, name: environment, value: production}]",
+            "tenant:workspace_id",
+        );
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&current)
+            .expect("initial context compiles");
+        let candidate = factory
+            .compile_candidate_context(&reordered, &installed.runtime_requirements)
+            .expect("reordered context compiles");
+
+        assert!(
+            installed
+                .bindings
+                .pipeline_bindings_match(&candidate.bindings, &pipeline("default", "main"))
+        );
+    }
+
+    /// Scenario: complete YAML contains an invalid qualified propagation selector.
+    /// Guarantees: startup reports the unknown composite, unknown member, or unsupported type.
+    #[test]
+    fn full_yaml_compilation_reports_actionable_composite_selector_errors() {
+        let cases = [
+            (
+                "[{type: transport_header, name: workspace, store_as: workspace_id}]",
+                "missing:workspace_id",
+                "unknown composite context entry `missing`",
+            ),
+            (
+                "[{type: transport_header, name: workspace, store_as: workspace_id}]",
+                "tenant:missing",
+                "context entry reference `tenant:missing` does not select a transport-header member",
+            ),
+            (
+                "[{type: authorized_identity, name: customer_id}]",
+                "tenant:customer_id",
+                "context entry reference `tenant:customer_id` selects authorized-identity member `customer_id`, which cannot be propagated as a transport header",
+            ),
+        ];
+        let factory = test_pipeline_factory();
+
+        for (composite, selector, expected) in cases {
+            let resolved = resolve_conditional_pipeline(composite, selector);
+            let error = factory
+                .compile_initial_context(&resolved)
+                .expect_err("invalid selector must fail startup");
+            let message = error.to_string();
+            assert!(message.contains(expected), "{message}");
+        }
     }
 
     /// Scenario: a receiver has an absent or explicitly empty authorized identity policy.
@@ -1137,7 +2256,8 @@ mod tests {
 
         for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
             let declarations =
-                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy);
+                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy, &[])
+                    .expect("wrapper declarations");
             assert!(declarations.is_empty());
 
             let compiled = compiled_bindings(declarations);
@@ -1159,9 +2279,7 @@ mod tests {
     }
 
     /// Scenario: a receiver declares an authorized identity claim projection.
-    /// Guarantees: compiled node bindings retain the exact policy and
-    /// live-update compatibility rejects changed projections in either
-    /// comparison direction.
+    /// Guarantees: bindings retain the policy and reject changed projections in either comparison direction.
     #[test]
     fn authorized_identity_policy_is_a_compiled_receiver_binding() {
         let policy: AuthorizedIdentityPolicy =
@@ -1196,7 +2314,7 @@ mod tests {
     }
 
     /// Scenario: a node declares a context read and a propagation policy.
-    /// Guarantees: undeclared reads and nodes fail. The propagation declaration is retained.
+    /// Guarantees: undeclared reads and nodes fail while the propagation declaration is retained.
     #[test]
     fn parsed_config_declarations_are_validated_against_compiled_policy() {
         let pipeline = pipeline("group", "pipeline");
@@ -1217,7 +2335,11 @@ mod tests {
             .collect();
         let declarations = HashMap::from([(
             pipeline.clone(),
-            HashMap::from([(node.clone(), declarations)]),
+            HashMap::from([(
+                node.clone(),
+                PreparedNodeContextDeclarations::new(declarations, &[])
+                    .expect("valid declarations"),
+            )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         let bindings = CompiledContextBindings::compile(declarations, &requirements);

@@ -56,12 +56,14 @@ pub mod otlp_grpc;
 /// OTLP/HTTP receiver support.
 pub mod otlp_http;
 
+/// Shared OTLP exporter utilities.
+pub mod otlp_exporter;
+
+/// HTTP Client authentication provider.
+pub mod http_client_auth;
+
 /// Cloud specific auth utilities
 pub mod cloud_auth;
-
-/// Consumer-side adapter over a bound `bearer_token_provider` capability,
-/// shared by every node that authenticates with a bearer token.
-pub mod bearer_auth;
 
 /// Redacted string type for sensitive values.
 pub mod opaque_string;
@@ -79,6 +81,9 @@ mod transport_headers;
 
 /// TLS utilities
 pub mod tls_utils;
+
+/// Bounded hot-reload of client TLS material for OTLP exporters.
+pub(crate) mod client_tls_reload;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

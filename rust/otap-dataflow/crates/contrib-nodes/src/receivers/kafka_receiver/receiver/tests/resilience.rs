@@ -26,17 +26,9 @@ async fn transport_error_is_non_fatal_and_recovers() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Inject a LONG run of fetch errors (consumed one-per-request in
             // order) so the fault stays active across the whole observation
@@ -75,13 +67,9 @@ async fn transport_error_is_non_fatal_and_recovers() {
 
             // The same receive loop must now deliver every record -- it was
             // not killed by the sustained transport errors.
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -104,26 +92,15 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..PRE {
-                let key = format!("pre-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send pre-outage record");
-            }
+            produce_records(&producer, TOPIC, PRE, "pre", &bytes).await;
 
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             // Consume and ack the first batch before the outage.
-            for _ in 0..PRE {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, PRE).await;
 
             // Prolonged outage: every broker down. No new records must be
             // delivered while the brokers are unreachable.
@@ -138,23 +115,13 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
 
             // Recover: bring brokers back and produce more records.
             cluster.faults().all_brokers_up();
-            for i in 0..POST {
-                let key = format!("post-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send post-outage record");
-            }
+            produce_records(&producer, TOPIC, POST, "post", &bytes).await;
 
             // The same receiver must reconnect and deliver every post-outage
             // record without loss.
-            for _ in 0..POST {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, POST).await;
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -181,26 +148,15 @@ async fn intermittent_network_interruption_recovers_without_loss() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..PRE {
-                let key = format!("pre-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send pre-interruption record");
-            }
+            produce_records(&producer, TOPIC, PRE, "pre", &bytes).await;
 
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             // Consume and ack the first batch before the interruption.
-            for _ in 0..PRE {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, PRE).await;
 
             // Transient network interruption: a long burst of fetch errors
             // that blocks fetches while active. Consumed one-per-request in
@@ -210,13 +166,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
 
             // Produce during the interruption; nothing must be delivered while
             // it is active.
-            for i in 0..POST {
-                let key = format!("post-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send post-interruption record");
-            }
+            produce_records(&producer, TOPIC, POST, "post", &bytes).await;
             assert!(
                 receiver
                     .try_recv_pdata(Duration::from_secs(3))
@@ -230,16 +180,12 @@ async fn intermittent_network_interruption_recovers_without_loss() {
 
             // The same receiver must recover and deliver every post-interruption
             // record without loss.
-            for _ in 0..POST {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, POST).await;
 
             // No loss: the committed offset reaches the full produced count.
             let brokers = cluster.bootstrap_servers().to_string();
             let committed = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
+                probe_committed_offset(&brokers, group, TOPIC)
                     .is_some_and(|o| o >= (PRE + POST) as i64)
             })
             .await;
@@ -248,12 +194,10 @@ async fn intermittent_network_interruption_recovers_without_loss() {
                 "after recovery the committed offset should reach the full \
                      produced count {}, got {:?}",
                 PRE + POST,
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -276,16 +220,8 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_records(&producer, TOPIC, RECORDS, "rec", &bytes).await;
 
             // Inject a bounded per-request latency on all brokers. The broker
             // stays reachable; requests merely take longer.
@@ -293,8 +229,7 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
                 .faults()
                 .round_trip_time(-1, Duration::from_millis(50));
 
-            let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // A larger per-record timeout absorbs the injected latency; every
             // record must still arrive.
@@ -307,22 +242,23 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
             }
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(8), Duration::from_millis(200), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS,
+                Duration::from_secs(8),
+                Duration::from_millis(200),
+            )
             .await;
             assert!(
                 committed,
                 "under bounded broker latency the committed offset must reach \
                      the full produced count {RECORDS} with no loss, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             assert_eq!(
                 measurement_counter(
                     terminal.metrics(),
@@ -400,17 +336,11 @@ async fn adversarial_topic_and_header_values_do_not_stall_loop() {
                 },
             );
             let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
+                manual_traces_builder(cluster.bootstrap_servers(), group, "^sec-adversarial-.*")
                     .with_traces(
                         SignalConfig::new(vec!["^sec-adversarial-.*".to_string()])
                             .with_encoding(MessageFormat::OtapProto),
                     )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadUncommitted)
                     .with_resource_attrs_from_headers(extraction);
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -446,8 +376,7 @@ async fn adversarial_topic_and_header_values_do_not_stall_loop() {
                 "poison record must not be forwarded, and the loop must not stall",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let decode_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",

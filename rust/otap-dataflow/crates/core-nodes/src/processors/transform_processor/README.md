@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:transform` (`urn:otel:processor:transform`)
-- Feature gate: Default
+- Feature gate: `transform`
 - Stability: Experimental
 
 ## Overview

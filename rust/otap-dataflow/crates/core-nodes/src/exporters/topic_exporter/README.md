@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:topic` (`urn:otel:exporter:topic`)
-- Feature gate: Default
+- Feature gate: `topic`
 - Stability: Experimental
 
 ## Overview
@@ -48,18 +48,42 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+#### `exporter.attempted`
+
+The shared exporter boundary records one attempt from the start of topic
+admission through acceptance or refusal. Optional duration and item accounting
+follow the node telemetry policy. Downstream tracked Ack/Nack latency is not
+included in the attempt.
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of topic admission attempts. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time spent attempting topic admission, including queue wait under the block policy. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items belonging to the attempted publish. |
+
+#### `exporter.topic.rejections`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.topic.rejections.messages` | `{message}` | `signal`, `reason` | Publishes refused because the queue was full, outcome capacity was exhausted, or shutdown interrupted admission. |
+
+The bounded `reason` values are `queue_full`, `outcome_capacity`, and
+`shutdown`.
+
+#### `exporter.topic.tracked`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.topic.tracked.messages` | `{message}` | `signal`, `result` | Admitted tracked publishes grouped by their downstream terminal result. |
+
+The bounded `result` values are `ack`, `nack`, `timeout`, `topic_closed`, and
+`shutdown`.
+
 #### `exporter.topic`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `exporter.topic.published_messages` | `{item}` | Number of messages published to the topic. |
-| `exporter.topic.dropped_messages_on_full` | `{item}` | Number of messages dropped due to queue full policy. |
-| `exporter.topic.end_to_end_acks` | `{item}` | Number of end-to-end acks bridged back to upstream. |
-| `exporter.topic.end_to_end_nacks` | `{item}` | Number of end-to-end nacks bridged back to upstream. |
-| `exporter.topic.dropped_messages_on_outcome_capacity` | `{item}` | Number of messages rejected because tracked outcome capacity was exhausted. |
-| `exporter.topic.tracked_in_flight` | `{item}` | Current number of tracked publishes waiting for a terminal outcome. Future: add a pending-bytes gauge once retained payload size accounting is available for tracked publishes. |
-| `exporter.topic.outcome_timeouts` | `{item}` | Number of tracked publishes that resolved by timeout. Future: add an outcome-latency histogram once histogram instruments are available in the telemetry layer. |
-| `exporter.topic.shutdown_nacks` | `{item}` | Number of pending end-to-end messages nacked during shutdown. |
+| `exporter.topic.tracked_in_flight` | `{message}` | Current number of admitted tracked publishes waiting for a terminal result. |
 
 ### Events
 

@@ -60,7 +60,7 @@ use otel_arrow_dfe_config::policy::{
 };
 use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
-    TopicImplSelectionPolicy, TopicSpec,
+    TopicImplSelectionPolicy, TopicScope, TopicSpec,
 };
 use otel_arrow_dfe_config::{
     DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
@@ -95,6 +95,9 @@ use otel_arrow_dfe_engine::topic::{
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_state::store::{ObservedStateHandle, ObservedStateStore};
 use otel_arrow_dfe_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otel_arrow_dfe_telemetry::output_service::{
+    OutputService, OutputServiceConfig, ServiceStats, ShutdownOutcome,
+};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry::{
@@ -105,12 +108,11 @@ use otel_arrow_dfe_telemetry::{
 use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 pub use linkme::distributed_slice;
@@ -144,10 +146,7 @@ pub use controller_monitor::{
     register_builtin_controller_extensions,
 };
 
-use live_control::{
-    ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
-    RuntimeInstanceExit,
-};
+use live_control::{ControllerRuntime, LaunchedPipelineThread, LogicalPipelineDeployment};
 use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
 use otel_arrow_dfe_engine::component_inventory;
@@ -328,6 +327,8 @@ pub struct ControllerRunOptions {
     /// Defaults to `false` so embedding hosts retain signal ownership. Standalone
     /// binaries that own the process can opt in explicitly.
     pub handle_os_signals: bool,
+    #[cfg(test)]
+    fail_final_console_metrics: bool,
 }
 
 /// Build-time identity of the collector binary.
@@ -383,9 +384,7 @@ struct PreparedControllerExtension {
 }
 
 struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
-    broker: TopicBroker<PData>,
-    global_names: HashMap<TopicName, TopicName>,
-    group_names: HashMap<(PipelineGroupId, TopicName), TopicName>,
+    bindings_by_scope: HashMap<TopicScope, HashMap<TopicName, PipelineTopicBinding<PData>>>,
     inferred_mode_reports: Vec<InferredTopicModeReport>,
 }
 
@@ -1127,20 +1126,23 @@ impl<
         name: TopicName,
         spec: &TopicSpec,
         inferred_mode: InferredTopicMode,
-    ) -> Result<(), Error> {
+    ) -> Result<PipelineTopicBinding<PData>, Error> {
         Self::validate_topic_runtime_support(&name, spec, inferred_mode)?;
         let opts = Self::map_topic_spec_to_options(spec, inferred_mode);
-        match spec.backend {
-            TopicBackendKind::InMemory => {
-                _ = broker
-                    .create_topic(name, opts, InMemoryBackend)
-                    .map_err(|e| Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    })?;
-                Ok(())
-            }
+        let handle = match spec.backend {
+            TopicBackendKind::InMemory => broker
+                .create_topic(name, opts, InMemoryBackend)
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })?,
             TopicBackendKind::Quiver => unreachable!("unsupported backend must be rejected above"),
-        }
+        };
+        let handle = handle.with_default_publish_outcome_config(
+            Self::map_topic_spec_to_publish_outcome_config(spec),
+        );
+        Ok(PipelineTopicBinding::from(handle)
+            .with_default_queue_on_full(spec.policies.balanced.on_full.clone())
+            .with_default_ack_propagation_mode(spec.policies.ack_propagation.mode))
     }
 
     fn parse_topic_name(raw: &str) -> Result<TopicName, Error> {
@@ -1158,6 +1160,9 @@ impl<
         let (inferred_modes, mut inferred_mode_reports) =
             Self::infer_topic_modes(config, &global_names, &group_names)?;
         let default_selection_policy = config.engine.topics.impl_selection;
+        let mut bindings_by_scope =
+            HashMap::<TopicScope, HashMap<TopicName, PipelineTopicBinding<PData>>>::new();
+        _ = bindings_by_scope.insert(TopicScope::GLOBAL, HashMap::new());
 
         for (topic_name, spec) in &config.topics {
             let declared_name = global_names
@@ -1184,10 +1189,17 @@ impl<
                 selection_policy,
                 selected_mode,
             );
-            Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+            let binding = Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+            _ = bindings_by_scope
+                .get_mut(&TopicScope::GLOBAL)
+                .expect("global topic scope must be registered")
+                .insert(topic_name.clone(), binding);
         }
 
         for (group_id, group_cfg) in &config.groups {
+            let topic_scope = config
+                .resolve_topic_scope(group_id)
+                .expect("pipeline group from config must resolve");
             for (topic_name, spec) in &group_cfg.topics {
                 let declared_name = group_names
                     .get(&(group_id.clone(), topic_name.clone()))
@@ -1214,21 +1226,23 @@ impl<
                     selection_policy,
                     selected_mode,
                 );
-                Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+                let binding = Self::declare_topic(&broker, declared_name, spec, selected_mode)?;
+                _ = bindings_by_scope
+                    .entry(topic_scope.clone())
+                    .or_default()
+                    .insert(topic_name.clone(), binding);
             }
         }
 
         Ok(DeclaredTopics {
-            broker,
-            global_names,
-            group_names,
+            bindings_by_scope,
             inferred_mode_reports,
         })
     }
 
     fn build_pipeline_topic_set(
-        config: &OtelDataflowSpec,
         declared: &DeclaredTopics<PData>,
+        topic_scope: &TopicScope,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
         core_id: usize,
@@ -1241,48 +1255,28 @@ impl<
         );
         let set = TopicSet::new(set_name);
 
-        for (global_topic_name, topic_spec) in &config.topics {
-            if let Some(declared_name) = declared.global_names.get(global_topic_name) {
-                let handle = declared
-                    .broker
-                    .get_topic_required(declared_name)
-                    .map_err(|e| Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    })?;
-                let handle = handle.with_default_publish_outcome_config(
-                    Self::map_topic_spec_to_publish_outcome_config(topic_spec),
-                );
-                let binding = PipelineTopicBinding::from(handle)
-                    .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                    .with_default_ack_propagation_mode(topic_spec.policies.ack_propagation.mode);
-                _ = set.insert(global_topic_name.clone(), binding);
-            }
+        let global_bindings = declared
+            .bindings_by_scope
+            .get(&TopicScope::GLOBAL)
+            .expect("global topic scope must be registered");
+        for (topic_name, binding) in global_bindings {
+            _ = set.insert(topic_name.clone(), binding.clone());
         }
 
-        if let Some(group_cfg) = config.groups.get(pipeline_group_id) {
-            for (group_topic_name, topic_spec) in &group_cfg.topics {
-                if let Some(declared_name) = declared
-                    .group_names
-                    .get(&(pipeline_group_id.clone(), group_topic_name.clone()))
-                {
-                    let handle =
-                        declared
-                            .broker
-                            .get_topic_required(declared_name)
-                            .map_err(|e| Error::PipelineRuntimeError {
-                                source: Box::new(e),
-                            })?;
-                    let handle = handle.with_default_publish_outcome_config(
-                        Self::map_topic_spec_to_publish_outcome_config(topic_spec),
-                    );
-                    let binding = PipelineTopicBinding::from(handle)
-                        .with_default_queue_on_full(topic_spec.policies.balanced.on_full.clone())
-                        .with_default_ack_propagation_mode(
-                            topic_spec.policies.ack_propagation.mode,
-                        );
-                    // Group-local declarations override globals with the same local name.
-                    _ = set.insert(group_topic_name.clone(), binding);
+        if topic_scope != &TopicScope::GLOBAL {
+            let scoped_bindings = declared.bindings_by_scope.get(topic_scope).ok_or_else(|| {
+                Error::PipelineRuntimeError {
+                    source: Box::new(EngineError::InternalError {
+                        message: format!(
+                            "topic scope {topic_scope:?} is not registered for pipeline {}:{}",
+                            pipeline_group_id.as_ref(),
+                            pipeline_id.as_ref()
+                        ),
+                    }),
                 }
+            })?;
+            for (topic_name, binding) in scoped_bindings {
+                _ = set.insert(topic_name.clone(), binding.clone());
             }
         }
 
@@ -1295,6 +1289,160 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
+        // Start the process-wide console writers before any pipeline or tracing
+        // output exists, so every engine-owned frame is written contiguously and
+        // no core thread performs blocking console I/O.
+        let output_service_config = OutputServiceConfig::default();
+        let _ = OutputService::init(output_service_config).map_err(|error| {
+            Error::PipelineRuntimeError {
+                source: Box::new(error),
+            }
+        })?;
+
+        let run_console_baseline = OutputService::stats();
+        let mut final_console_report = None;
+        let result = self.run_pipelines(
+            engine_config,
+            run_mode,
+            options,
+            run_console_baseline,
+            &mut final_console_report,
+        );
+
+        // Drained on every exit path, including the early error returns above the
+        // normal shutdown sequence: a frame the writer already accepted must still
+        // reach the terminal when a run ends early.
+        let (console_sample, remaining_drain) = final_console_report.map_or(
+            (
+                run_console_baseline,
+                output_service_config.shutdown_drain_deadline,
+            ),
+            |(sample, elapsed)| {
+                (
+                    sample,
+                    output_service_config
+                        .shutdown_drain_deadline
+                        .saturating_sub(elapsed),
+                )
+            },
+        );
+        let outcome = OutputService::drain(remaining_drain);
+        let result = if final_console_report.is_some() {
+            Self::fold_console_output_result(result, outcome)
+        } else {
+            Self::finish_console_output(result, outcome)
+        };
+        Self::fold_late_console_diagnostics(result, console_sample, OutputService::stats())
+    }
+
+    /// Reports an incomplete drain and folds a writer failure into the run result.
+    fn finish_console_output(
+        result: Result<(), Error>,
+        outcome: ShutdownOutcome,
+    ) -> Result<(), Error> {
+        if outcome.drained {
+            return result;
+        }
+        Self::warn_console_output(outcome);
+        // The report above is itself console output, so give it a chance to land.
+        let _ = OutputService::drain(Duration::from_secs(1));
+
+        Self::fold_console_output_result(result, outcome)
+    }
+
+    fn warn_console_output(outcome: ShutdownOutcome) {
+        if outcome.drained {
+            return;
+        }
+        if outcome.writer_failed {
+            otel_warn!(
+                "controller.console_output_writer_failed",
+                frames_pending = outcome.frames_pending,
+                message = "A console writer stopped on an I/O error; queued console output was not written"
+            );
+        } else {
+            otel_warn!(
+                "controller.console_output_drain_timeout",
+                frames_pending = outcome.frames_pending,
+                message = "Timed out draining console output; some queued frames may not have been written"
+            );
+        }
+    }
+
+    async fn finish_console_metrics(
+        monitor: &mut otel_arrow_dfe_engine::engine_metrics::EngineMetricsMonitor,
+        drain_budget: Duration,
+    ) -> Result<(ServiceStats, Duration), otel_arrow_dfe_telemetry::error::Error> {
+        let drain_started = Instant::now();
+        let outcome = OutputService::drain(drain_budget);
+        Self::warn_console_output(outcome);
+        let drain_elapsed = drain_started.elapsed();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let sampled = monitor.finish_reporting_until(deadline).await?;
+        Ok((sampled, drain_elapsed))
+    }
+
+    fn fold_late_console_diagnostics(
+        result: Result<(), Error>,
+        sampled: ServiceStats,
+        current: ServiceStats,
+    ) -> Result<(), Error> {
+        let diagnostics_dropped = current
+            .stdout
+            .diagnostics_dropped
+            .saturating_sub(sampled.stdout.diagnostics_dropped)
+            .saturating_add(
+                current
+                    .stderr
+                    .diagnostics_dropped
+                    .saturating_sub(sampled.stderr.diagnostics_dropped),
+            );
+        if diagnostics_dropped == 0 {
+            return result;
+        }
+        match result {
+            Ok(()) => Err(Error::ConsoleDiagnosticsDropped {
+                diagnostics_dropped,
+            }),
+            Err(error) => Err(Error::RunFailedWithConsoleDiagnosticsLoss {
+                diagnostics_dropped,
+                source: Box::new(error),
+            }),
+        }
+    }
+
+    /// Combines the engine result with an already-observed console outcome.
+    fn fold_console_output_result(
+        result: Result<(), Error>,
+        outcome: ShutdownOutcome,
+    ) -> Result<(), Error> {
+        match result {
+            // The engine failure stays the displayed cause, but the console loss
+            // travels with it instead of being dropped.
+            Err(error) if outcome.writer_failed => Err(Error::RunFailedWithConsoleOutputLoss {
+                frames_pending: outcome.frames_pending,
+                source: Box::new(error),
+            }),
+            Err(error) => Err(error),
+            // A failed writer may have no console stream left to report on, so the
+            // run result is the only channel that always survives.
+            Ok(()) if outcome.writer_failed => Err(Error::ConsoleOutputWriterFailed {
+                frames_pending: outcome.frames_pending,
+            }),
+            // A timeout leaves the writer running, so queued frames can still land
+            // for a caller that keeps the process alive.
+            Ok(()) => Ok(()),
+        }
+    }
+
+    fn run_pipelines(
+        &self,
+        engine_config: OtelDataflowSpec,
+        run_mode: RunMode,
+        options: ControllerRunOptions,
+        console_baseline: ServiceStats,
+        final_console_report: &mut Option<(ServiceStats, Duration)>,
+    ) -> Result<(), Error> {
         engine_config.validate().map_err(|error| match error {
             otel_arrow_dfe_config::error::Error::InvalidConfiguration { errors } => {
                 Error::InvalidConfiguration { errors }
@@ -1303,6 +1451,15 @@ impl<
                 errors: vec![other],
             },
         })?;
+
+        // Synchronous startup, before any pipeline or controller extension starts.
+        // Retain this capability in every context across restarts and live rollouts.
+        let state_directory = engine_config
+            .engine
+            .state_dir
+            .as_deref()
+            .map(otel_arrow_dfe_engine::state_dir::StateDirectory::provision)
+            .transpose()?;
 
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
@@ -1327,6 +1484,10 @@ impl<
         // controller context below.
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let controller_ctx = match state_directory {
+            Some(root) => controller_ctx.with_state_directory(root),
+            None => controller_ctx,
+        };
 
         // Inject auto-detected resource attributes into the telemetry resource map so
         // they surface on the OTLP Resource / Prometheus target_info. Precedence is
@@ -1518,8 +1679,6 @@ impl<
             observability_pipeline.policies.health.clone(),
         );
         let topology = NumaTopology::detect();
-        let observability_numa_node_id =
-            topology.numa_node_or_zero(observability_core.id as u32) as usize;
         otel_info!(
             "controller.numa_topology.detected",
             completeness = format!("{:?}", topology.completeness()),
@@ -1528,6 +1687,18 @@ impl<
         );
         let placement_snapshot =
             Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
+        let observability_placement = PipelinePlacement {
+            pipeline_group_id: observability_pipeline.pipeline_group_id.clone(),
+            pipeline_id: observability_pipeline.pipeline_id.clone(),
+            cores: vec![CorePlacement::from_core_id(observability_core, &topology)],
+        };
+        let observability_deployment = LogicalPipelineDeployment::new(
+            observability_pipeline,
+            Arc::clone(&context.bindings),
+            0,
+            observability_placement,
+            Arc::new(ListenerGroupSnapshot::empty()),
+        );
 
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
@@ -1548,6 +1719,7 @@ impl<
             engine_config.clone(),
         ));
 
+        let controller_telemetry_guard = runtime.hold_controller_telemetry();
         let control_plane = runtime.control_plane();
         // Extension factories are invoked before any pipeline thread is spawned
         // so missing registrations or synchronous config errors fail startup
@@ -1580,25 +1752,12 @@ impl<
             Error::from(otel_arrow_dfe_telemetry::error::Error::MetricsCollectorNotRunning)
         })?;
 
-        // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
-        // them report their terminal exit without becoming owners that keep the runtime alive
-        // during shutdown.
         let observability_pipeline_handle = Self::spawn_observability_pipeline(
-            Arc::downgrade(&runtime),
-            observability_key.clone(),
-            observability_core,
-            observability_pipeline,
-            &engine_config,
-            Arc::clone(&context.bindings),
+            &runtime,
+            &observability_deployment,
+            observability_core.id,
             &telemetry_system,
-            self.pipeline_factory,
-            &controller_ctx,
-            &engine_evt_reporter,
-            &metrics_reporter,
-            telemetry_reporting_interval,
-            &memory_pressure_tx,
             internal_tracing_setup,
-            observability_numa_node_id,
         )?;
 
         // Initialize the global subscriber AFTER the observability pipeline has signaled
@@ -1622,23 +1781,24 @@ impl<
         let engine_registry = controller_ctx.telemetry_registry();
         let engine_reporter = metrics_reporter.clone();
         let engine_metrics_memory_pressure_state = memory_pressure_state.clone();
+        #[cfg(test)]
+        let fail_final_console_metrics = options.fail_final_console_metrics;
+        let mut monitor =
+            otel_arrow_dfe_engine::engine_metrics::EngineMetricsMonitor::with_console_baseline(
+                engine_registry,
+                engine_entity_key,
+                engine_reporter,
+                engine_metrics_memory_pressure_state,
+                console_baseline,
+            );
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",
             admin_tracing_setup.clone(),
             move |cancellation_token| async move {
-                use otel_arrow_dfe_engine::engine_metrics::EngineMetricsMonitor;
-                use std::time::{Duration, Instant};
                 use tokio::time::{MissedTickBehavior, interval};
 
                 // TODO: Make this interval configurable via engine config.
                 const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
-
-                let mut monitor = EngineMetricsMonitor::new(
-                    engine_registry,
-                    engine_entity_key,
-                    engine_reporter,
-                    engine_metrics_memory_pressure_state.clone(),
-                );
 
                 let mut ticker = interval(ENGINE_METRICS_INTERVAL);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1646,14 +1806,14 @@ impl<
                 loop {
                     tokio::select! {
                         _ = cancellation_token.cancelled() => {
-                            let deadline = Instant::now() + Duration::from_secs(5);
-                            if let Err(err) = monitor.finish_reporting_until(deadline).await {
-                                otel_warn!(
-                                    "engine.metrics.final_reporting.fail",
-                                    error = err.to_string()
-                                );
+                            #[cfg(test)]
+                            if fail_final_console_metrics {
+                                return Err(otel_arrow_dfe_telemetry::error::Error::MetricsCollectorNotRunning);
                             }
-                            return Ok::<(), otel_arrow_dfe_telemetry::error::Error>(());
+                            return Self::finish_console_metrics(
+                                &mut monitor,
+                                OutputServiceConfig::default().shutdown_drain_deadline,
+                            ).await;
                         }
                         _ = ticker.tick() => {
                             monitor.update();
@@ -1674,17 +1834,19 @@ impl<
         for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
         {
-            runtime.register_committed_pipeline(
+            let deployment = LogicalPipelineDeployment::new(
                 pipeline_entry.clone(),
-                pipeline_placement.clone(),
+                Arc::clone(&context.bindings),
                 0,
+                pipeline_placement.clone(),
+                Arc::new(listener_group::snapshot_for_pipeline(
+                    pipeline_entry,
+                    pipeline_placement,
+                    placement_snapshot.generation,
+                )),
             );
+            runtime.register_committed_pipeline(&deployment);
             let num_cores = pipeline_placement.core_count();
-            let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
-                pipeline_entry,
-                pipeline_placement,
-                placement_snapshot.generation,
-            ));
 
             let core_allocation = pipeline_entry
                 .policies
@@ -1717,37 +1879,12 @@ impl<
             );
 
             for placement in &pipeline_placement.cores {
-                // Pass a Weak runtime handle into each pipeline thread. The thread upgrades it
-                // only when it needs to report Success/Error/Panic on exit, and silently skips
-                // that late report if shutdown has already dropped the runtime.
-                let launched = Self::launch_pipeline_thread(
-                    self.pipeline_factory,
-                    DeployedPipelineKey {
-                        pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
-                        pipeline_id: pipeline_entry.pipeline_id.clone(),
-                        core_id: placement.core_id.id,
-                        deployment_generation: placement_snapshot.generation,
-                    },
-                    placement.core_id,
-                    placement.numa_node_id,
-                    Arc::clone(&listener_group_snapshot),
-                    Arc::clone(&context.bindings),
-                    num_cores,
-                    pipeline_entry.pipeline.clone(),
-                    pipeline_entry.policies.channel_capacity.clone(),
-                    pipeline_entry.policies.telemetry.clone(),
-                    pipeline_entry.policies.rate_limiters.clone(),
-                    pipeline_entry.policies.rate_limiter_scope.clone(),
-                    controller_ctx.clone(),
-                    metrics_reporter.clone(),
-                    engine_evt_reporter.clone(),
-                    telemetry_system.engine_tracing_setup(),
-                    telemetry_reporting_interval,
-                    memory_pressure_tx.clone(),
-                    &engine_config,
-                    runtime.declared_topics(),
-                    Arc::downgrade(&runtime),
+                let launched = runtime.launch_pipeline_thread(
+                    &deployment,
+                    placement.core_id.id,
+                    placement_snapshot.generation,
                     runtime.next_thread_id(),
+                    telemetry_system.engine_tracing_setup(),
                     None,
                 )?;
                 runtime.register_launched_instance(launched);
@@ -1772,12 +1909,6 @@ impl<
         ) {
             Ok(handles) => handles,
             Err(err) => {
-                if let Err(stop_err) = engine_metrics_handle.shutdown_and_join() {
-                    otel_warn!(
-                        "controller.extension_startup_engine_metrics_shutdown_failed",
-                        error = stop_err.to_string()
-                    );
-                }
                 if let Some(handle) = memory_limiter_handle
                     && let Err(stop_err) = handle.shutdown_and_join()
                 {
@@ -1786,6 +1917,16 @@ impl<
                         error = stop_err.to_string()
                     );
                 }
+                match engine_metrics_handle.shutdown_and_join() {
+                    Ok(report) => *final_console_report = Some(report),
+                    Err(stop_err) => {
+                        otel_warn!(
+                            "controller.extension_startup_engine_metrics_shutdown_failed",
+                            error = stop_err.to_string()
+                        );
+                    }
+                }
+                drop(controller_telemetry_guard);
                 if let Err(shutdown_err) = control_plane.shutdown_all(10) {
                     otel_warn!(
                         "controller.extension_startup_shutdown_failed",
@@ -1847,10 +1988,8 @@ impl<
         // runtime shutdown to finish. The system observability pipeline remains
         // active until every regular pipeline exits, and its final collector
         // barrier must complete before the metric aggregator is stopped.
-        engine_metrics_handle.shutdown_and_join()?;
-        if let Some(handle) = memory_limiter_handle {
-            handle.shutdown_and_join()?;
-        }
+        let memory_limiter_error =
+            memory_limiter_handle.and_then(|handle| handle.shutdown_and_join().err());
         let mut controller_extension_error = None;
         for handle in controller_extension_handles {
             if let Err(err) = handle.shutdown_and_join()
@@ -1860,7 +1999,20 @@ impl<
             }
         }
 
+        match engine_metrics_handle.shutdown_and_join() {
+            Ok(report) => *final_console_report = Some(report),
+            Err(err) => {
+                otel_warn!(
+                    "engine.metrics.final_reporting.fail",
+                    error = err.to_string()
+                );
+            }
+        }
+        drop(controller_telemetry_guard);
+
         if run_mode == RunMode::ShutdownWhenDone {
+            // request_shutdown_all skips observability until a timed-out coordinator returns.
+            let _ = runtime.wait_for_global_shutdown_completion();
             if let Err(error) = control_plane.shutdown_all(10) {
                 return Err(Error::PipelineRuntimeError {
                     source: Box::new(std::io::Error::other(format!(
@@ -1874,6 +2026,16 @@ impl<
 
         if run_mode == RunMode::ParkMainThread {
             let global_shutdown_requested = runtime.wait_for_global_shutdown_completion();
+            if global_shutdown_requested && runtime.only_observability_active() {
+                // A coordinator that gave up waiting for the guard left observability running.
+                if let Err(error) = control_plane.shutdown_all(10) {
+                    otel_warn!(
+                        "controller.observability_shutdown_retry_failed",
+                        error = format!("{error:?}")
+                    );
+                }
+                let _ = runtime.wait_for_global_shutdown_completion();
+            }
             let all_instances_exited = if global_shutdown_requested {
                 runtime.all_instances_exited()
             } else {
@@ -1889,13 +2051,21 @@ impl<
 
         // All telemetry producers and pipelines have finished; shut down the
         // remaining support tasks and the metric aggregator gracefully.
-        admin_server_handle.shutdown_and_join()?;
-        metrics_agg_handle.shutdown_and_join()?;
-        obs_state_join_handle.shutdown_and_join()?;
+        let admin_server_result = admin_server_handle.shutdown_and_join();
+        let metrics_agg_result = metrics_agg_handle.shutdown_and_join();
+        let obs_state_result = obs_state_join_handle.shutdown_and_join();
         drop(telemetry_system);
-        if let Some(listener) = shutdown_signal_listener {
-            listener.shutdown_and_join()?;
+        let shutdown_signal_result = shutdown_signal_listener
+            .map(|listener| listener.shutdown_and_join())
+            .transpose();
+
+        if let Some(err) = memory_limiter_error {
+            return Err(err);
         }
+        admin_server_result?;
+        metrics_agg_result?;
+        obs_state_result?;
+        let _ = shutdown_signal_result?;
 
         if let Some(err) = controller_extension_error {
             return Err(err);
@@ -2548,192 +2718,24 @@ impl<
         }
     }
 
-    /// Launches one pipeline OS thread and wires its terminal exit back into the controller.
-    ///
-    /// The spawned thread owns the actual pipeline execution and maps success, runtime error, or
-    /// panic into RuntimeInstanceExit. `runtime` is a Weak handle on purpose: the pipeline thread
-    /// should be able to report its exit, but it must not become an owner that prolongs the
-    /// controller runtime during shutdown.
-    #[allow(clippy::too_many_arguments)]
-    fn launch_pipeline_thread(
-        pipeline_factory: &'static PipelineFactory<PData>,
-        pipeline_key: DeployedPipelineKey,
-        core_id: CoreId,
-        numa_node_id: usize,
-        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
-        context_bindings: Arc<CompiledContextBindings>,
-        num_cores: usize,
-        pipeline_config: PipelineConfig,
-        channel_capacity_policy: ChannelCapacityPolicy,
-        telemetry_policy: TelemetryPolicy,
-        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
-        rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
-        controller_ctx: ControllerContext,
-        metrics_reporter: MetricsReporter,
-        engine_evt_reporter: ObservedEventReporter,
-        tracing_setup: TracingSetup,
-        telemetry_reporting_interval: Duration,
-        memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
-        config: &OtelDataflowSpec,
-        declared_topics: &DeclaredTopics<PData>,
-        runtime: std::sync::Weak<ControllerRuntime<PData>>,
-        thread_id: usize,
-        internal_telemetry: Option<(
-            InternalTelemetrySettings,
-            std_mpsc::SyncSender<Result<(), EngineError>>,
-        )>,
-    ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        let mut pipeline_ctx = controller_ctx.pipeline_context_with_placement(
-            pipeline_key.pipeline_group_id.clone(),
-            pipeline_key.pipeline_id.clone(),
-            pipeline_key.core_id,
-            num_cores,
-            thread_id,
-            pipeline_key.deployment_generation,
-            numa_node_id,
-        );
-        let topic_set = Self::build_pipeline_topic_set(
-            config,
-            declared_topics,
-            &pipeline_key.pipeline_group_id,
-            &pipeline_key.pipeline_id,
-            pipeline_key.core_id,
-        )?;
-        pipeline_ctx.set_topic_set(topic_set);
-        pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
-        pipeline_ctx.set_compiled_context_bindings(Arc::clone(&context_bindings));
-        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
-            runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
-        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
-            pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
-        let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(runtime_ctrl_msg_tx.clone());
-        let memory_pressure_rx = memory_pressure_tx.subscribe();
-        let thread_name = format!(
-            "pipeline-{}-{}-core-{}-gen-{}",
-            pipeline_key.pipeline_group_id.as_ref(),
-            pipeline_key.pipeline_id.as_ref(),
-            pipeline_key.core_id,
-            pipeline_key.deployment_generation
-        );
-        let run_key = pipeline_key.clone();
-        let runtime_key = pipeline_key.clone();
-        let runtime_thread_name = thread_name.clone();
-        let _handle = thread::Builder::new()
-            .name(thread_name.clone())
-            .spawn(move || {
-                let exit = match catch_unwind(AssertUnwindSafe(|| {
-                    Self::run_pipeline_thread(
-                        run_key,
-                        core_id,
-                        pipeline_config,
-                        channel_capacity_policy,
-                        telemetry_policy,
-                        rate_limiter_policies,
-                        rate_limiter_scope,
-                        telemetry_reporting_interval,
-                        pipeline_factory,
-                        pipeline_ctx,
-                        engine_evt_reporter,
-                        metrics_reporter,
-                        runtime_ctrl_msg_tx,
-                        runtime_ctrl_msg_rx,
-                        pipeline_completion_msg_tx,
-                        pipeline_completion_msg_rx,
-                        memory_pressure_rx,
-                        tracing_setup,
-                        internal_telemetry,
-                    )
-                })) {
-                    Ok(Ok(_)) => RuntimeInstanceExit::Success,
-                    Ok(Err(err)) => {
-                        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(err.to_string()))
-                    }
-                    Err(panic) => RuntimeInstanceExit::Error(RuntimeInstanceError::from_panic(
-                        PanicReport::capture(
-                            "runtime thread",
-                            panic,
-                            Some(runtime_thread_name),
-                            Some(thread_id),
-                            Some(runtime_key.core_id),
-                        ),
-                    )),
-                };
-                if let Some(runtime) = runtime.upgrade() {
-                    runtime.note_instance_exit(runtime_key, exit);
-                }
-                // The controller runtime may already be gone during teardown. In that case there
-                // is nothing left to update, so late exit reporting is intentionally best-effort.
-            })
-            .map_err(|e| Error::ThreadSpawnError {
-                thread_name: thread_name.clone(),
-                source: e,
-            })?;
-
-        Ok(LaunchedPipelineThread {
-            pipeline_key,
-            control_sender,
-            context_bindings,
-            _marker: std::marker::PhantomData,
-        })
-    }
-
     /// Spawns the engine's mandatory observability pipeline and waits for startup.
-    #[allow(clippy::too_many_arguments)]
     fn spawn_observability_pipeline(
-        runtime: std::sync::Weak<ControllerRuntime<PData>>,
-        observability_key: DeployedPipelineKey,
-        observability_core: CoreId,
-        observability_pipeline: ResolvedPipelineConfig,
-        config: &OtelDataflowSpec,
-        context_bindings: Arc<CompiledContextBindings>,
+        runtime: &Arc<ControllerRuntime<PData>>,
+        deployment: &LogicalPipelineDeployment,
+        observability_core: usize,
         telemetry_system: &InternalTelemetrySystem,
-        pipeline_factory: &'static PipelineFactory<PData>,
-        controller_ctx: &ControllerContext,
-        engine_evt_reporter: &ObservedEventReporter,
-        metrics_reporter: &MetricsReporter,
-        telemetry_reporting_interval: Duration,
-        memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
-        observability_numa_node_id: usize,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        debug_assert_eq!(
-            observability_pipeline.role,
-            ResolvedPipelineRole::ObservabilityInternal
-        );
-        let channel_capacity_policy = observability_pipeline.policies.channel_capacity;
-        let telemetry_policy = observability_pipeline.policies.telemetry;
-        let pipeline_config = observability_pipeline.pipeline;
-
         let internal_telemetry_settings = telemetry_system.internal_telemetry_settings();
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
-        let launched = Self::launch_pipeline_thread(
-            pipeline_factory,
-            observability_key,
+        let launched = runtime.launch_pipeline_thread(
+            deployment,
             observability_core,
-            observability_numa_node_id,
-            Arc::new(ListenerGroupSnapshot::empty()),
-            context_bindings,
-            1,
-            pipeline_config,
-            channel_capacity_policy,
-            telemetry_policy,
-            BTreeMap::new(),
-            None,
-            controller_ctx.clone(),
-            metrics_reporter.clone(),
-            engine_evt_reporter.clone(),
-            tracing_setup,
-            telemetry_reporting_interval,
-            memory_pressure_tx.clone(),
-            config,
-            runtime
-                .upgrade()
-                .expect("controller runtime should exist while spawning observability pipeline")
-                .declared_topics(),
-            runtime,
             0,
+            0,
+            tracing_setup,
             Some((internal_telemetry_settings, startup_tx)),
         )?;
 
@@ -3023,6 +3025,661 @@ mod tests {
     use async_trait::async_trait;
     use otel_arrow_dfe_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otel_arrow_dfe_config::node::NodeUserConfig;
+
+    fn run_console_reporting_child(test_name: &str) {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(std::env::current_exe().expect("test binary path"))
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env("OTAP_CONSOLE_REPORTING_CHILD", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("console test child starts");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.try_wait().expect("child status") {
+                assert!(status.success(), "console test child failed: {status}");
+                return;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("console reporting child exceeded its deadline");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn admin_shutdown_test_config(address: std::net::SocketAddr) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "{address}"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    extensions:
+      observe_shutdown:
+        type: urn:test:extension:observe_shutdown
+groups: {{}}
+"#
+        ))
+        .expect("admin shutdown test config")
+    }
+
+    fn admin_shutdown_test_options() -> (
+        ControllerRunOptions,
+        std::sync::mpsc::Receiver<ControllerExtensionContext>,
+    ) {
+        let (context_tx, context_rx) = std::sync::mpsc::channel();
+        let mut extensions = ControllerExtensionRegistry::empty();
+        extensions.register(
+            "urn:test:extension:observe_shutdown".into(),
+            move |context| {
+                context_tx.send(context).expect("test receives context");
+                Ok(Box::new(|cancellation| {
+                    Box::pin(async move {
+                        cancellation.cancelled().await;
+                        Ok(())
+                    })
+                }))
+            },
+            otel_arrow_dfe_config::validation::no_config,
+        );
+        (
+            ControllerRunOptions {
+                extensions,
+                ..Default::default()
+            },
+            context_rx,
+        )
+    }
+
+    /// Registers an extension that, once cancelled, requests a 1 s global shutdown and then
+    /// keeps the controller joining it past that coordinator's telemetry guard deadline.
+    fn slow_extension_test_options() -> (
+        ControllerRunOptions,
+        std::sync::mpsc::Receiver<ControllerExtensionContext>,
+    ) {
+        let (context_tx, context_rx) = std::sync::mpsc::channel();
+        let mut extensions = ControllerExtensionRegistry::empty();
+        extensions.register(
+            "urn:test:extension:observe_shutdown".into(),
+            move |context| {
+                let context_tx = context_tx.clone();
+                Ok(Box::new(move |cancellation| {
+                    Box::pin(async move {
+                        // Sent from the task, which starts after system observability registers.
+                        let control_plane = Arc::clone(&context.control_plane);
+                        context_tx.send(context).expect("test receives context");
+                        cancellation.cancelled().await;
+                        let _ = control_plane.shutdown_all(1);
+                        // The guard deadline is the 1 s timeout plus the 1 s test grace.
+                        thread::sleep(Duration::from_secs(4));
+                        Ok(())
+                    })
+                }))
+            },
+            otel_arrow_dfe_config::validation::no_config,
+        );
+        (
+            ControllerRunOptions {
+                extensions,
+                ..Default::default()
+            },
+            context_rx,
+        )
+    }
+
+    fn assert_system_observability_stopped(context: &ControllerExtensionContext) {
+        use otel_arrow_dfe_state::phase::PipelinePhase;
+
+        let snapshot = context.observed_state.snapshot();
+        assert_eq!(snapshot.len(), 1, "only system observability is running");
+        for status in snapshot.values() {
+            assert!(!status.per_instance().is_empty());
+            for instance in status.per_instance().values() {
+                assert_eq!(instance.phase(), PipelinePhase::Stopped);
+            }
+        }
+    }
+
+    /// Scenario: an unread stdout pipe times out during the final drain, and the warning
+    /// cannot fit in stderr's byte budget in an isolated process with the real output service.
+    /// Guarantees: the production final handoff reports the dropped warning to the registry
+    /// before shutdown and returns the exact sampled totals for detecting later losses.
+    #[test]
+    fn console_final_drain_warning_is_in_final_metric_snapshot() {
+        use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+        use otel_arrow_dfe_engine::engine_metrics::EngineMetricsMonitor;
+        use otel_arrow_dfe_telemetry::metrics::MetricValue;
+        use otel_arrow_dfe_telemetry::output_service::Frame;
+        use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
+
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::console_final_drain_warning_is_in_final_metric_snapshot",
+            );
+            return;
+        }
+        assert!(
+            OutputService::init(OutputServiceConfig {
+                stderr_byte_capacity: 1,
+                ..OutputServiceConfig::default()
+            })
+            .expect("real process-wide service starts")
+        );
+        let telemetry = InternalTelemetrySystem::default();
+        let registry = telemetry.registry();
+        let context = ControllerContext::new(registry.clone());
+        let mut monitor = EngineMetricsMonitor::new(
+            registry.clone(),
+            context.register_engine_entity(),
+            telemetry.reporter(),
+            context.memory_pressure_state(),
+        );
+        OutputService::stdout()
+            .try_submit(Frame::new(vec![b'x'; 1024 * 1024]))
+            .expect("large frame admitted to the unread pipe");
+        let tracing = TracingSetup::new(
+            ProviderSetup::ConsoleDirect,
+            LogLevel::try_from("warn".to_owned()).expect("log level"),
+            Default::default,
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let collection = telemetry.collector().run_collection_loop();
+        let (sampled, _) = tracing
+            .with_subscriber(|| {
+                runtime.block_on(async {
+                    tokio::select! {
+                        result = Controller::<()>::finish_console_metrics(
+                            &mut monitor,
+                            Duration::from_millis(25),
+                        ) => result,
+                        result = collection => {
+                            result.expect("collector remains healthy");
+                            panic!("collector ended before the final report");
+                        }
+                    }
+                })
+            })
+            .expect("final metric handoff");
+        assert_eq!(sampled.stdout.frames_written, 0, "stdout remains blocked");
+        assert_eq!(sampled.stderr.diagnostics_dropped, 1, "warning was dropped");
+        let batch = registry.drain_metric_export_batch();
+        let stderr = batch
+            .metric_sets
+            .iter()
+            .find(|set| {
+                set.descriptor.name == "engine.console_output"
+                    && set
+                        .item_attributes
+                        .iter()
+                        .any(|(key, value)| key == "console.stream" && value == "stderr")
+            })
+            .expect("stderr console metrics exported");
+        let index = stderr
+            .descriptor
+            .metrics
+            .iter()
+            .position(|field| field.name == "diagnostics.dropped")
+            .expect("drop instrument exists");
+        assert_eq!(stderr.values[index], MetricValue::U64(1));
+        std::process::exit(0);
+    }
+
+    /// Scenario: two controller runs share a real output service with pre-existing diagnostic drops.
+    /// Guarantees: each run reports its own losses, including a startup diagnostic dropped
+    /// before the second monitor starts, without attributing older losses to the new run.
+    #[test]
+    fn console_metrics_reset_across_real_controller_runs() {
+        use otel_arrow_dfe_telemetry::metrics::MetricValue;
+        use otel_arrow_dfe_telemetry::output_service::{Frame, SubmitError};
+        use std::sync::Mutex;
+
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child("tests::console_metrics_reset_across_real_controller_runs");
+            return;
+        }
+        assert!(
+            OutputService::init(OutputServiceConfig {
+                stderr_byte_capacity: 1,
+                ..OutputServiceConfig::default()
+            })
+            .expect("process-wide service starts once")
+        );
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    extensions:
+      console_loss:
+        type: urn:test:extension:console_loss
+groups: {}
+"#,
+        )
+        .expect("empty controller config");
+        let controller = Controller::new(test_pipeline_factory());
+        for expected in [1u64, 2u64] {
+            assert_eq!(
+                OutputService::diagnostics().try_submit(Frame::line("older loss")),
+                Err(SubmitError::FrameTooLarge),
+            );
+            let captured = Arc::new(Mutex::new(None));
+            let capture = Arc::clone(&captured);
+            let mut extensions = ControllerExtensionRegistry::empty();
+            extensions.register(
+                "urn:test:extension:console_loss".into(),
+                move |context| {
+                    *capture.lock().expect("registry capture") = Some(context.telemetry_registry);
+                    let control_plane = context.control_plane;
+                    Ok(Box::new(move |cancellation| {
+                        Box::pin(async move {
+                            if expected == 1 {
+                                control_plane
+                                    .shutdown_all(5)
+                                    .expect("global shutdown accepted");
+                            }
+                            cancellation.cancelled().await;
+                            for _ in 0..expected {
+                                assert_eq!(
+                                    OutputService::diagnostics()
+                                        .try_submit(Frame::line("this run")),
+                                    Err(SubmitError::FrameTooLarge),
+                                );
+                            }
+                            Ok(())
+                        })
+                    }))
+                },
+                otel_arrow_dfe_config::validation::no_config,
+            );
+            let options = ControllerRunOptions {
+                extensions,
+                ..Default::default()
+            };
+            let result = if expected == 1 {
+                controller.run_forever_with_options(config.clone(), options)
+            } else {
+                controller.run_till_shutdown_with_options(config.clone(), options)
+            };
+            result.expect("both shutdown modes hand off all in-run drops");
+            let registry = captured
+                .lock()
+                .expect("captured registry")
+                .take()
+                .expect("extension captured this run's registry");
+            let batch = registry.drain_metric_export_batch();
+            let stderr = batch
+                .metric_sets
+                .iter()
+                .find(|set| {
+                    set.descriptor.name == "engine.console_output"
+                        && set
+                            .item_attributes
+                            .iter()
+                            .any(|(key, value)| key == "console.stream" && value == "stderr")
+                })
+                .expect("this run retained its terminal console metrics");
+            let index = stderr
+                .descriptor
+                .metrics
+                .iter()
+                .position(|field| field.name == "diagnostics.dropped")
+                .expect("drop instrument");
+            assert_eq!(
+                stderr.values[index],
+                MetricValue::U64(expected + u64::from(expected == 2))
+            );
+        }
+        assert_eq!(
+            OutputService::stats().stderr.diagnostics_dropped,
+            6,
+            "two older losses, three run losses, and the second global-subscriber notice"
+        );
+        assert!(OutputService::shutdown(Duration::from_secs(1)).drained);
+        std::process::exit(0);
+    }
+
+    /// Scenario: an admin shutdown request waits for every pipeline to terminate.
+    /// Guarantees: the controller releases its telemetry guard before joining the admin
+    /// server, so a wait=true request finishes successfully before its deadline.
+    #[test]
+    fn admin_shutdown_wait_completes_before_the_admin_server_joins() {
+        use std::io::{BufRead, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::admin_shutdown_wait_completes_before_the_admin_server_joins",
+            );
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve loopback port");
+        let address = listener.local_addr().expect("assigned port");
+        drop(listener);
+        let (options, context_rx) = admin_shutdown_test_options();
+        let config = admin_shutdown_test_config(address);
+        let controller = thread::spawn(move || {
+            Controller::new(test_pipeline_factory()).run_forever_with_options(config, options)
+        });
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("controller extension starts");
+        let status_line = (|| -> std::io::Result<String> {
+            let waiting_started = Instant::now();
+            let mut stream = loop {
+                match TcpStream::connect(address) {
+                    Ok(stream) => break stream,
+                    Err(error) if waiting_started.elapsed() >= Duration::from_secs(5) => {
+                        return Err(error);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(10)),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+            stream.write_all(b"POST /api/v1/groups/shutdown?wait=true&timeout_secs=8 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")?;
+            let mut status_line = String::new();
+            let _ = std::io::BufReader::new(stream).read_line(&mut status_line)?;
+            Ok(status_line)
+        })();
+        if status_line.is_err() {
+            let _ = context.control_plane.shutdown_all(5);
+        }
+        let result = controller.join().expect("controller thread finishes");
+        result.expect("controller shuts down cleanly");
+        let status_line = status_line.expect("admin request completes");
+        assert!(status_line.starts_with("HTTP/1.1 200 "), "{status_line}");
+        std::process::exit(0);
+    }
+
+    /// Scenario: the admin server cannot bind while a controller run has no producers.
+    /// Guarantees: run_till_shutdown reports the bind failure only after stopping the
+    /// observability pipeline and closing the other controller-owned tasks.
+    #[test]
+    fn admin_bind_failure_still_stops_observability() {
+        use std::net::TcpListener;
+
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child("tests::admin_bind_failure_still_stops_observability");
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("occupy loopback port");
+        let address = listener.local_addr().expect("assigned port");
+        let (options, context_rx) = admin_shutdown_test_options();
+        let result = Controller::new(test_pipeline_factory())
+            .run_till_shutdown_with_options(admin_shutdown_test_config(address), options);
+        assert!(
+            matches!(
+                result,
+                Err(Error::AdminError(
+                    otel_arrow_dfe_admin::error::Error::BindFailed { .. }
+                ))
+            ),
+            "expected the admin bind failure after teardown: {result:?}"
+        );
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("controller extension captured observed state");
+        let snapshot = context.observed_state.snapshot();
+        assert_eq!(snapshot.len(), 1, "only system observability is running");
+        assert!(snapshot.values().all(|status| status.is_terminated()));
+        std::process::exit(0);
+    }
+
+    /// Scenario: the metrics collector is not running during the final console handoff.
+    /// Guarantees: the reporting task returns an error instead of claiming a confirmed
+    /// final sample.
+    #[test]
+    fn final_console_report_requires_a_running_collector() {
+        use otel_arrow_dfe_engine::engine_metrics::EngineMetricsMonitor;
+
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child("tests::final_console_report_requires_a_running_collector");
+            return;
+        }
+        let telemetry = InternalTelemetrySystem::default();
+        let registry = telemetry.registry();
+        let context = ControllerContext::new(registry.clone());
+        let mut monitor = EngineMetricsMonitor::new(
+            registry,
+            context.register_engine_entity(),
+            telemetry.reporter(),
+            context.memory_pressure_state(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let failure = runtime.block_on(Controller::<()>::finish_console_metrics(
+            &mut monitor,
+            Duration::ZERO,
+        ));
+        assert!(matches!(
+            failure,
+            Err(otel_arrow_dfe_telemetry::error::Error::MetricsCollectorNotRunning)
+        ));
+        std::process::exit(0);
+    }
+
+    /// Scenario: the engine metrics task fails its final handoff during a controller run.
+    /// Guarantees: run_till_shutdown still succeeds after stopping system observability,
+    /// rather than returning early from the failed metrics task join.
+    #[test]
+    fn failed_final_console_report_still_stops_observability() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::failed_final_console_report_still_stops_observability",
+            );
+            return;
+        }
+        let (mut options, context_rx) = admin_shutdown_test_options();
+        options.fail_final_console_metrics = true;
+        let result = Controller::new(test_pipeline_factory()).run_till_shutdown_with_options(
+            admin_shutdown_test_config("127.0.0.1:0".parse().expect("loopback admin address")),
+            options,
+        );
+        assert!(result.is_ok(), "final reporting is best effort: {result:?}");
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("controller extension captured observed state");
+        let snapshot = context.observed_state.snapshot();
+        assert_eq!(snapshot.len(), 1, "only system observability is running");
+        assert!(snapshot.values().all(|status| status.is_terminated()));
+        std::process::exit(0);
+    }
+
+    /// Scenario: in run_forever, a global shutdown's coordinator gives up waiting for the
+    /// telemetry guard while the controller is still joining a slow extension.
+    /// Guarantees: after releasing the guard the controller retries the observability phase,
+    /// so system observability drains to Stopped and the late handoff is not a run error.
+    #[test]
+    fn run_forever_stops_observability_after_a_late_telemetry_handoff() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::run_forever_stops_observability_after_a_late_telemetry_handoff",
+            );
+            return;
+        }
+        let (options, context_rx) = slow_extension_test_options();
+        let config =
+            admin_shutdown_test_config("127.0.0.1:0".parse().expect("loopback admin address"));
+        let controller = thread::spawn(move || {
+            Controller::new(test_pipeline_factory()).run_forever_with_options(config, options)
+        });
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("controller extension starts");
+        context
+            .control_plane
+            .shutdown_all(1)
+            .expect("global shutdown accepted");
+        let result = controller.join().expect("controller thread finishes");
+        assert!(
+            result.is_ok(),
+            "a late telemetry handoff is retried: {result:?}"
+        );
+        assert_system_observability_stopped(&context);
+        std::process::exit(0);
+    }
+
+    /// Scenario: in run_till_shutdown, a shutdown request's coordinator gives up waiting for
+    /// the telemetry guard while the controller is still joining a slow extension.
+    /// Guarantees: the controller's own shutdown request still stops system observability
+    /// (drained to Stopped), and the late handoff is not a run error.
+    #[test]
+    fn run_till_shutdown_stops_observability_after_a_late_telemetry_handoff() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::run_till_shutdown_stops_observability_after_a_late_telemetry_handoff",
+            );
+            return;
+        }
+        let (options, context_rx) = slow_extension_test_options();
+        let result = Controller::new(test_pipeline_factory()).run_till_shutdown_with_options(
+            admin_shutdown_test_config("127.0.0.1:0".parse().expect("loopback admin address")),
+            options,
+        );
+        assert!(
+            result.is_ok(),
+            "a late telemetry handoff is retried: {result:?}"
+        );
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("controller extension captured observed state");
+        assert_system_observability_stopped(&context);
+        std::process::exit(0);
+    }
+
+    /// Scenario: a diagnostic is dropped after the final metrics sample and the writer later drains.
+    /// Guarantees: run success becomes an observable error, existing failures keep their source,
+    /// and diagnostics already represented in metrics do not cause a spurious failure.
+    #[test]
+    fn console_late_diagnostic_loss_survives_a_clean_drain() {
+        use otel_arrow_dfe_telemetry::output_service::{Frame, SubmitError};
+
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::console_late_diagnostic_loss_survives_a_clean_drain",
+            );
+            return;
+        }
+        assert!(
+            OutputService::init(OutputServiceConfig {
+                stderr_byte_capacity: 1,
+                ..OutputServiceConfig::default()
+            })
+            .expect("isolated output service starts")
+        );
+        let sampled = OutputService::stats();
+        assert_eq!(
+            OutputService::diagnostics().try_submit(Frame::line("late warning")),
+            Err(SubmitError::FrameTooLarge),
+        );
+        let current = OutputService::stats();
+        let outcome = OutputService::drain(Duration::from_secs(1));
+        assert!(outcome.drained, "all accepted output really drained");
+        let drained = Controller::<()>::fold_console_output_result(Ok(()), outcome);
+        assert!(matches!(
+            Controller::<()>::fold_late_console_diagnostics(drained, sampled, current),
+            Err(Error::ConsoleDiagnosticsDropped {
+                diagnostics_dropped: 1
+            })
+        ));
+        let original = Error::PipelineRuntimeError {
+            source: Box::new(std::io::Error::other("original failure")),
+        };
+        let dual = Controller::<()>::fold_late_console_diagnostics(Err(original), sampled, current)
+            .expect_err("both failures survive");
+        assert!(dual.to_string().contains("original failure"));
+        assert!(std::error::Error::source(&dual).is_some());
+        assert!(Controller::<()>::fold_late_console_diagnostics(Ok(()), current, current).is_ok());
+        assert!(OutputService::shutdown(Duration::from_secs(1)).drained);
+        std::process::exit(0);
+    }
+
+    /// Scenario: engine success or failure is combined with every console drain outcome.
+    /// Guarantees: clean and timeout outcomes preserve the engine result, while writer
+    /// failures return the single- or dual-failure variant without losing the cause.
+    #[test]
+    fn console_output_result_preserves_all_failure_information() {
+        let drained = ShutdownOutcome::default();
+        assert!(Controller::<()>::fold_console_output_result(Ok(()), drained).is_ok());
+
+        let engine_error = || Error::PipelineRuntimeError {
+            source: Box::new(std::io::Error::other("engine failed")),
+        };
+        let engine_only = Controller::<()>::fold_console_output_result(
+            Err(engine_error()),
+            ShutdownOutcome::default(),
+        )
+        .expect_err("engine error must survive a clean drain");
+        assert!(matches!(engine_only, Error::PipelineRuntimeError { .. }));
+
+        let writer_failed = ShutdownOutcome {
+            drained: false,
+            writer_failed: true,
+            deadline_expired: false,
+            frames_pending: 7,
+        };
+        let writer_only = Controller::<()>::fold_console_output_result(Ok(()), writer_failed)
+            .expect_err("writer failure must fail the run");
+        assert!(matches!(
+            writer_only,
+            Error::ConsoleOutputWriterFailed { frames_pending: 7 }
+        ));
+
+        let dual = Controller::<()>::fold_console_output_result(Err(engine_error()), writer_failed)
+            .expect_err("both failures must be preserved");
+        assert!(matches!(
+            dual,
+            Error::RunFailedWithConsoleOutputLoss {
+                frames_pending: 7,
+                ..
+            }
+        ));
+        assert!(dual.to_string().contains("engine failed"));
+        assert!(dual.to_string().contains("7 accepted frame(s) not written"));
+        assert!(std::error::Error::source(&dual).is_some());
+
+        let timed_out = ShutdownOutcome {
+            drained: false,
+            writer_failed: false,
+            deadline_expired: true,
+            frames_pending: 2,
+        };
+        assert!(Controller::<()>::fold_console_output_result(Ok(()), timed_out).is_ok());
+        let timed_out_engine =
+            Controller::<()>::fold_console_output_result(Err(engine_error()), timed_out)
+                .expect_err("timeout must not hide an engine error");
+        assert!(matches!(
+            timed_out_engine,
+            Error::PipelineRuntimeError { .. }
+        ));
+    }
+
     /// Scenario: `BuildInfo::seed_attrs` runs with a mix of set, empty, and absent fields.
     /// Guarantees: it yields typed pairs for non-empty values only, skipping empty and `None`.
     #[test]
@@ -3340,6 +3997,175 @@ connections:
         )))
     }
 
+    #[cfg(target_os = "linux")]
+    mod state_directory_startup {
+        use super::*;
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::path::PathBuf;
+
+        fn create_receiver(
+            context: PipelineContext,
+            node: otel_arrow_dfe_engine::node::NodeId,
+            node_config: Arc<NodeUserConfig>,
+            receiver_config: &ReceiverConfig,
+            _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+        ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+            let expected: PathBuf = serde_json::from_value(node_config.config.clone()).unwrap();
+            let root = context
+                .state_directory()
+                .expect("controller must inject the state root");
+            assert_eq!(root.path(), expected);
+            let directory = std::fs::File::from(root.as_fd().try_clone_to_owned().unwrap());
+            let opened = directory.metadata().unwrap();
+            let configured = std::fs::metadata(&expected).unwrap();
+            assert_eq!(
+                (opened.dev(), opened.ino()),
+                (configured.dev(), configured.ino())
+            );
+            assert!(opened.is_dir());
+            assert_eq!(opened.permissions().mode() & 0o777, 0o700);
+            Ok(ReceiverWrapper::local(
+                TestObservabilityReceiver,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        }
+
+        static FACTORY: PipelineFactory<()> = PipelineFactory::new(
+            &[
+                ReceiverFactory {
+                    name: "urn:test:receiver:state_directory",
+                    create: create_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+                ReceiverFactory {
+                    name: "urn:otel:receiver:internal_telemetry",
+                    create: create_test_observability_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+            ],
+            TEST_OBSERVABILITY_PROCESSORS,
+            TEST_OBSERVABILITY_EXPORTERS,
+            &[],
+        );
+
+        /// Scenario: controller startup provisions a missing state root.
+        /// Guarantees: the receiver gets the correct handle and shutdown completes.
+        #[test]
+        fn state_dir_reaches_receiver_through_controller_startup() {
+            // Shared temporary directories are deliberately outside the trust policy.
+            let parent = std::env::var_os("OTAP_STATE_DIR_TEST_PARENT")
+                .or_else(|| std::env::var_os("HOME"))
+                .expect("set OTAP_STATE_DIR_TEST_PARENT to a trusted test directory");
+            let temp = tempfile::Builder::new()
+                .prefix("otap-state-startup-")
+                .tempdir_in(parent)
+                .unwrap();
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = temp.path().join("state");
+            assert!(!path.exists());
+            const SHUTDOWN_EXTENSION: &str = "urn:test:extension:state_directory_shutdown";
+            let (control_tx, control_rx) = std_mpsc::sync_channel(1);
+            let mut extensions = ControllerExtensionRegistry::empty();
+            extensions.register(
+                SHUTDOWN_EXTENSION.into(),
+                move |context| {
+                    let control_tx = control_tx.clone();
+                    Ok(Box::new(move |_cancel| {
+                        Box::pin(async move {
+                            // Extension tasks start after pipeline instances are registered.
+                            control_tx.send(context.control_plane).unwrap();
+                            Ok(())
+                        })
+                    }))
+                },
+                accept_any_test_config,
+            );
+            let config_json = serde_json::json!({
+                "version": "otel_dataflow/v1",
+                "engine": {
+                    "state_dir": path,
+                    "http_admin": {
+                        "bind_address": "127.0.0.1:0"
+                    },
+                    "controller": {
+                        "extensions": {
+                            "shutdown": {
+                                "type": SHUTDOWN_EXTENSION
+                            }
+                        }
+                    }
+                },
+                "groups": {
+                    "g": {
+                        "pipelines": {
+                            "p": {
+                                "policies": {
+                                    "resources": {
+                                        "core_allocation": {
+                                            "type": "core_count",
+                                            "count": 1
+                                        }
+                                    }
+                                },
+                                "nodes": {
+                                    "receiver": {
+                                        "type": "urn:test:receiver:state_directory",
+                                        "config": path
+                                    },
+                                    "exporter": {
+                                        "type": "urn:test:exporter:example",
+                                        "config": null
+                                    }
+                                },
+                                "connections": [
+                                    {
+                                        "from": "receiver",
+                                        "to": "exporter"
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            });
+            let config = OtelDataflowSpec::from_json(&config_json.to_string()).unwrap();
+            let (result_tx, result_rx) = std_mpsc::sync_channel(1);
+            let controller_thread = thread::spawn(move || {
+                let result = Controller::new(&FACTORY).run_till_shutdown_with_options(
+                    config,
+                    ControllerRunOptions {
+                        extensions,
+                        ..Default::default()
+                    },
+                );
+                result_tx
+                    .send(result.map_err(|error| error.to_string()))
+                    .unwrap();
+            });
+            let control_plane = control_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("controller must register pipeline instances before shutdown");
+            control_plane
+                .shutdown_all(5)
+                .expect("bounded shutdown must be accepted");
+            result_rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("controller startup and shutdown must complete within the test deadline")
+                .expect("receiver must validate the provisioned state root");
+            controller_thread
+                .join()
+                .expect("controller thread must not panic");
+            assert!(path.is_dir());
+        }
+    }
+
     const TEST_LINKED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:controller_linked";
 
     fn start_test_linked_controller_extension(
@@ -3455,6 +4281,7 @@ groups: {{}}
             pipeline_group_id: pipeline_group_id.to_string().into(),
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
+            topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies {
                 resources: ResolvedResourcesPolicy {
                     core_allocation,
@@ -3470,33 +4297,33 @@ groups: {{}}
         declared: &DeclaredTopics<()>,
         topic_name: &str,
     ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
-        let declared_name = declared
-            .global_names
-            .get(topic_name)
-            .expect("global topic must be declared");
         declared
-            .broker
-            .get_topic_required(declared_name)
-            .expect("declared topic must exist in broker")
+            .bindings_by_scope
+            .get(&TopicScope::GLOBAL)
+            .expect("global topic scope must be declared")
+            .get(topic_name)
+            .expect("global topic must be declared")
+            .handle()
+            .clone()
     }
 
     fn group_topic_handle(
+        config: &OtelDataflowSpec,
         declared: &DeclaredTopics<()>,
         group_id: &str,
         topic_name: &str,
     ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
-        let key = (
-            PipelineGroupId::from(group_id.to_owned()),
-            TopicName::parse(topic_name).expect("topic name must parse"),
-        );
-        let declared_name = declared
-            .group_names
-            .get(&key)
-            .expect("group topic must be declared");
+        let group_id: PipelineGroupId = group_id.to_owned().into();
+        let topic_scope = config
+            .resolve_topic_scope(&group_id)
+            .expect("pipeline group must resolve");
         declared
-            .broker
-            .get_topic_required(declared_name)
-            .expect("declared topic must exist in broker")
+            .bindings_by_scope
+            .get(&topic_scope)
+            .and_then(|bindings| bindings.get(topic_name))
+            .expect("group topic must be declared")
+            .handle()
+            .clone()
     }
 
     #[test]
@@ -4461,7 +5288,27 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
 
-        assert_eq!(declared.broker.topic_names().len(), 4);
+        assert_eq!(
+            declared
+                .bindings_by_scope
+                .get(&TopicScope::GLOBAL)
+                .expect("global topic scope should exist")
+                .len(),
+            2
+        );
+        assert_eq!(declared.bindings_by_scope.len(), 2);
+        let group_id: PipelineGroupId = "g1".into();
+        let group_scope = config
+            .resolve_topic_scope(&group_id)
+            .expect("g1 topic scope should resolve");
+        assert_eq!(
+            declared
+                .bindings_by_scope
+                .get(&group_scope)
+                .expect("g1 topic bindings should exist")
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -5142,7 +5989,7 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
         let global_topic = global_topic_handle(&declared, "shared");
-        let group_topic = group_topic_handle(&declared, "g1", "shared");
+        let group_topic = group_topic_handle(&config, &declared, "g1", "shared");
 
         assert!(
             global_topic
@@ -5330,9 +6177,12 @@ groups:
         let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
         let group_id: PipelineGroupId = "g1".into();
         let pipeline_id: PipelineId = "p1".into();
+        let topic_scope = config
+            .resolve_topic_scope(&group_id)
+            .expect("g1 topic scope should resolve");
         let set = Controller::<()>::build_pipeline_topic_set(
-            &config,
             &declared,
+            &topic_scope,
             &group_id,
             &pipeline_id,
             0,
@@ -5387,6 +6237,76 @@ groups:
             overridden.default_publish_outcome_config().timeout,
             Duration::from_secs(47)
         );
+    }
+
+    /// Scenario: a startup group shadows a global topic, then is deleted and recreated without
+    /// local topic declarations while the startup topic runtimes remain cached.
+    /// Guarantees: pipelines resolved from the recreated group use the global binding rather than
+    /// the stale startup group binding.
+    #[test]
+    fn recreated_empty_group_uses_global_topic_scope() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+groups:
+  g1:
+    topics:
+      shared: {}
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let startup_config =
+            OtelDataflowSpec::from_yaml(yaml).expect("startup config should parse");
+        let declared =
+            Controller::<()>::declare_topics(&startup_config).expect("topics should declare");
+        let group_id: PipelineGroupId = "g1".into();
+        let pipeline_id: PipelineId = "p1".into();
+        let startup_group_topic = group_topic_handle(&startup_config, &declared, "g1", "shared");
+
+        let mut recreated_config = startup_config.clone();
+        recreated_config
+            .groups
+            .get_mut(&group_id)
+            .expect("g1 should exist")
+            .topics
+            .clear();
+        let resolved = recreated_config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .find(|pipeline| {
+                pipeline.pipeline_group_id == group_id && pipeline.pipeline_id == pipeline_id
+            })
+            .expect("p1 should resolve");
+        assert_eq!(resolved.topic_scope, TopicScope::GLOBAL);
+
+        let set = Controller::<()>::build_pipeline_topic_set(
+            &declared,
+            &resolved.topic_scope,
+            &group_id,
+            &pipeline_id,
+            0,
+        )
+        .expect("topic set should build");
+        let selected = set
+            .get_required(TopicName::from("shared"))
+            .expect("shared topic should resolve");
+        let global_topic = global_topic_handle(&declared, "shared");
+
+        assert_eq!(selected.name(), global_topic.name());
+        assert_ne!(selected.name(), startup_group_topic.name());
     }
 
     #[tokio::test]

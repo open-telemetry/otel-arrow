@@ -1,0 +1,6 @@
+type: partition
+status:
+  class: processor
+  codeowners:
+    active:
+      - albertlockett

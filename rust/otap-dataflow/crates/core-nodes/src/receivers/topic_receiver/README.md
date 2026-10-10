@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:topic` (`urn:otel:receiver:topic`)
-- Feature gate: Default
+- Feature gate: `topic`
 - Stability: Experimental
 
 ## Overview
@@ -77,12 +77,17 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.topic.forward.messages` | `{message}` | `outcome` | Number of messages forwarded dimensionalized by `outcome` (`success`, `failure`). |
+| `receiver.received.messages` | `{message}` | `signal`, `outcome` | Number of topic deliveries processed at the receiver boundary. Topic delivery processing currently records `success`; downstream forwarding is reported separately. |
+| `receiver.processing.duration` | `s` | `signal` | Optional receiver-local topic delivery processing duration. Enabled by the node-local duration telemetry policy and excludes downstream channel waiting. |
 | `receiver.topic.lag.events` | `{event}` | `event.type` | Number of lag events emitted by broadcast subscriptions, dimensionalized by `event.type` (`notification`, `disconnect`). |
 | `receiver.topic.bridge.controls` | `{control}` | `control`, `result` | Number of downstream ACK/NACK bridge controls, dimensionalized by `control` (`ack`, `nack`) and `result` (`success`, `ignored_propagation_disabled`, `missing_calldata`, `invalid_or_untracked_id`, `runtime_failure`). |
 | `receiver.topic.lagged.messages` | `{message}` | | Total messages missed across lag notifications. |
 | `receiver.topic.downstream.backpressure.events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
-| `receiver.topic.downstream.blocked.ms` | `ms` | | Total milliseconds blocked while forwarding to downstream. |
+| `receiver.topic.downstream.blocked.duration` | `s` | | Distribution of per-message downstream channel waits, using the configured duration tier. |
+
+All receiver metrics include the configured `topic` entity attribute. The
+shared boundary does not report payload size because the topic transports
+internal pdata rather than an encoded application payload.
 
 ### Events
 

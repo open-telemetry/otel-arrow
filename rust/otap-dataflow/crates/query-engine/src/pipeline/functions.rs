@@ -18,6 +18,7 @@ mod fnv;
 pub(crate) mod is_type;
 mod murmur3;
 mod now;
+pub(crate) mod regex_match;
 mod regexp_substr;
 #[cfg(feature = "sha1-hash")]
 mod sha1;
@@ -123,10 +124,6 @@ pub(crate) mod test {
     }
 
     impl ScalarUDFImpl for AlwaysPanicUdf {
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
         fn name(&self) -> &str {
             "always_panic"
         }
