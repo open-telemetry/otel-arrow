@@ -102,6 +102,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:extension:azure_key_vault_sasl_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:extension:flat_file_api_key_auth",
     "category": "Extension",
     "description": null,
@@ -109,12 +115,6 @@
   },
   {
     "id": "urn:otel:extension:flat_file_user_pass_auth",
-    "category": "Extension",
-    "description": null,
-    "attributes": {}
-  },
-  {
-    "id": "urn:otel:extension:oauth2_client_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}

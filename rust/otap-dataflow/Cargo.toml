@@ -270,6 +270,7 @@ one_collect = "0.1.35021"
 
 azure_core = { version = "1.2.0-beta.1", default-features = false }
 azure_identity = { version = "1.1.0-beta.1", default-features = false }
+azure_security_keyvault_secrets = { version = "1.1.0-beta.1", path = "../vendor/azure_security_keyvault_secrets", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -376,6 +377,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 # Contrib extensions.
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
+azure-key-vault-sasl-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-vault-sasl-auth"]
 flat-file-api-key-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-api-key-auth"]
 flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]
 k8s-service-account-token-auth = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth"]
