@@ -71,6 +71,7 @@ pub enum ControlPlaneError {
         message: String,
     },
     /// The requested change must be expressed through a supported live-mutation scope.
+    #[error("{message}")]
     UnsupportedMutation {
         /// Human-readable guidance for rewriting the request.
         message: String,

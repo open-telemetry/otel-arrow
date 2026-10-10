@@ -44,9 +44,7 @@
 use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
-use otel_arrow_dfe_admin::{
-    ControlPlane, EngineConfigReconcileRequest, EngineConfigReconcileState,
-};
+use otel_arrow_dfe_admin::{ControlPlane, EngineConfigReconcileState};
 use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
@@ -1891,13 +1889,10 @@ impl<
         runtime.register_launched_instance(observability_pipeline_handle);
 
         const STARTUP_RECONCILE_TIMEOUT_SECS: u64 = 30;
-        match runtime.reconcile_engine_config(EngineConfigReconcileRequest {
-            config: engine_config.clone(),
-            step_timeout_secs: STARTUP_RECONCILE_TIMEOUT_SECS,
-            drain_timeout_secs: STARTUP_RECONCILE_TIMEOUT_SECS,
-            delete_timeout_secs: STARTUP_RECONCILE_TIMEOUT_SECS,
-            delete_missing: true,
-        }) {
+        match runtime.reconcile_engine_config_startup(
+            engine_config.clone(),
+            STARTUP_RECONCILE_TIMEOUT_SECS,
+        ) {
             Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {}
             Ok(status) => {
                 let message = status
