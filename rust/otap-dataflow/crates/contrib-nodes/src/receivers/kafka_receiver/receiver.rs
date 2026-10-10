@@ -13,6 +13,7 @@ use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
 use super::rebalance::{RebalanceState, RebalancingConsumerContext};
 use super::retry::RetryManager;
+use super::text_transformation::TextTransformation;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
 use async_trait::async_trait;
@@ -100,6 +101,7 @@ pub struct KafkaReceiver {
     traces_exclude_regexes: Vec<Regex>,
     metrics_exclude_regexes: Vec<Regex>,
     logs_exclude_regexes: Vec<Regex>,
+    text_transformation: Option<TextTransformation>,
     // TODO: add this back once we can reset it without re-creation: https://github.com/open-telemetry/otel-arrow/issues/1669
     // used to decode otap bytes
     // pdata_consumer: PdataConsumer,
@@ -141,6 +143,11 @@ impl KafkaReceiver {
         pipeline_ctx: PipelineContext,
         mut config: KafkaReceiverConfig,
     ) -> Result<Self, ConfigError> {
+        let text_transformation = config
+            .text_transformation_query()
+            .map(|(query_type, query)| TextTransformation::new(query_type, query))
+            .transpose()?;
+
         // Kafka static membership requires each consumer-group member to have a
         // unique group.instance.id. Two situations would otherwise make separate
         // members share the configured ID and fence one another:
@@ -217,6 +224,7 @@ impl KafkaReceiver {
             traces_exclude_regexes,
             metrics_exclude_regexes,
             logs_exclude_regexes,
+            text_transformation,
         })
     }
 
@@ -299,6 +307,7 @@ impl KafkaReceiver {
                     extractors,
                     data,
                     message_format,
+                    self.text_transformation.as_ref(),
                 )
                 .map_err(|source| KafkaReceiverError::SignalDecode { signal, source })
             }

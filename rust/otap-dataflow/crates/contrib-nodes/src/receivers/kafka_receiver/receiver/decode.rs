@@ -11,10 +11,10 @@
 //! [`SignalDecoder`] maps a [`SignalType`] onto the configured encoding,
 //! the OTLP/OTAP/Syslog payload decoders, and the header-extraction dispatch.
 
-use super::super::config::HeaderExtraction;
+use super::super::config::{HeaderExtraction, KafkaReceiverEncoding};
 use super::super::headers::HeaderExtractions;
 use super::super::identity::DeliveryGeneration;
-use crate::common::kafka::MessageFormat;
+use super::super::text_transformation::TextTransformation;
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::{
@@ -201,20 +201,31 @@ impl SignalDecoder {
     pub(crate) fn decode_signal_payload(
         signal: SignalType,
         data: &[u8],
-        message_format: MessageFormat,
+        message_format: KafkaReceiverEncoding,
     ) -> Result<OtapPdata, EngineError> {
         match message_format {
-            MessageFormat::OtlpProto => Ok(Self::otlp_pdata(signal, data)),
-            MessageFormat::OtapProto => {
+            KafkaReceiverEncoding::OtlpProto => Ok(Self::otlp_pdata(signal, data)),
+            KafkaReceiverEncoding::OtapProto => {
                 let records = Self::decode_otap(signal, data)?;
                 Ok(OtapPdata::new(Context::default(), records.into()))
             }
-            MessageFormat::Syslog => match signal {
+            KafkaReceiverEncoding::Syslog => match signal {
                 SignalType::Logs => Ok(OtapPdata::new(
                     Context::default(),
                     Self::decode_syslog_logs(data)?.into(),
                 )),
                 SignalType::Traces | SignalType::Metrics => Err(syslog_logs_only_error()),
+            },
+            KafkaReceiverEncoding::TextTransformation => match signal {
+                SignalType::Logs => Err(EngineError::PdataConversionError {
+                    error: "text_transformation encoding has no compiled query".to_string(),
+                }),
+                SignalType::Traces | SignalType::Metrics => {
+                    Err(EngineError::PdataConversionError {
+                        error: "text_transformation encoding is only supported for logs"
+                            .to_string(),
+                    })
+                }
             },
         }
     }
@@ -231,8 +242,24 @@ impl SignalDecoder {
         kafka_message: &BorrowedMessage<'_>,
         extractors: &HashMap<String, HeaderExtraction>,
         data: &[u8],
-        message_format: MessageFormat,
+        message_format: KafkaReceiverEncoding,
+        text_transformation: Option<&TextTransformation>,
     ) -> Result<OtapPdata, EngineError> {
+        if message_format == KafkaReceiverEncoding::TextTransformation {
+            let output = text_transformation
+                .ok_or_else(|| EngineError::PdataConversionError {
+                    error: "text_transformation encoding has no compiled query".to_string(),
+                })?
+                .transform(data)?;
+            if !extractors.is_empty() {
+                let extractions = HeaderExtractions::otlp(kafka_message, extractors);
+                if extractions.has_any() {
+                    return extractions.apply_otlp_logs(&output);
+                }
+            }
+            return Ok(Self::otlp_pdata(SignalType::Logs, &output));
+        }
+
         let apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError> =
             match signal {
                 SignalType::Traces => HeaderExtractions::apply_otlp_traces,
@@ -278,26 +305,33 @@ pub(super) fn decode_with_extractions<F>(
     kafka_message: &BorrowedMessage<'_>,
     extractors: &HashMap<String, HeaderExtraction>,
     data: &[u8],
-    message_format: MessageFormat,
+    message_format: KafkaReceiverEncoding,
     apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_otap: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_syslog: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     decode: F,
 ) -> Result<OtapPdata, EngineError>
 where
-    F: FnOnce(&[u8], MessageFormat) -> Result<OtapPdata, EngineError>,
+    F: FnOnce(&[u8], KafkaReceiverEncoding) -> Result<OtapPdata, EngineError>,
 {
     if !extractors.is_empty() {
         let extractions = match message_format {
-            MessageFormat::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
-            MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
-            MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
+            KafkaReceiverEncoding::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
+            KafkaReceiverEncoding::OtapProto | KafkaReceiverEncoding::Syslog => {
+                HeaderExtractions::otap(kafka_message, extractors)
+            }
+            KafkaReceiverEncoding::TextTransformation => {
+                unreachable!("handled before extraction")
+            }
         };
         if extractions.has_any() {
             return match message_format {
-                MessageFormat::OtlpProto => apply_otlp(&extractions, data),
-                MessageFormat::OtapProto => apply_otap(&extractions, data),
-                MessageFormat::Syslog => apply_syslog(&extractions, data),
+                KafkaReceiverEncoding::OtlpProto => apply_otlp(&extractions, data),
+                KafkaReceiverEncoding::OtapProto => apply_otap(&extractions, data),
+                KafkaReceiverEncoding::Syslog => apply_syslog(&extractions, data),
+                KafkaReceiverEncoding::TextTransformation => {
+                    unreachable!("handled before extraction")
+                }
             };
         }
     }
@@ -307,6 +341,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::kafka::MessageFormat;
     use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
     use prost::Message;
 

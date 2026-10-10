@@ -546,6 +546,9 @@ impl KafkaExporter {
             MessageFormat::OtlpProto => MSG_FORMAT_OTLP,
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
             MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
+            MessageFormat::TextTransformation => {
+                unreachable!("text_transformation is rejected by Kafka exporter configuration")
+            }
         };
         headers = headers.insert(Header {
             key: format_header_key,
@@ -702,6 +705,9 @@ impl KafkaExporter {
             ),
             MessageFormat::Syslog => Err(KafkaExporterError::Configuration(
                 "syslog encoding is not supported by the Kafka exporter".to_string(),
+            )),
+            MessageFormat::TextTransformation => Err(KafkaExporterError::Configuration(
+                "text_transformation encoding is not supported by the Kafka exporter".to_string(),
             )),
         };
 

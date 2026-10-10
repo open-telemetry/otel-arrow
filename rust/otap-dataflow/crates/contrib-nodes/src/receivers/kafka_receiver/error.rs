@@ -87,6 +87,27 @@ pub enum KafkaReceiverError {
         encoding: String,
     },
 
+    /// `text_transformation` was selected without a query language.
+    #[error(
+        "invalid kafka receiver configuration: logs.transformation_query_type is required when logs.encoding is text_transformation"
+    )]
+    ConfigMissingTextTransformationQueryType,
+
+    /// `text_transformation` was selected without a non-empty query.
+    #[error(
+        "invalid kafka receiver configuration: logs.transformation_query must be non-empty when logs.encoding is text_transformation"
+    )]
+    ConfigMissingTextTransformationQuery,
+
+    /// Transformation settings were configured for an encoding that does not use them.
+    #[error(
+        "invalid kafka receiver configuration: {signal}.transformation_query_type and {signal}.transformation_query are only supported when encoding is text_transformation"
+    )]
+    ConfigUnexpectedTransformationQuery {
+        /// The signal containing the unexpected query.
+        signal: String,
+    },
+
     /// A literal topic name failed Kafka topic-name validation.
     #[error("invalid kafka receiver configuration: {signal}.topics: {message}")]
     ConfigInvalidTopicName {

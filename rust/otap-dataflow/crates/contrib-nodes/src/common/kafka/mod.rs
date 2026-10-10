@@ -229,6 +229,8 @@ pub enum MessageFormat {
     OtapProto,
     /// Syslog encoding for Kafka log records.
     Syslog,
+    /// UTF-8 text transformed into telemetry by a receiver-side query.
+    TextTransformation,
     // others eventually
 }
 

@@ -12,7 +12,8 @@
 
 The Kafka receiver consumes OpenTelemetry traces, metrics, and logs from
 Apache Kafka topics. It supports OTLP and OTAP protobuf encodings for all
-signals and Syslog encoding for logs,
+signals, Syslog encoding for logs, and KQL transformation of arbitrary UTF-8
+log records,
 per-signal topic routing, SASL authentication (PLAIN, SCRAM, AWS MSK IAM),
 TLS, manual and automatic offset commit modes, and Kafka message header
 extraction into resource attributes or pipeline transport headers.
@@ -75,7 +76,9 @@ Each signal type (`traces`, `metrics`, `logs`) accepts a nested configuration:
 | --- | --- | --- | --- |
 | `topics` | list | `[]` | Topics to subscribe to. Entries starting with `^` are regex patterns. |
 | `exclude_topics` | list | `[]` | Regex patterns for topics to exclude (requires at least one regex in `topics`). |
-| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, or `syslog`. Syslog is valid only for logs. |
+| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, `syslog`, or `text_transformation`. The last two are currently valid only for logs. |
+| `transformation_query_type` | string | *none* | Query language used by `text_transformation`. Required value: `kql`. |
+| `transformation_query` | string | *none* | Query used by `text_transformation`. Required when logs use that encoding. |
 
 At least one signal must have non-empty `topics` for the receiver to consume any data. Topic names must be **disjoint across signal types** -- the receiver rejects configurations where the same topic appears in more than one signal type.
 
@@ -131,6 +134,7 @@ Each signal can specify its own encoding format via the `encoding` field:
 | `otlp_proto` | OTLP protobuf encoding (default). |
 | `otap_proto` | OTAP Arrow protobuf encoding. |
 | `syslog` | One RFC 3164 or RFC 5424 message per Kafka record (logs only). CEF in the message body is decoded using the Syslog/CEF receiver mapping. |
+| `text_transformation` | One UTF-8 text record transformed into telemetry by `transformation_query` (currently logs only). The original text is available as `request_data` and `Attributes["request_data"]`. |
 
 Encoding can differ per signal:
 
@@ -145,6 +149,36 @@ config:
 ```
 
 Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otap`, or `syslog`, that encoding is used instead of the per-signal default. Syslog overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
+
+#### Transforming Text Logs with KQL
+
+Use `text_transformation` when each Kafka record contains text that is not already
+OTLP, OTAP, or Syslog. The receiver creates one input log record, stores the
+UTF-8 Kafka payload in its `request_data` attribute, and executes the configured
+query. Query output is emitted as normal logs pdata. Only KQL is currently
+supported, but the explicit query type leaves room for additional query
+languages in the future.
+
+For example, this configuration transforms JSON records such as
+`{"message":"Hello world","level":"Info"}`:
+
+```yaml
+config:
+  logs:
+    topics: ["application-logs"]
+    encoding: text_transformation
+    transformation_query_type: kql
+    transformation_query: |
+      source
+      | extend json = parse_json(Attributes["request_data"])
+      | project severity_text = tostring(json["level"]),
+          body = tostring(json["message"])
+```
+
+The query is compiled when the receiver starts. An empty or invalid query
+prevents startup, and a Kafka payload that is not valid UTF-8 is rejected as a
+decode failure. The `MessageFormat` header does not accept `text_transformation`;
+configure the query type, query, and encoding together on the logs signal.
 
 ### Commit Configuration
 

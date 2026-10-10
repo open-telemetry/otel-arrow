@@ -659,8 +659,16 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 /// the factory `validate_config` path, which runs this validation without
 /// constructing an exporter.
 fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
-    if signal.encoding == MessageFormat::Syslog {
-        return Err("encoding: syslog is not supported by the Kafka exporter".to_string());
+    match signal.encoding {
+        MessageFormat::Syslog => {
+            return Err("encoding: syslog is not supported by the Kafka exporter".to_string());
+        }
+        MessageFormat::TextTransformation => {
+            return Err(
+                "encoding: text_transformation is not supported by the Kafka exporter".to_string(),
+            );
+        }
+        MessageFormat::OtlpProto | MessageFormat::OtapProto => {}
     }
     validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
     for (i, t) in signal.allowed_topics.iter().enumerate() {
