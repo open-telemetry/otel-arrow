@@ -56,21 +56,65 @@ maps, vectors, locators, allocation metadata, and removal-heavy event state.
 
 ### Framer payload
 
-```text
-copies = 2 for non-raw preserve_raw
-copies = 1 otherwise
+Use the formula for the selected framer; do not add both for the same reader.
+These are payload allowances, separate from inline state and regex storage.
 
-framer_peak_payload =
+For newline-only `LineFramer`, retain the existing conservative allowance:
+
+```text
+copies = 2 for non-raw preserve_raw; 1 otherwise
+
+newline_peak_payload =
   4 * copies *
     (min(max_line_bytes, max_record_bytes) + max_record_bytes)
   + 16 * copies
   + 16
 ```
 
-The factor four models old and new vector allocations coexisting during growth. Fixed
-terms cover delimiter lookahead and a pending decoded/source unit. Regex program/cache,
-decoder objects, allocator metadata, and library overhead remain separate bounded or
-measured terms.
+For `MultilineFramer`, including line replay:
+
+```text
+line_source = max_line_bytes + 8 for raw or preserve_raw
+line_source = 2 * max_line_bytes + 8 otherwise
+line_text = 0 for raw; max_line_bytes otherwise
+record_copies = 2 for non-raw preserve_raw; 1 otherwise
+
+multiline_peak_payload =
+  4 * (line_source + line_text + record_copies * max_record_bytes)
+```
+
+Grouping retains a complete bounded physical line independently of the record
+limit. Exact source bytes support safe-unit replay and source offsets, including
+UTF-16 replacement output. UTF-16 source can use two bytes per decoded ASCII
+byte; the eight-byte allowance covers BOM and delimiter storage. Preserve-raw
+prospective sizing already bounds exact body bytes by the line limit.
+
+The factor four conservatively covers old/new buffer growth. Regex storage,
+decoder objects, other inline state, and allocator overhead are separate charges.
+The primitive exposes this payload estimate and its actual retained capacities;
+receiver admission must account for all simultaneously retained storage.
+
+### Regex construction and worker scratch
+
+Apply the [regex execution policy](filelog-receiver-phase1-spec.md#regex-execution-policy)
+before source activation. Keep three charges distinct: transient compilation,
+shared retained programs, and worker-local scratch. Per-program NFA limits and
+per-cache lazy-DFA limits do not establish either aggregate charge.
+
+For the initial meta-engine implementation, full and one-pass DFAs are disabled,
+implicit captures are retained, and the bounded backtracker is a benchmark
+variant. The worker model counts the reachable lazy-cache paths, capacity-growth
+overlap, and PikeVM storage derived from canonical forward-NFA states,
+capture slots, and epsilon branches. The implementation
+must document its coefficients and re-audit them when engine internals change.
+Fresh-cache measurements alone are insufficient because PikeVM scratch is
+allocated lazily. Post-search reports can also omit spare allocation capacity.
+
+Qualification must compare engine-reported storage with measured peak/live
+allocations for construction and forced fallback separately. Report any
+unqualified compilation reservation, admission integration, or control-latency
+target explicitly. Do not treat a successful microbenchmark as a complete
+receiver memory or control-latency qualification.
 
 ### Aggregate partial-state capacity
 
@@ -113,8 +157,10 @@ retained-work RFC's per-owner attribution semantics.
 For aggregate admission, replace an unmultiplied single-reader framer allowance
 with the complete partial-state budget. Add the one shared source-turn buffer,
 shared immutable regex programs, checkpoint/identity state, and simultaneous
-batch/carry-over allocations once in their respective models. Mutable per-reader
-regex or decoder storage belongs in the partial-state charge. Do not multiply
+batch/carry-over allocations once in their respective models. Filelog regex
+caches are worker-owned and charged for each simultaneously retained worker /
+pattern pair, including deferred fallback scratch. Decoder storage and any
+other mutable per-reader framing state belong in the partial-state charge. Do not multiply
 shared scratch by the durable tracked population or add the same framer payload
 again outside the budget.
 
@@ -126,7 +172,7 @@ slots can remain held indefinitely by boundary-less input with idle flush
 disabled. Only reservation/accounting violations use the partial-state terminal
 failure path; capacity saturation does not permit discard-and-rewind.
 
-At the proposed defaults, the payload-only framer formula is 16,777,264 bytes
+At the proposed defaults, the multiline payload formula is 16,777,248 bytes
 per worst-case text/preserve-raw reader. A 256 MiB budget therefore admits at most
 15 worst-case slots before other mutable state is included, even when actual
 records are short. This is a conservative payload estimate, not the final slot
@@ -530,6 +576,10 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Stored profile used 500ms and new configuration omits idle flush | Default resolves to 0s and mismatch remains fail-closed; explicit old setting preserves compatibility |
 | Configuration | Both multiline patterns | Rejected |
 | Configuration | Unsupported regex construct/profile | Rejected |
+| Configuration | Aggregate regex programs exceed admission after acceleration is disabled | Rejected before activation |
+| Resource | Regex fallback allocates scratch absent from the initial cache | Covered by the worker reservation |
+| Framing | Same normalized pattern through lazy DFA and forced NFA fallback | Same boolean results, including empty matches and text/raw boundaries |
+| Performance | Maximum eligible line under cache churn or NFA fallback | Report synchronous blocking time and receiver control latency against the qualification target |
 | Configuration | Framing bound exactly minimum | Accepted |
 | Configuration | Framing bound below encoding minimum | Rejected |
 | Configuration | Record plus attributes equals batch bound | Accepted |
