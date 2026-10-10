@@ -51,6 +51,7 @@ prost-types.workspace = true
 rand.workspace = true
 regex.workspace = true
 regex-automata.workspace = true
+regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
@@ -204,3 +205,15 @@ path = "benches/filelog_framing/main.rs"
 name = "filelog_framing_allocations"
 harness = false
 path = "benches/filelog_framing/allocations.rs"
+
+[[bench]]
+name = "filelog_multiline"
+required-features = ["bench"]
+harness = false
+path = "benches/filelog_multiline/main.rs"
+
+[[bench]]
+name = "filelog_multiline_allocations"
+required-features = ["bench"]
+harness = false
+path = "benches/filelog_multiline/allocations.rs"
