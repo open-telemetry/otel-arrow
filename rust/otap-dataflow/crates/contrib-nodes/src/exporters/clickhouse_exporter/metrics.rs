@@ -13,12 +13,16 @@ use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-/// Clickhouse transform path variants.
+/// Transformation path used to convert log batches for ClickHouse export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum ClickhouseTransformPath {
+    /// Specialized zero-copy transformation path for canonical OTAP log records.
     FastPath,
+    /// Generic transformation plan fallback for OTAP records that cannot use the fast path.
     GenericFallback,
+    /// Direct transformation path from raw serialized OTLP protobuf log requests into ClickHouse columns.
     OtlpDirect,
+    /// Legacy fallback transformation path used when direct raw OTLP log conversion fails.
     OtlpLegacyFallback,
 }
 
@@ -26,6 +30,7 @@ pub enum ClickhouseTransformPath {
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct ClickhouseTransformAttributes {
+    /// Transformation path used for the log batch.
     #[attribute_key = "path"]
     pub path: ClickhouseTransformPath,
 }
@@ -144,6 +149,7 @@ impl ClickhouseExporterMetrics {
 mod tests {
     use super::*;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn pipeline_context() -> PipelineContext {
@@ -152,30 +158,34 @@ mod tests {
         controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
     }
 
+    /// Scenario: ClickHouse transform path enum values are rendered into metrics.
+    /// Guarantees: Every transform path variant has a stable lowercase snake_case telemetry value.
     #[test]
-    fn test_clickhouse_transform_path() {
+    fn clickhouse_transform_path_attribute_values_are_stable() {
+        assert_eq!(ClickhouseTransformPath::FastPath.as_str(), "fast_path");
         assert_eq!(
-            ClickhouseTransformPath::FastPath,
-            ClickhouseTransformPath::FastPath
+            ClickhouseTransformPath::GenericFallback.as_str(),
+            "generic_fallback"
         );
+        assert_eq!(ClickhouseTransformPath::OtlpDirect.as_str(), "otlp_direct");
         assert_eq!(
-            ClickhouseTransformPath::GenericFallback,
-            ClickhouseTransformPath::GenericFallback
+            ClickhouseTransformPath::OtlpLegacyFallback.as_str(),
+            "otlp_legacy_fallback"
         );
+        assert_eq!(ClickhouseTransformPath::CARDINALITY, 4);
         assert_eq!(
-            ClickhouseTransformPath::OtlpDirect,
-            ClickhouseTransformPath::OtlpDirect
-        );
-        assert_eq!(
-            ClickhouseTransformPath::OtlpLegacyFallback,
-            ClickhouseTransformPath::OtlpLegacyFallback
-        );
-        assert_ne!(
-            ClickhouseTransformPath::FastPath,
-            ClickhouseTransformPath::GenericFallback
+            ClickhouseTransformPath::VARIANTS,
+            &[
+                "fast_path",
+                "generic_fallback",
+                "otlp_direct",
+                "otlp_legacy_fallback"
+            ]
         );
     }
 
+    /// Scenario: ClickHouse transform attributes wrap a transform path.
+    /// Guarantees: The path attribute is preserved without mutation.
     #[test]
     fn test_clickhouse_transform_attributes() {
         let attr = ClickhouseTransformAttributes {
@@ -184,6 +194,8 @@ mod tests {
         assert_eq!(attr.path, ClickhouseTransformPath::FastPath);
     }
 
+    /// Scenario: ClickHouse row metrics counter is incremented directly.
+    /// Guarantees: The written counter records the added row count.
     #[test]
     fn test_clickhouse_row_metrics() {
         let mut m = ClickhouseRowMetrics::default();
@@ -191,6 +203,8 @@ mod tests {
         assert_eq!(m.written.get(), 10);
     }
 
+    /// Scenario: ClickHouse batch metrics counter is incremented directly.
+    /// Guarantees: The transformed counter records batch increments.
     #[test]
     fn test_clickhouse_batch_metrics() {
         let mut m = ClickhouseBatchMetrics::default();
@@ -450,7 +464,7 @@ mod tests {
     }
 
     /// Scenario: terminal snapshots expose touched row and batch metric buckets.
-    /// Guarantees: snapshots contain the correct descriptors and are cleared after handoff.
+    /// Guarantees: snapshots contain the correct descriptors, dimensions, and are cleared after handoff.
     #[test]
     fn terminal_snapshots_expose_clickhouse_schema_and_clear() {
         let pipeline_ctx = pipeline_context();
@@ -467,6 +481,10 @@ mod tests {
             .expect("expected row metrics snapshot");
         assert_eq!(row_snapshot.descriptor().metrics[0].name, "written");
         assert_eq!(row_snapshot.descriptor().metrics[0].unit, "{row}");
+        assert_eq!(
+            row_snapshot.measurement_attribute_value("signal"),
+            Some("logs")
+        );
 
         let batch_snapshot = snapshots
             .iter()
@@ -474,9 +492,48 @@ mod tests {
             .expect("expected batch metrics snapshot");
         assert_eq!(batch_snapshot.descriptor().metrics[0].name, "transformed");
         assert_eq!(batch_snapshot.descriptor().metrics[0].unit, "{batch}");
+        assert_eq!(
+            batch_snapshot.measurement_attribute_value("path"),
+            Some("fast_path")
+        );
 
         // Second call should return empty since buckets were already taken.
         assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: multiple signals and transformation paths record metrics.
+    /// Guarantees: terminal snapshots contain dimensioned attributes for every reported signal and path.
+    #[test]
+    fn terminal_snapshots_dimensioned_attributes() {
+        let pipeline_ctx = pipeline_context();
+        let mut metrics = ClickhouseExporterMetrics::new(&pipeline_ctx);
+        metrics.add(10, ArrowPayloadType::Logs);
+        metrics.add(20, ArrowPayloadType::Spans);
+        metrics.record_log_fast_path();
+        metrics.record_log_transform_fallback();
+        metrics.record_log_otlp_direct_path();
+        metrics.record_log_otlp_transform_fallback();
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 6);
+
+        let row_signals: Vec<_> = snapshots
+            .iter()
+            .filter(|s| s.descriptor().name == "exporter.clickhouse.rows")
+            .map(|s| s.measurement_attribute_value("signal"))
+            .collect();
+        assert!(row_signals.contains(&Some("logs")));
+        assert!(row_signals.contains(&Some("traces")));
+
+        let batch_paths: Vec<_> = snapshots
+            .iter()
+            .filter(|s| s.descriptor().name == "exporter.clickhouse.batches")
+            .map(|s| s.measurement_attribute_value("path"))
+            .collect();
+        assert!(batch_paths.contains(&Some("fast_path")));
+        assert!(batch_paths.contains(&Some("generic_fallback")));
+        assert!(batch_paths.contains(&Some("otlp_direct")));
+        assert!(batch_paths.contains(&Some("otlp_legacy_fallback")));
     }
 
     /// Scenario: measurements are reported to metrics reporter.
