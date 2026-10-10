@@ -1086,9 +1086,9 @@ dependencies = [
 
 [[package]]
 name = "azure_core"
-version = "1.1.0"
+version = "1.2.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e41cbd819986ba41904c207d8ffc4106f8f8352a548d773e9554906379bb2fb"
+checksum = "c7dd9cc7f36a158fb897d029d97a9d2d52719a76ae2be2c729f63a380f5c4255"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1100,8 +1100,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "typespec 1.1.0",
- "typespec_client_core 1.1.0",
+ "typespec 1.2.0-beta.1",
+ "typespec_client_core 1.2.0-beta.1",
 ]
 
 [[package]]
@@ -1148,13 +1148,13 @@ dependencies = [
 
 [[package]]
 name = "azure_identity"
-version = "1.0.0"
+version = "1.1.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32edf96b356ca7c51d7590c4925cc36efc3947a5da4468e8e0b25c56ecbb3de5"
+checksum = "0b90a143acdae0f21a90bbd056f1472ccf79850c834f79380d5ac303506efc9c"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core 1.1.0",
+ "azure_core 1.2.0-beta.1",
  "futures",
  "pin-project",
  "serde",
@@ -1166,19 +1166,17 @@ dependencies = [
 
 [[package]]
 name = "azure_security_keyvault_secrets"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a344d7c923ea305fa36bdad4d36c54e7c6fb806077430efcafb19ee40ed7b786"
+version = "1.1.0-beta.1"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core 1.1.0",
+ "azure_core 1.2.0-beta.1",
+ "clap",
  "futures",
  "rustc_version",
  "serde",
  "serde_json",
  "time",
- "tokio",
 ]
 
 [[package]]
@@ -7388,8 +7386,8 @@ name = "otel-arrow-dfe-contrib-extensions"
 version = "0.61.0"
 dependencies = [
  "async-trait",
- "azure_core 1.1.0",
- "azure_identity 1.0.0",
+ "azure_core 1.2.0-beta.1",
+ "azure_identity 1.1.0-beta.1",
  "azure_security_keyvault_secrets",
  "base64 0.23.1",
  "futures",
@@ -7775,8 +7773,8 @@ dependencies = [
  "arc-swap",
  "arrow",
  "async-trait",
- "azure_core 1.1.0",
- "azure_identity 1.0.0",
+ "azure_core 1.2.0-beta.1",
+ "azure_identity 1.1.0-beta.1",
  "base64 0.23.1",
  "bitflags 2.13.2",
  "bytes",
@@ -11443,9 +11441,9 @@ dependencies = [
 
 [[package]]
 name = "typespec"
-version = "1.1.0"
+version = "1.2.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "753a2fe021e407d4fc9ee6f4f0a33403cc306d5c54c4e4ebe1b8cbde0ca052b9"
+checksum = "d1bfbf9f6c7d77a4bb34e5fd05493c752827adff113a86928072a2030a056ce8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11482,9 +11480,9 @@ dependencies = [
 
 [[package]]
 name = "typespec_client_core"
-version = "1.1.0"
+version = "1.2.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0373af0f9d4f580b3a1a9d9639cedaabe015ed262b35bfbe13941bfb14fe1ea6"
+checksum = "ae3020b828414079402a68d56d134b24b8ec58f8287e87149dee6765bc38a525"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11498,7 +11496,7 @@ dependencies = [
  "serde_json",
  "time",
  "tracing",
- "typespec 1.1.0",
+ "typespec 1.2.0-beta.1",
  "typespec_macros 1.0.0",
  "url",
  "uuid",

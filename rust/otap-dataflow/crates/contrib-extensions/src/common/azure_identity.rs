@@ -365,6 +365,65 @@ mod tests {
         ));
     }
 
+    /// Scenario: Azure Arc is selected by its explicit managed-identity environment.
+    /// Guarantees: System-assigned construction succeeds and user-assigned Arc identities stay rejected without token I/O.
+    #[test]
+    fn managed_identity_preserves_arc_support() {
+        const CHILD: &str = "OTEL_ARROW_TEST_ARC_IDENTITY_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let mut config = IdentityConfig::default();
+            assert!(
+                create_credential(IdentityOptions::from(&config)).is_ok(),
+                "system-assigned Azure Arc construction must succeed"
+            );
+            config.client_id = Some("test-user-assigned-client".to_owned());
+            let error = create_credential(IdentityOptions::from(&config))
+                .expect_err("Azure Arc must reject user-assigned identities");
+            assert!(matches!(
+                error.kind(),
+                azure_core::error::ErrorKind::Credential
+            ));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Only a system-assigned managed identity is supported")
+            );
+            return;
+        }
+
+        let child = || {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            let _ = command
+                .args([
+                    "--exact",
+                    "common::azure_identity::tests::managed_identity_preserves_arc_support",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1");
+            for name in [
+                "IDENTITY_ENDPOINT",
+                "IDENTITY_HEADER",
+                "IDENTITY_SERVER_THUMBPRINT",
+                "IMDS_ENDPOINT",
+                "MSI_ENDPOINT",
+                "MSI_SECRET",
+            ] {
+                let _ = command.env_remove(name);
+            }
+            command
+        };
+        let output = child()
+            .env("IDENTITY_ENDPOINT", "http://127.0.0.1:1/identity")
+            .env("IMDS_ENDPOINT", "http://127.0.0.1:1/identity")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "explicit Arc constructor child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// Scenario: Workload identity inputs are omitted, partially supplied, or fully supplied.
     /// Guarantees: Explicit inputs are unchanged and each omitted input stays None for SDK env fallback.
     #[test]

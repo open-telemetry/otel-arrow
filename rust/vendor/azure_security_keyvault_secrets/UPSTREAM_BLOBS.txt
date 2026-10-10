@@ -1,0 +1,16 @@
+89f08ba3ba2dc2f66cfdffc76952759b35ca8966  src/authorizer.rs
+7ed5c5104531cae2136e76430af776aa5b399dc1  src/clients.rs
+7b67b5b67354ce751831637f84092dd7a72b5653  src/lib.rs
+cd7d73a017d816e87a5c9aef13eb2f02e828bbd0  src/resource.rs
+0580e9f20aed4df1846571f336ea2b26435a3993  src/generated/mod.rs
+9cfa6872b0ba483cab76ef7616d57660243df7aa  src/generated/clients/mod.rs
+dad76f18b2bd769bf9dd6267024c5fd2b60ea17a  src/generated/clients/secret_client.rs
+ac5c7b4a3a23e931798ecf13ee9cc8da874800c5  src/generated/models/enums_impl.rs
+4157507cae31217121a7f5f300839fbc1ddc1374  src/generated/models/enums_serde.rs
+93b4ad7dec6557ac7ec75296f85ea0132ff5abb7  src/generated/models/enums.rs
+8779bc25a3bcf398209b220c9d73c6653c9cb09c  src/generated/models/method_options.rs
+b59467d7ec1f60ea6ddbfb70bd903187e97d6f54  src/generated/models/mod.rs
+0d1be2d5f85f1833e6cf361880ac2c9e1287f8e5  src/generated/models/models_impl.rs
+b022331e0e6fae009ad2f05d9cc129f3ef7a7f3f  src/generated/models/models.rs
+50883004dec0ef648485ba2b718c350c699df47a  README.md
+9e841e7a26e4eb057b24511e7b92d42b257a80e5  LICENSE.txt

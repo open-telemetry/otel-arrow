@@ -170,5 +170,10 @@ workspace default enables `crypto-ring`; custom no-default-feature builds must
 select a backend explicitly. The Azure SDK uses provider-neutral rustls/reqwest
 TLS and reuses the workspace crypto-provider initialization.
 
+The Secrets client is pinned to an official preview SDK source compatible with
+the existing Azure identity/core family. Its runtime source is unchanged; a
+minimal dependency-feature correction preserves crypto neutrality. See the
+[SDK provenance and update policy](../../../../../vendor/azure_security_keyvault_secrets/PROVENANCE.md).
+
 Automated tests inject deterministic SDK transports/credentials and use no
 real Azure resources, accounts, or secrets.

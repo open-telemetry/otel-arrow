@@ -1,0 +1,33 @@
+[package]
+name = "azure_security_keyvault_secrets"
+version = "1.1.0-beta.1"
+description = "Rust wrappers around Microsoft Azure REST APIs - Azure Key Vault Secrets"
+readme = "README.md"
+authors = ["Microsoft"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/azure/azure-sdk-for-rust"
+rust-version = "1.88"
+homepage = "https://github.com/azure/azure-sdk-for-rust"
+documentation = "https://docs.rs/azure_security_keyvault_secrets"
+keywords = ["sdk", "cloud"]
+categories = ["api-bindings"]
+publish = false
+
+[workspace]
+
+[features]
+default = ["azure_core/default"]
+
+[dependencies]
+async-lock = "3.4"
+async-trait = "0.1"
+azure_core = { version = "1.2.0-beta.1", default-features = false }
+clap = { version = "4.5.58", features = ["derive"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"
+time = { version = "0.3.47", features = ["serde-well-known", "macros"] }
+
+[build-dependencies]
+rustc_version = "0.4"
