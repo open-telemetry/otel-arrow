@@ -20,20 +20,25 @@ fn reserve<T>(buffer: &mut Vec<T>, count: usize, limit: usize) -> Result<(), Mul
     Ok(())
 }
 
+fn reserve_text(text: &mut String, count: usize, limit: usize) -> Result<(), MultilineError> {
+    let needed = text
+        .len()
+        .checked_add(count)
+        .ok_or(MultilineError::Allocation)?;
+    if needed > limit {
+        return Err(MultilineError::Allocation);
+    }
+    if needed > text.capacity() {
+        let target = needed.max(text.capacity().saturating_mul(2).max(64).min(limit));
+        text.try_reserve_exact(target - text.len())
+            .map_err(|_| MultilineError::Allocation)?;
+    }
+    Ok(())
+}
+
 fn push_text(text: &mut String, value: DecodedValue, limit: usize) -> Result<(), MultilineError> {
     if let DecodedValue::Scalar(c) = value {
-        let needed = text
-            .len()
-            .checked_add(c.len_utf8())
-            .ok_or(MultilineError::Allocation)?;
-        if needed > limit {
-            return Err(MultilineError::Allocation);
-        }
-        if needed > text.capacity() {
-            let target = needed.max(text.capacity().saturating_mul(2).max(64).min(limit));
-            text.try_reserve_exact(target - text.len())
-                .map_err(|_| MultilineError::Allocation)?;
-        }
+        reserve_text(text, c.len_utf8(), limit)?;
         text.push(c);
     }
     Ok(())
@@ -56,6 +61,9 @@ pub(super) struct Line {
     pub start: u64,
     pub end: u64,
     pub body_bytes: usize,
+    pub body_start: u64,
+    pub malformed_units: u64,
+    pub lf: Option<DecodeEvent>,
 }
 impl Line {
     pub fn new(offset: u64) -> Self {
@@ -65,6 +73,9 @@ impl Line {
             start: offset,
             end: offset,
             body_bytes: 0,
+            body_start: offset,
+            malformed_units: 0,
+            lf: None,
         }
     }
     pub fn fits(&self, event: DecodeEvent, config: LineConfig) -> bool {
@@ -88,11 +99,19 @@ impl Line {
         )?;
         self.source.extend_from_slice(bytes.as_slice());
         self.end = event.range().end;
-        if let DecodeEvent::Unit { value, .. } = event
-            && !is_lf(event)
-        {
-            push_text(&mut self.text, value, config.max_line_bytes)?;
-            self.body_bytes += bytes.as_slice().len();
+        match event {
+            DecodeEvent::StrippedBom { range, .. } => self.body_start = range.end,
+            DecodeEvent::Unit {
+                value, malformed, ..
+            } => {
+                if is_lf(event) {
+                    self.lf = Some(event);
+                } else {
+                    push_text(&mut self.text, value, config.max_line_bytes)?;
+                    self.body_bytes += bytes.as_slice().len();
+                    self.malformed_units += u64::from(malformed);
+                }
+            }
         }
         Ok(())
     }
@@ -102,6 +121,9 @@ impl Line {
         self.start = offset;
         self.end = offset;
         self.body_bytes = 0;
+        self.body_start = offset;
+        self.malformed_units = 0;
+        self.lf = None;
     }
     pub fn capacity(&self) -> usize {
         self.source.capacity() + self.text.capacity()
@@ -191,6 +213,40 @@ impl Body {
         self.body_malformed |= malformed;
         Ok(())
     }
+    // A complete validated line fits the record, so no internal unit boundary
+    // is needed. Copy its decoded text and exact bytes with one reservation each.
+    pub fn append_line(
+        &mut self,
+        line: &Line,
+        separator: Option<DecodeEvent>,
+        config: LineConfig,
+    ) -> Result<(), MultilineError> {
+        let text = line.text.len() + separator.map_or(0, text_bytes);
+        let raw = line.body_bytes + separator.map_or(0, |event| event.source().as_slice().len());
+        reserve_text(&mut self.text, text, config.max_record_bytes)?;
+        if keeps_raw(config) {
+            reserve(&mut self.raw, raw, config.max_record_bytes)?;
+        }
+        if let Some(separator) = separator {
+            self.push(separator, config)?;
+        }
+        if !self.has_progress() {
+            self.range.start = line.body_start;
+        }
+        self.text.push_str(&line.text);
+        if keeps_raw(config) {
+            let start = usize::try_from(line.body_start - line.start)
+                .map_err(|_| MultilineError::ContinuationBoundary)?;
+            self.raw
+                .extend_from_slice(&line.source[start..start + line.body_bytes]);
+        }
+        self.range.end = line.body_start + line.body_bytes as u64;
+        self.frame_end = line.end;
+        self.malformed += line.malformed_units;
+        self.body_malformed |= line.malformed_units != 0;
+        Ok(())
+    }
+
     pub fn take(
         &mut self,
         config: LineConfig,

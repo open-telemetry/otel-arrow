@@ -56,13 +56,30 @@ maps, vectors, locators, allocation metadata, and removal-heavy event state.
 
 ### Framer payload
 
+Use the formula for the selected framer; do not add both for the same reader.
+These are payload allowances, separate from inline state and regex storage.
+
+For newline-only `LineFramer`, retain the existing conservative allowance:
+
+```text
+copies = 2 for non-raw preserve_raw; 1 otherwise
+
+newline_peak_payload =
+  4 * copies *
+    (min(max_line_bytes, max_record_bytes) + max_record_bytes)
+  + 16 * copies
+  + 16
+```
+
+For `MultilineFramer`, including line replay:
+
 ```text
 line_source = max_line_bytes + 8 for raw or preserve_raw
 line_source = 2 * max_line_bytes + 8 otherwise
 line_text = 0 for raw; max_line_bytes otherwise
 record_copies = 2 for non-raw preserve_raw; 1 otherwise
 
-framer_peak_payload =
+multiline_peak_payload =
   4 * (line_source + line_text + record_copies * max_record_bytes)
 ```
 
@@ -155,7 +172,7 @@ slots can remain held indefinitely by boundary-less input with idle flush
 disabled. Only reservation/accounting violations use the partial-state terminal
 failure path; capacity saturation does not permit discard-and-rewind.
 
-At the proposed defaults, the payload-only framer formula is 16,777,248 bytes
+At the proposed defaults, the multiline payload formula is 16,777,248 bytes
 per worst-case text/preserve-raw reader. A 256 MiB budget therefore admits at most
 15 worst-case slots before other mutable state is included, even when actual
 records are short. This is a conservative payload estimate, not the final slot

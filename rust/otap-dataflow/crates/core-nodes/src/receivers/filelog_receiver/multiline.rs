@@ -7,9 +7,7 @@ use super::decoder::{
     DecodeError, DecodeEvent, DecodeStart, DecodedValue, Encoding, OnDecodeError, SourceRange,
     StreamDecoder,
 };
-use super::framer::{
-    LineBody, LineConfig, LineFramer, LineStart, OversizeBehavior, PartialCompletion,
-};
+use super::framer::{LineBody, LineConfig, OversizeBehavior, PartialCompletion};
 use super::multiline_pattern::{
     BoundaryMatcher, BoundaryPattern, PatternError, PatternInput, PatternMode,
 };
@@ -270,7 +268,9 @@ impl MultilineFramer {
         pattern: BoundaryPattern,
         start: RecordStart,
     ) -> Result<Self, MultilineError> {
-        let _ = LineFramer::new(config.line, LineStart::ResumeAt(0))
+        config
+            .line
+            .validate()
             .map_err(|_| MultilineError::InvalidConfig)?;
         let _ = config.payload_peak_bytes()?;
         if config.max_lines == 0 {
@@ -327,7 +327,7 @@ impl MultilineFramer {
         })
     }
 
-    /// Accepts one decoded/replayed unit, or makes one bounded state transition.
+    /// Accepts a decoded/replayed unit, appends a bounded line, or advances framing state.
     pub fn next(
         &mut self,
         offset: u64,
@@ -611,8 +611,18 @@ impl MultilineFramer {
             };
             end.reason().or(finish)
         };
-        self.start_replay(Some(end), finish);
-        Ok(None)
+        if overflow {
+            self.start_replay(Some(end), finish);
+            return Ok(None);
+        }
+        // The entire line (including any internal separator) fits. Its first
+        // decoding pass already established text, source range, and evidence.
+        self.body
+            .append_line(&self.line, self.separator.take(), self.config.line)?;
+        self.separator = self.line.lf;
+        self.ready = None;
+        self.line_match = None;
+        self.finish_collected_line(finish)
     }
 
     fn start_sequence(&mut self, end: u64) {
@@ -706,9 +716,16 @@ impl MultilineFramer {
 
     fn finish_line(&mut self) -> Result<Option<RecordFrame>, MultilineError> {
         let replay = self.replay.take().expect("active replay");
+        self.finish_collected_line(replay.finish)
+    }
+
+    fn finish_collected_line(
+        &mut self,
+        reason: Option<RecordEnding>,
+    ) -> Result<Option<RecordFrame>, MultilineError> {
         self.lines += 1;
         let exact = self.body.size(self.config.line) == self.config.line.max_record_bytes;
-        let finish = replay.finish.or({
+        let finish = reason.or({
             if exact {
                 Some(RecordEnding::ByteLimit)
             } else if self.lines == self.config.max_lines {
@@ -743,7 +760,7 @@ impl MultilineFramer {
             return Ok(Some(frame));
         }
         if last {
-            let reason = if self.recovering {
+            let reason = if self.recovering && known_end != 0 {
                 RecordEnding::Continuation
             } else {
                 RecordEnding::OversizeLine

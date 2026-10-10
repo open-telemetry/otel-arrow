@@ -217,3 +217,8 @@ name = "filelog_multiline_allocations"
 required-features = ["bench"]
 harness = false
 path = "benches/filelog_multiline/allocations.rs"
+
+[[bench]]
+name = "filelog_grouping"
+harness = false
+path = "benches/filelog_grouping/main.rs"

@@ -49,14 +49,16 @@ telemetry and policy actions for those reasons.
 
 ## Decoding and failures
 
-A bounded line retains decoded text for matching and exact source bytes for
-replay. Replaying it into the record buffer preserves source-unit boundaries
-without a per-character offset table. Each buffered line is decoded twice;
-this trades some CPU work for bounded storage and exact offsets, including
-replacements.
+A bounded line retains decoded text and exact source bytes. When it fits in the
+record, the framer reserves space for the whole line and appends those buffers
+directly. Overflow paths replay source units through the decoder to find safe
+fragment boundaries without a per-character offset table. A step can therefore
+copy one complete bounded line; it is not limited to one scalar's work.
 
-Under `preserve_raw`, a malformed grouped body becomes exact bytes. All split
-fragments use exact bytes from the start, even if malformed input appears later.
+Under `preserve_raw`, patterns match the decoded text with U+FFFD replacements
+for malformed units, while a malformed grouped body is emitted as exact bytes.
+All split fragments use exact bytes from the start, even if malformed input
+appears later.
 A clean truncated prefix may remain text; malformed discarded units still count.
 
 Decode-fail suppresses the failing record's truncated prefix. Earlier returned
@@ -81,6 +83,12 @@ or scan-to-LF boundary. Idle/EOF cannot shorten a known end. Empty recovery emit
 nothing. The final fragment can use `u32::MAX`; emitting a nonfinal fragment at
 that index fails before output.
 
+The checkpoint does not store completion reasons. A recovered known-end sequence
+reports `Continuation`; it cannot reconstruct an earlier idle/permanent-EOF
+reason. Do not infer terminal-unterminated metadata from that reason. Scan-to-LF
+recovery ending at LF reports `OversizeLine`. In-process retries preserve their
+original batch, but the spec permits completion metadata to change after a crash.
+
 ## Memory
 
 The framer retains one bounded physical line, one record buffer, and inline
@@ -95,6 +103,9 @@ Neither method reserves memory from a receiver budget.
 
 See the [conformance memory model][memory] for the formula. The tests cover
 chunk partitions, encoding and malformed-input cases, overflow and recovery,
-and allocation-free truncate-tail scanning.
+and allocation-free truncate-tail scanning. The [grouping benchmark][benchmark]
+compares throughput with newline framing.
 
 [memory]: ../../../../../../docs/filelog-receiver-phase1-conformance.md#framer-payload
+
+[benchmark]: ../../../../benches/filelog_grouping/README.md
