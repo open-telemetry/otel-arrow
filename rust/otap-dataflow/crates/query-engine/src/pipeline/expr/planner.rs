@@ -22,7 +22,6 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::logical_expr::{ScalarUDFImpl, cast};
-use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_contrib_data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
@@ -36,6 +35,7 @@ use otel_arrow_contrib_data_engine_expressions::{
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
+use regex::Regex;
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -58,6 +58,7 @@ use crate::pipeline::expr::{
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
+use crate::pipeline::functions::regex_match::RegexMatchFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
@@ -1512,9 +1513,7 @@ impl ExprPlanner {
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let pattern = match matches_expr.get_pattern() {
-            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
-                lit(regex.get_value().as_str().to_string())
-            }
+            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => regex.get_value(),
             _ => {
                 return Err(Error::InvalidPipelineError {
                     cause: "expected pattern to be a static regex".into(),
@@ -1527,7 +1526,7 @@ impl ExprPlanner {
         // Try fused attribute matches optimization: when haystack is attributes["key"]
         // and pattern is a static regex.
         if !self.record_type.is_attribute()
-            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, &pattern)?
+            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, pattern)?
         {
             return Ok(fused);
         }
@@ -1559,12 +1558,12 @@ impl ExprPlanner {
 
         let eval = if has_body_field {
             LeafEval::new_df_expr_anyval_as_struct(
-                binary_expr(haystack_expr, Operator::RegexMatch, pattern),
+                regex_match_expr(pattern, haystack_expr),
                 haystack.requires_dict_downcast,
             )?
         } else {
             LeafEval::new_df_expr_with_key_case(
-                binary_expr(haystack_expr, Operator::RegexMatch, pattern),
+                regex_match_expr(pattern, haystack_expr),
                 haystack.requires_dict_downcast,
                 self.attr_key_case_sensitive,
             )?
@@ -1580,7 +1579,7 @@ impl ExprPlanner {
     fn try_plan_fused_attr_matches(
         &self,
         haystack: &PlannedOp,
-        pattern: &Expr,
+        pattern: &Regex,
     ) -> Result<Option<ScopedExpr>> {
         let (attrs_id, key) = match haystack.expr.eval_scope() {
             Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
@@ -1597,11 +1596,7 @@ impl ExprPlanner {
             col(consts::ATTRIBUTE_KEY).ilike(lit(escape_like_pattern(&key)))
         };
 
-        let value_regex = binary_expr(
-            col(consts::ATTRIBUTE_STR),
-            Operator::RegexMatch,
-            pattern.clone(),
-        );
+        let value_regex = regex_match_expr(pattern, col(consts::ATTRIBUTE_STR));
 
         let fused_expr = key_filter.and(value_regex);
 
@@ -2157,6 +2152,17 @@ impl ScopedExpr {
             _ => None,
         }
     }
+}
+
+/// Build `regex_match(haystack)` with the pattern compiled once here rather than per batch
+/// (DataFusion's `Operator::RegexMatch` recompiles a scalar pattern on every evaluation).
+fn regex_match_expr(pattern: &Regex, haystack: Expr) -> Expr {
+    Expr::ScalarFunction(ScalarFunction::new_udf(
+        Arc::new(ScalarUDF::new_from_impl(RegexMatchFunc::new(
+            pattern.clone(),
+        ))),
+        vec![haystack],
+    ))
 }
 
 fn is_literal_eval(plan: &PlannedOp) -> bool {

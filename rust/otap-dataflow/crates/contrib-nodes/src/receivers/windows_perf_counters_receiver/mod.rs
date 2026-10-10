@@ -9,3 +9,21 @@
     allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
 )]
 mod config;
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by PDH collection in a follow-up")
+)]
+mod model;
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by PDH collection in a follow-up")
+)]
+mod native_type;
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
+)]
+mod otap_builder;
