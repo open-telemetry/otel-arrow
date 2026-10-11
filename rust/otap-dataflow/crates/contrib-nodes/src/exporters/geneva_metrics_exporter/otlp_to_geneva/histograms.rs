@@ -235,7 +235,7 @@ mod tests {
     }
 
     /// Scenario: An explicit histogram includes a NaN bound among otherwise valid bounds.
-    /// Guarantees: Malformed input is rejected before the quadratic insertion fallback can run.
+    /// Guarantees: NaN bounds are rejected before sorting, which would otherwise panic.
     #[test]
     fn rejects_nan_explicit_histogram_bounds() {
         let point = explicit_point(vec![1.0, f64::NAN, 2.0], vec![1, 2, 3, 4], 10);
