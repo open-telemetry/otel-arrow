@@ -4,6 +4,7 @@
 //! OTLP attribute selection and Geneva metric context construction.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::str::{self, Utf8Error};
 
 use otel_arrow_dfe_pdata_views::views::common::{
@@ -254,17 +255,18 @@ pub(super) fn apply_scope_resource_overrides(
     honor_resource: bool,
     honor_scope: bool,
 ) {
-    if honor_resource || honor_scope {
+    if honor_resource || honor_scope || scope_dimensions.is_empty() {
         return;
     }
+    let mut first_index = HashMap::with_capacity(original_resource_dimensions.len());
+    for (index, dimension) in original_resource_dimensions.iter().enumerate() {
+        let _ = first_index.entry(dimension.name.as_str()).or_insert(index);
+    }
     for scope_dimension in scope_dimensions {
-        let Some((index, original)) = original_resource_dimensions
-            .iter()
-            .enumerate()
-            .find(|(_, resource_dimension)| resource_dimension.name == scope_dimension.name)
-        else {
+        let Some(&index) = first_index.get(scope_dimension.name.as_str()) else {
             continue;
         };
+        let original = &original_resource_dimensions[index];
         resource_dimensions[index].value = if scope_dimension.value.is_empty() {
             original.value.clone()
         } else {
@@ -736,6 +738,27 @@ mod tests {
         );
 
         assert_eq!(effective, vec![dimension("region", "scope-one")]);
+    }
+
+    /// Scenario: Resource dimensions repeat an exact name and a scope dimension overrides that name.
+    /// Guarantees: Only the first matching resource occurrence is overridden, matching existing
+    /// first-match lookup behavior.
+    #[test]
+    fn scope_pre_override_targets_first_duplicate_resource_name() {
+        let original = vec![dimension("region", "first"), dimension("region", "second")];
+        let mut effective = original.clone();
+        apply_scope_resource_overrides(
+            &mut effective,
+            &original,
+            &[dimension("region", "scope")],
+            false,
+            false,
+        );
+
+        assert_eq!(
+            effective,
+            vec![dimension("region", "scope"), dimension("region", "second")]
+        );
     }
 
     /// Scenario: Selected resource and scope attributes contain case variants of the same key.

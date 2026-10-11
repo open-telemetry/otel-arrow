@@ -370,9 +370,8 @@ where
         ExplicitHistogram::Empty => None,
         ExplicitHistogram::Buckets(histogram) => Some(histogram),
     };
-    let Some(sum) = point.sum() else {
-        return Ok(MapPointResult::rejected(None));
-    };
+    // Matches existing behavior for absent optional sums.
+    let sum = point.sum().unwrap_or(0.0);
     let min = point.min();
     let max = point.max();
     let sampling_type = histogram_sampling_type(metric_type, min, max);
@@ -405,14 +404,12 @@ where
 {
     if point.flags().no_recorded_value()
         || !(MIN_EXPONENTIAL_SCALE..=MAX_EXPONENTIAL_SCALE).contains(&point.scale())
-        // Geneva's model only carries `zero_count`, which can't represent a nonzero threshold.
-        || point.zero_threshold() != 0.0
     {
         return Ok(MapPointResult::rejected(None));
     }
-    let Some(sum) = point.sum() else {
-        return Ok(MapPointResult::rejected(None));
-    };
+    // Matches existing behavior of ignoring zero_threshold and using only zero_count.
+    // Matches existing behavior for absent optional sums.
+    let sum = point.sum().unwrap_or(0.0);
     let min = point.min();
     let max = point.max();
     let Some(mut positive) = sparse_buckets(point.positive()) else {
@@ -542,8 +539,7 @@ fn is_banned_metric_namespace(namespace: &str) -> bool {
     BANNED_METRIC_NAMESPACES.contains(&namespace)
 }
 
-// Non-Delta (including Unspecified) maps to Cumulative,
-// and non-monotonic Delta sums are rejected rather than mapped to an up-down counter.
+// Non-Delta maps to Cumulative; non-monotonic Delta sums are rejected.
 fn sum_metric_type(is_monotonic: bool, temporality: AggregationTemporality) -> Option<u32> {
     let is_delta = temporality == AggregationTemporality::Delta;
     match (is_monotonic, is_delta) {
@@ -591,22 +587,22 @@ where
 }
 
 fn unix_nanos_to_dotnet_seconds_floor(value: u64) -> Option<u64> {
-    let ticks = unix_nanos_to_dotnet_ticks(value)?;
+    let ticks = unix_nanos_to_dotnet_ticks(value);
     let seconds = ticks / DOTNET_TICKS_PER_SECOND;
     DOTNET_UNIX_EPOCH_OFFSET_SECONDS.checked_add(seconds)
 }
 
 fn unix_nanos_to_dotnet_seconds_ceil(value: u64) -> Option<u64> {
-    let ticks = unix_nanos_to_dotnet_ticks(value)?;
+    let ticks = unix_nanos_to_dotnet_ticks(value);
     let seconds = ticks / DOTNET_TICKS_PER_SECOND;
-    let round_up = u64::from(ticks % DOTNET_TICKS_PER_SECOND != 0);
+    let round_up = u64::from(!ticks.is_multiple_of(DOTNET_TICKS_PER_SECOND));
     DOTNET_UNIX_EPOCH_OFFSET_SECONDS
         .checked_add(seconds)?
         .checked_add(round_up)
 }
 
-fn unix_nanos_to_dotnet_ticks(value: u64) -> Option<u64> {
-    (value <= i64::MAX as u64).then_some(value / NANOS_PER_DOTNET_TICK)
+fn unix_nanos_to_dotnet_ticks(value: u64) -> u64 {
+    value / NANOS_PER_DOTNET_TICK
 }
 
 #[cfg(test)]
@@ -1113,7 +1109,7 @@ mod tests {
                 histogram: Some(MetricHistogram::Explicit(vec![
                     (1.0, 1),
                     (2.0, 2),
-                    (2.0_f64.next_up(), 3),
+                    (3.0, 3),
                 ])),
             })
         );
@@ -1145,10 +1141,10 @@ mod tests {
         assert_eq!(metrics[1].sampling_type & IS_RAW_DATA, 0);
     }
 
-    /// Scenario: Explicit and exponential OTLP histograms omit the sum required by the Geneva metric representation.
-    /// Guarantees: Histograms with no sum are rejected instead of publishing a fabricated zero.
+    /// Scenario: Explicit and exponential OTLP histograms omit their optional sums.
+    /// Guarantees: Both histogram types are published with a zero sum to match Metrics Extension behavior.
     #[test]
-    fn rejects_histograms_without_sums() {
+    fn defaults_missing_histogram_sums_to_zero() {
         let scope = scope_with_metrics(vec![
             gauge_metric("valid", gauge_point(Vec::new())),
             otlp_metric(
@@ -1182,41 +1178,48 @@ mod tests {
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
-        assert_eq!(mapped.rejected_data_points, 2);
-        assert_eq!(mapped.packet.metrics.len(), 1);
-        assert_eq!(mapped.packet.metrics[0].name, "valid");
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 3);
+        for metric in &mapped.packet.metrics[1..] {
+            let MetricValues::Double(values) = &metric.values else {
+                panic!("histogram should map to double values");
+            };
+            assert_eq!(values.sum, Some(0.0));
+        }
     }
 
     /// Scenario: An exponential histogram data point sets a nonzero `zero_threshold`.
-    /// Guarantees: The point is rejected, since Geneva's exponential-histogram model only carries
-    /// `zero_count` and cannot represent the OTLP zero-threshold interval without changing the
-    /// distribution's semantics.
+    /// Guarantees: The point is mapped using only `zero_count`, matching existing behavior of
+    /// ignoring the zero threshold.
     #[test]
-    fn rejects_nonzero_zero_threshold() {
-        let scope = scope_with_metrics(vec![
-            gauge_metric("valid", gauge_point(Vec::new())),
-            otlp_metric(
-                "exponential",
-                metric::Data::ExponentialHistogram(ExponentialHistogram {
-                    data_points: vec![ExponentialHistogramDataPoint {
-                        time_unix_nano: TEST_TIME_NANOS,
-                        count: 1,
-                        sum: Some(1.0),
-                        zero_count: 1,
-                        zero_threshold: 0.5,
-                        ..Default::default()
-                    }],
-                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
-                }),
-            ),
-        ]);
+    fn ignores_nonzero_zero_threshold() {
+        let scope = scope_with_metrics(vec![otlp_metric(
+            "exponential",
+            metric::Data::ExponentialHistogram(ExponentialHistogram {
+                data_points: vec![ExponentialHistogramDataPoint {
+                    time_unix_nano: TEST_TIME_NANOS,
+                    count: 1,
+                    sum: Some(1.0),
+                    zero_count: 1,
+                    zero_threshold: 0.5,
+                    ..Default::default()
+                }],
+                aggregation_temporality: AggregationTemporality::Cumulative as i32,
+            }),
+        )]);
 
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
-        assert_eq!(mapped.rejected_data_points, 1);
+        assert_eq!(mapped.rejected_data_points, 0);
         assert_eq!(mapped.packet.metrics.len(), 1);
-        assert_eq!(mapped.packet.metrics[0].name, "valid");
+        let MetricValues::Double(values) = &mapped.packet.metrics[0].values else {
+            panic!("histogram should use double values");
+        };
+        let Some(MetricHistogram::Exponential(histogram)) = &values.histogram else {
+            panic!("exponential histogram should be present");
+        };
+        assert_eq!(histogram.zero_count, 1);
     }
     /// Scenario: Explicit and exponential histograms report scalar counts above the Geneva `u32` wire limit.
     /// Guarantees: Oversized counts are rejected instead of wrapping while other valid metrics remain publishable.
@@ -1281,8 +1284,6 @@ mod tests {
             unix_nanos_to_dotnet_seconds_floor(fractional),
             Some(DOTNET_UNIX_EPOCH_OFFSET_SECONDS + 45)
         );
-        assert_eq!(unix_nanos_to_dotnet_seconds_ceil(i64::MAX as u64 + 1), None);
-
         let scope = scope_with_metrics(vec![gauge_metric(
             "fractional",
             NumberDataPoint {
@@ -1301,6 +1302,35 @@ mod tests {
             mapped.packet.metrics[0].time_bucket,
             (DOTNET_UNIX_EPOCH_OFFSET_SECONDS + 46) as i64
         );
+    }
+
+    /// Scenario: A data point reports a timestamp beyond `i64::MAX` nanoseconds, which OTLP's
+    /// unsigned wire format allows but OTAP's signed internal representation cannot hold.
+    /// Guarantees: The point is still mapped to the correct bucket instead of being rejected,
+    /// since converting to 100ns ticks keeps every value in range far below `u64::MAX`.
+    #[test]
+    fn maps_timestamps_beyond_signed_nanosecond_range() {
+        assert_eq!(
+            unix_nanos_to_dotnet_seconds_floor(u64::MAX),
+            Some(80_582_340_873)
+        );
+        assert_eq!(
+            unix_nanos_to_dotnet_seconds_ceil(u64::MAX),
+            Some(80_582_340_874)
+        );
+
+        let scope = scope_with_metrics(vec![gauge_metric(
+            "far-future",
+            NumberDataPoint {
+                time_unix_nano: i64::MAX as u64 + 1,
+                ..gauge_point(Vec::new())
+            },
+        )]);
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 1);
     }
 
     /// Scenario: An explicit histogram reports only scalar count and sum without a bucket distribution.
