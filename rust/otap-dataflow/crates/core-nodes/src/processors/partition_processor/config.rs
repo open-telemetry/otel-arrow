@@ -130,6 +130,8 @@ mod test {
         );
     }
 
+    /// Scenario: Partition processor config includes each supported signal type.
+    /// Guarantees: `signal_type` deserializes to the corresponding `SignalType` variant.
     #[test]
     fn test_deserialize_with_signal_type_configured() {
         for (config_sig_type, expected) in [
