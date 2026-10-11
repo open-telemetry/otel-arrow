@@ -2378,13 +2378,35 @@ mod test {
         assert_eq!(sent.get_source_node(), Some(2));
     }
 
-    /// Scenario: a receiver uses base and source-tagged sends with a randomness composite.
-    /// Guarantees: both send paths materialize UUID-v7 before downstream delivery.
+    fn assert_materialized_uuid(
+        sent: &OtapPdata,
+        plan: &ContextMaterializationPlan,
+        projection: &ContextProjection,
+        expected_source: Option<usize>,
+    ) {
+        assert_eq!(sent.get_source_node(), expected_source);
+        let resolved = sent
+            .resolve_materialized_context(plan, projection)
+            .expect("context was materialized");
+        resolved.visit_members(|member| {
+            let value = member.values().values()[0].as_str().expect("UUID is text");
+            assert_eq!(value.len(), 36);
+            assert_eq!(value.as_bytes()[14], b'7');
+        });
+    }
+
+    /// Scenario: a local receiver uses every base and source-tagged send variant.
+    /// Guarantees: default, named-port, blocking, and try-send paths materialize UUID-v7.
     #[tokio::test]
-    async fn receiver_send_materializes_context() {
-        let (tx, rx) = LocalChannel::<OtapPdata>::new(2);
+    async fn local_receiver_send_paths_materialize_context() {
+        let (default_tx, default_rx) = LocalChannel::<OtapPdata>::new(4);
+        let (named_tx, named_rx) = LocalChannel::<OtapPdata>::new(4);
         let mut senders = HashMap::new();
-        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+        let _ = senders.insert(
+            "default".into(),
+            Sender::Local(LocalSender::mpsc(default_tx)),
+        );
+        let _ = senders.insert("named".into(), Sender::Local(LocalSender::mpsc(named_tx)));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut handler = LocalReceiverEffectHandler::new(
@@ -2393,7 +2415,7 @@ mod test {
                 name: "recv_local".into(),
             },
             senders,
-            Some("out".into()),
+            Some("default".into()),
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
@@ -2410,21 +2432,106 @@ mod test {
             .await
             .expect("send succeeds");
         handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
             .send_message_with_source_node(create_test_pdata())
             .await
             .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
 
-        for expected_source in [None, Some(2)] {
-            let sent = rx.recv().await.expect("message received");
-            assert_eq!(sent.get_source_node(), expected_source);
-            let resolved = sent
-                .resolve_materialized_context(&plan, &projection)
-                .expect("context was materialized");
-            resolved.visit_members(|member| {
-                let value = member.values().values()[0].as_str().expect("UUID is text");
-                assert_eq!(value.len(), 36);
-                assert_eq!(value.as_bytes()[14], b'7');
-            });
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a shared receiver uses every base and source-tagged send variant.
+    /// Guarantees: production-style shared paths materialize UUID-v7 before delivery.
+    #[tokio::test]
+    async fn shared_receiver_send_paths_materialize_context() {
+        let (default_tx, mut default_rx) = mpsc::channel::<OtapPdata>(4);
+        let (named_tx, mut named_rx) = mpsc::channel::<OtapPdata>(4);
+        let senders = HashMap::from([
+            ("default".into(), SharedSender::mpsc(default_tx)),
+            ("named".into(), SharedSender::mpsc(named_tx)),
+        ]);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = SharedReceiverEffectHandler::new(
+            NodeId {
+                index: 3,
+                name: "recv_shared".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
         }
     }
 
