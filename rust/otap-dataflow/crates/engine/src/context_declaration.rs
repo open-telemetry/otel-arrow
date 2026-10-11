@@ -686,7 +686,7 @@ impl CompiledContextBindings {
     fn compile(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let mut materialization_by_pipeline = HashMap::new();
         let by_pipeline = declarations
             .into_iter()
@@ -698,8 +698,7 @@ impl CompiledContextBindings {
                     .collect::<BTreeMap<_, _>>()
                     .into_values()
                     .collect::<Vec<_>>();
-                let materialization = ContextMaterializationPlan::compile(&selected_composites)
-                    .expect("prepared context declarations compile into a runtime layout");
+                let materialization = ContextMaterializationPlan::compile(&selected_composites)?;
                 if !materialization.is_empty() {
                     _ = materialization_by_pipeline.insert(pipeline.clone(), materialization);
                 }
@@ -712,14 +711,14 @@ impl CompiledContextBindings {
                         )
                     })
                     .collect();
-                (pipeline, nodes)
+                Ok((pipeline, nodes))
             })
-            .collect();
+            .collect::<Result<_, Error>>()?;
 
-        Self {
+        Ok(Self {
             by_pipeline,
             materialization_by_pipeline,
-        }
+        })
     }
 
     /// Returns the pipeline's constant/randomness materialization plan.
@@ -828,7 +827,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
         let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = Self::compile_bindings(declarations, &runtime_requirements);
+        let bindings = Self::compile_bindings(declarations, &runtime_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
             bindings,
@@ -843,7 +842,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
         let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = Self::compile_bindings(declarations, installed_requirements);
+        let bindings = Self::compile_bindings(declarations, installed_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
             bindings,
@@ -854,8 +853,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     fn compile_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
-    ) -> Arc<CompiledContextBindings> {
-        Arc::new(CompiledContextBindings::compile(declarations, requirements))
+    ) -> Result<Arc<CompiledContextBindings>, EngineError> {
+        CompiledContextBindings::compile(declarations, requirements)
+            .map(Arc::new)
+            .map_err(|error| EngineError::ConfigError(Box::new(error)))
     }
 
     /// Collects and validates component and engine declarations for each resolved pipeline node.
@@ -1257,6 +1258,7 @@ groups:
         let declarations = declarations_by_pipeline(effective);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         CompiledContextBindings::compile(declarations, &requirements)
+            .expect("test bindings compile")
     }
 
     /// Derives runtime requirements from one test node's declarations.
@@ -1544,7 +1546,8 @@ groups:
         )]);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
 
-        let bindings = CompiledContextBindings::compile(declarations, &requirements);
+        let bindings =
+            CompiledContextBindings::compile(declarations, &requirements).expect("valid bindings");
 
         let plan = bindings
             .context_materialization_plan(&pipeline)
@@ -1696,6 +1699,35 @@ groups:
                 let error = result.expect_err("invalid consumer must fail preparation");
                 assert!(error.to_string().contains(expected), "{error}");
             }
+        }
+    }
+
+    /// Scenario: one selected composite references the same transport header with different casing.
+    /// Guarantees: startup and live-update preparation return a config error instead of panicking.
+    #[test]
+    fn full_yaml_preparation_rejects_case_variant_header_references() {
+        let valid = "[{type: constant, name: route_name, value: stable}, \
+            {type: transport_header, name: X-Tenant, store_as: upper}]";
+        let invalid = "[{type: constant, name: route_name, value: stable}, \
+            {type: transport_header, name: X-Tenant, store_as: upper}, \
+            {type: transport_header, name: x-tenant, store_as: lower}]";
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&resolve_consumer_pipeline(valid, "route_name", false))
+            .expect("valid initial context");
+        let invalid = resolve_consumer_pipeline(invalid, "route_name", false);
+
+        for result in [
+            factory.compile_initial_context(&invalid),
+            factory.compile_candidate_context(&invalid, &installed.runtime_requirements),
+        ] {
+            let error = result.expect_err("case-variant references must fail preparation");
+            assert!(
+                error
+                    .to_string()
+                    .contains("context entry `tenant` repeats `x-tenant`"),
+                "{error}"
+            );
         }
     }
 
@@ -2407,7 +2439,8 @@ default:
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = CompiledContextBindings::compile(declarations, &requirements);
+        let bindings =
+            CompiledContextBindings::compile(declarations, &requirements).expect("valid bindings");
 
         assert!(
             bindings
