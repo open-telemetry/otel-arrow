@@ -846,20 +846,12 @@ impl SummaryDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.count.finish() {
-            fields.push(Field::new(
-                consts::COUNT,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::COUNT, array.data_type().clone(), false));
             columns.push(array);
         }
 
         if let Some(array) = self.sum.finish() {
-            fields.push(Field::new(
-                consts::SUM,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::SUM, array.data_type().clone(), false));
             columns.push(array);
         }
 
@@ -1057,11 +1049,7 @@ impl HistogramDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.count.finish() {
-            fields.push(Field::new(
-                consts::COUNT,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::COUNT, array.data_type().clone(), false));
             columns.push(array);
         }
 
@@ -1086,11 +1074,7 @@ impl HistogramDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.sum.finish() {
-            fields.push(Field::new(
-                consts::SUM,
-                array.data_type().clone(),
-                true,
-            ));
+            fields.push(Field::new(consts::SUM, array.data_type().clone(), true));
             columns.push(array);
         }
 
@@ -1322,20 +1306,12 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.count.finish() {
-            fields.push(Field::new(
-                consts::COUNT,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::COUNT, array.data_type().clone(), false));
             columns.push(array);
         }
 
         if let Some(array) = self.sum.finish() {
-            fields.push(Field::new(
-                consts::SUM,
-                array.data_type().clone(),
-                true,
-            ));
+            fields.push(Field::new(consts::SUM, array.data_type().clone(), true));
             columns.push(array);
         }
 
