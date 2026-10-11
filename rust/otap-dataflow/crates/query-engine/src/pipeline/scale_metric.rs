@@ -69,11 +69,7 @@ impl ScaleMetricPipelineStage {
         scale_columns(
             &mut otap_batch,
             ArrowPayloadType::HistogramDataPoints,
-            &[
-                consts::SUM,
-                consts::HISTOGRAM_MIN,
-                consts::HISTOGRAM_MAX,
-            ],
+            &[consts::SUM, consts::HISTOGRAM_MIN, consts::HISTOGRAM_MAX],
             self.multiplier,
         )?;
         scale_list_values(
