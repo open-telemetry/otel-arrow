@@ -19,19 +19,21 @@ use otel_arrow_dfe_config::error::Error;
 use uuid::Uuid;
 
 use super::{
-    ContextDomain, ContextFieldLayout, ContextLayout, ContextMemberSource, ContextProjection,
+    ContextDomain, ContextEntryId, ContextEntryLayout, ContextFieldLayout, ContextLayout,
+    ContextMemberSource, ContextProjection,
 };
 
 /// Immutable plan for materializing selected composites with domainless members.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ContextMaterializationPlan {
     layout: Arc<ContextLayout>,
+    declarations: Arc<[Arc<ContextEntryDeclaration>]>,
 }
 
 impl ContextMaterializationPlan {
     /// Compiles selected constant/randomness composites and their referenced fields.
     pub fn compile(declarations: &[ContextEntryDeclaration]) -> Result<Self, Error> {
-        let declarations = declarations
+        let mut declarations = declarations
             .iter()
             .filter(|declaration| {
                 declaration.definition.0.iter().any(|part| {
@@ -41,7 +43,13 @@ impl ContextMaterializationPlan {
                     )
                 })
             })
+            .cloned()
             .collect::<Vec<_>>();
+        declarations.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.scope.cmp(&right.scope))
+        });
         let fields = declarations
             .iter()
             .flat_map(|declaration| declaration.definition.0.iter())
@@ -58,10 +66,16 @@ impl ContextMaterializationPlan {
                 domain,
             })
             .collect::<BTreeSet<_>>();
-        let declarations = declarations.into_iter().cloned().collect::<Vec<_>>();
+        let layout = ContextLayout::compile(fields, &declarations)?;
+        let declarations = declarations
+            .into_iter()
+            .map(Arc::new)
+            .collect::<Vec<_>>()
+            .into();
 
         Ok(Self {
-            layout: Arc::new(ContextLayout::compile(fields, &declarations)?),
+            layout: Arc::new(layout),
+            declarations,
         })
     }
 
@@ -75,6 +89,16 @@ impl ContextMaterializationPlan {
     #[must_use]
     pub fn layout(&self) -> &ContextLayout {
         &self.layout
+    }
+
+    fn entries(
+        &self,
+    ) -> impl Iterator<Item = (&ContextEntryLayout, &Arc<ContextEntryDeclaration>)> {
+        self.layout.entries().iter().zip(self.declarations.iter())
+    }
+
+    fn declaration(&self, entry: ContextEntryId) -> Option<&Arc<ContextEntryDeclaration>> {
+        self.declarations.get(entry.index())
     }
 }
 
@@ -249,6 +273,7 @@ impl MaterializedContextMember {
 pub struct MaterializedContextEntry {
     name: ContextEntryName,
     members: Box<[MaterializedContextMember]>,
+    provenance: Arc<ContextEntryDeclaration>,
 }
 
 impl fmt::Debug for MaterializedContextEntry {
@@ -280,6 +305,10 @@ impl MaterializedContextEntry {
             .binary_search_by(|member| member.name.cmp(name))
             .ok()
             .map(|index| &self.members[index])
+    }
+
+    fn matches_declaration(&self, declaration: &ContextEntryDeclaration) -> bool {
+        self.provenance.as_ref() == declaration
     }
 }
 
@@ -329,10 +358,11 @@ impl MaterializedContext {
             .map(|index| &self.entries()[index])
     }
 
-    /// Materializes composites not already present in this context.
+    /// Materializes composites not already present under the same declaration.
     ///
-    /// Existing entries are retained so generated values remain stable when a
-    /// context crosses a receiver boundary or is materialized more than once.
+    /// Existing entries are retained only when their originating declaration
+    /// matches the destination plan. A same-named entry with different
+    /// provenance is removed before the destination presence gate is evaluated.
     pub fn materialize(
         &mut self,
         plan: &ContextMaterializationPlan,
@@ -341,12 +371,10 @@ impl MaterializedContext {
         if plan.is_empty() {
             return;
         }
-        if plan
-            .layout
-            .entries()
-            .iter()
-            .all(|entry| self.entry(&entry.name).is_some())
-        {
+        if plan.entries().all(|(entry, declaration)| {
+            self.entry(&entry.name)
+                .is_some_and(|materialized| materialized.matches_declaration(declaration.as_ref()))
+        }) {
             return;
         }
 
@@ -357,12 +385,15 @@ impl MaterializedContext {
             .map(|field| source.values(field))
             .collect::<Vec<_>>();
         let mut entries = self.entries().to_vec();
-        for entry in plan.layout.entries() {
-            if entries
+        for (entry, declaration) in plan.entries() {
+            if let Some(index) = entries
                 .iter()
-                .any(|materialized| materialized.name == entry.name)
+                .position(|materialized| materialized.name == entry.name)
             {
-                continue;
+                if entries[index].matches_declaration(declaration.as_ref()) {
+                    continue;
+                }
+                _ = entries.remove(index);
             }
             if !entry.conditions.iter().all(|condition| {
                 fields[condition.field.index()]
@@ -404,6 +435,7 @@ impl MaterializedContext {
                 entries.push(MaterializedContextEntry {
                     name: entry.name.clone(),
                     members: members.into_boxed_slice(),
+                    provenance: Arc::clone(declaration),
                 });
             }
         }
@@ -429,7 +461,11 @@ impl MaterializedContext {
             return None;
         };
         let layout = plan.layout.entries().get(entry.index())?;
+        let declaration = plan.declaration(*entry)?;
         let materialized = self.entry(&layout.name)?;
+        if !materialized.matches_declaration(declaration.as_ref()) {
+            return None;
+        }
         members
             .iter()
             .all(|member| materialized.member(&member.name).is_some())
@@ -563,6 +599,83 @@ mod tests {
         context.materialize(&plan, &TestSource::default());
 
         assert_eq!(context, first);
+    }
+
+    /// Scenario: separately compiled plans contain the same randomness declaration.
+    /// Guarantees: structural declaration provenance retains the generated UUID across plans.
+    #[test]
+    fn retains_generated_value_across_identical_plans() {
+        let declaration = declaration(vec![ContextEntryPart::Randomness {
+            name: name("id"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        let first_plan = ContextMaterializationPlan::compile(std::slice::from_ref(&declaration))
+            .expect("first plan compiles");
+        let second_plan =
+            ContextMaterializationPlan::compile(&[declaration]).expect("second plan compiles");
+        let mut context = MaterializedContext::default();
+        context.materialize(&first_plan, &TestSource::default());
+        let first = context.clone();
+
+        context.materialize(&second_plan, &TestSource::default());
+
+        assert_eq!(context, first);
+    }
+
+    /// Scenario: a detached context reaches a same-named destination declaration with a new gate.
+    /// Guarantees: mismatched provenance removes the old value and re-evaluates the destination.
+    #[test]
+    fn re_evaluates_same_name_entry_with_different_provenance() {
+        let upstream_plan =
+            ContextMaterializationPlan::compile(&[declaration(vec![ContextEntryPart::Constant {
+                name: name("route"),
+                value: "upstream".to_owned(),
+            }])])
+            .expect("upstream plan compiles");
+        let destination_plan = ContextMaterializationPlan::compile(&[declaration(vec![
+            ContextEntryPart::TransportHeaderMatch {
+                name: name("environment"),
+                value: "production".to_owned(),
+            },
+            ContextEntryPart::Constant {
+                name: name("route"),
+                value: "destination".to_owned(),
+            },
+        ])])
+        .expect("destination plan compiles");
+        let projection = destination_plan
+            .layout()
+            .resolve_member(&name("request"), &name("route"))
+            .expect("destination projection resolves");
+        let mut context = MaterializedContext::default();
+        context.materialize(&upstream_plan, &TestSource::default());
+        let mut detached = context.clone();
+
+        assert!(detached.resolve(&destination_plan, &projection).is_none());
+        detached.materialize(&destination_plan, &TestSource::default());
+
+        assert!(detached.entry(&name("request")).is_none());
+        assert!(detached.resolve(&destination_plan, &projection).is_none());
+
+        let mut source = TestSource::default();
+        _ = source.values.insert(
+            (ContextDomain::TransportHeader, name("environment")),
+            text("production"),
+        );
+        detached.materialize(&destination_plan, &source);
+
+        let entry = detached
+            .entry(&name("request"))
+            .expect("destination entry is present");
+        assert_eq!(
+            entry
+                .member(&name("route"))
+                .expect("destination route")
+                .values()
+                .values()[0]
+                .as_str(),
+            Some("destination")
+        );
     }
 
     /// Scenario: two independent pdata contexts use the same randomness plan.

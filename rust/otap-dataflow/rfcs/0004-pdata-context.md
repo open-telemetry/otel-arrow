@@ -268,10 +268,13 @@ whether the composite entry is present.
 
 Each selected random value is generated once when its context is materialized
 at the receiver boundary and retained for that context's lifetime. Materialized
-values are preserved by detached context clones. Runtime projection reads use
-the existing logical projection model; general consumer bindings, optimized
-lookups, projector transforms, and propagation remain separate integration
-work.
+values are preserved by detached context clones together with their originating
+declaration. A destination plan retains an existing composite only when that
+declaration is identical. A same-named composite with different provenance is
+treated as absent, so the destination presence gate is evaluated before its
+value is materialized. Runtime projection reads use the existing logical
+projection model; general consumer bindings, optimized lookups, projector
+transforms, and propagation remain separate integration work.
 
 UUID v7 values expose their generation time and are not secrets. They must not
 be used as authentication tokens, secret values, or cryptographic anti-replay

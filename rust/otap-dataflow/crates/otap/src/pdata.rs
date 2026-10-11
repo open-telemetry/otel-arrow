@@ -1161,10 +1161,11 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers, authorized identity entries, and peer address are
-    /// **preserved** because they represent request-scoped metadata (tenant ID,
-    /// verified identity, trace context, originating peer) that should survive
-    /// cross-pipeline hops.
+    /// Transport headers, authorized identity entries, materialized context,
+    /// and peer address are **preserved** because they represent request-scoped
+    /// metadata that should survive cross-pipeline hops. Materialized entries
+    /// retain declaration provenance, so a destination plan accepts them only
+    /// when its declaration is identical.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
