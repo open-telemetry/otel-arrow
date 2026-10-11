@@ -100,7 +100,7 @@ fn normalize_explicit_buckets(buckets: &mut Vec<(f64, u32)>) {
     for read_index in 0..buckets.len() {
         let (bound, count) = buckets[read_index];
         if write_index > 0 && buckets[write_index - 1].0 == bound {
-            // Matches ME's unguarded `uint32_t +=` merge (wraps on overflow).
+            // Note: wrapping_add is specified/intentional behavior.
             buckets[write_index - 1].1 = buckets[write_index - 1].1.wrapping_add(count);
         } else {
             buckets[write_index] = (bound, count);

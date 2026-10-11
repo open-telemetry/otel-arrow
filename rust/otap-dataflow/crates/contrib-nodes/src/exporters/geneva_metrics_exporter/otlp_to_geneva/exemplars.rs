@@ -307,6 +307,12 @@ fn bucket_decision(
     }
 }
 
+// Returns the bucket index for a value in a logarithmically spaced range.
+fn logarithmic_bucket_index(value: f64, minimum: f64, maximum: f64, bucket_count: usize) -> f64 {
+    let growth = (maximum / minimum).powf(1.0 / bucket_count as f64);
+    ((value / minimum).ln() / growth.ln()).floor()
+}
+
 fn exemplar_bucket(value: f64, range: Option<(f64, f64)>, bucket_count: usize) -> Option<usize> {
     let (minimum, maximum) = range?;
     if value == maximum {
@@ -315,12 +321,11 @@ fn exemplar_bucket(value: f64, range: Option<(f64, f64)>, bucket_count: usize) -
     if minimum == maximum {
         return Some(0);
     }
-    let growth = (maximum / minimum).powf(1.0 / bucket_count as f64);
-    let raw_index = (value / minimum).ln() / growth.ln();
+    let raw_index = logarithmic_bucket_index(value, minimum, maximum, bucket_count);
     if !raw_index.is_finite() {
         return None;
     }
-    let index = raw_index.floor() as isize;
+    let index = raw_index as isize;
     if index < 0 || index > bucket_count as isize {
         return None;
     }
@@ -340,8 +345,7 @@ fn mixed_negative_exemplar_bucket(
     let raw_index = if value == minimum {
         bucket_count as f64
     } else {
-        let growth = (maximum / minimum).powf(1.0 / bucket_count as f64);
-        ((value / minimum).ln() / growth.ln()).floor()
+        logarithmic_bucket_index(value, minimum, maximum, bucket_count)
     };
     if !raw_index.is_finite() {
         return None;
