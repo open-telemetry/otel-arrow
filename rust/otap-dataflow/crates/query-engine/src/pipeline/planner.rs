@@ -1461,7 +1461,7 @@ pub enum AttributesIdentifier {
 #[cfg(test)]
 mod test {
     use otel_arrow_contrib_data_engine_kql_parser::Parser;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs, otlp::metrics::MetricType};
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{MetricTypeContext, Pipeline, planner::PipelinePlanner};
@@ -1808,6 +1808,27 @@ mod test {
             "logs | where name == \"x\"",
             SignalKind::Logs,
             "unknown field name for signal type",
+        );
+    }
+
+    /// Scenario: invalid metric data point field names are rejected
+    #[test]
+    fn test_data_point_field_name_validation() {
+        let query = "metrics | apply data_points {
+            where max > 0
+        }";
+        assert_planning_error_contains(
+            query,
+            SignalKind::Metrics(MetricTypeContext::All),
+            "unknown field max for data point type",
+        );
+
+        let query = "histograms | apply data_points {
+            where max > 0
+        }";
+        assert_planning_ok(
+            query,
+            SignalKind::Metrics(MetricTypeContext::Single(MetricType::Histogram)),
         );
     }
 
