@@ -32,9 +32,8 @@ where
     let bounds = point.explicit_bounds();
     let mut buckets = Vec::with_capacity(bounds.size_hint().0 + 1);
     let mut bound_count = 0_usize;
-    // Geneva's percentile lookup returns a bucket's own bound as the answer, so it must stay
-    // finite; matches the Metrics Extension behavior of treating an absent last bound as 0.0,
-    // giving bound+1 = 1.0.
+    // Matches the existing behavior of using the last bound plus one for the synthetic
+    // overflow bucket, or 1.0 when there is no last bound.
     let mut overflow_bound = 1.0;
     let mut total = 0_u64;
     for bound in bounds {
@@ -50,12 +49,7 @@ where
         };
         total = running_total;
         buckets.push((bound, clamp_bucket_count(count)));
-        // `next_up` avoids `bound + 1.0` rounding back to `bound` for large bounds.
-        let next_bound = bound.next_up();
-        if next_bound.is_infinite() {
-            return ExplicitHistogram::Invalid;
-        }
-        overflow_bound = next_bound;
+        overflow_bound = bound + 1.0;
         current_count = counts.next();
     }
     if bound_count == 0 {
@@ -218,7 +212,7 @@ mod tests {
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, 3),
                 (2.0, 4),
-                (2.0_f64.next_up(), 5),
+                (3.0, 5),
             ]))
         );
         let extra_counts = explicit_point(vec![1.0, 2.0], vec![3, 4, 5, 999], 12);
@@ -244,19 +238,21 @@ mod tests {
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, 5),
                 (3.0, 1),
-                (huge_bound, 4),
-                (huge_bound.next_up(), 5),
+                (huge_bound, 9),
             ]))
         );
     }
 
-    /// Scenario: An explicit histogram's last bound is f64::MAX, leaving no finite value for the synthetic overflow bucket.
-    /// Guarantees: The data point is rejected rather than encoding a non-finite bucket bound.
+    /// Scenario: An explicit histogram's last bound is so large that adding one leaves it unchanged.
+    /// Guarantees: The overflow count is merged into the final bucket to match Metrics Extension behavior.
     #[test]
-    fn rejects_explicit_histogram_with_max_bound() {
+    fn coalesces_explicit_histogram_overflow_at_max_bound() {
         let histogram = explicit_histogram(&explicit_point(vec![f64::MAX], vec![1, 2], 3));
 
-        assert_eq!(histogram, ExplicitHistogram::Invalid);
+        assert_eq!(
+            histogram,
+            ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![(f64::MAX, 3)]))
+        );
     }
 
     /// Scenario: An explicit histogram includes a NaN bound among otherwise valid bounds.
@@ -283,7 +279,7 @@ mod tests {
             histogram,
             ExplicitHistogram::Buckets(MetricHistogram::Explicit(vec![
                 (1.0, u32::MAX),
-                (1.0_f64.next_up(), u32::MAX),
+                (2.0, u32::MAX),
             ]))
         );
     }

@@ -370,9 +370,8 @@ where
         ExplicitHistogram::Empty => None,
         ExplicitHistogram::Buckets(histogram) => Some(histogram),
     };
-    let Some(sum) = point.sum() else {
-        return Ok(MapPointResult::rejected(None));
-    };
+    // Matches existing behavior for absent optional sums.
+    let sum = point.sum().unwrap_or(0.0);
     let min = point.min();
     let max = point.max();
     let sampling_type = histogram_sampling_type(metric_type, min, max);
@@ -410,9 +409,8 @@ where
     {
         return Ok(MapPointResult::rejected(None));
     }
-    let Some(sum) = point.sum() else {
-        return Ok(MapPointResult::rejected(None));
-    };
+    // Matches existing behavior for absent optional sums.
+    let sum = point.sum().unwrap_or(0.0);
     let min = point.min();
     let max = point.max();
     let Some(mut positive) = sparse_buckets(point.positive()) else {
@@ -1112,7 +1110,7 @@ mod tests {
                 histogram: Some(MetricHistogram::Explicit(vec![
                     (1.0, 1),
                     (2.0, 2),
-                    (2.0_f64.next_up(), 3),
+                    (3.0, 3),
                 ])),
             })
         );
@@ -1144,10 +1142,10 @@ mod tests {
         assert_eq!(metrics[1].sampling_type & IS_RAW_DATA, 0);
     }
 
-    /// Scenario: Explicit and exponential OTLP histograms omit the sum required by the Geneva metric representation.
-    /// Guarantees: Histograms with no sum are rejected instead of publishing a fabricated zero.
+    /// Scenario: Explicit and exponential OTLP histograms omit their optional sums.
+    /// Guarantees: Both histogram types are published with a zero sum to match Metrics Extension behavior.
     #[test]
-    fn rejects_histograms_without_sums() {
+    fn defaults_missing_histogram_sums_to_zero() {
         let scope = scope_with_metrics(vec![
             gauge_metric("valid", gauge_point(Vec::new())),
             otlp_metric(
@@ -1181,9 +1179,14 @@ mod tests {
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
-        assert_eq!(mapped.rejected_data_points, 2);
-        assert_eq!(mapped.packet.metrics.len(), 1);
-        assert_eq!(mapped.packet.metrics[0].name, "valid");
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 3);
+        for metric in &mapped.packet.metrics[1..] {
+            let MetricValues::Double(values) = &metric.values else {
+                panic!("histogram should map to double values");
+            };
+            assert_eq!(values.sum, Some(0.0));
+        }
     }
 
     /// Scenario: An exponential histogram data point sets a nonzero `zero_threshold`.
