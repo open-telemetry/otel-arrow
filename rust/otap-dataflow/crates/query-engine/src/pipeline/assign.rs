@@ -2085,7 +2085,9 @@ fn validate_assign(
             let dest_type = match record_type {
                 RecordType::Signal(ctx) => {
                     root_field_type(col_name, ctx).ok_or_else(|| Error::InvalidPipelineError {
-                        cause: format!("cannot assign to non-existent column '{col_name}'"),
+                        cause: format!(
+                            "cannot assign to field '{col_name}' for signal type {ctx:?}"
+                        ),
                         query_location: dest_query_location.cloned(),
                     })?
                 }
@@ -3035,7 +3037,7 @@ mod test {
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
-                    err_msg.contains("cannot assign to non-existent column 'bad_column'"),
+                    err_msg.contains("cannot assign to field 'bad_column' for signal type"),
                     "unexpected error message: {err_msg:?}"
                 )
             }
