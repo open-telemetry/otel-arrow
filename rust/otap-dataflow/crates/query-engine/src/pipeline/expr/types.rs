@@ -54,7 +54,10 @@ pub enum ExprLogicalType {
 
 impl ExprLogicalType {
     pub fn is_integer(&self) -> bool {
-        matches!(self, Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32)
+        matches!(
+            self,
+            Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32 | Self::UInt64
+        )
     }
 
     fn is_signed_integer(&self) -> bool {
@@ -73,7 +76,7 @@ impl ExprLogicalType {
         match self {
             Self::UInt8 => Some(8),
             Self::Int32 | Self::UInt32 => Some(32),
-            Self::Int64 => Some(64),
+            Self::UInt64 | Self::Int64 => Some(64),
             _ => None,
         }
     }
