@@ -404,11 +404,10 @@ where
 {
     if point.flags().no_recorded_value()
         || !(MIN_EXPONENTIAL_SCALE..=MAX_EXPONENTIAL_SCALE).contains(&point.scale())
-        // Geneva's model only carries `zero_count`, which can't represent a nonzero threshold.
-        || point.zero_threshold() != 0.0
     {
         return Ok(MapPointResult::rejected(None));
     }
+    // Matches existing behavior of ignoring zero_threshold and using only zero_count.
     // Matches existing behavior for absent optional sums.
     let sum = point.sum().unwrap_or(0.0);
     let min = point.min();
@@ -1190,35 +1189,37 @@ mod tests {
     }
 
     /// Scenario: An exponential histogram data point sets a nonzero `zero_threshold`.
-    /// Guarantees: The point is rejected, since Geneva's exponential-histogram model only carries
-    /// `zero_count` and cannot represent the OTLP zero-threshold interval without changing the
-    /// distribution's semantics.
+    /// Guarantees: The point is mapped using only `zero_count`, matching existing behavior of
+    /// ignoring the zero threshold.
     #[test]
-    fn rejects_nonzero_zero_threshold() {
-        let scope = scope_with_metrics(vec![
-            gauge_metric("valid", gauge_point(Vec::new())),
-            otlp_metric(
-                "exponential",
-                metric::Data::ExponentialHistogram(ExponentialHistogram {
-                    data_points: vec![ExponentialHistogramDataPoint {
-                        time_unix_nano: TEST_TIME_NANOS,
-                        count: 1,
-                        sum: Some(1.0),
-                        zero_count: 1,
-                        zero_threshold: 0.5,
-                        ..Default::default()
-                    }],
-                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
-                }),
-            ),
-        ]);
+    fn ignores_nonzero_zero_threshold() {
+        let scope = scope_with_metrics(vec![otlp_metric(
+            "exponential",
+            metric::Data::ExponentialHistogram(ExponentialHistogram {
+                data_points: vec![ExponentialHistogramDataPoint {
+                    time_unix_nano: TEST_TIME_NANOS,
+                    count: 1,
+                    sum: Some(1.0),
+                    zero_count: 1,
+                    zero_threshold: 0.5,
+                    ..Default::default()
+                }],
+                aggregation_temporality: AggregationTemporality::Cumulative as i32,
+            }),
+        )]);
 
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
-        assert_eq!(mapped.rejected_data_points, 1);
+        assert_eq!(mapped.rejected_data_points, 0);
         assert_eq!(mapped.packet.metrics.len(), 1);
-        assert_eq!(mapped.packet.metrics[0].name, "valid");
+        let MetricValues::Double(values) = &mapped.packet.metrics[0].values else {
+            panic!("histogram should use double values");
+        };
+        let Some(MetricHistogram::Exponential(histogram)) = &values.histogram else {
+            panic!("exponential histogram should be present");
+        };
+        assert_eq!(histogram.zero_count, 1);
     }
     /// Scenario: Explicit and exponential histograms report scalar counts above the Geneva `u32` wire limit.
     /// Guarantees: Oversized counts are rejected instead of wrapping while other valid metrics remain publishable.
