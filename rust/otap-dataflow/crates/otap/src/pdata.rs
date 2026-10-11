@@ -372,7 +372,7 @@ fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
 
 /// Context for OTAP requests.
 ///
-/// Carries five independent concerns:
+/// Carries independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
