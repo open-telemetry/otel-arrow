@@ -358,6 +358,15 @@ impl MaterializedContext {
             .map(|index| &self.entries()[index])
     }
 
+    fn is_materialized(
+        &self,
+        entry: &ContextEntryLayout,
+        declaration: &ContextEntryDeclaration,
+    ) -> bool {
+        self.entry(&entry.name)
+            .is_some_and(|materialized| materialized.matches_declaration(declaration))
+    }
+
     /// Materializes composites not already present under the same declaration.
     ///
     /// Existing entries are retained only when their originating declaration
@@ -371,10 +380,10 @@ impl MaterializedContext {
         if plan.is_empty() {
             return;
         }
-        if plan.entries().all(|(entry, declaration)| {
-            self.entry(&entry.name)
-                .is_some_and(|materialized| materialized.matches_declaration(declaration.as_ref()))
-        }) {
+        if plan
+            .entries()
+            .all(|(entry, declaration)| self.is_materialized(entry, declaration))
+        {
             return;
         }
 
