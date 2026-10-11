@@ -1541,13 +1541,13 @@ impl FlowMetricHook for OtapPdata {
 ///   $trait_name   - `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      - fully-qualified EffectHandler type
 ///   $id_method    - `processor_id` or `receiver_id`
-///   $hook         - `with_hook` (processors: invokes `before_processor_send`)
-///                   or `no_hook` (receivers: no per-send bookkeeping)
-macro_rules! maybe_processor_send_hook {
-    (with_hook, $handler:expr, $data:expr) => {
+///   $before_send  - `processor_flow_metrics` invokes `before_processor_send`
+///                   or `receiver_materialization` materializes configured context
+macro_rules! before_message_source_send {
+    (processor_flow_metrics, $handler:expr, $data:expr) => {
         $data.before_processor_send($handler);
     };
-    (no_hook, $handler:expr, $data:expr) => {
+    (receiver_materialization, $handler:expr, $data:expr) => {
         $handler.materialize_context($data);
     };
 }
@@ -1558,7 +1558,7 @@ macro_rules! impl_message_source_ext {
         $trait_name:ident,
         $handler:ty,
         $id_method:ident,
-        $hook:ident,
+        $before_send:ident,
         $completion_from_output:expr
     ) => {
         #[$async_attr]
@@ -1572,7 +1572,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -1585,7 +1585,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -1602,7 +1602,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -1619,7 +1619,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -1631,7 +1631,7 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook,
+    processor_flow_metrics,
     false
 );
 impl_message_source_ext!(
@@ -1639,7 +1639,7 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook,
+    receiver_materialization,
     true
 );
 impl_message_source_ext!(
@@ -1647,7 +1647,7 @@ impl_message_source_ext!(
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook,
+    processor_flow_metrics,
     false
 );
 impl_message_source_ext!(
@@ -1655,7 +1655,7 @@ impl_message_source_ext!(
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook,
+    receiver_materialization,
     true
 );
 
