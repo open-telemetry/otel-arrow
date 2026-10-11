@@ -43,8 +43,8 @@ impl<'a> TryFrom<&'a RecordBatch> for SummaryDpArrays<'a> {
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano = get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?;
-        let summary_count = get_u64_array_opt(rb, consts::SUMMARY_COUNT)?;
-        let summary_sum = get_f64_array_opt(rb, consts::SUMMARY_SUM)?;
+        let summary_count = get_u64_array_opt(rb, consts::COUNT)?;
+        let summary_sum = get_f64_array_opt(rb, consts::SUM)?;
         let flags = get_u32_array_opt(rb, consts::FLAGS)?;
         let summary_quantile_values = rb
             .column_by_name(consts::SUMMARY_QUANTILE_VALUES)

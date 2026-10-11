@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::{SignalType, context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
@@ -41,6 +42,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
+use otel_arrow_dfe_query_engine::pipeline::{MetricTypeContext, SignalContext, SignalKind};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
@@ -91,22 +93,39 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
         // about invalid expressions in user's config
         match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let (expr, function_defs) =
-                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not parse OPL Expression: {e:?}"),
-                    })?;
-
-                let _ = Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
-                    }
-                })?;
+                let _ = try_create_partitioner(&opl_expression, config.signal_type.as_ref())?;
             }
         };
         Ok(())
     },
 };
+
+fn try_create_partitioner(
+    opl_expression: &str,
+    signal_type: Option<&SignalType>,
+) -> Result<Partitioner, ConfigError> {
+    let (expr, function_defs) =
+        OplParser::parse_expr_with_options(opl_expression, default_parser_options()).map_err(
+            |e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!("Could not parse OPL Expression: {e:?}"),
+            },
+        )?;
+
+    let signal_context = match signal_type {
+        None => SignalContext::All,
+        Some(SignalType::Logs) => SignalContext::Single(SignalKind::Logs),
+        Some(SignalType::Metrics) => {
+            SignalContext::Single(SignalKind::Metrics(MetricTypeContext::All))
+        }
+        Some(SignalType::Traces) => SignalContext::Single(SignalKind::Traces),
+    };
+
+    Partitioner::try_new(expr, function_defs, signal_context).map_err(|e| {
+        ConfigError::InvalidUserConfig {
+            error: format!("Could not plan partitioner from OPL expression: {e:?}"),
+        }
+    })
+}
 
 /// partition processor.
 pub struct PartitionProcessor {
@@ -115,6 +134,10 @@ pub struct PartitionProcessor {
     header_name: ContextEntryName,
     serialization_strategy: PartitionValueSerializeStrategy,
     metrics: MeasurementMetricSet<Metrics>,
+
+    /// batches containing this type of signal will be partitioned by this instance, other batches
+    /// will be passed through unmodified. Set to None to partition all signal batches.
+    signal_type: Option<SignalType>,
 }
 
 impl PartitionProcessor {
@@ -131,17 +154,7 @@ impl PartitionProcessor {
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let (expr, function_defs) =
-                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not parse OPL Expression: {e:?}"),
-                    })?;
-
-                Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
-                    }
-                })?
+                try_create_partitioner(&opl_expression, config.signal_type.as_ref())?
             }
         };
 
@@ -151,6 +164,7 @@ impl PartitionProcessor {
             header_name: config.partition_header_name,
             serialization_strategy: config.header_serialization_strategy,
             metrics: Metrics::register(pipeline_ctx),
+            signal_type: config.signal_type,
         })
     }
 
@@ -247,6 +261,14 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
             },
             Message::PData(mut pdata) => {
+                // check if this batch should be pass-through based on configured signal type
+                if let Some(expected_signal_type) = &self.signal_type
+                    && pdata.signal_type() != *expected_signal_type
+                {
+                    effect_handler.send_message_with_source_node(pdata).await?;
+                    return Ok(());
+                }
+
                 // get/preserve the original flow_metric ns counter
                 let flow_metrics_counter = pdata.take_flow_compute();
                 if let Some(flow) = flow_metrics_counter {
@@ -539,6 +561,7 @@ mod test {
     ) -> TransportHeader {
         TransportHeader::new(context_name(name.as_ref()), value_kind, value)
     }
+    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_otap::{
         OTAP_PIPELINE_FACTORY,
         pdata::Context,
@@ -552,6 +575,7 @@ mod test {
             opentelemetry::{
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
             },
         },
@@ -563,7 +587,7 @@ mod test {
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
-    ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
+    ) -> Result<ProcessorWrapper<OtapPdata>, EngineError> {
         let mut node_config = NodeUserConfig::new_processor_config(PARTITION_PROCESSOR_URN);
         node_config.config = config;
 
@@ -585,21 +609,23 @@ mod test {
             &mut pipeline_context,
             &OTAP_PIPELINE_FACTORY,
             pipeline_config,
-        )
-        .expect("test context bindings should compile");
+        )?;
         let pipeline_context = pipeline_context.with_node_context(
             "partition_processor".into(),
             node_config.r#type.clone(),
             node_config.kind(),
             HashMap::new(),
         );
-        create_partition_processor(
+        let processor = create_partition_processor(
             pipeline_context,
             node_id,
             Arc::new(node_config),
             runtime.config(),
             &Capabilities::empty(),
         )
+        .map_err(|config_err| EngineError::ConfigError(Box::new(config_err)))?;
+
+        Ok(processor)
     }
 
     fn partition_operation_counts(
@@ -927,6 +953,81 @@ mod test {
             });
     }
 
+    /// Scenario: batches where only some will be partitioned because of configured signal type
+    /// Guarantees: only the selected batches are partitioned
+    #[test]
+    fn test_treats_non_configured_batch_types_as_passthrough() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": "instrumentation_scope.name" },
+                "signal_type": "Logs",
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .expect("create partition processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let logs_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![
+                            ScopeLogs::new(
+                                InstrumentationScope::build().name("scope1").finish(),
+                                vec![LogRecord::build().event_name("hello1").finish()],
+                            ),
+                            ScopeLogs::new(
+                                InstrumentationScope::build().name("scope2").finish(),
+                                vec![LogRecord::build().event_name("hello2").finish()],
+                            ),
+                        ],
+                    )],
+                }));
+
+                let metrics_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![
+                            ScopeMetrics::new(
+                                InstrumentationScope::build().name("scope1").finish(),
+                                vec![Metric::build().name("hello1").finish()],
+                            ),
+                            ScopeMetrics::new(
+                                InstrumentationScope::build().name("scope2").finish(),
+                                vec![Metric::build().name("hello2").finish()],
+                            ),
+                        ],
+                    )],
+                }));
+
+                ctx.process(Message::PData(OtapPdata::new_default(logs_batch.into())))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(OtapPdata::new_default(metrics_batch.into())))
+                    .await
+                    .unwrap();
+
+                let output_batches = ctx.drain_pdata().await;
+
+                let mut logs_count = 0;
+                let mut metrics_count = 0;
+                for batch in output_batches {
+                    match batch.signal_type() {
+                        SignalType::Logs => logs_count += 1,
+                        SignalType::Metrics => metrics_count += 1,
+                        SignalType::Traces => panic!("unexpected signal type"),
+                    }
+                }
+
+                assert_eq!(logs_count, 2);
+                assert_eq!(metrics_count, 1);
+            })
+            .validate(move |_ctx| async move {})
+    }
+
     /// Scenario: A partition expression divides by zero while processing a PData message.
     /// Guarantees: The processor returns an error and reports one failed partition operation.
     #[test]
@@ -937,6 +1038,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": "severity_number / 0" },
+                "signal_type": "Logs",
                 "partition_header_name": "partition-header",
             }),
             &runtime,
@@ -1985,5 +2087,28 @@ mod test {
                 entry: context_name("x-partition"),
             }
         );
+    }
+
+    /// Scenario: the config partition expression references a field that is not valid for the
+    /// configured signal type
+    /// Guarantees: an error is returned when validating the config which explains the problem.
+    #[test]
+    fn test_invalid_field_name_is_config_error() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let config = serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "x-partition",
+            "signal_type": "Logs"
+        });
+
+        let Err(error) = create_processor_with_config(config, &runtime) else {
+            panic!("expected error, got Ok")
+        };
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("unknown field name for signal type Single"),
+            "unexpected error {}",
+            error_message
+        )
     }
 }
