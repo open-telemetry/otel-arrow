@@ -2594,6 +2594,67 @@ mod test {
         );
     }
 
+    /// Scenario: repeated captured binary headers retain their complete source representation.
+    /// Guarantees: materialization preserves kind, original name, order, bytes, and cardinality.
+    #[test]
+    fn materializes_repeated_binary_header_fidelity() {
+        let header_name =
+            ContextEntryName::try_from("custom-bin").expect("valid stored header name");
+        let member_name =
+            ContextEntryName::try_from("payload").expect("valid materialized member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::TransportHeader {
+                name: header_name.clone(),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("source").expect("valid constant member name"),
+                value: "test".to_owned(),
+            },
+        ]);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::captured(
+            header_name.clone(),
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x00, 0xff],
+        ));
+        headers.push(TransportHeader::captured(
+            header_name,
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x01, 0xfe],
+        ));
+        let mut pdata = create_test_pdata();
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_header = false;
+        resolved.visit_members(|member| {
+            if member.name() != &member_name {
+                return;
+            }
+            found_header = true;
+            assert_eq!(member.name(), &member_name);
+            assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+            let values = member.values().values();
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0].kind(), ContextValueKind::Binary);
+            assert_eq!(values[0].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[0].bytes(), [0x00, 0xff]);
+            assert_eq!(values[1].kind(), ContextValueKind::Binary);
+            assert_eq!(values[1].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[1].bytes(), [0x01, 0xfe]);
+        });
+        assert!(found_header, "materialized header member is present");
+    }
+
     #[tokio::test]
     async fn local_receiver_send_with_source_to_named_port() {
         let (a_tx, a_rx) = LocalChannel::<OtapPdata>::new(2);

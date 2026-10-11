@@ -724,6 +724,20 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     context_materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
 }
 
+fn validate_context_materialization_support<PData>(
+    plan: Option<&context_declaration::ContextMaterializationPlan>,
+    materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
+) -> Result<(), Error> {
+    if plan.is_some() && materializer.is_none() {
+        return Err(Error::ConfigError(Box::new(
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "pipeline data type does not support context materialization".to_owned(),
+            },
+        )));
+    }
+    Ok(())
+}
+
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
@@ -1993,13 +2007,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .compiled_context_bindings()
             .context_materialization_plan(&pipeline_ctx.pipeline_key())
             .cloned();
-        if context_materialization_plan.is_some() && self.context_materializer.is_none() {
-            return Err(Error::ConfigError(Box::new(
-                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                    error: "pipeline data type does not support context materialization".to_owned(),
-                },
-            )));
-        }
+        validate_context_materialization_support(
+            context_materialization_plan.as_ref(),
+            self.context_materializer,
+        )?;
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -2697,11 +2708,53 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context_policy::{
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+    };
     use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         TokenBucketPolicy,
     };
     use std::time::Duration;
+
+    fn materialize_unit(_: &mut (), _: &context_declaration::ContextMaterializationPlan) {}
+
+    /// Scenario: receiver construction sees every plan/materializer compatibility combination.
+    /// Guarantees: only a present plan without a registered materializer fails configuration.
+    #[test]
+    fn context_materialization_support_fails_closed() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: ContextEntryName::try_from("request").expect("valid composite name"),
+            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            }]),
+        };
+        let plan = context_declaration::ContextMaterializationPlan::compile(&[declaration])
+            .expect("plan compiles");
+
+        assert!(validate_context_materialization_support::<()>(None, None).is_ok());
+        assert!(validate_context_materialization_support(None, Some(materialize_unit)).is_ok());
+        assert!(
+            validate_context_materialization_support(Some(&plan), Some(materialize_unit)).is_ok()
+        );
+        let error = validate_context_materialization_support::<()>(Some(&plan), None)
+            .expect_err("plan without materializer must fail");
+        match error {
+            Error::ConfigError(error) => match error.as_ref() {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig { error } => {
+                    assert_eq!(
+                        error,
+                        "pipeline data type does not support context materialization"
+                    );
+                }
+                error => panic!("unexpected configuration error: {error}"),
+            },
+            error => panic!("unexpected receiver construction error: {error}"),
+        }
+    }
 
     /// Scenario: runtime metric levels resolve optional data-path measurements.
     /// Guarantees: detailed metrics enable node duration, item counts, and size while normal metrics enable none by default.
