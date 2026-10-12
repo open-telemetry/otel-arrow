@@ -47,6 +47,7 @@ struct CounterFixture {
     size_status: u32,
     info_size: u32,
     fill_status: u32,
+    fill_size: Option<u32>,
     raw_status: u32,
     raw_cstatus: u32,
     base: i64,
@@ -63,6 +64,7 @@ impl CounterFixture {
             size_status: PDH_MORE_DATA,
             info_size: size_of::<PDH_COUNTER_INFO_W>() as u32,
             fill_status: 0,
+            fill_size: None,
             raw_status: 0,
             raw_cstatus: PDH_CSTATUS_VALID_DATA,
             base: 10,
@@ -142,25 +144,25 @@ impl PdhApi for FakePdh {
         Ok(())
     }
 
-    fn info(
-        &mut self,
-        counter: PDH_HCOUNTER,
-        size: &mut u32,
-        info: *mut PDH_COUNTER_INFO_W,
-    ) -> u32 {
+    fn counter_type(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<u32, Error> {
         let state = self.0.borrow();
         assert!(state.handles.contains(&counter.addr()));
         let fixture = &state.counters[counter.addr() - 1];
-        if info.is_null() {
-            *size = fixture.info_size;
-            fixture.size_status
-        } else {
-            if fixture.fill_status == 0 {
-                // SAFETY: inspect_counter supplies an aligned, full-header buffer.
-                unsafe { (*info).dwType = fixture.native_type };
+        NativePdh::counter_type_with(path, |size, buffer| {
+            if let Some(buffer) = buffer {
+                assert!((*size as usize) <= size_of_val(buffer));
+                if fixture.fill_status == 0 {
+                    buffer[0].dwType = fixture.native_type;
+                }
+                if let Some(fill_size) = fixture.fill_size {
+                    *size = fill_size;
+                }
+                Ok(fixture.fill_status)
+            } else {
+                *size = fixture.info_size;
+                Ok(fixture.size_status)
             }
-            fixture.fill_status
-        }
+        })
     }
 
     fn collect(&mut self, _: PDH_HQUERY) -> Result<(), Error> {
@@ -183,21 +185,30 @@ impl PdhApi for FakePdh {
         })
     }
 
-    fn formatted(&mut self, counter: PDH_HCOUNTER, format: u32) -> (u32, PDH_FMT_COUNTERVALUE) {
+    fn formatted(
+        &mut self,
+        counter: PDH_HCOUNTER,
+        path: &str,
+        format: ValueFormat,
+    ) -> Result<Option<Number>, Error> {
         let mut state = self.0.borrow_mut();
         let index = counter.addr() - 1;
         assert!(state.handles.contains(&counter.addr()));
-        state.formats.push((index, format));
-        let fixture = &state.counters[index];
-        let mut value = PDH_FMT_COUNTERVALUE {
-            CStatus: fixture.format_cstatus,
-            ..Default::default()
-        };
-        match fixture.number {
-            Number::Integer(number) => value.Anonymous.largeValue = number,
-            Number::Double(number) => value.Anonymous.doubleValue = number,
-        }
-        (fixture.format_status, value)
+        NativePdh::formatted_with(path, format, |flags, value| {
+            state.formats.push((index, flags));
+            let fixture = &state.counters[index];
+            value.CStatus = fixture.format_cstatus;
+            match (format, fixture.number) {
+                (ValueFormat::Integer, Number::Integer(number)) => {
+                    value.Anonymous.largeValue = number;
+                }
+                (ValueFormat::Double, Number::Double(number)) => {
+                    value.Anonymous.doubleValue = number;
+                }
+                _ => panic!("fixture number must match the requested format"),
+            }
+            fixture.format_status
+        })
     }
 
     fn close(&mut self, _: PDH_HQUERY) -> u32 {
@@ -289,11 +300,11 @@ fn opening_fails_without_a_query_or_usable_counters() {
     }
 }
 
-/// Scenario: Counter-info sizing, buffer filling or native-type inspection fails on a later counter.
+/// Scenario: Counter-info sizing, buffer filling, filled size or native-type inspection fails on a later counter.
 /// Guarantees: Unfilled zeroed metadata never becomes a valid counter; startup diagnostics preserve the failure and healthy peers collect.
 #[test]
 fn inspection_failure_cleans_up_without_classifying_zero_buffer() {
-    for failure in 0..5 {
+    for failure in 0..7 {
         let (api, state, configs) = fake(vec![
             CounterFixture::new(0, Number::Integer(1)),
             CounterFixture::new(0, Number::Integer(2)),
@@ -307,6 +318,8 @@ fn inspection_failure_cleans_up_without_classifying_zero_buffer() {
                 2 => counter.fill_status = PDH_INVALID_DATA,
                 3 => counter.fill_status = PDH_MORE_DATA,
                 4 => counter.native_type = 0x4003_0401,
+                5 => counter.fill_size = Some(1),
+                6 => counter.fill_size = Some(counter.info_size + 1),
                 _ => unreachable!(),
             }
         }
@@ -361,14 +374,15 @@ fn failed_counter_removal_remains_owned_and_reported() {
     assert!(state.borrow().handles.is_empty());
 }
 
-/// Scenario: Successfully filled metadata has native type zero, and direct counts use decimal scaling.
-/// Guarantees: Valid zero types emit exact integers; configured scaling alone controls double output.
+/// Scenario: Variable-sized metadata has native type zero, and direct counts use decimal scaling.
+/// Guarantees: Padded metadata storage preserves valid zero types and exact integers; configured scaling alone controls double output.
 #[test]
 fn direct_reads_preserve_integers_and_apply_only_configured_scaling() {
     let (api, state, mut configs) = fake(vec![
         CounterFixture::new(0, Number::Integer(i64::MAX)),
         CounterFixture::new(0x0001_0100, Number::Integer(7)),
     ]);
+    state.borrow_mut().counters[0].info_size += 1;
     configs[1].scale_power10 = -1;
     let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
     for _ in 0..3 {
@@ -399,14 +413,15 @@ fn direct_reads_preserve_integers_and_apply_only_configured_scaling() {
     );
 }
 
-/// Scenario: A two-sample calculation warms up, then PDH returns a percentage above 100.
-/// Guarantees: Warm-up is not a failure and the calculated value remains an unclamped scaled double.
+/// Scenario: A two-sample calculation seeds readiness with a zero raw base, then PDH returns a percentage above 100.
+/// Guarantees: A zero history value still completes warm-up and the calculated value remains an unclamped scaled double.
 #[test]
 fn calculated_reads_warm_up_and_do_not_cap_percentages() {
     let (api, state, mut configs) = fake(vec![CounterFixture::new(
         0x2051_0500,
         Number::Double(250.0),
     )]);
+    state.borrow_mut().counters[0].base = 0;
     configs[0].scale_power10 = -2;
     let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
     let warmup = query.collect().unwrap();
@@ -471,23 +486,6 @@ fn base_progression_and_reset_preserve_sequence_start() {
         assert_eq!(sample.points[0].value, expected);
         assert!(sample.failures.is_empty());
     }
-}
-
-/// Scenario: An average is marked ready but its previous receiver-side base is absent.
-/// Guarantees: The read omits instead of panicking, seeds the current base, and resumes on advancement.
-#[test]
-fn missing_previous_base_omits_without_panicking() {
-    let (api, state, configs) = fake(vec![CounterFixture::new(0x4002_0500, Number::Double(4.0))]);
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
-    query.counters[0].ready = true;
-    let sample = query.collect().unwrap();
-    assert!(sample.failures.is_empty());
-    assert_eq!(sample.points[0].value, SampleValue::NoObservation);
-    state.borrow_mut().counters[0].base = 12;
-    assert_eq!(
-        query.collect().unwrap().points[0].value,
-        SampleValue::Value(Number::Double(4.0))
-    );
 }
 
 /// Scenario: Formatted reads report missing or invalid data, or a negative calculation status.
@@ -560,7 +558,7 @@ fn formatted_statuses_omit_and_reset_readiness() {
 }
 
 /// Scenario: A genuine formatted API error accompanies valid or expected-omission data status.
-/// Guarantees: An unrelated API error cannot be hidden by the returned data status.
+/// Guarantees: An unrelated API error cannot be hidden by data status or discard valid raw history.
 #[test]
 fn real_formatted_errors_remain_failures() {
     for (status, cstatus) in [
@@ -585,8 +583,21 @@ fn real_formatted_errors_remain_failures() {
                 .error
                 .contains("PdhGetFormattedCounterValue")
         );
+        assert!(sample.failures[0].error.contains("failed with PDH status"));
         assert_eq!(sample.points.len(), 1);
         assert_eq!(sample.points[0].counter_index, 1);
+        {
+            let mut state = state.borrow_mut();
+            state.counters[0].format_status = 0;
+            state.counters[0].format_cstatus = PDH_CSTATUS_VALID_DATA;
+        }
+        let recovered = query.collect().unwrap();
+        assert!(recovered.failures.is_empty());
+        assert_eq!(
+            recovered.points[0].value,
+            SampleValue::Value(Number::Double(3.0))
+        );
+        assert_eq!(recovered.start_time_unix_nano, 100);
     }
 }
 
@@ -716,6 +727,11 @@ fn formatted_invalid_data_preserves_specific_failures() {
             assert!(
                 sample.failures[0]
                     .error
+                    .contains("failed with counter data status")
+            );
+            assert!(
+                sample.failures[0]
+                    .error
                     .contains(&format!("0x{cstatus:08X}"))
             );
             assert_eq!(sample.points.len(), 1);
@@ -766,6 +782,12 @@ fn real_raw_errors_remain_failures() {
         assert_eq!(sample.failures.len(), 1);
         assert_eq!(sample.failures[0].counter_index, 0);
         assert!(sample.failures[0].error.contains(&configs[0].path));
+        let status_label = if status == 0 {
+            "failed with counter data status"
+        } else {
+            "failed with PDH status"
+        };
+        assert!(sample.failures[0].error.contains(status_label));
         assert_eq!(sample.points.len(), 1);
         assert_eq!(sample.points[0].counter_index, 1);
         assert_eq!(
@@ -969,22 +991,17 @@ fn native_formulas_from_raw_fixtures() {
             SecondValue: previous_second,
             ..Default::default()
         };
-        let mut value = PDH_FMT_COUNTERVALUE::default();
-        // SAFETY: All pointers reference initialized fixture values and writable output.
-        let status = unsafe {
-            PdhFormatFromRawValue(
-                native_type,
-                PDH_FMT_DOUBLE | PDH_FMT_NOSCALE | PDH_FMT_NOCAP100,
-                &time_base,
-                &current,
-                &previous,
-                &mut value,
-            )
+        let value = NativePdh::formatted_with("fixture", ValueFormat::Double, |flags, value| {
+            // SAFETY: All pointers reference initialized fixture values and writable output.
+            unsafe {
+                PdhFormatFromRawValue(native_type, flags, &time_base, &current, &previous, value)
+            }
+        })
+        .unwrap();
+        let Some(Number::Double(actual)) = value else {
+            panic!("successful native double formatting must return a double");
         };
-        check("PdhFormatFromRawValue", "fixture", status).unwrap();
-        check_data("fixture CStatus", "fixture", value.CStatus).unwrap();
-        // SAFETY: The successful PDH_FMT_DOUBLE call initialized doubleValue.
-        assert!((unsafe { value.Anonymous.doubleValue } - expected).abs() < 1e-9);
+        assert!((actual - expected).abs() < 1e-9);
     }
 }
 

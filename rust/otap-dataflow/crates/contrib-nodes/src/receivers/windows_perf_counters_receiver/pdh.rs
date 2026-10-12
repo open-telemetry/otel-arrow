@@ -6,10 +6,11 @@
 
 use super::config::CounterConfig;
 use super::model::{
-    Sample, SampleFailure, SamplePoint, SampleValue, ScaleError, scale_double, scale_integer,
+    Number, Sample, SampleFailure, SamplePoint, SampleValue, ScaleError, scale_double,
+    scale_integer,
 };
 use super::native_type::{CounterKind, UnsupportedNativeType, classify_native_type};
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::ptr::{null, null_mut};
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::System::Performance::{
@@ -44,6 +45,13 @@ pub(super) enum Error {
         path: String,
         status: u32,
     },
+    /// A counter's CStatus failure, separate from a PDH API return code.
+    #[error("{operation} for {path} failed with counter data status 0x{status:08X}")]
+    CounterData {
+        operation: &'static str,
+        path: String,
+        status: u32,
+    },
     #[error(transparent)]
     UnsupportedType(#[from] UnsupportedNativeType),
     #[error("no configured performance counter could be loaded; startup failures: {failures:?}")]
@@ -72,7 +80,7 @@ fn check_data(operation: &'static str, path: &str, status: u32) -> Result<(), Er
     if matches!(status, PDH_CSTATUS_VALID_DATA | PDH_CSTATUS_NEW_DATA) {
         Ok(())
     } else {
-        Err(Error::Pdh {
+        Err(Error::CounterData {
             operation,
             path: path.to_owned(),
             status,
@@ -108,16 +116,28 @@ fn is_no_observation_data_status(status: u32) -> bool {
     )
 }
 
-/// Private call seam for deterministic Windows status and ownership tests.
+/// The numeric representation requested from PDH.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ValueFormat {
+    Integer,
+    Double,
+}
+
+/// Native operations with metadata storage and formatted-value decoding owned by the adapter.
 pub(super) trait PdhApi {
     fn open(&mut self) -> Result<PDH_HQUERY, Error>;
     fn add(&mut self, query: PDH_HQUERY, path: &str) -> Result<PDH_HCOUNTER, Error>;
     fn remove(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<(), Error>;
-    fn info(&mut self, counter: PDH_HCOUNTER, size: &mut u32, info: *mut PDH_COUNTER_INFO_W)
-    -> u32;
+    fn counter_type(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<u32, Error>;
     fn collect(&mut self, query: PDH_HQUERY) -> Result<(), Error>;
     fn raw(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<PDH_RAW_COUNTER, Error>;
-    fn formatted(&mut self, counter: PDH_HCOUNTER, format: u32) -> (u32, PDH_FMT_COUNTERVALUE);
+    /// Returns an unscaled value, an expected omission, or a validated failure.
+    fn formatted(
+        &mut self,
+        counter: PDH_HCOUNTER,
+        path: &str,
+        format: ValueFormat,
+    ) -> Result<Option<Number>, Error>;
     fn close(&mut self, query: PDH_HQUERY) -> u32;
     fn timestamp(&mut self) -> Result<i64, Error>;
 }
@@ -151,15 +171,22 @@ impl PdhApi for NativePdh {
         })
     }
 
-    fn info(
-        &mut self,
-        counter: PDH_HCOUNTER,
-        size: &mut u32,
-        info: *mut PDH_COUNTER_INFO_W,
-    ) -> u32 {
-        // SAFETY: The caller supplies a live counter and either null for sizing
-        // or an aligned buffer of at least `size` bytes.
-        unsafe { PdhGetCounterInfoW(counter, false, size, info) }
+    fn counter_type(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<u32, Error> {
+        Self::counter_type_with(path, |size, buffer| {
+            let info = if let Some(buffer) = buffer {
+                if (*size as usize) > size_of_val(buffer) {
+                    return Err(Error::InvalidSample(
+                        "PdhGetCounterInfoW requested size exceeds buffer capacity",
+                    ));
+                }
+                buffer.as_mut_ptr()
+            } else {
+                null_mut()
+            };
+            // SAFETY: The adapter provides either null for sizing or aligned
+            // storage with capacity for the requested size. Counter is live.
+            Ok(unsafe { PdhGetCounterInfoW(counter, false, size, info) })
+        })
     }
 
     fn collect(&mut self, query: PDH_HQUERY) -> Result<(), Error> {
@@ -178,13 +205,17 @@ impl PdhApi for NativePdh {
         Ok(raw)
     }
 
-    fn formatted(&mut self, counter: PDH_HCOUNTER, format: u32) -> (u32, PDH_FMT_COUNTERVALUE) {
-        let mut value = PDH_FMT_COUNTERVALUE::default();
-        // SAFETY: Counter is live and output storage accommodates either requested format.
-        let status =
-            unsafe { PdhGetFormattedCounterValue(counter, format, null_mut(), &mut value) };
-        // Keep CStatus even when PDH_INVALID_DATA reports a failed calculation.
-        (status, value)
+    fn formatted(
+        &mut self,
+        counter: PDH_HCOUNTER,
+        path: &str,
+        format: ValueFormat,
+    ) -> Result<Option<Number>, Error> {
+        Self::formatted_with(path, format, |flags, value| {
+            // SAFETY: Counter is live and the adapter supplies initialized,
+            // writable storage for the format it will decode.
+            unsafe { PdhGetFormattedCounterValue(counter, flags, null_mut(), value) }
+        })
     }
 
     fn close(&mut self, query: PDH_HQUERY) -> u32 {
@@ -202,35 +233,80 @@ impl PdhApi for NativePdh {
     }
 }
 
-fn inspect_counter(
-    api: &mut impl PdhApi,
-    path: &str,
-    counter: PDH_HCOUNTER,
-) -> Result<CounterKind, Error> {
-    let mut size = 0;
-    let status = api.info(counter, &mut size, null_mut());
-    if status != PDH_MORE_DATA {
-        return Err(Error::Pdh {
-            operation: "PdhGetCounterInfoW(size)",
-            path: path.to_owned(),
-            status,
-        });
+impl NativePdh {
+    fn counter_type_with(
+        path: &str,
+        mut info: impl FnMut(&mut u32, Option<&mut [PDH_COUNTER_INFO_W]>) -> Result<u32, Error>,
+    ) -> Result<u32, Error> {
+        let mut size = 0;
+        let status = info(&mut size, None)?;
+        if status != PDH_MORE_DATA {
+            return Err(Error::Pdh {
+                operation: "PdhGetCounterInfoW(size)",
+                path: path.to_owned(),
+                status,
+            });
+        }
+        if (size as usize) < size_of::<PDH_COUNTER_INFO_W>() {
+            return Err(Error::InvalidSample(
+                "PdhGetCounterInfoW returned an undersized buffer",
+            ));
+        }
+        // Typed storage guarantees the header's alignment and initializes the
+        // trailing buffer; PDH fills both the header and variable-sized data.
+        let mut buffer = vec![
+            PDH_COUNTER_INFO_W::default();
+            (size as usize).div_ceil(size_of::<PDH_COUNTER_INFO_W>())
+        ];
+        check(
+            "PdhGetCounterInfoW",
+            path,
+            info(&mut size, Some(&mut buffer))?,
+        )?;
+        if (size as usize) < size_of::<PDH_COUNTER_INFO_W>()
+            || (size as usize) > size_of_val(buffer.as_slice())
+        {
+            return Err(Error::InvalidSample(
+                "PdhGetCounterInfoW returned an invalid filled size",
+            ));
+        }
+        // Only a successful fill reaches classification; zero is a valid type.
+        Ok(buffer[0].dwType)
     }
-    if (size as usize) < size_of::<PDH_COUNTER_INFO_W>() {
-        return Err(Error::InvalidSample(
-            "PdhGetCounterInfoW returned an undersized buffer",
-        ));
+
+    fn formatted_with(
+        path: &str,
+        format: ValueFormat,
+        formatted: impl FnOnce(u32, &mut PDH_FMT_COUNTERVALUE) -> u32,
+    ) -> Result<Option<Number>, Error> {
+        let flags = match format {
+            ValueFormat::Integer => PDH_FMT_LARGE | PDH_FMT_NOSCALE,
+            ValueFormat::Double => PDH_FMT_DOUBLE | PDH_FMT_NOSCALE | PDH_FMT_NOCAP100,
+        };
+        let mut value = PDH_FMT_COUNTERVALUE::default();
+        let status = formatted(flags, &mut value);
+        if status != 0 && status != PDH_INVALID_DATA {
+            if is_no_observation_status(status) {
+                return Ok(None);
+            }
+            check("PdhGetFormattedCounterValue", path, status)?;
+        }
+        // PDH_INVALID_DATA can carry a more specific failure in CStatus.
+        if is_no_observation_data_status(value.CStatus) {
+            return Ok(None);
+        }
+        check_data("formatted counter CStatus", path, value.CStatus)?;
+        if status == PDH_INVALID_DATA {
+            return Ok(None);
+        }
+        let number = match format {
+            // SAFETY: A successful PDH_FMT_LARGE call initialized largeValue.
+            ValueFormat::Integer => Number::Integer(unsafe { value.Anonymous.largeValue }),
+            // SAFETY: A successful PDH_FMT_DOUBLE call initialized doubleValue.
+            ValueFormat::Double => Number::Double(unsafe { value.Anonymous.doubleValue }),
+        };
+        Ok(Some(number))
     }
-    let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
-    let info = buffer.as_mut_ptr().cast::<PDH_COUNTER_INFO_W>();
-    check(
-        "PdhGetCounterInfoW",
-        path,
-        api.info(counter, &mut size, info),
-    )?;
-    // SAFETY: Only a successful fill reaches classification. The aligned buffer
-    // contains the fixed header; zero is a valid native type, not a failure sentinel.
-    classify_native_type(path, unsafe { (*info).dwType }).map_err(Error::from)
 }
 
 struct CounterHandle {
@@ -239,13 +315,11 @@ struct CounterHandle {
     handle: PDH_HCOUNTER,
     kind: CounterKind,
     scale_power10: i32,
-    ready: bool,
     previous_base: Option<i64>,
 }
 
 impl CounterHandle {
     fn reset_readiness(&mut self) {
-        self.ready = false;
         self.previous_base = None;
     }
 
@@ -281,14 +355,10 @@ impl CounterHandle {
                     });
                 }
             } else {
-                let previous_base = self.previous_base.replace(raw.SecondValue);
-                if !std::mem::replace(&mut self.ready, true) {
+                let Some(previous) = self.previous_base.replace(raw.SecondValue) else {
                     return Ok(SampleValue::NoObservation);
-                }
+                };
                 if self.kind == CounterKind::CalculatedTwoSampleWithBase {
-                    let Some(previous) = previous_base else {
-                        return Ok(SampleValue::NoObservation);
-                    };
                     match raw.SecondValue.cmp(&previous) {
                         std::cmp::Ordering::Less => {
                             self.reset_readiness();
@@ -302,37 +372,26 @@ impl CounterHandle {
         }
 
         let format = if self.kind == CounterKind::Direct {
-            PDH_FMT_LARGE | PDH_FMT_NOSCALE
+            ValueFormat::Integer
         } else {
-            PDH_FMT_DOUBLE | PDH_FMT_NOSCALE | PDH_FMT_NOCAP100
+            ValueFormat::Double
         };
-        let (status, value) = api.formatted(self.handle, format);
-        if status != 0 && status != PDH_INVALID_DATA {
-            if is_no_observation_status(status) {
+        let number = match api.formatted(self.handle, &self.path, format) {
+            Ok(Some(number)) => number,
+            Ok(None) => {
                 self.reset_readiness();
                 return Ok(SampleValue::NoObservation);
             }
-            check("PdhGetFormattedCounterValue", &self.path, status)?;
-        }
-        // PDH_INVALID_DATA can carry a more specific failure in CStatus.
-        if is_no_observation_data_status(value.CStatus) {
-            self.reset_readiness();
-            return Ok(SampleValue::NoObservation);
-        }
-        if let Err(error) = check_data("formatted counter CStatus", &self.path, value.CStatus) {
-            self.reset_readiness();
-            return Err(error);
-        }
-        if status == PDH_INVALID_DATA {
-            self.reset_readiness();
-            return Ok(SampleValue::NoObservation);
-        }
-        let number = if self.kind == CounterKind::Direct {
-            // SAFETY: A successful PDH_FMT_LARGE request initialized largeValue.
-            scale_integer(unsafe { value.Anonymous.largeValue }, self.scale_power10)
-        } else {
-            // SAFETY: A successful PDH_FMT_DOUBLE request initialized doubleValue.
-            scale_double(unsafe { value.Anonymous.doubleValue }, self.scale_power10)
+            Err(error) => {
+                if matches!(error, Error::CounterData { .. }) {
+                    self.reset_readiness();
+                }
+                return Err(error);
+            }
+        };
+        let number = match number {
+            Number::Integer(value) => scale_integer(value, self.scale_power10),
+            Number::Double(value) => scale_double(value, self.scale_power10),
         }
         .map_err(|source| Error::Scale {
             path: self.path.clone(),
@@ -387,7 +446,12 @@ impl<A: PdhApi> Query<A> {
                     continue;
                 }
             };
-            let kind = match inspect_counter(&mut query.api, &config.path, handle) {
+            let kind = match query
+                .api
+                .counter_type(handle, &config.path)
+                .and_then(|native_type| {
+                    classify_native_type(&config.path, native_type).map_err(Error::from)
+                }) {
                 Ok(kind) => kind,
                 Err(error) => {
                     let mut diagnostic = error.to_string();
@@ -410,7 +474,6 @@ impl<A: PdhApi> Query<A> {
                 handle,
                 kind,
                 scale_power10: config.scale_power10,
-                ready: false,
                 previous_base: None,
             });
         }
