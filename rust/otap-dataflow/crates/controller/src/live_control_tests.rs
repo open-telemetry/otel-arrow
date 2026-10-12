@@ -33,7 +33,7 @@ use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHan
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
 use serde::Deserialize;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Registry;
@@ -224,6 +224,59 @@ impl receiver::Receiver<()> for RecoveryTestReceiver {
     }
 }
 
+struct StartupFailingReceiver;
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for StartupFailingReceiver {
+    async fn start(
+        self: Box<Self>,
+        _ctrl_chan: receiver::ControlChannel<()>,
+        effect_handler: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        Err(EngineError::ReceiverError {
+            receiver: effect_handler.receiver_id(),
+            kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Connect,
+            error: "simulated receiver bind failure".to_owned(),
+            source_detail: String::new(),
+        })
+    }
+}
+
+static DELAYED_READY_RECEIVER_STARTED: AtomicBool = AtomicBool::new(false);
+static DELAYED_READY_RECEIVER_RELEASED: AtomicBool = AtomicBool::new(false);
+static DELAYED_READY_RECEIVER_SIGNALLED: AtomicBool = AtomicBool::new(false);
+
+struct DelayedReadyReceiver;
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for DelayedReadyReceiver {
+    async fn start(
+        self: Box<Self>,
+        mut ctrl_chan: receiver::ControlChannel<()>,
+        effect_handler: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        DELAYED_READY_RECEIVER_STARTED.store(true, Ordering::SeqCst);
+        while !DELAYED_READY_RECEIVER_RELEASED.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        effect_handler.signal_ready();
+        DELAYED_READY_RECEIVER_SIGNALLED.store(true, Ordering::SeqCst);
+
+        loop {
+            match ctrl_chan.recv().await? {
+                NodeControlMsg::DrainIngress { deadline, .. } => {
+                    effect_handler.notify_receiver_drained().await?;
+                    return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                }
+                NodeControlMsg::Shutdown { deadline, .. } => {
+                    return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 struct RecoveryTestExporter;
 
 #[async_trait(?Send)]
@@ -256,6 +309,32 @@ fn recovery_test_receiver_create(
         node_config,
         receiver_config,
     ))
+}
+
+fn startup_failing_receiver_create(
+    _pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    Ok(
+        ReceiverWrapper::local(StartupFailingReceiver, node, node_config, receiver_config)
+            .with_startup_readiness(),
+    )
+}
+
+fn delayed_ready_receiver_create(
+    _pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    Ok(
+        ReceiverWrapper::local(DelayedReadyReceiver, node, node_config, receiver_config)
+            .with_startup_readiness(),
+    )
 }
 
 fn recovery_test_exporter_create(
@@ -445,6 +524,54 @@ static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
 
 static RECOVERY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     RECOVERY_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+static STARTUP_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: "urn:test:receiver:example",
+        create: startup_failing_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: recovery_test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static STARTUP_FAILING_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    STARTUP_FAILING_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+static DELAYED_READY_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: "urn:test:receiver:example",
+        create: delayed_ready_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: recovery_test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static DELAYED_READY_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    DELAYED_READY_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
     RECOVERY_TEST_EXPORTER_FACTORIES,
     &[],
@@ -847,6 +974,7 @@ fn register_runtime_instance(
         RuntimeInstanceRecord {
             control_sender: Some(control_sender),
             context_bindings,
+            startup_ready: Arc::new(AtomicBool::new(false)),
             lifecycle,
         },
     );
@@ -873,6 +1001,7 @@ fn register_runtime_instance_with_sender(
         RuntimeInstanceRecord {
             control_sender: Some(control_sender),
             context_bindings,
+            startup_ready: Arc::new(AtomicBool::new(false)),
             lifecycle,
         },
     );
@@ -1023,6 +1152,7 @@ fn launched_runtime_instance(
         },
         control_sender,
         context_bindings,
+        startup_ready: Arc::new(AtomicBool::new(false)),
         _marker: std::marker::PhantomData,
     }
 }
@@ -3538,6 +3668,145 @@ connections:
         candidate_rx.try_recv().is_err(),
         "committed target generation must not receive panic-cleanup shutdown"
     );
+}
+
+/// Scenario: a receiver returns a non-panic runtime error before signaling startup readiness.
+/// Guarantees: reconciliation fails deterministically with the receiver's original error and does
+/// not commit the candidate pipeline.
+#[test]
+fn receiver_failure_before_readiness_preserves_error() {
+    let desired = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime =
+        test_runtime_with_factory(&empty_engine_config(), &STARTUP_FAILING_PIPELINE_FACTORY);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect("reconciliation should report receiver failure");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Failed);
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("simulated receiver bind failure")),
+        "unexpected startup reconciliation failure: {:?}",
+        status.failure_reason
+    );
+    assert!(
+        !runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .logical_pipelines
+            .contains_key(&PipelineKey::new("g1".into(), "p1".into())),
+        "failed candidate must not be committed"
+    );
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances,
+        0,
+        "failed candidate must be rolled back"
+    );
+}
+
+/// Scenario: a receiver remains in fallible initialization before explicitly signaling ready.
+/// Guarantees: reconciliation does not commit or complete until the receiver crosses its
+/// startup-readiness boundary.
+#[test]
+fn reconciliation_waits_for_receiver_readiness_signal() {
+    DELAYED_READY_RECEIVER_STARTED.store(false, Ordering::SeqCst);
+    DELAYED_READY_RECEIVER_RELEASED.store(false, Ordering::SeqCst);
+    DELAYED_READY_RECEIVER_SIGNALLED.store(false, Ordering::SeqCst);
+
+    let desired = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime =
+        test_runtime_with_factory(&empty_engine_config(), &DELAYED_READY_PIPELINE_FACTORY);
+    let _observed_state_runner = ObservedStateRunner::start(&runtime);
+    let reconcile_runtime = Arc::clone(&runtime);
+    let reconcile = thread::spawn(move || {
+        reconcile_runtime
+            .reconcile_engine_config(reconcile_request(desired, true))
+            .expect("reconciliation should complete")
+    });
+
+    let start_deadline = Instant::now() + Duration::from_secs(5);
+    while !DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < start_deadline,
+            "receiver did not enter startup"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !reconcile.is_finished(),
+        "reconciliation must still be waiting for receiver readiness"
+    );
+    assert!(
+        !runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .logical_pipelines
+            .contains_key(&PipelineKey::new("g1".into(), "p1".into())),
+        "pipeline must not be committed before receiver readiness"
+    );
+
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    let reconcile_status = reconcile
+        .join()
+        .expect("reconciliation thread should not panic");
+    assert!(
+        DELAYED_READY_RECEIVER_SIGNALLED.load(Ordering::SeqCst),
+        "receiver did not call signal_ready"
+    );
+    assert_eq!(
+        reconcile_status.state,
+        EngineConfigReconcileState::Succeeded,
+        "unexpected reconciliation result: {:?}",
+        reconcile_status.failure_reason
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("ready pipeline should accept shutdown");
+    assert!(runtime.wait_for_global_shutdown_completion());
+}
+
+/// Scenario: a runtime exits immediately after crossing the startup-readiness boundary.
+/// Guarantees: the recorded readiness boundary wins over the later exit so rollout can commit and
+/// hand the failure to runtime recovery.
+#[test]
+fn startup_readiness_marker_wins_over_later_runtime_exit() {
+    let runtime = test_runtime(&empty_engine_config());
+    let deployed_key = deployed_key("g1", "p1", 0, 0);
+    let _notifications = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        0,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("failure after ready".to_owned()),
+        )),
+    );
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .runtime_instances
+        .get(&deployed_key)
+        .expect("runtime instance should be registered")
+        .startup_ready
+        .store(true, Ordering::Release);
+
+    runtime
+        .wait_for_pipeline_ready(&deployed_key, Instant::now())
+        .expect("readiness marker should win over a later runtime exit");
 }
 
 /// Scenario: a resize rollback must clean up cores that were already started
@@ -6117,6 +6386,7 @@ fn register_launched_instance_retries_failed_sends() {
         pipeline_key: key0.clone(),
         control_sender: sender0,
         context_bindings,
+        startup_ready: Arc::new(AtomicBool::new(false)),
         _marker: std::marker::PhantomData,
     };
 
@@ -6191,6 +6461,7 @@ fn register_launched_instance_respects_global_shutdown_timeout() {
         pipeline_key: key0,
         control_sender: sender0,
         context_bindings,
+        startup_ready: Arc::new(AtomicBool::new(false)),
         _marker: std::marker::PhantomData,
     };
 
@@ -7198,7 +7469,7 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
 }
 
 static LAUNCH_STARTED: AtomicUsize = AtomicUsize::new(0);
-static LAUNCH_PROCEED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static LAUNCH_PROCEED: AtomicBool = AtomicBool::new(true);
 
 fn blocking_create(
     _pipeline_ctx: PipelineContext,

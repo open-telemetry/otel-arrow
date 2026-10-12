@@ -41,6 +41,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -116,6 +117,8 @@ pub struct EffectHandler<PData> {
     authorized_identity_policy: Option<Arc<AuthorizedIdentityPolicy>>,
     /// Data-type-specific context materialization shared by request handlers.
     context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+    /// Optional signal used to gate pipeline startup on receiver initialization.
+    readiness: Option<ReadinessSignaller>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -139,6 +142,7 @@ impl<PData> EffectHandler<PData> {
             capture_policy: None,
             authorized_identity_policy: None,
             context_materialization_plan: None,
+            readiness: None,
         }
     }
 
@@ -219,6 +223,19 @@ impl<PData> EffectHandler<PData> {
     ) {
         self.context_materialization_plan =
             Some(ReceiverContextMaterialization::new(plan, materialize));
+    }
+
+    pub(crate) fn set_readiness_signaller(&mut self, readiness: Option<ReadinessSignaller>) {
+        self.readiness = readiness;
+    }
+
+    /// Signals that fallible receiver startup has completed.
+    ///
+    /// This is a no-op for receivers that did not opt into startup readiness.
+    pub fn signal_ready(&self) {
+        if let Some(readiness) = &self.readiness {
+            readiness.ready();
+        }
     }
 
     /// Sends a message to the next node(s) in the pipeline.

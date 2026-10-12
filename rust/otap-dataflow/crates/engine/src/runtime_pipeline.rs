@@ -34,6 +34,7 @@ use crate::pipeline_ctrl::{
     snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
+use crate::readiness::ReadinessProbeError;
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
@@ -279,6 +280,8 @@ pub struct RuntimePipeline<PData: Debug> {
     admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
+    /// Optional one-shot notification fired at the runtime-ready boundary.
+    startup_callback: Option<Box<dyn FnOnce()>>,
 }
 
 async fn flush_metrics_reporter(
@@ -421,7 +424,15 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics: Default::default(),
             admission_metrics: Default::default(),
             telemetry_policy,
+            startup_callback: None,
         }
+    }
+
+    /// Registers a one-shot callback for successful runtime initialization.
+    #[must_use]
+    pub fn with_startup_callback(mut self, callback: impl FnOnce() + 'static) -> Self {
+        self.startup_callback = Some(Box::new(callback));
+        self
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
@@ -478,6 +489,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             channel_metrics,
             admission_metrics,
             telemetry_policy,
+            mut startup_callback,
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
@@ -490,6 +502,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let runtime_services = PipelineRuntimeServices::new(Default::default())?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
+        let mut receiver_readiness = FuturesUnordered::new();
 
         // Build the extension monitor (or its no-op variant when
         // pipeline-internal telemetry is disabled) and pass it into
@@ -821,6 +834,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
+            if let Some(probe) = receiver.take_startup_readiness_probe() {
+                let readiness_node_id = node_id.clone();
+                receiver_readiness
+                    .push(async move { (readiness_node_id, probe.wait_ready().await) });
+            }
             let node_config = pipeline_config
                 .nodes()
                 .get(node_id.name.as_ref())
@@ -978,6 +996,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 .run_until(async {
                     let loop_result: Result<Vec<_>, Error> = async {
                         let mut task_results = Vec::new();
+                        let mut startup_complete = receiver_readiness.is_empty();
+                        if startup_complete
+                            && let Some(callback) = startup_callback.take()
+                        {
+                            callback();
+                        }
+
                         loop {
                             tokio::select! {
                                 biased;
@@ -1011,13 +1036,29 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                         }
                                     }
                                 }
+                                Some((receiver, result)) = receiver_readiness.next(),
+                                    if !receiver_readiness.is_empty() =>
+                                {
+                                    if let Err(ReadinessProbeError::SignallerDropped) = result {
+                                        return Err(Error::ReceiverReadinessSignallerDropped {
+                                            receiver,
+                                        });
+                                    }
+                                }
                                 else => break,
+                            }
+
+                            if !startup_complete && receiver_readiness.is_empty() {
+                                startup_complete = true;
+                                if let Some(callback) = startup_callback.take() {
+                                    callback();
+                                }
                             }
 
                             // Data path drained: hand off the bounded wait
                             // for remaining extension tasks to
                             // `drain_until_deadline` below.
-                            if futures.is_empty() {
+                            if startup_complete && futures.is_empty() {
                                 extension_lifecycle
                                     .initiate_shutdown(Some("pipeline data-path drained"));
                                 break;

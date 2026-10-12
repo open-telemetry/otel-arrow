@@ -19,7 +19,12 @@
 pub mod builder;
 /// Extension-facing compatibility exports for readiness primitives.
 pub mod readiness {
-    pub use crate::readiness::*;
+    use std::time::Duration;
+
+    pub use crate::readiness::{ReadinessProbe, ReadinessProbeError, ReadinessSignaller};
+
+    /// Default timeout for an extension readiness probe.
+    pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 }
 pub mod wrapper;
 

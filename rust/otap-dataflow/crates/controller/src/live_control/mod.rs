@@ -157,6 +157,8 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
     /// Compiled context bindings used by this runtime instance.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Synchronous marker for crossing the runtime startup-readiness boundary.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,
 }

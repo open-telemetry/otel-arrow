@@ -421,6 +421,8 @@ pub(super) struct RuntimeInstanceRecord {
     pub(super) control_sender: Option<Arc<dyn PipelineAdminSender>>,
     /// Compiled context bindings used by this runtime instance.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Synchronous marker for crossing the runtime startup-readiness boundary.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     pub(super) lifecycle: RuntimeInstanceLifecycle,
 }
 
