@@ -23,6 +23,7 @@ datafusion = { workspace = true, features = [
 ] }
 futures-core = { workspace = true }
 memchr = { workspace = true }
+regex = { workspace = true }
 sha1 = { workspace = true, optional = true }
 xxhash-rust = { workspace = true }
 parking_lot = { workspace = true }
@@ -76,6 +77,10 @@ harness = false
 
 [[bench]]
 name = "data_point_parent_attrs"
+harness = false
+
+[[bench]]
+name = "regex_match"
 harness = false
 
 [lints]
