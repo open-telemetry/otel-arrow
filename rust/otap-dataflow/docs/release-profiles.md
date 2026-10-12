@@ -170,8 +170,11 @@ backend. See [rustc's frame-pointer option](https://doc.rust-lang.org/rustc/code
 
 A standalone fixture uses the engine's pinned `backtrace` 0.3.76 and `pprof`
 0.15.0, the same three profiles, and identical native linker settings across the
-frame-pointer variants. Non-inlined recursion supplies depths 16 and 64. Each
-operation uses warmed caches and nine adaptive batches targeting 20 ms each,
+frame-pointer variants. The fixture uses the native GNU unwinder (`libgcc_s`);
+the cross-built engines use Zig-linked LLVM `libunwind`. These API costs do not
+measure the engine's Zig unwinder directly. Non-inlined recursion supplies depths
+16 and 64. Each operation uses warmed caches and nine adaptive batches targeting
+20 ms each,
 with the process pinned to one x86_64 CPU. Cells show median microseconds per
 operation at **depth 16 / depth 64**.
 
