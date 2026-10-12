@@ -26,7 +26,9 @@ steps:
           - ready_check_http:
               url: http://localhost:8087/api/v1/telemetry/metrics?reset=false
               method: GET
-              expected_status_code: 200
+              expected_status: 200
+              max_retries: {{ready_check_max_retries | default(30)}}
+              retry_interval: {{ready_check_retry_interval | default(2)}}
   - name: Deploy Dataflow Engine
     action:
       component_action:
@@ -46,7 +48,9 @@ steps:
           - ready_check_http:
               url: http://localhost:8086/api/v1/telemetry/metrics?reset=false
               method: GET
-              expected_status_code: 200
+              expected_status: 200
+              max_retries: {{ready_check_max_retries | default(30)}}
+              retry_interval: {{ready_check_retry_interval | default(2)}}
   - name: Deploy Load Generator
     action:
       component_action:
@@ -89,7 +93,9 @@ steps:
           - ready_check_http:
               url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
               method: GET
-              expected_status_code: 200
+              expected_status: 200
+              max_retries: {{ready_check_max_retries | default(30)}}
+              retry_interval: {{ready_check_retry_interval | default(2)}}
   - name: Monitor All
     action:
       multi_component_action:

@@ -211,3 +211,35 @@ jobs:
             tools/pipeline_perf_test/results/windows_idle_variance/**/*.json
             tools/pipeline_perf_test/results/windows-idle-variance.json
             tools/pipeline_perf_test/results/windows-idle-memory-scaling.json
+
+      - name: Run standard load batch size test (BATCH512)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        working-directory: ./tools/pipeline_perf_test
+        run: |
+          python orchestrator/run_orchestrator.py `
+            --config test_suites/integration/nightly-windows/100klrps-batch-sizes-docker.yaml `
+            --tests OTLP-ATTR-OTLP-BATCH512
+
+      - name: Upload batch size results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-batch-size-results
+          path: tools/pipeline_perf_test/results/windows_nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json
+
+      - name: Display batch size results in Job Summary
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $jsonFiles = Get-ChildItem tools/pipeline_perf_test/results/windows_nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+          if ($jsonFiles) {
+            $data = Get-Content $jsonFiles[0].FullName | ConvertFrom-Json
+            echo "### Windows Standard Load Test (OTLP-ATTR-OTLP-BATCH512)" >> $env:GITHUB_STEP_SUMMARY
+            echo "| Metric | Value | Unit |" >> $env:GITHUB_STEP_SUMMARY
+            echo "|:---|---:|:---|" >> $env:GITHUB_STEP_SUMMARY
+            foreach ($entry in $data) {
+              $val = if ($null -ne $entry.value) { [math]::Round([double]$entry.value, 2) } else { "N/A" }
+              echo "| $($entry.name) | $val | $($entry.unit) |" >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
