@@ -193,8 +193,12 @@ resource-validator = []
 
 # Exporters.
 azure-data-explorer = [
+    "dep:chrono",
     "dep:humantime-serde",
+    "dep:itoa",
     "dep:reqwest",
+    "dep:ryu",
+    "dep:sysinfo",
 ]
 azure-monitor = [
     "dep:opentelemetry-proto",
