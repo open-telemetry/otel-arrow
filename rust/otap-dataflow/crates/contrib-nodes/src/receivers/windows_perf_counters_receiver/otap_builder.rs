@@ -209,6 +209,7 @@ mod tests {
             start_time_unix_nano: start,
             timestamp_unix_nano: timestamp,
             points,
+            failures: Vec::new(),
         }
     }
 
