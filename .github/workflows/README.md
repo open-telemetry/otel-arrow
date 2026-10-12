@@ -2,7 +2,8 @@
 
 This directory contains the repository's main CI workflows:
 
-- [`rust-ci.yml`](rust-ci.yml): Rust validation.
+- [`rust-ci.yml`](rust-ci.yml): Rust validation, including contrib receiver
+  smoke tests.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
@@ -25,7 +26,8 @@ already passed in the merge queue.
 
 The aggregate Rust and Go status jobs define required validation through their
 `needs` lists. Treat those lists as the source of truth when adding or removing
-required jobs.
+required jobs. New external integration jobs can remain non-required while
+their reliability is established.
 
 ## Caching and artifacts
 
