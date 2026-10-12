@@ -495,7 +495,7 @@ debug = "line-tables-only"  # minimum required for profiling
 inherits = "release"
 opt-level = 3
 debug = 0
-strip = "symbols"
+strip = "debuginfo"
 lto = "fat"
 codegen-units = 1
 panic = "unwind"
@@ -506,14 +506,14 @@ incremental = false
 inherits = "release-perf"
 opt-level = 2
 debug = 0
-strip = "symbols"
+strip = "debuginfo"
 
 # Favor the smallest binary, accepting potential processing throughput loss.
 [profile.release-size]
 inherits = "release-perf"
 opt-level = "z"
 debug = 0
-strip = "symbols"
+strip = "debuginfo"
 
 [profile.profiling]
 inherits = "release-perf"

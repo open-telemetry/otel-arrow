@@ -1,40 +1,49 @@
 # DFE release build profiles
 
-DFE preserves its existing `release` build settings and provides three opt-in
-profiles for different binary-size and processing performance priorities.
-Choose the profile independently of the component features required by a
-pipeline.
+DFE provides three opt-in profiles for different binary-size and processing
+performance priorities. Choose the profile independently of the component
+features required by a pipeline.
 
-| Profile | Priority | Optimization level | Debug information | Symbol stripping |
+| Profile | Priority | Optimization level | Debug information | Function symbols |
 | --- | --- | --- | --- | --- |
-| `release` | Existing release build | `3` (Cargo default) | Line tables for profiling | None |
-| `release-perf` | Runtime performance | `3` | None | Symbols |
-| `release-balanced` | Compact binary with speed-oriented optimization | `2` | None | Symbols |
-| `release-size` | Minimum binary size, accepting potential throughput loss | `z` | None | Symbols |
+| `release` | Existing release build | `3` (Cargo default) | Line tables for profiling | Retained |
+| `release-perf` | Runtime performance | `3` | None | Retained |
+| `release-balanced` | Compact binary with speed-oriented optimization | `2` | None | Retained |
+| `release-size` | Minimum binary size, accepting potential throughput loss | `z` | None | Retained |
 
 All three custom profiles use fat LTO, one codegen unit, disabled incremental
-compilation, and `panic="unwind"`. Unwinding preserves the controller's
-supervised panic handling.
-`release-perf` inherits from `release`; `release-balanced` and `release-size`
-inherit from `release-perf`. Existing `release`, `bench`, and `release-debug`
-build settings are unchanged. The custom profiles take longer
-to compile than the default release build without cross-crate LTO.
+compilation, `debug = 0`, `strip = "debuginfo"`, and `panic = "unwind"`.
+Unwinding preserves the controller's supervised panic handling. `release-perf`
+inherits from `release`; `release-balanced` and `release-size` inherit from
+`release-perf`. Cross-crate LTO generally increases build time.
 
-The `profiling` profile also inherits from `release-perf`, but retains full debug
-information and symbols (`debug = 2`, `strip = "none"`). Use it for profiling and
-debugging with the same optimization settings. Stripped binaries provide less
-information for symbolizing profiles and backtraces.
-
-The default `release` profile is left unchanged for now. A future change could
-merge `release` and `release-perf` after evaluating throughput and build time
-on representative workloads.
+The `profiling` profile inherits the performance optimizations and retains full
+debug information and symbols (`debug = 2`, `strip = "none"`). Existing `release`,
+`bench`, and `release-debug` settings are unchanged. A future change could merge
+`release` and `release-perf` after evaluating throughput and build time on
+representative workloads.
 
 The balanced profile retains speed-oriented optimization and loop vectorization
 while avoiding some level-3 code expansion. The size profile prioritizes code
 size and disables loop vectorization. These are intended tradeoffs, not a
-promise that any level always produces the fastest or smallest executable.
-Measure throughput for the intended workload before choosing a profile. See the
-[Cargo profile reference](https://doc.rust-lang.org/cargo/reference/profiles.html).
+promise that an optimization level always produces the fastest or smallest
+executable. Measure throughput for the intended workload before choosing a
+profile. See the [Cargo profile reference](https://doc.rust-lang.org/cargo/reference/profiles.html).
+
+## Production diagnostics
+
+Package the configured custom-profile output directly. In the measured Linux
+x86_64 builds, retained symbols provide function names in backtraces and live
+CPU profiles without DWARF file/line information. Additional `--strip-all` stripping
+removes those names. A separate debug artifact cannot recover application frames
+already discarded by the current CPU profiler: the pinned `pprof` backend drops
+unresolved frames, and its exported profile omits instruction addresses and
+mappings. The controller's short backtrace rendering also omits addresses for
+unresolved frames. See [profiling](../PROFILING.md) for diagnostic builds.
+
+Heap profiling requires the `jemalloc` feature and runtime profiling
+configuration. The minimal feature selection measured below disables jemalloc;
+its heap endpoint was not tested.
 
 ## Build
 
@@ -48,91 +57,158 @@ cargo build --locked -p otel-arrow-dfe --bin df_engine \
 ```
 
 Replace `release-balanced` with `release-perf` or `release-size` as appropriate.
-Use `--release` for the existing default release build settings.
-Add `transform` to the feature list when the pipeline uses Transform. Batch and
-Fan-out are always available; the crypto feature retains TLS capability.
-The output is under `target/<profile>/`, or
+Use `--release` for the existing default settings. Add `transform` when the
+pipeline uses Transform. Batch and Fan-out are always available; the crypto
+feature retains TLS capability. Output is under `target/<profile>/`, or
 `target/<target-triple>/<profile>/` for cross builds.
 
 ## Binary-size comparison
 
-Normal Cargo output, using each profile's configured debug and stripping settings:
+Reevaluated on 2026-10-12 with function symbols retained. Each cell shows
+**build / ZIP**, in MiB. ZIPs contain the exact custom-profile output.
 
-| Profile | x86_64 without Transform (MiB) | x86_64 with Transform (MiB) | arm64 without Transform (MiB) | arm64 with Transform (MiB) |
+| Profile | x86_64 | x86_64 + Transform | arm64 | arm64 + Transform |
 | --- | ---: | ---: | ---: | ---: |
-| `release` (unchanged settings, pre-PR baseline) | 407.07 | Not measured | Not measured | Not measured |
-| `release-perf` | 36.13 | 72.09 | 31.35 | 62.08 |
-| `release-balanced` | 35.09 | 69.64 | 30.34 | 59.14 |
-| `release-size` | 22.75 | 41.36 | 19.15 | 32.32 |
+| `release` (pre-PR baseline) | 407.07 / 18.29 | Not measured | Not measured | Not measured |
+| `release-perf` | 42.69 / 14.58 | 86.29 / 28.34 | 39.40 / 13.80 | 79.22 / 26.81 |
+| `release-balanced` | 41.62 / 14.16 | 83.80 / 27.39 | 38.48 / 13.38 | 76.29 / 25.80 |
+| `release-size` | 30.84 / 9.79 | 56.75 / 17.51 | 32.33 / 10.48 | 57.03 / 18.65 |
 
-`release` retains line tables and symbols; all three custom release profiles
-disable debug information and strip symbols. The `release` row is the historical
-native x86_64 build before this PR, using the same minimal feature selection and
-the release settings preserved by this PR. The custom-profile rows use
-cargo-zigbuild with a glibc 2.34 baseline. Therefore, the difference from the
-407.07 MiB baseline includes toolchain differences and cannot be attributed solely
-to profile settings. The default `release` has not been rebuilt in the custom
-profiles' toolchain matrix.
+The historical `release` row is the native x86_64 build before this PR. Its ZIP
+was regenerated with debug-only stripping, retaining function symbols. The
+407.07 MiB build was not rebuilt or modified. Custom profiles use cargo-zigbuild
+with a glibc 2.34 baseline, so differences from that historical build include
+toolchain differences and cannot be attributed solely to profile settings.
+The baseline has not been rebuilt in this matrix.
 
-Deployment copies after additional stripping, with binary-only ZIP sizes:
+Without Transform, `release-balanced` saves 2.9-3.0% in ZIP size
+versus `release-perf`; `release-size` saves 24.0-32.8%. Compared with fully stripped
+copies of these same rebuilt binaries, retaining function symbols adds
+0.96-3.74 MiB to the ZIP across the 12 combinations. Symbol tables
+and names compress well, so their uncompressed size is a poor proxy for package
+overhead.
 
-| Profile | Transform | x86_64 stripped (MiB) | x86_64 ZIP (MiB) | arm64 stripped (MiB) | arm64 ZIP (MiB) |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `release-perf` | No | 36.13 | 13.61 | 31.35 | 12.62 |
-| `release-perf` | Yes | 72.09 | 26.35 | 62.08 | 24.41 |
-| `release-balanced` | No | 35.09 | 13.19 | 30.34 | 12.19 |
-| `release-balanced` | Yes | 69.64 | 25.39 | 59.14 | 23.40 |
-| `release-size` | No | 22.75 | 8.56 | 19.15 | 8.46 |
-| `release-size` | Yes | 41.36 | 15.26 | 32.32 | 14.90 |
-
-Without Transform, `release-balanced` reduces stripped size by about 3% versus
-`release-perf`; `release-size` reduces it by 37-39%. Debug and symbol information
-previously accounted for much of the performance build's file size. These size
-results do not establish a processing-throughput ranking.
+Architecture also affects retained-symbol overhead. Without Transform,
+`release-size` has a 5.18 MiB symbol table on arm64 versus 1.17 MiB on x86_64,
+even though arm64 has a smaller code section. This contributes to the arm64
+size-profile build being larger in this matrix.
 
 The pipeline is OTLP receiver -> optional Transform -> Batch -> Fan-out ->
-OTLP/gRPC and OTAP exporters. The Transform configuration uses OTTL to set log
-severity text. Selecting this single statement still compiles the full
-Transform feature. The default feature bundle is disabled in every row.
+OTLP/gRPC and OTAP exporters. Transform uses OTTL to set log severity text;
+selecting this statement still compiles the full Transform feature. Default
+features are disabled in every row. Size results do not establish a
+processing-throughput ranking or imply proportional startup improvements.
 
-Custom-profile measurements use Rust 1.98.1, cargo-zigbuild 0.23.4, Zig 0.15.2,
-and a glibc 2.34 baseline. Each artifact was built with a named workspace profile,
-without experimental profile overrides. The performance artifacts were rebuilt
-after disabling debug information and enabling symbol stripping. The compact
-profiles retain the same effective compiler settings; their earlier measurements
-are reused.
-MiB means 1,048,576 bytes. ZIPs contain one executable and use DEFLATE level 9
-with matching timestamps and permissions.
+All 12 custom-profile combinations were rebuilt with Rust 1.98.1,
+cargo-zigbuild 0.23.4, Zig 0.15.2, and a glibc 2.34 baseline, using named workspace
+profiles without optimization overrides. ELF inspection verifies function symbol
+tables, absence of bulk DWARF sections, architecture, and glibc requirements.
+Both targets declare only libc and libm dependencies. MiB means 1,048,576 bytes.
+Binary-only ZIPs use DEFLATE level 9 with matching timestamps and permissions.
 
-The stripped columns make code-size comparisons consistent across profiles.
-All three custom release profiles already strip their normal output; the
-additional stripping pass changes it only slightly. Debug and symbol information
-changes package size without implying proportional startup or throughput gains.
+### Cross-linker reproducibility
 
-The custom-profile measurements include the startup fix below;
-the historical `release` baseline predates it. They are engine binaries, not
-complete Lambda extension layers. Both custom-profile targets declare only libc
-and libm dependencies; compatibility and behavior still need testing on the
-actual deployment image. Arm64 is cross-built and ELF-inspected, not executed
-locally.
+The measured Zig 0.15.2 toolchain treats rustc's `--strip-debug` linker argument
+as full stripping. See the [Zig driver source][zig-strip-debug]. The experiment
+used a local compatibility launcher that removed that argument before linking
+and ran `llvm-strip --strip-debug` on the result. Stale executable cache entries
+were bypassed when relinking. Every accepted artifact was checked for a retained
+`.symtab`. This workaround does not change the profile's optimization settings
+and is not part of the engine changes.
 
-To reproduce the cross builds, install the pinned Rust arm64 target,
-LLVM tools, Zig, and cargo-zigbuild. For example:
+[zig-strip-debug]: https://github.com/ziglang/zig/blob/0.15.2/src/main.zig#L2608-L2613
+
+With an unmodified copy of that Zig version, reproduce the same stripping policy
+by disabling link-time stripping and applying debug-only stripping afterward:
 
 ```sh
 cargo zigbuild --locked -p otel-arrow-dfe --bin df_engine \
-  --profile release-size --target aarch64-unknown-linux-gnu.2.34 \
+  --profile release-size --config 'profile.release-size.strip="none"' \
+  --target aarch64-unknown-linux-gnu.2.34 \
   --no-default-features --features otlp,otap,crypto-ring
+llvm-strip --strip-debug target/aarch64-unknown-linux-gnu/release-size/df_engine
 ```
 
-Use `x86_64-unknown-linux-gnu.2.34` for x86_64 and add `transform` for the optional
-processor. Retain the normal output first, then use `llvm-strip --strip-all`
-for the comparison copy. Build times depend on cache state and are not measured
-as a profile-performance comparison.
+Install the pinned Rust target, LLVM tools, Zig, and cargo-zigbuild first, and
+put `llvm-strip` on PATH. Use `x86_64-unknown-linux-gnu.2.34` for x86_64 and add
+`transform` for the optional processor. Standard GNU-linked Cargo builds do not
+need this measured Zig workaround. Verify symbol retention before packaging.
+Build times depend on cache state and were not compared.
 
-This Zig toolchain warns that it ignores the deprecated linker optimization
-setting `1` emitted by rustc. The named Rust optimization and LTO settings
-remain in effect; the full workspace check reports no source warnings.
+This Zig toolchain also warns that it ignores the deprecated linker optimization
+setting `1` emitted by rustc; named Rust optimization and LTO settings remain in
+effect.
+
+## Frame-pointer comparison
+
+Frame pointers are not forced by these profiles. A second set of all 12 builds
+adds `-C force-frame-pointers=yes`; the first set uses the compiler's target
+defaults. The comparison below shows **build / ZIP**, in MiB, for the forced set.
+
+| Profile | x86_64 | x86_64 + Transform | arm64 | arm64 + Transform |
+| --- | ---: | ---: | ---: | ---: |
+| `release-perf` | 42.07 / 14.59 | 84.75 / 28.34 | 39.62 / 13.84 | 79.57 / 26.86 |
+| `release-balanced` | 41.02 / 14.17 | 82.39 / 27.41 | 38.61 / 13.39 | 76.59 / 25.84 |
+| `release-size` | 30.15 / 9.65 | 55.15 / 17.23 | 32.55 / 10.50 | 57.43 / 18.69 |
+
+Forced frame pointers change ZIP size by -1.61% to +0.31%
+across the 12 combinations, at most 0.28 MiB in absolute terms. Uncompressed
+size changes by -2.82% to +0.70%. This measures binary size, not
+processing-throughput overhead.
+
+The host x86_64 configuration requests `-fuse-ld=mold`; Zig ignores that
+selection flag. A linker control produced identical outputs with and without it.
+The forced variants supply only the frame-pointer flag to Zig-linked builds.
+
+These flags affect compiled Rust crates. Prebuilt Rust standard libraries and
+native dependencies were not rebuilt with forced frame pointers. Enabling this
+compiler flag does not switch the pinned CPU profiler to its optional
+`frame-pointer` backend; the engine currently uses its default `backtrace`
+backend. See [rustc's frame-pointer option](https://doc.rust-lang.org/rustc/codegen-options/index.html#force-frame-pointers).
+
+### Stack-capture cost
+
+A standalone fixture uses the engine's pinned `backtrace` 0.3.76 and `pprof`
+0.15.0, the same three profiles, and identical native linker settings across the
+frame-pointer variants. Non-inlined recursion supplies depths 16 and 64. Each
+operation uses warmed caches and nine adaptive batches targeting 20 ms each,
+with the process pinned to one x86_64 CPU. Cells show median microseconds per
+operation at **depth 16 / depth 64**.
+
+| Profile | Frame pointers | pprof unwind (us) | Capture (us) | Capture + render (us) |
+| --- | --- | ---: | ---: | ---: |
+| `release-perf` | target-default | 3.11 / 8.58 | 5.18 / 13.98 | 21.59 / 61.19 |
+| `release-perf` | forced | 3.17 / 9.00 | 5.25 / 14.41 | 21.78 / 61.86 |
+| `release-balanced` | target-default | 3.13 / 8.73 | 5.25 / 14.32 | 22.26 / 63.23 |
+| `release-balanced` | forced | 3.22 / 9.23 | 5.33 / 14.80 | 21.67 / 61.25 |
+| `release-size` | target-default | 3.64 / 9.76 | 5.90 / 15.64 | 23.38 / 64.38 |
+| `release-size` | forced | 3.45 / 9.69 | 5.68 / 15.51 | 23.77 / 66.19 |
+
+`pprof unwind` measures `backtrace::trace_unsynchronized`, the current CPU
+profiler's stack-walking API. `Capture` measures
+`std::backtrace::Backtrace::force_capture`; `Capture + render` also calls
+`to_string`, as the controller does when logging a captured panic. The fixture
+includes recursion overhead and has fewer symbols than the engine. It excludes
+signal delivery, profile aggregation, logger I/O, and first-capture cold-cache
+costs. These are API measurements, not production logging or throughput results.
+
+Frame-pointer effects vary by operation and optimization level in this fixture.
+The current profiler still uses its existing unwinder; these results do not
+establish a benefit from forcing frame pointers in the release profiles.
+
+All six fixture variants retain logging function names and application frames
+in sampled CPU profiles. A fully stripped control loses both. The control's
+exported CPU profile has no addresses or mappings for later symbolization.
+The real engine CPU endpoint was also exercised for all 12 x86_64 variants.
+Successful captures retained application function names under OTLP traffic.
+Live profiling intermittently segfaulted on the local host; GDB reproduced a
+fault in the Zig-linked `libunwind` register-restoration path during `SIGPROF`,
+interrupted inside glibc allocation code. The host runs glibc 2.43; the binaries
+target glibc 2.34. The cause has not been isolated to profile settings, and
+retaining symbols or forcing frame pointers does not establish profiler
+reliability. This requires separate unwinder/toolchain investigation; ordinary
+pipeline and shutdown checks passed. The profiler setup and unwinding backend
+are unchanged by this PR.
 
 ## Startup optimization
 
@@ -144,31 +220,32 @@ information the banner does not use. Available core counts come from
 information.
 
 In the isolated native-release comparison using the original profile settings,
-median OTLP receiver readiness
-fell from 748.3 ms to 36.5 ms over ten launches per variant. The stripped
-executable changed by only 232 bytes. These measurements demonstrate reduced
-initialization work independently of binary size.
+median OTLP receiver readiness fell from 748.3 ms to 36.5 ms over ten launches
+per variant. The stripped executable changed by only 232 bytes. This demonstrates
+reduced initialization work independently of binary size.
+
+Fresh measurements of the function-symbol-retaining outputs, with target-default
+frame pointers and ten launches per variant:
 
 | Profile | Transform | Receiver ready median (ms) | Both exports delivered median (ms) | RSS median (MiB) |
 | --- | --- | ---: | ---: | ---: |
-| `release-perf` | No | 34.2 | 143.3 | 25.8 |
-| `release-perf` | Yes | 34.9 | 149.1 | 41.1 |
-| `release-balanced` | No | 34.3 | 144.1 | 24.1 |
-| `release-balanced` | Yes | 36.4 | 150.2 | 35.0 |
-| `release-size` | No | 34.2 | 142.9 | 19.9 |
-| `release-size` | Yes | 37.3 | 151.1 | 30.0 |
-
-The `release-perf` timings use the rebuilt stripped outputs; compact-profile
-timings come from the earlier runs. These are separate runs, not an isolated
-benchmark of stripping.
+| `release-perf` | No | 33.7 | 158.1 | 25.3 |
+| `release-perf` | Yes | 35.7 | 164.9 | 39.9 |
+| `release-balanced` | No | 35.4 | 163.5 | 26.2 |
+| `release-balanced` | Yes | 36.6 | 151.6 | 39.2 |
+| `release-size` | No | 34.3 | 143.7 | 21.4 |
+| `release-size` | Yes | 37.9 | 151.2 | 32.0 |
 
 Local readiness is measured from process launch until the OTLP TCP listener
-accepts a connection. First delivery is measured until separate OTLP and OTAP
+accepts a connection. First delivery is measured until independent OTLP and OTAP
 sinks have both received the test log; it includes the 100 ms batch window.
 Transform runs verify the changed severity text at both sinks. The test sends
-logs over OTLP/HTTP protobuf and checks successful SIGTERM shutdown.
+logs over OTLP/HTTP protobuf and checks successful SIGTERM shutdown. The forced
+frame-pointer variants passed the same checks, for 120 pipeline launches total.
 
 These are warm-filesystem-cache measurements on an x86_64 host with many
-processes, not AWS cold-start estimates or sustained-throughput benchmarks.
-Native arm64 startup, TLS handshakes, all-signal workloads, retry behavior, and
-Lambda invocation/freeze/shutdown coordination need separate validation.
+processes. Arm64 was cross-built and ELF-inspected, not executed locally. These
+are engine binaries, not complete Lambda extension layers. AWS cold starts,
+native arm64 startup, TLS handshakes, all-signal workloads, sustained throughput,
+retry behavior, and Lambda invocation/freeze/shutdown coordination need separate
+validation on the deployment image.
