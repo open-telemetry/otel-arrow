@@ -197,6 +197,7 @@ mod tests {
             pipeline_group_id: "pg".into(),
             pipeline_id: "pipe".into(),
             pipeline: PipelineConfig::from_yaml("pg".into(), "pipe".into(), yaml).unwrap(),
+            topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             policies: ResolvedPolicies::default(),
             role: ResolvedPipelineRole::Regular,
         }

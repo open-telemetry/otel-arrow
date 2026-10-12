@@ -85,7 +85,7 @@ impl<
             if state
                 .logical_pipelines
                 .get(pipeline_key)
-                .is_some_and(|record| record.create_or_replace_generation == target_generation)
+                .is_some_and(|record| record.baseline_generation == target_generation)
             {
                 return;
             }
@@ -327,7 +327,7 @@ impl<
             let deployed_key = match self.launch_regular_pipeline_instance(
                 &plan.target_deployment,
                 *core_id,
-                plan.target_deployment.create_or_replace_generation,
+                plan.target_deployment.baseline_generation,
             ) {
                 Ok(deployed_key) => deployed_key,
                 Err(err) => {
@@ -378,7 +378,7 @@ impl<
                 "internal error: resize rollout missing current deployment".to_owned(),
             ));
         };
-        let active_generation = current_deployment.create_or_replace_generation;
+        let active_generation = current_deployment.baseline_generation;
         let mut started_cores = Vec::new();
         let mut retired_cores = Vec::new();
 
@@ -511,7 +511,7 @@ impl<
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.target_deployment,
                 *core_id,
-                plan.target_deployment.create_or_replace_generation,
+                plan.target_deployment.baseline_generation,
             ) {
                 Ok(new_key) => new_key,
                 Err(err) => {
@@ -547,7 +547,7 @@ impl<
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
-                plan.target_deployment.create_or_replace_generation,
+                plan.target_deployment.baseline_generation,
             );
             activated_added_cores.push(*core_id);
             self.update_rollout_core_state(
@@ -571,7 +571,7 @@ impl<
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.target_deployment,
                 *core_id,
-                plan.target_deployment.create_or_replace_generation,
+                plan.target_deployment.baseline_generation,
             ) {
                 Ok(new_key) => new_key,
                 Err(err) => {
@@ -648,7 +648,7 @@ impl<
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
-                plan.target_deployment.create_or_replace_generation,
+                plan.target_deployment.baseline_generation,
             );
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -734,7 +734,7 @@ impl<
                 "internal error: resize rollback missing current deployment".to_owned(),
             ));
         };
-        let previous_generation = previous.create_or_replace_generation;
+        let previous_generation = previous.baseline_generation;
 
         for core_id in retired_cores.iter().rev() {
             self.update_rollout_core_state(
@@ -850,7 +850,7 @@ impl<
         };
 
         // Rollback must restore the exact pre-rollout generation for each core.
-        // previous.create_or_replace_generation only identifies the committed deployment and can
+        // previous.baseline_generation only identifies the committed deployment and can
         // be older than a core-local generation installed by runtime recovery.
         for core_id in retired_removed_cores.iter().rev() {
             self.update_rollout_core_state(
@@ -919,7 +919,7 @@ impl<
                 pipeline_group_id: plan.pipeline_group_id.clone(),
                 pipeline_id: plan.pipeline_id.clone(),
                 core_id: *core_id,
-                deployment_generation: plan.target_deployment.create_or_replace_generation,
+                deployment_generation: plan.target_deployment.baseline_generation,
             };
             self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
@@ -952,7 +952,7 @@ impl<
                 pipeline_group_id: plan.pipeline_group_id.clone(),
                 pipeline_id: plan.pipeline_id.clone(),
                 core_id: *core_id,
-                deployment_generation: plan.target_deployment.create_or_replace_generation,
+                deployment_generation: plan.target_deployment.baseline_generation,
             };
             self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
@@ -966,10 +966,7 @@ impl<
                 None,
             );
         }
-        self.restore_replace_rollback_serving_generations(
-            plan,
-            previous.create_or_replace_generation,
-        );
+        self.restore_replace_rollback_serving_generations(plan, previous.baseline_generation);
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 

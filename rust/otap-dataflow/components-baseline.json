@@ -1,5 +1,11 @@
 [
   {
+    "id": "urn:microsoft:exporter:azure_data_explorer",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:microsoft:exporter:azure_monitor",
     "category": "Exporter",
     "description": null,

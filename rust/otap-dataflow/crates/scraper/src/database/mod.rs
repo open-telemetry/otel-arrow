@@ -5,7 +5,7 @@
 //!
 //! Vendor adapters own native connectivity and normalize returned values into
 //! [`CellValue`]. Shared OTLP encoding preserves these normalized values.
-//! Scalar and composite watermarks share the same durable delivery runtime.
+//! Snapshot, scalar, and composite modes share the durable delivery runtime.
 
 mod config;
 mod driver;
@@ -38,3 +38,6 @@ pub use scalar::{CursorError, ScalarValue};
 
 #[cfg(test)]
 mod scalar_tests;
+
+#[cfg(test)]
+mod snapshot_tests;

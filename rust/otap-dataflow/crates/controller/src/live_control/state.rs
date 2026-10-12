@@ -485,8 +485,9 @@ pub(crate) struct LogicalPipelineDeployment {
     pub(super) resolved: ResolvedPipelineConfig,
     /// Compiled context bindings for this deployment generation.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
-    /// Generation established by the create or replace rollout for this deployment.
-    pub(super) create_or_replace_generation: u64,
+    /// Generation established when this logical deployment was created or replaced.
+    /// Preserved across resize; recovered cores may serve newer generations.
+    pub(super) baseline_generation: u64,
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
     pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
@@ -496,14 +497,14 @@ impl LogicalPipelineDeployment {
     pub(crate) fn new(
         resolved: ResolvedPipelineConfig,
         context_bindings: Arc<CompiledContextBindings>,
-        create_or_replace_generation: u64,
+        baseline_generation: u64,
         placement: PipelinePlacement,
         listener_group_snapshot: Arc<ListenerGroupSnapshot>,
     ) -> Self {
         Self {
             resolved,
             context_bindings,
-            create_or_replace_generation,
+            baseline_generation,
             placement,
             placement_generation: listener_group_snapshot.generation,
             listener_group_snapshot,

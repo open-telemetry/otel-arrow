@@ -40,11 +40,17 @@ tracelogging::define_provider!(STATIC_PROVIDER, "OtapEtwE2E.Static");
 
 const STATIC_PROVIDER_NAME: &str = "OtapEtwE2E.Static";
 const DYNAMIC_EVENT_NAME: &str = "E2eDynamicEvent";
+const GUID_DYNAMIC_EVENT_NAME: &str = "E2eGuidDynamicEvent";
 /// Must stay in sync with the string literal passed to `write_event!` in
 /// [`emit_static_event`] -- the `tracelogging::write_event!` macro requires
 /// the event name to be a compile-time string literal.
 const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 
+/// Scenario: Named and GUID-only TraceLogging subscriptions capture dynamic
+/// and static events through the same real Windows ETW session.
+/// Guarantees: Named subscriptions emit their configured provider name;
+/// unregistered GUID subscriptions omit only that name while preserving the
+/// exact provider GUID and decoded payload fields.
 #[test]
 #[ignore = "requires Administrator privileges and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_decodes_tracelogging_events_end_to_end() {
@@ -64,6 +70,7 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     // fixed (it's a compile-time literal in `define_provider!`).
     let pid = std::process::id();
     let dynamic_provider_name = format!("OtapEtwE2E.Dyn.{pid}");
+    let guid_dynamic_provider_name = format!("OtapEtwE2E.GuidDyn.{pid}");
     let session_name = format!("OtapEtwE2E-{pid}");
 
     // Stop every leftover `OtapEtwE2E-*` session on the box.  We can't
@@ -77,20 +84,15 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     // would otherwise have succeeded.
     cleanup_stale_otap_etw_sessions();
 
-    // Canonical TraceLogging GUIDs for both providers -- the same hash
-    // ETW itself uses for manifest-free providers, so the kernel session
-    // and the producers agree on the routing.
-    let dynamic_guid_str = guid_string_from_name(&dynamic_provider_name);
-    let static_guid_str = guid_string_from_name(STATIC_PROVIDER_NAME);
-
-    // Subscribe to both providers in a single session.  Use default
+    // Subscribe to all providers in a single session. Use default
     // batching so we exercise the production flush path; a single event
     // flushes via the default timer (~100ms).
     let config_json = serde_json::json!({
         "session_name": session_name,
         "providers": [
-            { "guid": dynamic_guid_str, "level": "verbose" },
-            { "guid": static_guid_str,  "level": "verbose" },
+            { "name": dynamic_provider_name, "kind": "tracelogging", "level": "verbose" },
+            { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(&guid_dynamic_provider_name)).to_string(), "level": "verbose" },
+            { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(STATIC_PROVIDER_NAME)).to_string(), "level": "verbose" },
         ],
     });
 
@@ -109,17 +111,24 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
 
     test_runtime
         .set_receiver(receiver_wrapper)
-        .run_test(producer_scenario(dynamic_provider_name))
-        .run_validation(producer_validation());
+        .run_test(producer_scenario(
+            dynamic_provider_name.clone(),
+            guid_dynamic_provider_name.clone(),
+        ))
+        .run_validation(producer_validation(
+            dynamic_provider_name,
+            guid_dynamic_provider_name,
+        ));
 }
 
 // -- Producer ------------------------------------------------------------
 
-/// Test scenario: register both providers, emit one event from each,
+/// Test scenario: register all providers, emit one event from each,
 /// then signal `DrainIngress` + `Shutdown` so the validation phase sees
 /// the batch.
 fn producer_scenario(
     dynamic_provider_name: String,
+    guid_dynamic_provider_name: String,
 ) -> impl FnOnce(
     otel_arrow_dfe_engine::testing::receiver::TestContext<OtapPdata>,
 ) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -133,9 +142,12 @@ fn producer_scenario(
             // running (its `parse_until` callback never stops on its own)
             // and `TestRuntime::run_validation` would hang forever
             // instead of surfacing the panic.
-            let outcome = AssertUnwindSafe(run_producer_body(&dynamic_provider_name))
-                .catch_unwind()
-                .await;
+            let outcome = AssertUnwindSafe(run_producer_body(
+                &dynamic_provider_name,
+                &guid_dynamic_provider_name,
+            ))
+            .catch_unwind()
+            .await;
 
             // Best-effort cleanup of the static provider: `run_producer_body`
             // only unregisters on the happy path, so a panic before that
@@ -169,7 +181,7 @@ fn producer_scenario(
     }
 }
 
-async fn run_producer_body(dynamic_provider_name: &str) {
+async fn run_producer_body(dynamic_provider_name: &str, guid_dynamic_provider_name: &str) {
     // -- Dynamic provider (`tracelogging_dynamic`) -----------------------
     let dynamic_provider = Box::pin(tld::Provider::new(
         dynamic_provider_name,
@@ -181,6 +193,16 @@ async fn run_producer_body(dynamic_provider_name: &str) {
     let r = unsafe { dynamic_provider.as_ref().register() };
     assert_eq!(r, 0, "dynamic Provider::register returned errno {r}");
 
+    let guid_dynamic_provider = Box::pin(tld::Provider::new(
+        guid_dynamic_provider_name,
+        &tld::Provider::options(),
+    ));
+    // SAFETY: The provider stays pinned until this function exits and
+    // automatically unregisters on drop, including during unwinding.
+    #[allow(unsafe_code)]
+    let r = unsafe { guid_dynamic_provider.as_ref().register() };
+    assert_eq!(r, 0, "GUID dynamic Provider::register returned errno {r}");
+
     // -- Static provider (`tracelogging`) --------------------------------
     // SAFETY: this is an EXE-style test binary; process exit triggers
     // `unregister` for any provider still registered.  We also call
@@ -189,7 +211,7 @@ async fn run_producer_body(dynamic_provider_name: &str) {
     let r = unsafe { STATIC_PROVIDER.register() };
     assert_eq!(r, 0, "static Provider::register returned errno {r}");
 
-    // Wait for both providers to be enabled by the kernel session.  10s
+    // Wait for all providers to be enabled by the kernel session. 10s
     // is generous; in practice this flips within a few hundred ms on a
     // healthy machine.
     wait_until_enabled(
@@ -198,12 +220,18 @@ async fn run_producer_body(dynamic_provider_name: &str) {
     )
     .await;
     wait_until_enabled(
+        || guid_dynamic_provider.enabled(tld::Level::Verbose, 0),
+        guid_dynamic_provider_name,
+    )
+    .await;
+    wait_until_enabled(
         || STATIC_PROVIDER.enabled(tracelogging::Level::Verbose, 0),
         STATIC_PROVIDER_NAME,
     )
     .await;
 
-    emit_dynamic_event(&dynamic_provider);
+    emit_dynamic_event(&dynamic_provider, DYNAMIC_EVENT_NAME);
+    emit_dynamic_event(&guid_dynamic_provider, GUID_DYNAMIC_EVENT_NAME);
     emit_static_event();
 
     // Wait long enough for the kernel ETW buffer-flush timer to hand our
@@ -240,9 +268,9 @@ async fn wait_until_enabled(mut check: impl FnMut() -> bool, provider_name: &str
 /// Emit one TraceLogging event populated with the full breadth of scalar
 /// in-types that one_collect's TDH decoder handles, so the validator can
 /// pin down every branch in the receiver's value translation.
-fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
+fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>, event_name: &str) {
     let r = tld::EventBuilder::new()
-        .reset(DYNAMIC_EVENT_NAME, tld::Level::Informational, 0x1, 0)
+        .reset(event_name, tld::Level::Informational, 0x1, 0)
         // Unsigned and signed integers.
         .add_u32("MyAnswer", 42u32, tld::OutType::Default, 0)
         .add_u64("MyBigCount", 1_000_000_000_001u64, tld::OutType::Default, 0)
@@ -334,17 +362,20 @@ fn emit_static_event() {
 
 // -- Validation ----------------------------------------------------------
 
-/// Drain downstream pdata until we have batches containing BOTH events,
+/// Drain downstream pdata until we have batches containing all three events,
 /// then run comprehensive assertions on each.
-fn producer_validation() -> impl FnOnce(
+fn producer_validation(
+    dynamic_provider_name: String,
+    guid_dynamic_provider_name: String,
+) -> impl FnOnce(
     otel_arrow_dfe_engine::testing::receiver::NotSendValidateContext<OtapPdata>,
 ) -> Pin<Box<dyn Future<Output = ()>>> {
     move |mut ctx| {
         Box::pin(async move {
             // The kernel session may surface unrelated events while
-            // enabling the providers, and our two events may end up in
-            // one batch or two consecutive batches depending on flush
-            // timing.  Collect everything until we've seen both
+            // enabling the providers, and our three events may end up in
+            // one batch or consecutive batches depending on flush
+            // timing. Collect everything until we've seen all three
             // event_names or hit the deadline.  15s safety margin for
             // busy CI runners.
             let deadline = Instant::now() + Duration::from_secs(15);
@@ -354,6 +385,7 @@ fn producer_validation() -> impl FnOnce(
             loop {
                 if has_event(&batches, DYNAMIC_EVENT_NAME, our_pid)
                     && has_event(&batches, STATIC_EVENT_NAME, our_pid)
+                    && has_event(&batches, GUID_DYNAMIC_EVENT_NAME, our_pid)
                 {
                     break;
                 }
@@ -375,11 +407,33 @@ fn producer_validation() -> impl FnOnce(
             let (dyn_records, dyn_row) = locate_event(&batches, DYNAMIC_EVENT_NAME, our_pid);
             let (stc_records, stc_row) = locate_event(&batches, STATIC_EVENT_NAME, our_pid);
 
-            assert_log_record_common(dyn_records, dyn_row, DYNAMIC_EVENT_NAME);
+            assert_log_record_common(
+                dyn_records,
+                dyn_row,
+                DYNAMIC_EVENT_NAME,
+                &dynamic_provider_name,
+                Some(&dynamic_provider_name),
+            );
             assert_dynamic_user_attrs(dyn_records, dyn_row);
 
-            assert_log_record_common(stc_records, stc_row, STATIC_EVENT_NAME);
+            assert_log_record_common(
+                stc_records,
+                stc_row,
+                STATIC_EVENT_NAME,
+                STATIC_PROVIDER_NAME,
+                None,
+            );
             assert_static_user_attrs(stc_records, stc_row);
+
+            let (guid_records, guid_row) = locate_event(&batches, GUID_DYNAMIC_EVENT_NAME, our_pid);
+            assert_log_record_common(
+                guid_records,
+                guid_row,
+                GUID_DYNAMIC_EVENT_NAME,
+                &guid_dynamic_provider_name,
+                None,
+            );
+            assert_dynamic_user_attrs(guid_records, guid_row);
         })
     }
 }
@@ -441,7 +495,13 @@ fn find_event_row(records: &OtapArrowRecords, expected: &str, expected_pid: u32)
 /// Field-by-field validation of the Logs/Resource/Scope columns and the
 /// receiver-injected `etw.*` attributes -- the parts that are identical
 /// for every event regardless of how it was produced.
-fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: &str) {
+fn assert_log_record_common(
+    records: &OtapArrowRecords,
+    row: usize,
+    event_name: &str,
+    provider_name: &str,
+    expected_provider_name: Option<&str>,
+) {
     let logs_rb = records
         .get(ArrowPayloadType::Logs)
         .expect("Logs payload should be present");
@@ -568,8 +628,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     // string (lowercase) by the encoder's `format_guid`. The little-endian
     // Data1/2/3 fields are byte-swapped into canonical GUID form once at the
     // session boundary (`CanonicalGuid`), so `format_guid` just renders it.
-    // We check shape here rather than exact equality against a specific
-    // provider GUID.
+    // Check the shape as well as the exact subscribed provider GUID below.
     let provider_id = attr_str(&attrs, "etw.provider.id");
     assert_eq!(
         provider_id.len(),
@@ -582,6 +641,19 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
             .all(|c| c == '-' || c.is_ascii_hexdigit()),
         "etw.provider.id contains non-hex/non-dash characters: {provider_id:?}"
     );
+    assert_eq!(
+        provider_id,
+        session::CanonicalGuid::from(one_collect::guid_from_provider_name(provider_name))
+            .to_string(),
+        "captured provider GUID must match the subscribed provider"
+    );
+    match expected_provider_name {
+        Some(name) => assert_attr_str(&attrs, "etw.provider.name", name),
+        None => assert!(
+            !attrs.iter().any(|(key, _)| key == "etw.provider.name"),
+            "unregistered GUID-only providers must omit etw.provider.name"
+        ),
+    }
 }
 
 /// Per-attribute assertions for the rich `tracelogging_dynamic` event.
@@ -1175,16 +1247,6 @@ fn struct_field_is_null(s: &arrow::array::StructArray, field: &str, row: usize) 
 }
 
 // -- Diagnostic / privilege helpers --------------------------------------
-
-/// Compute the canonical TraceLogging GUID string for `provider_name`
-/// (the same hash ETW uses for manifest-free providers).
-fn guid_string_from_name(provider_name: &str) -> String {
-    let guid = tld::Guid::from_name(provider_name);
-    let buf = guid.to_utf8_bytes();
-    std::str::from_utf8(&buf)
-        .expect("GUID bytes are valid ASCII")
-        .to_string()
-}
 
 /// True when the current process is running with Administrator
 /// privileges (high integrity level / member of the local

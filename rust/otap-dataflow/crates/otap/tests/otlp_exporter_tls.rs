@@ -130,45 +130,14 @@ async fn otlp_exporter_connects_with_mtls() {
     server.abort();
 }
 
+/// Scenario: configure an OTLP exporter with malformed inline CA material.
+/// Guarantees: TLS setup rejects the CA before constructing an endpoint or
+/// attempting a connection.
 #[tokio::test]
 async fn otlp_exporter_fails_with_invalid_ca_pem() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-
-    // Generate CA and server cert.
-    let ca = generate_ca("Test CA");
-    let server = ca.issue_leaf(
-        "localhost",
-        Some("localhost"),
-        Some(ExtendedKeyUsage::ServerAuth),
-    );
-    let server_cert_pem = server.cert_pem;
-    let server_key_pem = server.key_pem;
-
-    // gRPC service mock.
-    let (tx, _rx) = mpsc::channel::<()>(8);
-    let logs_service = LogsServiceServer::new(LogsServiceMock { sender: tx });
-
-    let server_identity = Identity::from_pem(server_cert_pem.as_bytes(), server_key_pem.as_bytes());
-    let tls = ServerTlsConfig::new().identity(server_identity);
-
-    // Bind to ephemeral port.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    let server = tokio::spawn(async move {
-        Server::builder()
-            .tls_config(tls)
-            .unwrap()
-            .add_service(logs_service)
-            .serve_with_incoming(incoming)
-            .await
-            .unwrap();
-    });
-
-    // Invalid CA PEM should prevent a successful TLS connection.
     let settings = GrpcClientSettings {
-        grpc_endpoint: format!("https://localhost:{}", addr.port()),
+        grpc_endpoint: "https://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {
             config: TlsConfig::default(),
             ca_file: None,
@@ -180,22 +149,31 @@ async fn otlp_exporter_fails_with_invalid_ca_pem() {
         ..GrpcClientSettings::default()
     };
 
-    let endpoint = settings.build_endpoint_with_tls().await.unwrap();
-    let connect_res = endpoint.connect().await;
-    assert!(connect_res.is_err());
-
-    server.abort();
+    let error = settings
+        .build_endpoint_with_tls()
+        .await
+        .expect_err("malformed CA PEM must fail during TLS setup");
+    assert!(
+        error
+            .to_string()
+            .contains("ca_pem contains no CA certificates")
+    );
 }
 
+/// Scenario: configure valid client TLS settings for an OTLP endpoint using the
+/// HTTP URI scheme.
+/// Guarantees: explicit TLS configuration is accepted regardless of endpoint
+/// scheme instead of being silently ignored.
 #[tokio::test]
 async fn otlp_exporter_allows_http_with_tls_config() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+    let ca = generate_ca("Test CA");
     let settings = GrpcClientSettings {
         grpc_endpoint: "http://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {
             config: TlsConfig::default(),
             ca_file: None,
-            ca_pem: Some("fake pem".to_string()),
+            ca_pem: Some(ca.cert_pem),
             include_system_ca_certs_pool: None,
             server_name: None,
             ..TlsClientConfig::default()
