@@ -48,6 +48,7 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 
 [dev-dependencies]
+libtest-mimic.workspace = true
 tokio-stream = { workspace = true }
 prost = { workspace = true }
 criterion = { workspace = true }
@@ -85,3 +86,7 @@ required-features = ["testing", "bench"]
 name = "filter_regex"
 harness = false
 required-features = ["testing"]
+
+[[test]]
+name = "test_count_items_allocation"
+harness = false

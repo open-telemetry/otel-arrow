@@ -224,3 +224,11 @@ path = "benches/filelog_multiline/allocations.rs"
 [[test]]
 name = "filelog_multiline_memory"
 harness = false
+
+[[test]]
+name = "filelog_decoder_allocations"
+harness = false
+
+[[test]]
+name = "filelog_framer_allocations"
+harness = false

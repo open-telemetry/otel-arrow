@@ -5,7 +5,25 @@
 //! allocator is set for the whole binary. By defining this file as standalone in the
 //! tests/ directory, it makes it an independent binary.
 
-#[cfg(all(test, target_os = "linux"))]
+fn main() {
+    let mut args = libtest_mimic::Arguments::from_args();
+    // Some(1) executes on the calling thread in libtest-mimic 0.8.2.
+    // Override CLI settings to keep harness workers out of global DHAT measurements.
+    args.test_threads = Some(1);
+    #[cfg(target_os = "linux")]
+    let trials = vec![libtest_mimic::Trial::test(
+        "test_allocation::test_signal_num_items_should_not_allocate",
+        || {
+            test_allocation::test_signal_num_items_should_not_allocate();
+            Ok(())
+        },
+    )];
+    #[cfg(not(target_os = "linux"))]
+    let trials = Vec::new();
+    libtest_mimic::run(&args, trials).exit();
+}
+
+#[cfg(target_os = "linux")]
 mod test_allocation {
     use bytes::Bytes;
     use otel_arrow_dfe_pdata::OtapPayloadHelpers;
@@ -294,8 +312,7 @@ mod test_allocation {
 
     /// Scenario: Calling OtlpProtoBytes::num_items() on representative OTLP Logs/Traces/Metrics payloads.
     /// Guarantees: num_items() returns the correct count and performs zero heap allocations.
-    #[test]
-    fn test_signal_num_items_should_not_allocate() {
+    pub(super) fn test_signal_num_items_should_not_allocate() {
         let cases: [(&str, (OtlpProtoBytes, usize)); _] = [
             ("Logs", helper_get_test_logs_and_num_items()),
             ("Traces", helper_get_test_traces_and_num_items()),
@@ -303,7 +320,12 @@ mod test_allocation {
         ];
 
         for (signal_type, (otlp_bytes, expected_number_of_items)) in cases {
-            let _profiler = dhat::Profiler::builder().testing().build();
+            // Name each signal session separately, before starting measurement.
+            let path = format!(
+                "dhat-test_count_items_allocation-test_allocation-test_signal_num_items_should_not_allocate-{signal_type}-{}.json",
+                std::process::id()
+            );
+            let _profiler = dhat::Profiler::builder().testing().file_name(path).build();
 
             let number_of_items = otlp_bytes.num_items();
 
