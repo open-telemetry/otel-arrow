@@ -1,16 +1,23 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::native::check;
 use super::*;
-use crate::receivers::windows_perf_counters_receiver::config::MetricKind;
+use crate::receivers::windows_perf_counters_receiver::config::{MetricKind, RuntimeConfig};
 use crate::receivers::windows_perf_counters_receiver::model::Number;
 use crate::receivers::windows_perf_counters_receiver::otap_builder::into_otap;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader};
+use std::mem::{size_of, size_of_val};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::Arc;
 use windows_sys::Win32::System::Performance::{
-    PDH_CSTATUS_NO_INSTANCE, PDH_INVALID_ARGUMENT, PdhFormatFromRawValue,
+    PDH_CALC_NEGATIVE_DENOMINATOR, PDH_CALC_NEGATIVE_TIMEBASE, PDH_CALC_NEGATIVE_VALUE,
+    PDH_COUNTER_INFO_W, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_NO_INSTANCE,
+    PDH_CSTATUS_VALID_DATA, PDH_INVALID_ARGUMENT, PDH_INVALID_DATA, PDH_MORE_DATA, PDH_NO_DATA,
 };
 
 const OMISSION_STATUSES: [u32; 5] = [
@@ -87,13 +94,13 @@ struct State {
     removes: Vec<usize>,
     collect_status: u32,
     timestamp: i64,
-    formats: Vec<(usize, u32)>,
+    formats: Vec<(usize, ValueFormat)>,
     raws: Vec<usize>,
 }
 
 struct FakePdh(Rc<RefCell<State>>);
 
-fn fake(counters: Vec<CounterFixture>) -> (FakePdh, Rc<RefCell<State>>, Vec<CounterConfig>) {
+fn fake(counters: Vec<CounterFixture>) -> (Rc<RefCell<State>>, Vec<CounterConfig>) {
     let configs = (0..counters.len())
         .map(|i| config(&format!(r"\Object\Counter{i}")))
         .collect();
@@ -112,18 +119,31 @@ fn fake(counters: Vec<CounterFixture>) -> (FakePdh, Rc<RefCell<State>>, Vec<Coun
         formats: Vec::new(),
         raws: Vec::new(),
     }));
-    (FakePdh(Rc::clone(&state)), state, configs)
+    (state, configs)
+}
+
+impl FakePdh {
+    fn open(state: Rc<RefCell<State>>) -> Result<Self, Error> {
+        {
+            let mut state = state.borrow_mut();
+            state.opens += 1;
+            check("PdhOpenQueryW", "<query>", state.open_status)?;
+        }
+        Ok(Self(state))
+    }
+}
+
+fn open_fake(
+    state: &Rc<RefCell<State>>,
+    configs: &[CounterConfig],
+) -> Result<Query<FakePdh>, Error> {
+    Query::open_with(FakePdh::open(Rc::clone(state))?, configs)
 }
 
 impl PdhApi for FakePdh {
-    fn open(&mut self) -> Result<PDH_HQUERY, Error> {
-        let mut state = self.0.borrow_mut();
-        state.opens += 1;
-        check("PdhOpenQueryW", "<query>", state.open_status)?;
-        Ok(std::ptr::without_provenance_mut(100))
-    }
+    type Counter = usize;
 
-    fn add(&mut self, _: PDH_HQUERY, path: &str) -> Result<PDH_HCOUNTER, Error> {
+    fn add(&mut self, path: &str) -> Result<usize, Error> {
         let mut state = self.0.borrow_mut();
         let index = state.adds;
         state.adds += 1;
@@ -133,21 +153,21 @@ impl PdhApi for FakePdh {
             state.counters[index].add_status,
         )?;
         assert!(state.handles.insert(index + 1));
-        Ok(std::ptr::without_provenance_mut(index + 1))
+        Ok(index + 1)
     }
 
-    fn remove(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<(), Error> {
+    fn remove(&mut self, counter: &usize, path: &str) -> Result<(), Error> {
         let mut state = self.0.borrow_mut();
-        state.removes.push(counter.addr() - 1);
+        state.removes.push(*counter - 1);
         check("PdhRemoveCounter", path, state.remove_status)?;
-        assert!(state.handles.remove(&counter.addr()));
+        assert!(state.handles.remove(counter));
         Ok(())
     }
 
-    fn counter_type(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<u32, Error> {
+    fn counter_type(&mut self, counter: &usize, path: &str) -> Result<u32, Error> {
         let state = self.0.borrow();
-        assert!(state.handles.contains(&counter.addr()));
-        let fixture = &state.counters[counter.addr() - 1];
+        assert!(state.handles.contains(counter));
+        let fixture = &state.counters[*counter - 1];
         NativePdh::counter_type_with(path, |size, buffer| {
             if let Some(buffer) = buffer {
                 assert!((*size as usize) <= size_of_val(buffer));
@@ -165,37 +185,36 @@ impl PdhApi for FakePdh {
         })
     }
 
-    fn collect(&mut self, _: PDH_HQUERY) -> Result<(), Error> {
+    fn collect(&mut self) -> Result<bool, Error> {
         let mut state = self.0.borrow_mut();
         state.collects += 1;
-        check("PdhCollectQueryData", "<query>", state.collect_status)
+        NativePdh::collect_status(state.collect_status)
     }
 
-    fn raw(&mut self, counter: PDH_HCOUNTER, path: &str) -> Result<PDH_RAW_COUNTER, Error> {
+    fn raw(&mut self, counter: &usize, path: &str) -> Result<Option<i64>, Error> {
         let mut state = self.0.borrow_mut();
-        let index = counter.addr() - 1;
-        assert!(state.handles.contains(&counter.addr()));
+        let index = *counter - 1;
+        assert!(state.handles.contains(counter));
         state.raws.push(index);
         let fixture = &state.counters[index];
-        check("PdhGetRawCounterValue", path, fixture.raw_status)?;
-        Ok(PDH_RAW_COUNTER {
-            CStatus: fixture.raw_cstatus,
-            SecondValue: fixture.base,
-            ..Default::default()
+        NativePdh::raw_with(path, |raw| {
+            raw.CStatus = fixture.raw_cstatus;
+            raw.SecondValue = fixture.base;
+            fixture.raw_status
         })
     }
 
     fn formatted(
         &mut self,
-        counter: PDH_HCOUNTER,
+        counter: &usize,
         path: &str,
         format: ValueFormat,
     ) -> Result<Option<Number>, Error> {
         let mut state = self.0.borrow_mut();
-        let index = counter.addr() - 1;
-        assert!(state.handles.contains(&counter.addr()));
-        NativePdh::formatted_with(path, format, |flags, value| {
-            state.formats.push((index, flags));
+        let index = *counter - 1;
+        assert!(state.handles.contains(counter));
+        NativePdh::formatted_with(path, format, |_, value| {
+            state.formats.push((index, format));
             let fixture = &state.counters[index];
             value.CStatus = fixture.format_cstatus;
             match (format, fixture.number) {
@@ -211,15 +230,16 @@ impl PdhApi for FakePdh {
         })
     }
 
-    fn close(&mut self, _: PDH_HQUERY) -> u32 {
+    fn timestamp(&mut self) -> Result<i64, Error> {
+        Ok(self.0.borrow().timestamp)
+    }
+}
+
+impl Drop for FakePdh {
+    fn drop(&mut self) {
         let mut state = self.0.borrow_mut();
         state.closes += 1;
         state.handles.clear();
-        0
-    }
-
-    fn timestamp(&mut self) -> Result<i64, Error> {
-        Ok(self.0.borrow().timestamp)
     }
 }
 
@@ -228,12 +248,12 @@ impl PdhApi for FakePdh {
 #[test]
 fn opening_retains_healthy_counters_and_startup_diagnostics() {
     for failed in [0, 1] {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0, Number::Integer(1)),
             CounterFixture::new(0, Number::Integer(2)),
         ]);
         state.borrow_mut().counters[failed].add_status = PDH_INVALID_DATA;
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
         assert_eq!(query.startup_failures.len(), 1);
         assert_eq!(query.startup_failures[0].counter_index, failed);
         assert_eq!(query.startup_failures[0].path, configs[failed].path);
@@ -257,11 +277,11 @@ fn opening_retains_healthy_counters_and_startup_diagnostics() {
 }
 
 /// Scenario: PDH cannot open a query, or every configured counter fails to add or inspect.
-/// Guarantees: Opening returns an explicit error with all startup diagnostics and releases every acquired handle.
+/// Guarantees: Opening returns a single-line error with readable path/error entries for every failed counter and releases every acquired handle.
 #[test]
 fn opening_fails_without_a_query_or_usable_counters() {
     for fail_open in [true, false] {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0, Number::Integer(1)),
             CounterFixture::new(0, Number::Integer(2)),
         ]);
@@ -271,7 +291,7 @@ fn opening_fails_without_a_query_or_usable_counters() {
             state.borrow_mut().counters[0].add_status = PDH_INVALID_DATA;
             state.borrow_mut().counters[1].fill_status = PDH_INVALID_DATA;
         }
-        let error = match Query::open_with(api, &configs, "test".to_owned()) {
+        let error = match open_fake(&state, &configs) {
             Ok(_) => panic!("opening must fail without usable counters"),
             Err(error) => error,
         };
@@ -284,10 +304,22 @@ fn opening_fails_without_a_query_or_usable_counters() {
                 }
             ));
         } else {
+            let message = error.to_string();
             let Error::NoCounters { failures } = error else {
                 panic!("expected startup diagnostics for every counter");
             };
             assert_eq!(failures.len(), 2);
+            assert_eq!(
+                message,
+                format!(
+                    "no configured performance counter could be loaded; startup failures: {}",
+                    failures
+                        .iter()
+                        .map(|failure| format!("{}: {}", failure.path, failure.error))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
+            );
             for (index, failure) in failures.iter().enumerate() {
                 assert_eq!(failure.counter_index, index);
                 assert_eq!(failure.path, configs[index].path);
@@ -305,7 +337,7 @@ fn opening_fails_without_a_query_or_usable_counters() {
 #[test]
 fn inspection_failure_cleans_up_without_classifying_zero_buffer() {
     for failure in 0..7 {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0, Number::Integer(1)),
             CounterFixture::new(0, Number::Integer(2)),
         ]);
@@ -323,7 +355,7 @@ fn inspection_failure_cleans_up_without_classifying_zero_buffer() {
                 _ => unreachable!(),
             }
         }
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
         assert_eq!(query.startup_failures.len(), 1);
         assert_eq!(query.startup_failures[0].counter_index, 1);
         assert_eq!(query.startup_failures[0].path, configs[1].path);
@@ -351,12 +383,12 @@ fn inspection_failure_cleans_up_without_classifying_zero_buffer() {
 /// Guarantees: Cleanup failure is reported without losing healthy points, and query closure releases the retained handle.
 #[test]
 fn failed_counter_removal_remains_owned_and_reported() {
-    let (api, state, configs) = fake(vec![
+    let (state, configs) = fake(vec![
         CounterFixture::new(0, Number::Integer(1)),
         CounterFixture::new(0x4003_0401, Number::Integer(2)),
     ]);
     state.borrow_mut().remove_status = PDH_INVALID_DATA;
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let mut query = open_fake(&state, &configs).unwrap();
     assert_eq!(query.startup_failures.len(), 1);
     assert!(
         query.startup_failures[0]
@@ -378,13 +410,13 @@ fn failed_counter_removal_remains_owned_and_reported() {
 /// Guarantees: Padded metadata storage preserves valid zero types and exact integers; configured scaling alone controls double output.
 #[test]
 fn direct_reads_preserve_integers_and_apply_only_configured_scaling() {
-    let (api, state, mut configs) = fake(vec![
+    let (state, mut configs) = fake(vec![
         CounterFixture::new(0, Number::Integer(i64::MAX)),
         CounterFixture::new(0x0001_0100, Number::Integer(7)),
     ]);
     state.borrow_mut().counters[0].info_size += 1;
     configs[1].scale_power10 = -1;
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let mut query = open_fake(&state, &configs).unwrap();
     for _ in 0..3 {
         let sample = query.collect().unwrap();
         assert_eq!(
@@ -402,7 +434,7 @@ fn direct_reads_preserve_integers_and_apply_only_configured_scaling() {
             .borrow()
             .formats
             .iter()
-            .all(|(_, flags)| *flags == PDH_FMT_LARGE | PDH_FMT_NOSCALE)
+            .all(|(_, format)| *format == ValueFormat::Integer)
     );
     assert!(state.borrow().raws.is_empty());
     drop(query);
@@ -417,13 +449,13 @@ fn direct_reads_preserve_integers_and_apply_only_configured_scaling() {
 /// Guarantees: A zero history value still completes warm-up and the calculated value remains an unclamped scaled double.
 #[test]
 fn calculated_reads_warm_up_and_do_not_cap_percentages() {
-    let (api, state, mut configs) = fake(vec![CounterFixture::new(
+    let (state, mut configs) = fake(vec![CounterFixture::new(
         0x2051_0500,
         Number::Double(250.0),
     )]);
     state.borrow_mut().counters[0].base = 0;
     configs[0].scale_power10 = -2;
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let mut query = open_fake(&state, &configs).unwrap();
     let warmup = query.collect().unwrap();
     assert_eq!(warmup.points[0].value, SampleValue::NoObservation);
     assert!(warmup.failures.is_empty());
@@ -434,18 +466,15 @@ fn calculated_reads_warm_up_and_do_not_cap_percentages() {
         SampleValue::Value(Number::Double(2.5))
     );
     assert!(into_otap(&configs, sample).unwrap().is_some());
-    assert_eq!(
-        state.borrow().formats,
-        vec![(0, PDH_FMT_DOUBLE | PDH_FMT_NOSCALE | PDH_FMT_NOCAP100)]
-    );
+    assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
 }
 
 /// Scenario: A raw fraction's current denominator is zero, negative, then positive.
 /// Guarantees: Invalid denominators fail locally and a valid fraction needs no two-sample warm-up.
 #[test]
 fn raw_fraction_requires_a_positive_current_base() {
-    let (api, state, configs) = fake(vec![CounterFixture::new(0x2002_0400, Number::Double(25.0))]);
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let (state, configs) = fake(vec![CounterFixture::new(0x2002_0400, Number::Double(25.0))]);
+    let mut query = open_fake(&state, &configs).unwrap();
     for base in [0, -1] {
         state.borrow_mut().counters[0].base = base;
         let sample = query.collect().unwrap();
@@ -470,8 +499,8 @@ fn raw_fraction_requires_a_positive_current_base() {
 /// Guarantees: Idle and reset intervals omit points without failures; reset recovery re-warms without restarting cumulative time.
 #[test]
 fn base_progression_and_reset_preserve_sequence_start() {
-    let (api, state, configs) = fake(vec![CounterFixture::new(0x4002_0500, Number::Double(4.0))]);
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let (state, configs) = fake(vec![CounterFixture::new(0x4002_0500, Number::Double(4.0))]);
+    let mut query = open_fake(&state, &configs).unwrap();
     for (base, expected) in [
         (10, SampleValue::NoObservation),
         (10, SampleValue::NoObservation),
@@ -505,11 +534,11 @@ fn formatted_statuses_omit_and_reset_readiness() {
                 (0, data_omission),
                 (PDH_INVALID_DATA, data_omission),
             ] {
-                let (api, state, configs) = fake(vec![
+                let (state, configs) = fake(vec![
                     CounterFixture::new(native_type, number),
                     CounterFixture::new(0, Number::Integer(7)),
                 ]);
-                let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+                let mut query = open_fake(&state, &configs).unwrap();
                 let _ = query.collect().unwrap();
                 state.borrow_mut().counters[0].base = 12;
                 assert_eq!(
@@ -567,11 +596,11 @@ fn real_formatted_errors_remain_failures() {
         (PDH_INVALID_ARGUMENT, PDH_NO_DATA),
         (PDH_INVALID_ARGUMENT, PDH_CALC_NEGATIVE_VALUE),
     ] {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0x1041_0400, Number::Double(3.0)),
             CounterFixture::new(0, Number::Integer(7)),
         ]);
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
         let _ = query.collect().unwrap();
         state.borrow_mut().counters[0].format_status = status;
         state.borrow_mut().counters[0].format_cstatus = cstatus;
@@ -606,11 +635,11 @@ fn real_formatted_errors_remain_failures() {
 #[test]
 fn counter_failures_preserve_peers_and_retry_existing_handles() {
     for fail_status in [false, true] {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0, Number::Integer(7)),
             CounterFixture::new(0x3002_0400, Number::Double(2.0)),
         ]);
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
         let _ = query.collect().unwrap();
         {
             let mut state = state.borrow_mut();
@@ -650,11 +679,11 @@ fn counter_failures_preserve_peers_and_retry_existing_handles() {
 fn raw_statuses_omit_and_clear_base_readiness() {
     for (omission, data_omission) in OMISSION_STATUSES.into_iter().zip(DATA_OMISSION_STATUSES) {
         for fail_status in [false, true] {
-            let (api, state, configs) = fake(vec![
+            let (state, configs) = fake(vec![
                 CounterFixture::new(0x20C2_0400, Number::Double(50.0)),
                 CounterFixture::new(0, Number::Integer(7)),
             ]);
-            let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+            let mut query = open_fake(&state, &configs).unwrap();
             let _ = query.collect().unwrap();
             state.borrow_mut().counters[0].base = 12;
             assert_eq!(
@@ -705,11 +734,11 @@ fn raw_statuses_omit_and_clear_base_readiness() {
 fn formatted_invalid_data_preserves_specific_failures() {
     for status in [0, PDH_INVALID_DATA] {
         for cstatus in [PDH_CSTATUS_NO_INSTANCE, PDH_INVALID_DATA] {
-            let (api, state, configs) = fake(vec![
+            let (state, configs) = fake(vec![
                 CounterFixture::new(0x1041_0400, Number::Double(3.0)),
                 CounterFixture::new(0, Number::Integer(7)),
             ]);
-            let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+            let mut query = open_fake(&state, &configs).unwrap();
             let _ = query.collect().unwrap();
             {
                 let mut state = state.borrow_mut();
@@ -759,8 +788,8 @@ fn formatted_invalid_data_preserves_specific_failures() {
     }
 }
 
-/// Scenario: A raw API or data status reports an unrelated error beside a healthy direct counter.
-/// Guarantees: Real raw errors remain local failures and cannot be masked by an expected-omission data status.
+/// Scenario: A warmed counter's raw API or data status reports an unrelated error beside a healthy direct counter.
+/// Guarantees: API errors cannot be masked by data status; all raw failures remain local and require fresh warm-up on recovery.
 #[test]
 fn real_raw_errors_remain_failures() {
     for (status, cstatus) in [
@@ -771,11 +800,12 @@ fn real_raw_errors_remain_failures() {
         (0, PDH_CSTATUS_NO_INSTANCE),
         (0, PDH_INVALID_DATA),
     ] {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0x1041_0400, Number::Double(3.0)),
             CounterFixture::new(0, Number::Integer(7)),
         ]);
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
+        let _ = query.collect().unwrap();
         state.borrow_mut().counters[0].raw_status = status;
         state.borrow_mut().counters[0].raw_cstatus = cstatus;
         let sample = query.collect().unwrap();
@@ -794,6 +824,21 @@ fn real_raw_errors_remain_failures() {
             sample.points[0].value,
             SampleValue::Value(Number::Integer(7))
         );
+        {
+            let mut state = state.borrow_mut();
+            state.counters[0].raw_status = 0;
+            state.counters[0].raw_cstatus = PDH_CSTATUS_VALID_DATA;
+        }
+        let warming = query.collect().unwrap();
+        assert!(warming.failures.is_empty());
+        assert_eq!(warming.points[0].value, SampleValue::NoObservation);
+        let recovered = query.collect().unwrap();
+        assert!(recovered.failures.is_empty());
+        assert_eq!(
+            recovered.points[0].value,
+            SampleValue::Value(Number::Double(3.0))
+        );
+        assert_eq!(recovered.start_time_unix_nano, 100);
     }
 }
 
@@ -802,12 +847,12 @@ fn real_raw_errors_remain_failures() {
 #[test]
 fn scaling_failures_are_counter_local() {
     for number in [f64::NAN, f64::INFINITY, f64::MAX] {
-        let (api, _, mut configs) = fake(vec![
+        let (state, mut configs) = fake(vec![
             CounterFixture::new(0x2002_0400, Number::Double(number)),
             CounterFixture::new(0, Number::Integer(42)),
         ]);
         configs[0].scale_power10 = 18;
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
         let sample = query.collect().unwrap();
         assert_eq!(sample.failures.len(), 1);
         assert_eq!(sample.failures[0].counter_index, 0);
@@ -821,11 +866,11 @@ fn scaling_failures_are_counter_local() {
 /// Guarantees: Calculations re-warm and retries neither rebuild handles nor reset cumulative time.
 #[test]
 fn query_failure_retries_without_rebuilding_or_restarting_sequence() {
-    let (api, state, configs) = fake(vec![
+    let (state, configs) = fake(vec![
         CounterFixture::new(0, Number::Integer(7)),
         CounterFixture::new(0x1041_0400, Number::Double(3.0)),
     ]);
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let mut query = open_fake(&state, &configs).unwrap();
     let _ = query.collect().unwrap();
     state.borrow_mut().collect_status = PDH_INVALID_ARGUMENT;
     assert!(query.collect().is_err());
@@ -849,11 +894,11 @@ fn query_failure_retries_without_rebuilding_or_restarting_sequence() {
 #[test]
 fn query_statuses_omit_and_clear_all_readiness() {
     for omission in OMISSION_STATUSES {
-        let (api, state, configs) = fake(vec![
+        let (state, configs) = fake(vec![
             CounterFixture::new(0, Number::Integer(7)),
             CounterFixture::new(0x4002_0500, Number::Double(3.0)),
         ]);
-        let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+        let mut query = open_fake(&state, &configs).unwrap();
         let _ = query.collect().unwrap();
         state.borrow_mut().counters[1].base = 12;
         assert_eq!(
@@ -904,8 +949,8 @@ fn query_statuses_omit_and_clear_all_readiness() {
 /// Guarantees: Omissions still enforce positive timestamps and only rollback restarts cumulative time.
 #[test]
 fn query_omissions_preserve_timestamp_validation_and_rollback() {
-    let (api, state, configs) = fake(vec![CounterFixture::new(0, Number::Integer(7))]);
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let (state, configs) = fake(vec![CounterFixture::new(0, Number::Integer(7))]);
+    let mut query = open_fake(&state, &configs).unwrap();
     state.borrow_mut().collect_status = PDH_NO_DATA;
     state.borrow_mut().timestamp = 0;
     assert!(matches!(query.collect(), Err(Error::InvalidSample(_))));
@@ -929,8 +974,8 @@ fn query_omissions_preserve_timestamp_validation_and_rollback() {
 /// Guarantees: Only opening and rollback begin sequences; every sample satisfies projection timestamps.
 #[test]
 fn rollback_alone_restarts_cumulative_sequence() {
-    let (api, state, configs) = fake(vec![CounterFixture::new(0, Number::Integer(7))]);
-    let mut query = Query::open_with(api, &configs, "test".to_owned()).unwrap();
+    let (state, configs) = fake(vec![CounterFixture::new(0, Number::Integer(7))]);
+    let mut query = open_fake(&state, &configs).unwrap();
     for (timestamp, start) in [(110, 100), (110, 100), (90, 90), (120, 90)] {
         state.borrow_mut().timestamp = timestamp;
         let sample = query.collect().unwrap();
@@ -941,19 +986,19 @@ fn rollback_alone_restarts_cumulative_sequence() {
 }
 
 /// Scenario: Opening or a collection receives a non-positive observation timestamp.
-/// Guarantees: Invalid timestamps never enter projection or corrupt the last valid sequence.
+/// Guarantees: Invalid startup timestamps release the query; invalid collections never enter projection or corrupt the last valid sequence.
 #[test]
 fn rejects_non_positive_timestamps() {
-    let (api, state, configs) = fake(vec![
+    let (state, configs) = fake(vec![
         CounterFixture::new(0, Number::Integer(7)),
         CounterFixture::new(0x4002_0500, Number::Double(2.0)),
     ]);
     state.borrow_mut().timestamp = 0;
-    assert!(Query::open_with(api, &configs, "test".to_owned()).is_err());
-    assert_eq!(state.borrow().opens, 0);
+    assert!(open_fake(&state, &configs).is_err());
+    assert_eq!((state.borrow().opens, state.borrow().closes), (1, 1));
+    assert_eq!(state.borrow().adds, 0);
     state.borrow_mut().timestamp = 100;
-    let mut query =
-        Query::open_with(FakePdh(Rc::clone(&state)), &configs, "test".to_owned()).unwrap();
+    let mut query = open_fake(&state, &configs).unwrap();
     let _ = query.collect().unwrap();
     for timestamp in [0, -1] {
         state.borrow_mut().timestamp = timestamp;
@@ -967,42 +1012,120 @@ fn rejects_non_positive_timestamps() {
     assert!(sample.failures.is_empty());
 }
 
-/// Scenario: Windows formats rate, percentage, fraction and average fixtures from successive raw samples.
-/// Guarantees: Native formulas remain finite, preserve CPU above 100 percent, and use no display scaling.
+/// Scenario: A removed counter token is reused after another counter is added to the same adapter.
+/// Guarantees: Repeated removal and reads return adapter token errors rather than native statuses; removed slots cannot alias new counters.
 #[test]
-fn native_formulas_from_raw_fixtures() {
-    for (native_type, first, second, previous_first, previous_second, time_base, expected) in [
-        (0x1041_0400, 160, 12, 100, 10, 10, 300.0),
-        (0x2051_0500, 150, 200, 100, 180, 10_000_000, 250.0),
-        (0x2002_0400, 25, 100, 0, 0, 1, 25.0),
-        (0x20C2_0400, 160, 200, 100, 100, 1, 60.0),
-        (0x3002_0400, 200, 5, 100, 3, 100, 0.5),
-        (0x4002_0500, 200, 5, 100, 3, 1, 50.0),
+#[ignore = "requires live Windows performance counters; run explicitly with --ignored"]
+fn live_pdh_adapter_rejects_removed_tokens() {
+    let path = r"\Memory\Available Bytes";
+    let mut api = NativePdh::open("removed".to_owned()).unwrap();
+    let removed = api.add(path).unwrap();
+    api.remove(&removed, path).unwrap();
+    let live = api.add(path).unwrap();
+    for result in [
+        api.remove(&removed, path),
+        api.counter_type(&removed, path).map(|_| ()),
+        api.raw(&removed, path).map(|_| ()),
+        api.formatted(&removed, path, ValueFormat::Integer)
+            .map(|_| ()),
     ] {
-        let current = PDH_RAW_COUNTER {
-            CStatus: PDH_CSTATUS_VALID_DATA,
-            FirstValue: first,
-            SecondValue: second,
-            ..Default::default()
-        };
-        let previous = PDH_RAW_COUNTER {
-            CStatus: PDH_CSTATUS_VALID_DATA,
-            FirstValue: previous_first,
-            SecondValue: previous_second,
-            ..Default::default()
-        };
-        let value = NativePdh::formatted_with("fixture", ValueFormat::Double, |flags, value| {
-            // SAFETY: All pointers reference initialized fixture values and writable output.
-            unsafe {
-                PdhFormatFromRawValue(native_type, flags, &time_base, &current, &previous, value)
-            }
-        })
-        .unwrap();
-        let Some(Number::Double(actual)) = value else {
-            panic!("successful native double formatting must return a double");
-        };
-        assert!((actual - expected).abs() < 1e-9);
+        let error = result.unwrap_err();
+        assert!(matches!(&error, Error::InvalidCounterToken { path: failed } if failed == path));
+        assert_eq!(
+            error.to_string(),
+            format!("invalid performance-counter token for {path}")
+        );
     }
+    assert!(api.collect().unwrap());
+    assert!(api.counter_type(&live, path).is_ok());
+}
+
+struct CounterProcess(Child);
+
+impl Drop for CounterProcess {
+    fn drop(&mut self) {
+        drop(self.0.stdin.take());
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn_counter_process(executable: &Path) -> CounterProcess {
+    // Keeping stdin open holds cmd alive; closing it also releases the child if the test panics.
+    let mut child = CounterProcess(
+        Command::new(executable)
+            .args(["/d", "/q", "/c", "echo ready & set /p wait="])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut ready = String::new();
+    let _ = BufReader::new(child.0.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "ready");
+    child
+}
+
+/// Scenario: Parsed configuration names duplicate live process instances using #0 and #1.
+/// Guarantees: The normalized omitted-zero and indexed paths read exactly the fixture's process IDs, not unrelated processes, and project checked samples.
+#[test]
+#[ignore = "requires live Windows performance counters; run explicitly with --ignored"]
+fn live_pdh_collects_parsed_instance_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let instance = format!("otpd{:08x}", std::process::id());
+    let executable = directory.path().join(format!("{instance}.exe"));
+    let source = std::env::var_os("COMSPEC").expect("COMSPEC must identify cmd.exe");
+    let _ = std::fs::copy(source, &executable).unwrap();
+    let processes = [
+        spawn_counter_process(&executable),
+        spawn_counter_process(&executable),
+    ];
+    let config = RuntimeConfig::from_json(&serde_json::json!({
+        "metrics": {
+            "process.id": {
+                "description": "Process identifier.",
+                "unit": "1",
+                "gauge": {}
+            }
+        },
+        "perfcounters": [{
+            "object": "Process",
+            "instances": [format!("{instance}#0"), format!("{instance}#1")],
+            "counters": [{"name": "ID Process", "metric": "process.id"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        config.counters[0].path,
+        format!(r"\Process({instance})\ID Process")
+    );
+    assert_eq!(
+        config.counters[1].path,
+        format!(r"\Process({instance}#1)\ID Process")
+    );
+    let mut query = Query::open(&config.counters, "parsed".to_owned()).unwrap();
+    assert!(query.startup_failures.is_empty());
+    let sample = query.collect().unwrap();
+    assert!(sample.failures.is_empty(), "{:?}", sample.failures);
+    assert_eq!(sample.points.len(), 2);
+    let ids: BTreeSet<_> = sample
+        .points
+        .iter()
+        .map(|point| match point.value {
+            SampleValue::Value(Number::Integer(id)) if id > 0 => id,
+            value => panic!("expected a positive process ID, got {value:?}"),
+        })
+        .collect();
+    let expected: BTreeSet<_> = processes
+        .iter()
+        .map(|process| i64::from(process.0.id()))
+        .collect();
+    assert_eq!(ids, expected);
+    assert!(into_otap(&config.counters, sample).unwrap().is_some());
+    drop(query);
+    drop(processes);
+    directory.close().unwrap();
 }
 
 /// Scenario: Two native queries collect exact direct counters repeatedly and are dropped independently.

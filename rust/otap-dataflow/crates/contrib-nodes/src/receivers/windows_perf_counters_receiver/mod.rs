@@ -20,12 +20,6 @@ mod model;
     not(test),
     allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
 )]
-mod native_type;
-
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
-)]
 mod otap_builder;
 
 #[cfg_attr(
