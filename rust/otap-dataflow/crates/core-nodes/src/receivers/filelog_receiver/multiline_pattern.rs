@@ -168,7 +168,7 @@ impl BoundaryPattern {
     ) -> Result<Self, PatternError> {
         validate_limits(limits)?;
         let hir = parse(pattern, mode)?;
-        build(&hir, mode, limits, true, false)
+        build(&hir, mode, limits, true)
     }
 
     /// Compiler policy and any reason for disabling acceleration.
@@ -252,16 +252,8 @@ fn build(
     mode: PatternMode,
     limits: PatternLimits,
     prefilter: bool,
-    backtrack: bool,
 ) -> Result<BoundaryPattern, PatternError> {
-    build_with_payload_limit(
-        hir,
-        mode,
-        limits,
-        prefilter,
-        backtrack,
-        limits.program_bytes,
-    )
+    build_with_payload_limit(hir, mode, limits, prefilter, limits.program_bytes)
 }
 
 fn build_with_payload_limit(
@@ -269,14 +261,13 @@ fn build_with_payload_limit(
     mode: PatternMode,
     limits: PatternLimits,
     prefilter: bool,
-    backtrack: bool,
     payload_limit: usize,
 ) -> Result<BoundaryPattern, PatternError> {
     // Validate the forward program once, before meta can attempt a reverse program.
     // This also supplies exact state/epsilon counts for scratch sizing. Drop it
     // before meta construction so the sizing copy is never retained by workers.
     let nfa = forward_nfa(hir, mode, limits.program_bytes)?;
-    let scratch = memory::NfaScratch::from_nfa(&nfa, backtrack)?;
+    let scratch = memory::NfaScratch::from_nfa(&nfa)?;
     let minimum_cache = regex_automata::hybrid::dfa::Config::new()
         .starts_for_each_pattern(true)
         .unicode_word_boundary(true)
@@ -298,7 +289,7 @@ fn build_with_payload_limit(
         .hybrid_cache_capacity(limits.lazy_cache_bytes)
         .dfa(false)
         .onepass(false)
-        .backtrack(backtrack)
+        .backtrack(false)
         .auto_prefilter(prefilter)
         .pool_capacity(0);
     let first = meta::Regex::builder()
@@ -432,10 +423,9 @@ pub(crate) mod qualification {
         mode: PatternMode,
         limits: PatternLimits,
         prefilter: bool,
-        backtrack: bool,
     ) -> Result<BoundaryPattern, PatternError> {
         validate_limits(limits)?;
-        build(&parse(pattern, mode)?, mode, limits, prefilter, backtrack)
+        build(&parse(pattern, mode)?, mode, limits, prefilter)
     }
 }
 

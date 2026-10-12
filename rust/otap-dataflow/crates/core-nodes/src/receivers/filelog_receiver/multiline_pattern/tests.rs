@@ -284,7 +284,6 @@ fn qualified(source: &str, mode: PatternMode, capacity: usize) -> BoundaryPatter
             ..PatternLimits::default()
         },
         false,
-        false,
     )
     .expect("qualified pattern")
 }
@@ -524,7 +523,6 @@ fn aggregate_program_fallback() {
         &hir,
         PatternMode::Raw,
         PatternLimits::default(),
-        false,
         false,
         limit,
     )

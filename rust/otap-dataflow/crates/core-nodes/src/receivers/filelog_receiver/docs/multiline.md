@@ -43,8 +43,8 @@ accelerated build and, if necessary, a build without acceleration. Reverse-NFA
 size failure remains recoverable; `size_limit()` does not identify direction.
 
 Meta uses implicit captures because `search_half_with` returns no match when
-captures are disabled. Full and one-pass DFAs are disabled. Normal construction
-also disables the bounded backtracker; qualification can enable it separately.
+captures are disabled. Full and one-pass DFAs and the bounded backtracker are
+disabled.
 Searches use `earliest(true)` and caller-owned caches, bypassing the convenience
 API's pool. Literal shortcuts and equivalent PikeVM fallback remain enabled.
 
@@ -122,11 +122,7 @@ allocation overlap, the audited hash-table load/growth behavior, and serialized
 states' unreported Arc headers. It is a conservative configured-capacity bound,
 not four times measured use and not a charge applied to NFA payload bytes.
 
-Add the PikeVM bound and meta wrapper/capture bookkeeping. The qualification-
-only
-backtracker variant additionally accounts for both its visited bitmap and
-traversal stack over at most 128 bytes under meta's earliest-search policy.
-It is not enabled merely because its bitmap has a cap.
+Add the PikeVM bound and meta wrapper/capture bookkeeping.
 
 Small patterns can use far less than the configured cache ceiling. Callers can
 choose a smaller ceiling explicitly; measurements do not prove that a smaller
@@ -141,10 +137,8 @@ must discard the matcher and handle a resource-accounting failure.
 
 ## Qualification and grouping integration
 
-The [harness][bench] validates text before timing and compares lazy
-acceleration,
-PikeVM with and without prefilters, smaller caches, and the backtracker
-candidate.
+The [harness][bench] validates text before timing and compares lazy acceleration,
+PikeVM with and without prefilters, and smaller caches.
 Large-program and repetition-cap cases are opt-in and should run under external
 time/memory limits. Raw evidence belongs with the review artifacts rather than
 in this source directory.

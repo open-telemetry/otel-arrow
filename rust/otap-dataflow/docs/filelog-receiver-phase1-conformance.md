@@ -79,9 +79,9 @@ before source activation. Keep three charges distinct: transient compilation,
 shared retained programs, and worker-local scratch. Per-program NFA limits and
 per-cache lazy-DFA limits do not establish either aggregate charge.
 
-For the initial meta-engine implementation, full and one-pass DFAs are disabled,
-implicit captures are retained, and the bounded backtracker is a benchmark
-variant. The worker model counts the reachable lazy-cache paths, capacity-growth
+For the initial meta-engine implementation, full and one-pass DFAs and the
+bounded backtracker are disabled; implicit captures are retained. The worker
+model counts the reachable lazy-cache paths, capacity-growth
 overlap, and PikeVM storage derived from canonical forward-NFA states,
 capture slots, and epsilon branches. The implementation
 must document its coefficients and re-audit them when engine internals change.

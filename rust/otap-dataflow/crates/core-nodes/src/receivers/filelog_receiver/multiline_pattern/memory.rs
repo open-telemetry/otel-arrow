@@ -24,15 +24,12 @@ pub struct MemoryEstimate {
     pub lazy_cache_bytes: usize,
     /// Bound for PikeVM's fixed arrays and epsilon-stack growth overlap.
     pub pikevm_heap_bound: usize,
-    /// Candidate backtracker bound; zero in normal library construction.
-    pub backtracker_heap_bound: usize,
     /// Peak requested heap allowance for one worker's scratch, excluding input.
     pub worker_heap_bound: usize,
 }
 
 pub(super) struct NfaScratch {
     pike: usize,
-    backtrack: usize,
 }
 
 fn add(a: usize, b: usize) -> Result<usize, PatternError> {
@@ -43,7 +40,7 @@ fn mul(a: usize, b: usize) -> Result<usize, PatternError> {
 }
 
 impl NfaScratch {
-    pub(super) fn from_nfa(nfa: &thompson::NFA, backtrack: bool) -> Result<Self, PatternError> {
+    pub(super) fn from_nfa(nfa: &thompson::NFA) -> Result<Self, PatternError> {
         let states = nfa.states().len();
         let slots = nfa.group_info().slot_len();
         // Both active-state sets have dense/sparse StateID arrays and a slot
@@ -70,20 +67,7 @@ impl NfaScratch {
         let frame_bytes = mul(3, size_of::<usize>())?;
         let stack = mul(mul(3, pushes.max(4))?, frame_bytes)?;
         let pike = add(add(sets, tables)?, stack)?;
-        let backtrack = if backtrack {
-            // Qualification only: meta's earliest search skips backtracking
-            // beyond 128 bytes. Account for the visited matrix AND its stack.
-            let visited_cap = thompson::backtrack::Config::new().get_visited_capacity();
-            let positions = (mul(visited_cap, 8)? / states.max(1)).min(129);
-            let bits = mul(states, positions)?;
-            let words = add(bits, usize::BITS as usize - 1)? / usize::BITS as usize;
-            let visited = mul(mul(3, words.max(4))?, size_of::<usize>())?;
-            let frames = mul(pushes, positions)?.max(4);
-            add(visited, mul(mul(3, frames)?, frame_bytes)?)?
-        } else {
-            0
-        };
-        Ok(Self { pike, backtrack })
+        Ok(Self { pike })
     }
 
     pub(super) fn estimate(
@@ -100,14 +84,13 @@ impl NfaScratch {
         let lazy = mul(4, add(initial, mul(growing, cache)?)?)?;
         // Meta's report omits its implicit Captures buffer and wrapper storage.
         let bookkeeping = add(size_of::<meta::Cache>(), mul(4, size_of::<usize>())?)?;
-        let bound = add(add(add(lazy, self.pike)?, self.backtrack)?, bookkeeping)?;
+        let bound = add(add(lazy, self.pike)?, bookkeeping)?;
         Ok(MemoryEstimate {
             program_payload_bytes: payload,
             initial_cache_reported_bytes: initial,
             growing_lazy_caches: growing,
             lazy_cache_bytes: if growing == 0 { 0 } else { cache },
             pikevm_heap_bound: self.pike,
-            backtracker_heap_bound: self.backtrack,
             worker_heap_bound: bound,
         })
     }

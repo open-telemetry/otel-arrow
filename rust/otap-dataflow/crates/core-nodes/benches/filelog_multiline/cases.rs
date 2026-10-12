@@ -125,28 +125,24 @@ pub fn cases(bytes: usize) -> Vec<Case> {
     cases
 }
 
-pub const VARIANTS: [&str; 8] = [
+pub const VARIANTS: [&str; 6] = [
     "meta",
     "meta_no_prefilter",
     "meta_64k",
     "meta_256k",
-    "meta_backtrack",
     "pike",
     "pike_prefilter",
-    "pike_backtrack",
 ];
 
 pub fn compile(case: &Case, variant: &str) -> BoundaryPattern {
     use super::pattern::{MAX_LAZY_CACHE_BYTES, PatternLimits, qualification};
-    let (capacity, prefilter, backtrack) = match variant {
-        "meta" => (MAX_LAZY_CACHE_BYTES, true, false),
-        "meta_no_prefilter" => (MAX_LAZY_CACHE_BYTES, false, false),
-        "meta_64k" => (64 * 1024, true, false),
-        "meta_256k" => (256 * 1024, true, false),
-        "meta_backtrack" => (MAX_LAZY_CACHE_BYTES, true, true),
-        "pike" => (0, false, false),
-        "pike_prefilter" => (0, true, false),
-        "pike_backtrack" => (0, false, true),
+    let (capacity, prefilter) = match variant {
+        "meta" => (MAX_LAZY_CACHE_BYTES, true),
+        "meta_no_prefilter" => (MAX_LAZY_CACHE_BYTES, false),
+        "meta_64k" => (64 * 1024, true),
+        "meta_256k" => (256 * 1024, true),
+        "pike" => (0, false),
+        "pike_prefilter" => (0, true),
         _ => unreachable!("known variant"),
     };
     qualification::compile(
@@ -157,7 +153,6 @@ pub fn compile(case: &Case, variant: &str) -> BoundaryPattern {
             ..PatternLimits::default()
         },
         prefilter,
-        backtrack,
     )
     .expect("benchmark pattern")
 }
