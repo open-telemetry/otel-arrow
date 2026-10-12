@@ -5,6 +5,7 @@
 # The binary must be built on the host before building this image.
 #
 # Build steps from the rust/otap-dataflow directory:
+#   $env:RUSTFLAGS="-C target-feature=+crt-static"
 #   cargo build --release --no-default-features --features mimalloc,crypto-ring,dev-tools,core-nodes
 #   docker build -f Dockerfile.windows -t df_engine_win .
 #
@@ -24,7 +25,7 @@
 # nanoserver base may work here and would cut several GB from the per-run image
 # pull. Left as servercore until that is verified.
 
-FROM mcr.microsoft.com/windows/servercore:ltsc2025
+FROM mcr.microsoft.com/windows/servercore:ltsc2025@sha256:e18a49cbc074dfaa8e106296d51cebd62bbf6effb999f134a5c48eed1c2334e1
 
 WORKDIR C:\\dataflow
 

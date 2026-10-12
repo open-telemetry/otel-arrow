@@ -1,5 +1,7 @@
 version: otel_dataflow/v1
 policies:
+  telemetry:
+    runtime_metrics: normal
   channel_capacity:
     control:
       pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
@@ -21,6 +23,10 @@ groups:
         nodes:
           receiver:
             type: "urn:otel:receiver:traffic_generator"
+            policies:
+              telemetry:
+                item_counts: true
+                size: true
             config:
               data_source: {{ data_source | default("semantic_conventions") }}
               generation_strategy: {{ generation_strategy | default("pre_generated") }}

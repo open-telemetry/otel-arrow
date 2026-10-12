@@ -388,6 +388,9 @@ embedding binary typically needs:
 - **`system_info`** -- Returns a formatted string with CPU/memory info
   plus all registered component and controller extension URNs, useful for
   `--help` banners or diagnostics.
+- **`shutdown_console_and_exit`** -- Stops the console writers after the
+  run, reports the final status on stderr without waiting on a stalled
+  reader, and exits the process with the run's exit code.
 
 A minimal custom binary looks like this:
 
@@ -397,6 +400,7 @@ use otel_arrow_dfe_controller::{Controller, ControllerRunOptions, startup};
 
 // Side-effect imports to register components via linkme.
 use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_core_nodes::exporters::console_exporter::claim_structured_stdout;
 // Bring your own contrib/custom nodes as needed.
 // Bring your own controller extension crates the same way.
 
@@ -418,15 +422,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ControllerRunOptions::default().extensions,
     )?;
 
-    // Print diagnostics.
+    // Print diagnostics on stderr, because stdout may carry `record_json` records.
     // Pass "system" here for the minimal example; in practice, align this
     // string with your binary's allocator feature (e.g. "jemalloc", "mimalloc").
-    println!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
+    eprintln!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
 
-    // Run the engine.
+    // Reserve stdout for records before any pipeline starts; without this, a
+    // `record_json` console exporter fails when it is created.
+    claim_structured_stdout(&cfg);
+
+    // Run the engine, then stop the console writers and exit. The status write
+    // gives up quickly, so a stalled or closed stderr cannot hang the exit.
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    controller.run_forever(cfg)?;
-    Ok(())
+    let result = controller.run_forever(cfg);
+    startup::shutdown_console_and_exit(&result)
 }
 ```
 

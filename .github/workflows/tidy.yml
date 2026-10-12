@@ -21,6 +21,7 @@ jobs:
         with:
           client-id: ${{ vars.OTELBOT_ARROW_CLIENT_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
+          permission-contents: write
       - name: Get GitHub App User ID
         id: get-user-id
         env:
@@ -32,6 +33,8 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
           token: ${{ steps.app-token.outputs.token }}
+          # zizmor: ignore[artipacked] Credentials are required by the branch push below.
+          persist-credentials: true
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.1"

@@ -13,6 +13,7 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metri
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
+use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
 };
@@ -29,7 +30,6 @@ use crate::terminal_state::TerminalState;
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
@@ -1405,7 +1405,7 @@ mod tests {
 
     // -- with_propagation_policy tests ----------------------------------------
 
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+    use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
     #[test]
     fn test_with_propagation_policy_none_by_default() {

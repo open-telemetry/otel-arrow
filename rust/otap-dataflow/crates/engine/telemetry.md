@@ -70,14 +70,42 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 
 ### Metric reference
 
+#### Engine and console metrics
+
+OTLP exports each instrument name below under its instrumentation scope; the
+scope is not a prefix of `Metric.name`. For example, select scope
+`engine.console_output` and instrument `diagnostics.dropped` to find diagnostic
+loss. Console points also carry the datapoint attribute `console.stream` with
+the bounded values `stdout` and `stderr`.
+
+Console counters measure process-wide activity since the controller run
+started. The controller performs a bounded console drain and emits any drain
+warning before the final sample, while the observability pipeline is still
+alive. If diagnostics are dropped after that handoff, the run returns an error
+with the unsampled drop count, even if all accepted output eventually drains.
+Those later drops are not added to the already exported metric points. Multiple
+engines hosted concurrently observe shared process activity, not exclusive
+per-engine output.
+
+| OTLP scope | Instrument name | Description | Produced when |
+| --- | --- | --- | --- |
+| `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `memory.pressure.state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
+| `engine` | `process.memory.usage.bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
+| `engine` | `process.memory.soft.limit.bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
+| `engine` | `process.memory.hard.limit.bytes` | Effective process-wide hard memory limit in bytes. | The engine is running. The value is `0` when no hard limit is configured. |
+| `engine.console_output` | `frames.submitted` | Frames accepted into a console stream's queue since the run started. | Sampled once per engine about every five seconds and after the shutdown drain. |
+| `engine.console_output` | `frames.enqueue.failed` | Frames a console stream rejected because its queue was closed or full, a frame was too large, or its writer had failed. | The engine is running and a console frame was rejected. |
+| `engine.console_output` | `frames.written` | Frames written to a console stream. | The engine is running and console output was written. |
+| `engine.console_output` | `bytes.written` | Bytes written to a console stream. | The engine is running and console output was written. |
+| `engine.console_output` | `write.errors` | Failed console writes or flushes. Each one stops that stream's writer; a transient `WouldBlock` is retried instead. | The engine is running and a console write failed. |
+| `engine.console_output` | `diagnostics.dropped` | Best-effort diagnostics dropped because a console stream's queue was full or the frame exceeded its byte budget. | The engine is running and a diagnostic did not fit in the queue. |
+
+#### Node, channel, and flow metrics
+
 | Metric name | Description | Produced when |
 | --- | --- | --- |
-| `engine.memory_rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
-| `engine.cpu_utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
-| `engine.memory_pressure_state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
-| `engine.process_memory_usage_bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
-| `engine.process_memory_soft_limit_bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
-| `engine.process_memory_hard_limit_bytes` | Effective process-wide hard memory limit in bytes. | The engine is running. The value is `0` when no hard limit is configured. |
 | `channel.sender.messages` | Number of immediate send attempts, grouped by `outcome` and, for PData channels, `signal`. | `runtime_metrics` is `basic` or higher and a data or control channel send is attempted. |
 | `channel.sender.failures` | Number of unsuccessful send attempts, grouped by `error.type` and, for PData channels, `signal`. | `runtime_metrics` is `basic` or higher and a send finds a full or closed channel. Healthy pipelines may not produce this metric. |
 | `channel.receiver.messages` | Number of messages successfully dequeued, grouped by `signal` for PData channels. | `runtime_metrics` is `basic` or higher and a data or control message is dequeued. Empty polls and channel closure are not counted. |

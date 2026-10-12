@@ -453,6 +453,10 @@ func StructFromRecord(record arrow.Record, fieldID int, row int) (sarr *array.St
 
 // TimestampFromRecord returns the timestamp value for a specific row and column
 // in an Arrow record. If the value is null, it returns 0.
+//
+// The column's type must conform to the OTAP specification: nanoseconds since
+// the Unix epoch tagged with the UTC time zone. Otherwise the raw int64 value
+// could not be interpreted as Unix nanoseconds.
 func TimestampFromRecord(record arrow.Record, fieldID int, row int) (arrow.Timestamp, error) {
 	if fieldID == AbsentFieldID {
 		return 0, nil
@@ -465,6 +469,13 @@ func TimestampFromRecord(record arrow.Record, fieldID int, row int) (arrow.Times
 	} else {
 		switch arr := arr.(type) {
 		case *array.Timestamp:
+			dt, ok := arr.DataType().(*arrow.TimestampType)
+			if !ok {
+				return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a timestamp array")
+			}
+			if err := ValidateTimestampType(dt); err != nil {
+				return 0, werror.Wrap(err)
+			}
 			if arr.IsNull(row) {
 				return 0, nil
 			} else {

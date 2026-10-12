@@ -30,8 +30,8 @@ them.
 
 **Compatibility:** version 1 is the first version of this format. There is no
 prior format to migrate from. A conforming implementation MUST reject any
-other `format_version` value in any header (snapshot, WAL, or `CURRENT`
-marker) as an unsupported-version error, distinct from corruption. See
+other `format_version` value in any header (snapshot or checkpoint container)
+as an unsupported-version error, distinct from corruption. See
 [Cross-version and migration behavior](#cross-version-and-migration-behavior).
 Version 1 remains unfrozen while this proposal has no released conforming
 implementation. After the first release freezes v1, every incompatible layout
@@ -90,16 +90,13 @@ The on-disk namespace layout implements the
 
 ```text
 ${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/
-  CURRENT
-  offsets-<generation>.snapshot
-  offsets-<generation>.wal
   ownership.lock
+  checkpoint.db
 ```
 
-Later-generation compaction uses only the bounded temporary names
-`offsets-<generation>.snapshot.compact.tmp`,
-`offsets-<generation>.wal.compact.tmp`, and `CURRENT.compact.tmp` defined by
-the behavioral compaction state machine. They are never authoritative.
+First publication uses `checkpoint.db.create.tmp`; later compaction uses
+`checkpoint.db.compact.tmp`. Only one temporary file may exist during normal
+operation. Neither temporary name is authoritative.
 
 - `@v1` is the literal namespace-layout version directory. The `@` byte is not
   in the configured checkpoint-ID alphabet, so this component cannot be
@@ -120,17 +117,11 @@ the behavioral compaction state machine. They are never authoritative.
   avoids interpreting the raw ID as a Windows reserved name or
   path-normalized component. Different raw IDs are different namespaces, and
   recovery never searches sibling encodings.
-- `<generation>` is the ASCII decimal rendering of a `u64` generation number
-  with no leading zeros (`0`, `1`, `2`, ... `18446744073709551615`). A
-  generation number becomes assigned when a durable `CURRENT` first publishes
-  it and is never reused after publication; an unpublished proposal may be
-  reused only after its exact abandoned artifacts are removed and the
-  directory is synced under exclusive ownership. The pair of files `offsets-<generation>.snapshot` and
-  `offsets-<generation>.wal` sharing a generation number are always read and
-  written together.
-- `CURRENT` is a small fixed-width binary marker (not free-form text) that
-  names the active generation. Its exact layout is defined in
-  [The `CURRENT` marker](#the-current-marker).
+- `checkpoint.db` is the only authoritative data file. It contains a fixed
+  container header, one complete snapshot section, and an append-only WAL
+  section. Its pathname selects authority; its snapshot generation is only a
+  monotonically increasing compaction counter. Generation zero is the initial
+  publication and overflow fails before wrapping.
 - `ownership.lock` is an empty lock file used only for exclusive checkpoint-
   namespace ownership under architecture decision
   [D15](filelog-receiver.md#decisions-requested). The lock mechanism MUST
@@ -140,30 +131,25 @@ the behavioral compaction state machine. They are never authoritative.
   has no byte format of its own and is otherwise out of scope for this
   document.
 
-Recovery always reads `CURRENT` first to select the generation, then opens
-both files named by that generation. A missing, unreadable, or incomplete
-authoritative file fails closed with the distinct recovery errors defined
-below; recovery never selects an older generation by modification time. After
-header validation, it loads `offsets-<generation>.snapshot` as the recovery
-base, then replays `offsets-<generation>.wal` from sequence `1`. A generation directory MAY
-contain snapshot/WAL files for more than one generation simultaneously during
-compaction (the previous generation stays present and valid until `CURRENT`
-is atomically repointed); this document only defines the byte format of each
-individual file, not the atomic-replacement procedure for `CURRENT` itself,
-which is a durable-checkpoint-store concern.
+Recovery opens only `checkpoint.db` under exclusive namespace ownership.
+It validates the container header, loads exactly the snapshot section, and
+replays transactions starting at the header's absolute `wal_offset` with
+sequence `1`. The snapshot section includes its own header and footer. The WAL
+section has no separate header and may be empty. Header and snapshot bytes are
+immutable throughout a published file's lifetime; only the WAL suffix is
+appended or repaired.
 
-The behavioral
-[compaction state machine](filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery)
-owns publication ordering and crash outcomes. In particular, a valid
-post-crash `CURRENT` names either the complete old or complete new generation;
-unnamed generation artifacts are never authoritative, a published generation
-is never reused, and generation overflow fails before wrap.
+The behavioral [compaction state machine](filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery)
+prepares and syncs a complete replacement file before atomically replacing
+`checkpoint.db` and syncing its directory. On qualified filesystems, crash
+recovery observes the complete old or new file, never independently selected
+snapshot and WAL generations. Temporary artifacts are never recovery authority.
+File replacement does not replace the separately held `ownership.lock`.
 
-Version 1 has no released predecessor namespace layout. The path above is the
-first supported v1 layout and matches the existing pre-release implementation.
-Recovery does not search for or migrate a direct-`checkpoint.id` directory.
-The raw ID remains unchanged in the namespace digest and administrative
-operation fields; only its filesystem path component is lowercase-hex encoded.
+Version 1 has no released predecessor namespace layout. Recovery does not
+search for or migrate a direct-`checkpoint.id` directory. The raw ID remains
+unchanged in the namespace digest and administrative operation fields; only
+its filesystem path component is lowercase-hex encoded.
 
 The namespace root must satisfy the behavioral
 [stable engine state-root contract](filelog-receiver-phase1-spec.md#stable-engine-state-root).
@@ -176,7 +162,7 @@ Implementing and qualifying this engine integration is a Phase 1 release gate.
 
 ## Namespace digest
 
-Snapshot and WAL headers bind an artifact to the selected opaque
+The snapshot header binds the complete checkpoint to the selected opaque
 `checkpoint.id`. Given its exact validated bytes:
 
 ```text
@@ -191,13 +177,13 @@ The format can represent `checkpoint_id_len` in `1..=255`, matching the
 administrative namespace-ID field bound. A conforming Phase 1 runtime supplies
 only a configured ID in `1..=127` because of the lowercase-hex filesystem
 component bound. No Unicode normalization, case folding, path escaping, or
-other transformation occurs before hashing. The digest is stored in both the
-snapshot and WAL headers. It is deliberately not added to `CURRENT`, whose
-sole authority function remains selecting a generation.
+other transformation occurs before hashing. The digest is stored in the
+snapshot header. The WAL belongs to that same container and has no
+independently selectable namespace or generation.
 
 Recovery derives the expected digest from the selected namespace before
-loading records. After validating each header's own CRC, it requires the
-snapshot digest and WAL digest to equal the expected digest and one another.
+loading records. After validating the container and snapshot header CRCs, it
+requires the snapshot digest to equal the expected digest.
 Any mismatch fails closed with `NamespaceMismatch` before a snapshot record or
 WAL transaction is applied. The digest detects accidental artifact
 misplacement; it does not authenticate checkpoint data.
@@ -216,76 +202,66 @@ Protecting checkpoint confidentiality and integrity against a hostile local
 principal is an operational access-control responsibility, not a property of
 this encoding.
 
-## The `CURRENT` marker
+## Checkpoint container header
 
-Fixed width, 24 bytes total:
+Fixed width, 24 bytes at file offset zero:
 
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
-| 0 | 8 | `magic` | `"FLOGCUR\0"` (`0x46 0x4C 0x4F 0x47 0x43 0x55 0x52 0x00`) |
-| 8 | 2 | `format_version` | `u16` BE, `1` in this version |
+| 0 | 8 | `magic` | `"FLOGCHK\0"` |
+| 8 | 2 | `format_version` | `u16` BE, `1` |
 | 10 | 2 | `flags` | `u16` BE, reserved, MUST be `0` |
-| 12 | 8 | `generation` | `u64` BE, the selected generation number |
-| 20 | 4 | `marker_crc32c` | `u32` BE, CRC-32C over bytes `[0, 20)` |
+| 12 | 8 | `wal_offset` | `u64` BE, absolute file offset of the WAL section |
+| 20 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 20)` |
 
-A decoder MUST reject: a length other than exactly 24 bytes, an unrecognized
-`magic`, a `format_version` other than `1` (unsupported-version error, see
-[Cross-version and migration behavior](#cross-version-and-migration-behavior)),
-a nonzero `flags` value (v1 defines no flag bits), or a CRC-32C mismatch. All
-of these conditions fail closed. An unsupported `format_version` remains
-distinct from corruption. There is no torn-tail leniency for `CURRENT`
-because it is written and synced as a single small atomic replacement, never
-appended to.
+The snapshot occupies exactly `[24, wal_offset)`, including its 60-byte header
+and 24-byte footer. The WAL occupies `[wal_offset, file_length)`. An empty
+checkpoint is 108 bytes; an empty WAL has no bytes. There is no separate WAL
+header or whole-file checksum over the mutable suffix.
+
+Recovery checks exact header width, magic, version, flags, and CRC before
+trusting `wal_offset`. Unsupported versions fail distinctly. It then requires
+`wal_offset >= 108` and `wal_offset - 24 <= configured maximum snapshot bytes`
+before allocating or reading the declared section. Offset arithmetic and
+conversion to platform sizes are checked. The physically supplied snapshot
+must end exactly at `wal_offset`: neither a short footer nor extra bytes are
+accepted. Snapshot-relative field offsets in this document start at file
+position 24; WAL transaction offsets start at `wal_offset`.
+
+The codec can decode the immutable prefix without reading the WAL. It returns
+the WAL offset, not an assertion that the WAL is valid or that physical EOF has
+been reached. Recovery must scan and apply transactions separately.
 
 ## Authoritative-generation recovery errors
 
-After a valid `CURRENT` selects generation `G`, recovery opens exactly
-`offsets-G.snapshot` and `offsets-G.wal`. It never searches another generation
-or chooses by modification time.
+The name `checkpoint.db` alone selects authority; recovery never promotes a
+temporary file or searches for a larger generation or newer modification time.
 
-| Condition after valid `CURRENT` | Distinct fail-closed result |
+| Condition | Distinct fail-closed result |
 | --- | --- |
-| Either named file does not exist | `AuthoritativeGenerationMissing` |
-| Either named file cannot be opened or completely read for an environmental or permission reason | `AuthoritativeGenerationUnreadable` |
-| The snapshot is physically incomplete, or the WAL lacks its complete 56-byte header | `AuthoritativeGenerationIncomplete` |
-| A validated snapshot or WAL header namespace digest differs from the selected namespace or from its peer | `NamespaceMismatch` |
-| A complete required structure has an invalid CRC, impossible length, or other invalid bytes | The specific corruption error defined by the affected structure |
+| `checkpoint.db` is absent outside the exact interrupted-first-publication states below | `AuthoritativeGenerationMissing` |
+| The authoritative file cannot be opened/read | `AuthoritativeGenerationUnreadable` |
+| The container header or declared snapshot section is physically incomplete | `AuthoritativeGenerationIncomplete` |
+| The validated snapshot namespace digest differs from the selected namespace | `NamespaceMismatch` |
+| Invalid offset, CRC, snapshot, version, or complete transaction | Corresponding corruption or unsupported-format error |
 
-The allowed incomplete final WAL transaction remains the sole torn-tail
-exception and does not make the authoritative generation incomplete. No error
-above authorizes automatic WAL-prefix recovery after a complete bad-CRC frame.
-Cleanup, including recovery after interrupted cleanup, MUST reread `CURRENT`
-under exclusive namespace ownership and MUST NOT delete either file belonging
-to the generation it currently names. Before deletion, its authority selection
-MUST be durable through completed publication sync or the required recovery
-barrier below; validating visible marker bytes alone is insufficient.
-
-After read-only validation of `CURRENT` and its selected generation, recovery
-MUST synchronize the opened checkpoint namespace directory under exclusive
-ownership, as specified by the behavioral
+Only the mechanically valid incomplete final WAL transaction may be a torn
+tail. Missing snapshot bytes are never repaired as a WAL tail. Cleanup and new
+appends require validated authority and a successful recovery directory barrier:
+a replacement may be visible after process exit without being durable. Recovery
+syncs the namespace directory before source reads, progress acceptance, WAL
+repair, temporary-file deletion, or another publication. Failure keeps those
+operations blocked; neither the WAL-file sync nor the engine root sync replaces
+this barrier. This also applies to first publication; see the behavioral
 [recovery publication barrier](filelog-receiver-phase1-spec.md#recovery-and-publication-barrier).
-A process exit after marker rename but before directory sync can leave a new
-marker visible without durable publication. Until this barrier and remaining
-recovery steps succeed, source reads, WAL appends/progress acceptance, cleanup,
-and another publication MUST remain blocked. A sync failure never permits
-fallback to another generation. This requirement also applies to recovery of
-first publication and is independent of the checkpoint sync interval; engine
-root sync and WAL-file sync do not substitute for it.
 
 ## First-generation namespace publication
 
-A namespace is genuinely absent only when the namespace directory itself and
-all artifacts beneath its intended path are absent. An existing directory,
-`CURRENT` temporary, snapshot, WAL, or other artifact without a valid
-`CURRENT` is never interpreted as an empty namespace.
-
-Version 1 uses these fixed first-publication temporary names:
-
-```text
-offsets-0.snapshot.create.tmp
-offsets-0.wal.create.tmp
-CURRENT.create.tmp
-```
+A namespace is new only when its directory and artifacts are absent. A leftover
+temporary is never treated as saved progress. The only first-publication
+temporary name is `checkpoint.db.create.tmp`; it is exclusively created with
+no symlink following. Compaction uses a distinct name so missing authority after
+compaction cannot be mistaken for interrupted initialization.
 
 Under least-privilege permissions, first publication is:
 
@@ -301,51 +277,42 @@ Under least-privilege permissions, first publication is:
    already-existing path enters recovery rather than creation.
 3. Create/acquire `ownership.lock` and hold exclusive ownership.
 4. Inventory the directory. A fresh creation contains only `ownership.lock`.
-5. Write a complete empty snapshot to `offsets-0.snapshot.create.tmp`, sync the
-   file, and close it.
-6. Write the complete 56-byte WAL header to
-   `offsets-0.wal.create.tmp`, sync the file, and close it.
-7. Rename both temporary generation files to `offsets-0.snapshot` and
-   `offsets-0.wal`, then sync the namespace directory where the platform
-   supports directory sync.
-8. Write and sync a complete generation-zero marker to `CURRENT.create.tmp`.
-9. Atomically rename it to `CURRENT`, then sync the namespace directory where
-   supported.
+5. Exclusively create `checkpoint.db.create.tmp`. Write and validate the
+   container header plus a complete generation-zero empty snapshot (108 bytes,
+   empty WAL), sync the file, and close it.
+6. Publish it as `checkpoint.db` with exclusive/no-replace semantics, then sync
+   the namespace directory. Never overwrite an existing checkpoint during
+   initialization.
 
-No source is registered or read before step 9 and every required ancestor sync
-complete. A platform cannot claim the Phase 1 durable-publication guarantee if
-it cannot provide the required parent-directory durability.
+No source is registered or read before step 6 and every required ancestor sync
+succeeds. Failure enters the checkpoint-store failure path.
 
-With no valid `CURRENT`, an empty namespace directory is recognized as an
-interruption after durable directory creation but before lock-file creation.
-Recovery creates/acquires `ownership.lock`, then inventories again under that
-exclusive ownership. Repair proceeds only when the directory contains
-`ownership.lock` plus a subset of the three exact temporary names and the two
-generation-zero final names, and contains no other artifact. Recovery reports
-the interruption, removes the recognized temporary and generation artifacts
-while retaining the held lock, syncs the namespace directory where supported,
-ensures the namespace entry is durable in its parent, and restarts from the
-step 4 inventory. This is explicit interrupted-publication repair, not
-treatment as an empty namespace. Any other artifact set without a valid
-`CURRENT` is `AuthorityMissingOrAmbiguous` and fails closed.
+With no `checkpoint.db`, an empty directory is a recognized interruption before
+lock-file creation: create/acquire the lock and inventory again under exclusive
+ownership. A directory containing only `ownership.lock`, or that
+lock plus `checkpoint.db.create.tmp`, is a recognized interrupted initial
+publication. Report the interruption, remove only the recognized temporary,
+sync the directory, and retry creation under the held lock. A compaction
+temporary, legacy generation artifacts, or any unrecognized artifact with
+missing authority fails closed; never recover progress from a temporary file.
+A present but invalid `checkpoint.db` is corruption, never a new namespace.
 
-Once valid `CURRENT` exists, it alone selects authority. A leftover
-`CURRENT.create.tmp` or generation temporary is never authoritative and may be
-removed only after protecting the generation named by `CURRENT`. The Windows
-directory-sync limitation remains as documented by the behavioral platform
-contract.
+Once valid `checkpoint.db` exists, it alone selects authority. After successful
+recovery and the directory barrier, remove a recognized leftover creation or
+compaction temporary and sync the directory before another publication.
+Unexpected artifacts fail closed for explicit inspection. The Windows
+platform durability limitation remains as documented in the behavioral spec.
 
 ## Magic values, versions, and fixed widths at a glance
 
-| File | Magic (8 bytes) | Header width | Footer |
+| Container/section | Magic (8 bytes) | Header width | Footer |
 | --- | --- | --- | --- |
-| `CURRENT` marker | `"FLOGCUR\0"` | 24 bytes (whole file) | none |
+| Checkpoint container | `"FLOGCHK\0"` | 24 bytes | none |
 | Snapshot | `"FLOGSNP\0"` | 60 bytes | 24 bytes, magic `"FLOGSFT\0"` |
-| WAL | `"FLOGWAL\0"` | 56 bytes | none (append-only) |
 | WAL transaction | `"FLOGTXN\0"` | 36 bytes | 4-byte `frame_crc32c` |
 
 `format_version` is `u16` and is `1` for every header in this version. The
-snapshot/WAL/`CURRENT` format version is a single coherent number for the
+container/snapshot format version is a single coherent number for the
 whole on-disk encoding; it is distinct from `framing_profile_version`, which
 versions only the framing-profile canonical serialization and digest
 algorithm (see below) and can in principle advance independently.
@@ -353,7 +320,7 @@ algorithm (see below) and can in principle advance independently.
 framing within format version 1, and any other value fails before body-length
 classification.
 
-## Snapshot file format
+## Snapshot section format
 
 ### Snapshot header (60 bytes)
 
@@ -362,7 +329,7 @@ classification.
 | 0 | 8 | `magic` | `"FLOGSNP\0"` |
 | 8 | 2 | `format_version` | `u16` BE, `1` |
 | 10 | 2 | `flags` | `u16` BE, reserved, MUST be `0` |
-| 12 | 8 | `generation` | `u64` BE; MUST equal the generation encoded in the file name |
+| 12 | 8 | `generation` | `u64` BE; compaction counter, zero at first publication |
 | 20 | 32 | `namespace_digest` | SHA-256 digest defined in [Namespace digest](#namespace-digest) |
 | 52 | 4 | `record_count` | `u32` BE; number of snapshot records that follow |
 | 56 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 56)` |
@@ -404,7 +371,7 @@ this order):
 | 15 | `advisory_path` | [`AdvisoryPath`](#advisorypath-encoding) | `44 + stored_path_len` bytes |
 
 `file_id` is the record's key and MUST be unique across every record in a
-single snapshot file. An encoder MUST refuse to write two records sharing a
+single snapshot section. An encoder MUST refuse to write two records sharing a
 `file_id`, and a decoder MUST fail closed (rather than keeping only the
 last-seen record for that key) if it encounters two records sharing a
 `file_id`.
@@ -494,8 +461,9 @@ remains the distinct per-file `FramingProfileIncompatible` condition.
 
 ### Snapshot torn-tail policy: none
 
-Unlike the WAL, a snapshot file has **no torn-tail tolerance**. A snapshot is
-written completely, synced, and only then made reachable through `CURRENT`
+Unlike the WAL, a snapshot section has **no torn-tail tolerance**. A snapshot is
+written completely, synced, and only then published through atomic replacement
+of `checkpoint.db`
 (the [Phase 1 publication and compaction algorithm](filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery));
 a reader never observes a snapshot that is genuinely still being written.
 All of the following fail recovery closed, with no tail-repair leniency. The
@@ -748,28 +716,15 @@ This document defines these `reason_code` values for `quarantine_file` /
 `removal_reason` has no assigned values in v1 beyond the requirement that an
 encoder MUST NOT write `0x0000`; `0x0000` is reserved exactly as above.
 
-## WAL file format
+## WAL section format
 
-### WAL header (56 bytes)
-
-| Offset | Size | Field | Value |
-| --- | --- | --- | --- |
-| 0 | 8 | `magic` | `"FLOGWAL\0"` |
-| 8 | 2 | `format_version` | `u16` BE, `1` |
-| 10 | 2 | `flags` | `u16` BE, reserved, MUST be `0` |
-| 12 | 8 | `generation` | `u64` BE; MUST equal the generation encoded in the file name |
-| 20 | 32 | `namespace_digest` | SHA-256 digest defined in [Namespace digest](#namespace-digest) |
-| 52 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 52)` |
-
-The header itself follows the same no-torn-tail policy as the snapshot
-header: it is written once when the WAL generation is created and never
-rewritten in place, so an incomplete or invalid header is corruption, not a
-torn write.
-
-After the header, the WAL body is a sequence of **transactions** that
-continues until end of file. There is no footer, because the WAL is
-append-only and its last transaction is the only place a torn write can ever
-occur (see [Torn-tail versus corruption](#torn-tail-versus-corruption)).
+Starting at the container header's `wal_offset`, the WAL is a sequence of
+transactions extending to physical EOF. It has no separate header or footer.
+A fresh checkpoint has zero WAL bytes; its first appended transaction has
+sequence `1`. The header and snapshot prefix never change during append.
+Compaction replaces the complete file and restarts transaction numbering.
+Only the final transaction can qualify as a torn append; see
+[Torn-tail versus corruption](#torn-tail-versus-corruption).
 
 ### Transaction framing
 
@@ -1023,7 +978,7 @@ file-path convention alone.
 | `SNAPSHOT_MAX_RECORD_FRAME_BYTES` | `69862` | Length + maximum snapshot payload + CRC |
 | `WAL_MAX_OPS_PER_TX` | `4096` | `op_count` per transaction |
 | `WAL_MAX_NON_PROGRESS_OPS_PER_TX` | `256` | operation count for registration, metadata, fingerprint, reset, quarantine, and removal transactions |
-| `WAL_HEADER_BYTES` | `56` | Fixed WAL generation header included in artifact-size accounting |
+| `CHECKPOINT_HEADER_BYTES` | `24` | Immutable container header, excluded from WAL byte accounting |
 | `TX_HEADER_BYTES` | `36` | Fixed transaction envelope header |
 | `TX_MIN_BODY_BYTES` | `34` | One minimum strict fingerprint-extension operation frame |
 | `TX_MIN_FRAME_BYTES` | `74` | Header + minimum body + frame CRC |
@@ -1106,11 +1061,10 @@ artifact sizes through configuration.
 
 | Checksum field | Covers |
 | --- | --- |
-| `CURRENT.marker_crc32c` | bytes `[0, 20)` of the marker (magic, format_version, flags, generation) |
+| container `header_crc32c` | bytes `[0, 20)` of the file (magic, format_version, flags, wal_offset) |
 | snapshot `header_crc32c` | bytes `[0, 56)` of the snapshot header |
 | snapshot `record_crc32c` | the record's own 4-byte `record_len` field followed by its `payload` |
 | snapshot `footer_crc32c` | bytes `[0, 20)` of the footer (footer_magic, total_record_bytes, record_count_echo) |
-| WAL `header_crc32c` | bytes `[0, 52)` of the WAL header |
 | transaction `header_crc32c` | fixed transaction-header bytes `[0, 32)` |
 | transaction `frame_crc32c` | complete 36-byte transaction header followed by exactly `body_len` operation bytes |
 | `op_crc32c` | the operation's own 4-byte `op_len` field followed by its `op_payload` |
@@ -1437,7 +1391,7 @@ precisely, so the distinction is mechanical rather than a matter of judgment:
 
 Given a WAL body being scanned sequentially for transactions, starting from
 a byte offset immediately after the last successfully validated transaction
-(or immediately after the header, for the first transaction), with `R` bytes
+(or at the container's `wal_offset`, for the first transaction), with `R` bytes
 remaining in the file from that offset:
 
 1. If `R == 0`: clean end of file. Nothing to discard.
@@ -1477,12 +1431,17 @@ operations -- the whole trailing partial region is dropped as a unit.
 
 The writer encodes and validates a complete transaction in bounded memory
 before issuing an append. It tracks the byte offset immediately after the last
-complete validated transaction. Under exclusive namespace ownership:
+complete validated transaction as an absolute file offset at or beyond
+`wal_offset`. Reopening revalidates the active container and snapshot under the
+same namespace ownership before trusting the saved append boundary. A changed
+generation or section boundary requires full recovery, not reuse of that offset.
+Repair never rewrites the immutable prefix or truncates below `wal_offset`.
+Under exclusive namespace ownership:
 
 | Append result | Required handling |
 | --- | --- |
 | Definitively no bytes written | Keep the known boundary and retry within the store-failure policy |
-| Known partial write | Mark the live store unavailable, reopen the WAL, validate through the known boundary, classify the suffix with the fixed envelope, truncate to the known boundary only when the suffix is a mechanically valid torn append, sync the truncation, then retry |
+| Known partial write | Mark the live store unavailable, reopen `checkpoint.db`, validate through the known boundary, classify the suffix with the fixed envelope, truncate to the known boundary only when the suffix is a mechanically valid torn append, sync the truncation, then retry |
 | Ambiguous write result | Reopen and validate: accept an exactly sequenced complete valid transaction as appended; truncate and retry only a mechanically valid torn append beginning at the known boundary; fail closed on any complete invalid header/frame or unclassifiable bytes |
 | Append completed but required sync failed | Reopen and validate; if the transaction is complete and valid, do not append it again--retry the sync under the store-failure policy; if incomplete, use the torn-append repair above before applying progress |
 
@@ -1520,7 +1479,7 @@ produce byte-identical digests for the same configuration.
 
 `framing_profile_version` (the profile/digest recipe version, stored
 alongside the digest in the snapshot and in `register_file`) is `1` in this
-first version of the design. It is independent of the snapshot/WAL/`CURRENT`
+first version of the design. It is independent of the container/snapshot
 `format_version` field: this version tracks only the digest recipe below and
 can advance when the identity or framing compatibility inputs change without
 requiring a change to the snapshot/WAL byte layout.
@@ -1647,11 +1606,11 @@ declaration; after first release, the cross-version policy is mandatory.
 
 | Situation | Behavior |
 | --- | --- |
-| `format_version` other than `1` in `CURRENT`, snapshot, or WAL header | fail closed with a distinct "unsupported version" error, checked before any record/transaction is parsed |
+| `format_version` other than `1` in container or snapshot header | fail closed with a distinct "unsupported version" error, checked before any record/transaction is parsed |
 | `tx_envelope_version` other than `1` | fail closed before trusting `body_len` |
 | nonzero file/transaction flags or reserved fields, nonzero reserved `AdvisoryPath` flags, or a nonzero reserved bit in `update_metadata.presence_flags` | fail closed |
-| snapshot or WAL `namespace_digest` differs from the expected selected-namespace digest or from its peer | fail closed with `NamespaceMismatch` before applying any record or transaction |
-| valid `CURRENT` names a missing, unreadable, or incomplete authoritative generation | fail closed with the corresponding distinct authoritative-generation error; never select another generation |
+| snapshot `namespace_digest` differs from the expected selected-namespace digest | fail closed with `NamespaceMismatch` before applying any record or transaction |
+| `checkpoint.db` is missing, unreadable, or has an incomplete immutable prefix | fail closed with the corresponding distinct authoritative-generation error; never select another generation |
 | unknown `locator.kind`, `AdvisoryPath.path_kind`, `framing_resume.kind`, `lifecycle_state`, `op_code`, `update_metadata.expected_prior_state`, `reset_quarantined_file.action`, or `remove_file.expected_prior_state` | fail closed; these are all structural discriminants |
 | unknown `reason_code` / `removal_reason` value | accepted at decode time (opaque, non-structural); may still be rejected by apply-time business rules for specific operations |
 | a declared length exceeding either its documented maximum or the bytes actually remaining | fail closed before allocating or slicing |
@@ -1699,8 +1658,8 @@ tool can scan a WAL and find every administrative action without ambiguity:
 These encodings do not define or authorize a CLI or API. A separately reviewed
 engine administrative interface or offline tool MUST acquire exclusive
 namespace ownership and append validated operations through the checkpoint
-store. Operators MUST NOT edit snapshots, WAL transactions, checksums, or
-`CURRENT` manually. An operable Phase 1 release with durable quarantine MUST
+store. Operators MUST NOT edit checkpoint headers, snapshots, WAL transactions,
+or checksums manually. An operable Phase 1 release with durable quarantine MUST
 provide such a surface with exact namespace, `file_id`, expected lifecycle and
 epoch, bounded evidence inspection, and all defined reset/removal actions.
 WAL administrative entries remain operational history only until compaction;
@@ -1716,16 +1675,18 @@ authorized to replace or recreate the namespace.
 
 ## Cross-version and migration behavior
 
-- Every stored format (`CURRENT` marker, snapshot, WAL) carries its own
-  explicit `format_version`. This is the first version; there is no prior
-  version to be compatible with and no automatic migration is implemented.
+- Container and snapshot headers carry the same explicit `format_version`.
+  This is a pre-release revision of version 1. The earlier unshipped proposal
+  with a `CURRENT` marker and separate generation files is not imported or
+  silently reset. Legacy artifacts fail closed. Once a Filelog release writes
+  this format, its durable bytes require the compatibility policy below.
 - A future incompatible change to byte layout, discriminant meaning, or
   field semantics requires a new `format_version` value, a superseding
   version of this document defining the new encoding completely (not as a
   diff), and explicit compatibility/migration vectors analogous to this
   document's golden vectors.
 - A future incompatible transaction-envelope layout increments both the
-  containing WAL `format_version` and `tx_envelope_version`; version 1 never
+  container/snapshot `format_version` and `tx_envelope_version`; version 1 never
   mixes envelope versions in one WAL.
 - A reader encountering an unrecognized `format_version` MUST fail closed
   with a distinct "unsupported version, migration required" error. It MUST
@@ -1759,7 +1720,8 @@ tests rather than this design-document set. They must be generated
 independently from this specification, not by round-tripping the encoder under
 test, and must cover:
 
-- `CURRENT`, an empty snapshot, and a WAL header;
+- empty and active checkpoint containers, a container with WAL transactions,
+  and independent snapshot sections;
 - reachable `Active`, `Quarantined`, and `RotatedFinalized` snapshots;
 - one complete transaction for every version 1 operation;
 - valid `keep_failed` state preservation; and

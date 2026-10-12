@@ -653,6 +653,14 @@ impl WalWriter {
         })
     }
 
+    /// Establishes a durability barrier without finalizing the open segment.
+    ///
+    /// All WAL writes completed before this call are flushed and synchronized
+    /// to durable storage when it returns.
+    pub(crate) async fn flush(&mut self) -> WalResult<()> {
+        self.active_file.flush_now().await
+    }
+
     /// Persists the cursor position and enables cleanup of consumed WAL data.
     ///
     /// This validates the cursor, writes to the cursor sidecar with fsync,

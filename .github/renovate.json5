@@ -16,6 +16,7 @@
   // alerts are in effect.
   "vulnerabilityAlerts": {
     "addLabels": ["area:security"],
+    "schedule": ["at any time"],
   },
   // List unresolved CVEs (from osv.dev) on the Dependency Dashboard issue.
   // The dashboard itself is already enabled via the config:recommended

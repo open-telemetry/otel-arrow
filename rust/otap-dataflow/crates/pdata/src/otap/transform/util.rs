@@ -90,28 +90,6 @@ pub fn take_record_batch_ranges(
     RecordBatch::try_new(rb.schema(), new_columns)
 }
 
-/// Create a new record batch by removing the specified ranges from the provided record batch.
-pub(crate) fn remove_record_batch_ranges(
-    rb: &RecordBatch,
-    ranges: &[Range<usize>],
-) -> arrow::error::Result<RecordBatch> {
-    let new_len = rb.num_rows() - ranges.iter().map(|r| r.end - r.start).sum::<usize>();
-    let mut new_columns = Vec::with_capacity(rb.num_columns());
-    for column in rb.columns() {
-        let data = column.to_data();
-        let mut new_data = MutableArrayData::new(vec![&data], false, new_len);
-        let mut pos = 0;
-        for range in ranges {
-            new_data.extend(0, pos, range.start);
-            pos = range.end;
-        }
-        new_data.extend(0, pos, rb.num_rows());
-        new_columns.push(make_array(new_data.freeze()));
-    }
-
-    RecordBatch::try_new(rb.schema(), new_columns)
-}
-
 pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
     batches: &mut [Option<RecordBatch>; N],
 ) -> Result<()> {

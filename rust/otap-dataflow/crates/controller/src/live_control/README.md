@@ -50,7 +50,7 @@ extending the controller lifetime.
 Live control separates three related concepts:
 
 - A logical pipeline is identified by `(pipeline_group_id, pipeline_id)` and
-  points at the committed resolved pipeline plus its active generation.
+  points at the committed deployment plus its create-or-replace generation.
 - A pipeline group is the config hierarchy that contains related pipelines,
   group-local topics, and group-level policies. Current live-control operations
   target one logical pipeline inside that group.

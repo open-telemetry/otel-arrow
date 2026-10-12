@@ -390,6 +390,9 @@ Note that a column is nullable if and only if it is not required. See
 have required fields. The required fields must be provided only if the row is
 not null.
 
+Every `Timestamp(Nanosecond)` column below carries a required time zone. See
+[Section 5.5.2](#552-timestamp-time-zone).
+
 Note: For Columns which have a Struct type, there is one entry in the table
 representing the definition of the struct Column e.g. `resource`. Then there are
 additional entries in the table for each of their sub fields named according to
@@ -676,6 +679,24 @@ is also interpreted as empty.
 
 If the `type` falls outside of the allowed range (0-7), then the data is
 considered invalid and SHOULD be rejected.
+
+#### 5.5.2 Timestamp Time Zone
+
+All `Timestamp(Nanosecond)` columns represent nanoseconds since the Unix epoch.
+Apache Arrow's `Timestamp` type also carries an optional time zone. The same
+instant can be expressed against any time zone, and an absent time zone is
+ambiguous, so OTAP constrains the time zone of every timestamp column:
+
+- Producers MUST set the time zone of every `Timestamp(Nanosecond)` column to
+  `UTC` (equivalently `+00:00`).
+- Consumers MAY reject a `Timestamp(Nanosecond)` column whose time zone is set
+  to any value other than `UTC` or `+00:00` as ambiguous.
+
+A `Timestamp(Nanosecond)` column that omits the time zone is ambiguous and is
+therefore invalid.
+
+Note that `duration_time_unix_nano` is a `Duration(Nanosecond)` column, not a
+`Timestamp`, and therefore has no time zone.
 
 ---
 

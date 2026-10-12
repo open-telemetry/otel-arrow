@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -83,10 +82,6 @@ impl Murmur3HashFunc {
 }
 
 impl ScalarUDFImpl for Murmur3HashFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "murmur3"
     }

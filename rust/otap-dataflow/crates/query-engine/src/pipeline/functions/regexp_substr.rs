@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -117,10 +116,6 @@ impl RegexpSubstrFunc {
 }
 
 impl ScalarUDFImpl for RegexpSubstrFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         FUNC_NAME
     }

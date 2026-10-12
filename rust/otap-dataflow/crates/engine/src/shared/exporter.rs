@@ -32,6 +32,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
@@ -43,7 +44,6 @@ use crate::terminal_state::TerminalState;
 use crate::{Interests, ReceivedAtNode};
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -146,10 +146,11 @@ impl<PData> EffectHandler<PData> {
         self.propagation_policy = policy.map(Arc::new);
     }
 
-    /// Print an info message to stdout.
+    /// Print an info message to the engine's diagnostic stream (stderr).
     ///
     /// This method provides a standardized way for exporters to output
-    /// informational messages without blocking the async runtime.
+    /// informational messages. It never waits for the console: a full
+    /// diagnostic queue drops the message.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
     }

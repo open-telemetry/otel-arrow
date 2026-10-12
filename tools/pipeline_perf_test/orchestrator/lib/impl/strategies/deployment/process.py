@@ -41,7 +41,10 @@ from ....core.strategies.deployment_strategy import (
     DeploymentStrategyConfig,
 )
 from ....runner.registry import deployment_registry, PluginMeta
-from ..common.process import ComponentProcessRuntime
+from ..common.process import (
+    ComponentProcessRuntime,
+    wait_or_terminate_process_tree,
+)
 from ..hooks.process.ensure_process import EnsureProcess, EnsureProcessConfig
 
 STRATEGY_NAME = "process"
@@ -178,19 +181,20 @@ components:
 
         process = runtime.process
         try:
-            # Attempt to terminate the process gracefully
-            process.terminate()
+            wait_or_terminate_process_tree(
+                process.pid, logger, normal_timeout=0, graceful_timeout=5
+            )
+
+            # Bound output draining so a lingering descendant that still holds the
+            # inherited pipe descriptors cannot hang teardown indefinitely.
             try:
-                # Wait for process to terminate with a timeout
-                process.wait(timeout=5)
-                logger.info(f"Process for {component.name} terminated successfully.")
+                stdout_logs, stderr_logs = process.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 logger.warning(
-                    f"Process for {component.name} did not terminate, killing it."
+                    f"Timed out draining output for {component.name}; "
+                    "skipping log capture."
                 )
-                process.kill()  # Force kill if terminate fails
-
-            stdout_logs, stderr_logs = process.communicate()
+                stdout_logs, stderr_logs = None, None
             args = ctx.get_suite().get_runtime("args")
             if stdout_logs:
                 decoded = (

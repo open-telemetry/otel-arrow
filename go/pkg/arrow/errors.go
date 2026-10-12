@@ -33,4 +33,8 @@ var (
 
 	// ErrMissingFieldName is returned when a field name is missing in a struct.
 	ErrMissingFieldName = errors.New("missing field name")
+
+	// ErrInvalidTimestampType is returned when a timestamp column does not use
+	// the time unit and time zone required by the OTAP specification.
+	ErrInvalidTimestampType = errors.New("invalid arrow timestamp type")
 )

@@ -497,6 +497,12 @@ epic's target with direct sticky assignment, rendezvous or consistent hashing,
 or another mechanism requires a separately reviewed Phase 3 proposal and
 explicit maintainer agreement reflected in the epic.
 
+Phase 1 checkpoint storage uses one `checkpoint.db` containing a snapshot and
+an append-only WAL section. Synchronous compaction replaces the complete file
+under exclusive namespace ownership. This simplifies local publication; it
+does not supply Phase 3 fencing or decide the future shared-storage boundary.
+Phase 3 still requires the explicit migration described above.
+
 ## Delivery phases
 
 | Phase | Deliverables | Principal limitation or gate |
