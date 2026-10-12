@@ -173,6 +173,30 @@ fn snapshot_queries_use_complete_result_probe() {
     }
 }
 
+/// Scenario: Decimal casts use supported precision and scale, with or without an ARRAY modifier.
+/// Guarantees: Scalar decimal casts still prepare, but array casts fail even inside expressions.
+#[test]
+fn rejects_decimal_array_casts() {
+    for expression in [
+        "CAST(AMOUNT AS decimal(19,4))",
+        "CAST(AMOUNT AS decimal(1,0))",
+        "CAST(AMOUNT AS decimal(38,38))",
+        "ABS(CAST(AMOUNT AS decimal(19,4)))",
+        "CAST(AMOUNT AS decimal(19,4)) + 1",
+    ] {
+        let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
+        _ = parse(snapshot(&statement));
+        let array_statement = statement
+            .replace("decimal(19,4)", "decimal(19,4) ARRAY")
+            .replace("decimal(1,0)", "decimal(1,0) ARRAY")
+            .replace("decimal(38,38)", "decimal(38,38) ARRAY");
+        assert!(
+            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&array_statement)).is_err(),
+            "accepted unsupported array cast: {array_statement}"
+        );
+    }
+}
+
 /// Scenario: Every allowlisted function is called with zero through three arguments.
 /// Guarantees: COALESCE accepts two or more, ISNULL exactly two, and other functions exactly one.
 #[test]

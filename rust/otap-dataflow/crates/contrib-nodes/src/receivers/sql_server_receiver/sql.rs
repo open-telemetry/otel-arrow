@@ -528,8 +528,8 @@ fn validate_expr(expr: &Expr, aggregates: bool, depth: usize) -> Result<(), SqlS
             kind: CastKind::Cast,
             expr,
             data_type: DataType::Decimal(ExactNumberInfo::PrecisionAndScale(precision, scale)),
+            array: false,
             format: None,
-            ..
         } if (1..=38).contains(precision)
             && u64::try_from(*scale).is_ok_and(|scale| scale <= *precision) =>
         {

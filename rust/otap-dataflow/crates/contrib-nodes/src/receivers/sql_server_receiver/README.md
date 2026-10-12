@@ -104,7 +104,8 @@ Allowed scalar functions are `ABS`, `COALESCE`, `ISNULL`, `LOWER`, `UPPER`, `LEN
 and `DATALENGTH`; snapshot aggregates are `COUNT`, `COUNT_BIG`, `MIN`, `MAX`,
 `SUM`, and `AVG`. `COALESCE` requires at least two arguments, `ISNULL` exactly
 two, and every other allowed function exactly one. `COUNT(*)` and `COUNT_BIG(*)`
-are supported. Decimal casts require explicit valid precision and scale.
+are supported. Decimal casts require explicit valid precision and scale;
+`ARRAY` modifiers are unsupported.
 
 Writes, extra statements, comments, wildcard projections, operator-provided
 `TOP`, offsets, hints, joins, subqueries, CTEs, table aliases, external sources,
