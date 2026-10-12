@@ -106,7 +106,6 @@ impl<
             core_id,
             deployment_generation,
         };
-        let live_config = self.engine_config_snapshot();
         let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -117,8 +116,8 @@ impl<
             core_placement.numa_node_id,
         );
         let topic_set = Controller::<PData>::build_pipeline_topic_set(
-            &live_config,
             &self.declared_topics,
+            &deployment.resolved.topic_scope,
             &pipeline_key.pipeline_group_id,
             &pipeline_key.pipeline_id,
             pipeline_key.core_id,
@@ -557,7 +556,7 @@ impl<
                 .runtime_recoveries
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
-                    serving_generation: current_deployment.create_or_replace_generation,
+                    serving_generation: current_deployment.baseline_generation,
                     context_bindings: Arc::clone(&context_bindings),
                     restart_count: 0,
                     ready_since: None,
@@ -1874,6 +1873,18 @@ impl<
             return;
         }
 
+        let controller_deadline =
+            pipeline_shutdown_completion_deadline(Instant::now() + shutdown_timeout);
+        if !self.wait_for_controller_telemetry(controller_deadline) {
+            // Not a run error: the controller retries this phase after it releases the guard.
+            self.restore_observability_senders(&observability_senders);
+            otel_warn!(
+                "controller.global_shutdown.controller_telemetry_timeout",
+                message = "Controller telemetry handoff missed the shutdown deadline; system observability shutdown is retried after the handoff"
+            );
+            return;
+        }
+
         // Observability is a distinct shutdown phase. Give it the same budget
         // selected by the caller instead of collapsing that phase to one second
         // after producers have consumed their own drain budget.
@@ -1970,6 +1981,28 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .active_instances
             == 0
+    }
+
+    /// Returns whether system observability is the only runtime instance still active.
+    pub(crate) fn only_observability_active(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut observability_active = false;
+        for (key, instance) in &state.runtime_instances {
+            if !matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active) {
+                continue;
+            }
+            if key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID
+            {
+                observability_active = true;
+            } else {
+                return false;
+            }
+        }
+        observability_active
     }
 
     /// Restores system observability senders if the coordinator could not start.
@@ -2101,8 +2134,38 @@ impl<
         }
     }
 
+    /// Holds the observability shutdown phase until controller reporting completes.
+    pub(crate) fn hold_controller_telemetry(&self) -> ControllerTelemetryGuard<'_, PData> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(!state.controller_telemetry_pending);
+        state.controller_telemetry_pending = true;
+        ControllerTelemetryGuard { runtime: self }
+    }
+
+    /// Waits at most until `deadline` for the controller's terminal metrics handoff.
+    pub(super) fn wait_for_controller_telemetry(&self, deadline: Instant) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.controller_telemetry_pending {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, _) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+        }
+        true
+    }
+
     /// Blocks until an explicit global shutdown has been requested and every
-    /// runtime instance has exited, or until the wait is released after a fatal
+    /// producer instance has exited, or until the wait is released after a fatal
     /// controller failure.
     ///
     /// Unlike [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit),
@@ -2115,7 +2178,12 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         while !state.instance_wait_released
-            && (!state.global_shutdown_requested || state.active_instances > 0)
+            && (!state.global_shutdown_requested
+                || state.runtime_instances.iter().any(|(key, instance)| {
+                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                            && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+                }))
         {
             state = self
                 .state_changed

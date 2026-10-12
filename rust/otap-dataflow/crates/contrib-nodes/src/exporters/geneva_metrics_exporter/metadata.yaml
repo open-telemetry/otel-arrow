@@ -1,0 +1,8 @@
+type: geneva_metrics
+status:
+  class: exporter
+  codeowners:
+    active:
+      - ngowran
+      - maksmara
+

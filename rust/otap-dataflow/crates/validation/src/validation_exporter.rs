@@ -16,8 +16,8 @@ use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextEntrySelector, ContextEntrySelectorForm,
-    NodeContextDeclarations,
+    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
+    ContextEntryTarget, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -165,7 +165,10 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
                     entries: names
                         .into_iter()
                         .map(|name| ContextEntrySelector {
-                            name,
+                            target: ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name,
+                            },
                             form: ContextEntrySelectorForm::Value,
                         })
                         .collect(),
@@ -324,7 +327,10 @@ mod tests {
         names
             .iter()
             .map(|name| ContextEntrySelector {
-                name: context_name(name),
+                target: ContextEntryTarget::Primitive {
+                    domain: ContextDomain::TransportHeader,
+                    name: context_name(name),
+                },
                 form: ContextEntrySelectorForm::Value,
             })
             .collect()

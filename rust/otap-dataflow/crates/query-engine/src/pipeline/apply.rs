@@ -17,10 +17,10 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// The source for which to apply the pipeline. Records belonging to this source data will be
 /// treated as the main record by execution of the child pipeline stages.
@@ -164,6 +164,18 @@ impl PipelineStage for ApplyPipelineStage {
             }
         }
     }
+
+    // Applying a nested pipeline to scope/resource attributes can rebuild that parent payload.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(
+            self.source,
+            ApplySource::Attributes(AttributesIdentifier::NonRecord(_))
+        ) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
+    }
 }
 
 #[cfg(test)]
@@ -191,10 +203,17 @@ mod test {
     };
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-    use crate::{
-        parser::default_parser_options,
-        pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline},
+    use crate::parser::default_parser_options;
+    use crate::pipeline::{
+        Pipeline,
+        planner::{PipelinePlanner, RecordType, SignalContext, SignalKind},
+        test::exec_logs_pipeline,
     };
+
+    /// Create a planner for log signal pipelines (used in tests).
+    fn logs_planner() -> PipelinePlanner {
+        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    }
 
     mod data_point;
 
@@ -417,7 +436,7 @@ mod test {
                 rename attributes "y" as "x"
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
 
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
@@ -450,7 +469,7 @@ mod test {
                 }}"
             );
             let pipeline_expr = OplParser::parse(&query).unwrap().pipeline;
-            let planner = PipelinePlanner::new();
+            let planner = logs_planner();
 
             let session_ctx = Pipeline::create_session_context();
             let otap_batch = OtapArrowRecords::Logs(Logs::default());
@@ -480,7 +499,7 @@ mod test {
                 where value > 5
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline.execute(input.clone()).await.unwrap();
@@ -496,7 +515,7 @@ mod test {
                 where value > 5
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
@@ -515,7 +534,7 @@ mod test {
                 where value < 5
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
@@ -662,11 +681,12 @@ mod test {
         let query = r#"logs | apply attributes {
             where value > 10.0
         }"#;
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         let expected = to_logs_data(vec![LogRecord::build().attributes(Vec::new()).finish()]);
@@ -679,11 +699,12 @@ mod test {
         let query = r#"logs | apply attributes {
             where value == 0.0
         }"#;
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         let expected = to_logs_data(log_records.clone());
@@ -710,11 +731,12 @@ mod test {
         let query = r#"logs | apply attributes {
             where (value as Integer) > 6
         }"#;
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         let expected = to_logs_data(vec![
@@ -741,11 +763,12 @@ mod test {
             }
         "#;
 
-        let mut pipeline = Pipeline::new(
+        let mut pipeline = Pipeline::try_new(
             OplParser::parse_with_options(query, default_parser_options())
                 .unwrap()
                 .pipeline,
-        );
+        )
+        .unwrap();
 
         let input1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
             LogRecord::build()
@@ -1160,7 +1183,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // verify we have the correct type
@@ -1208,7 +1231,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let result_as_otlp = otap_to_otlp(&result);
@@ -1248,7 +1271,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
         let result_as_otlp = otap_to_otlp(&result);
 
@@ -1296,7 +1319,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         let result_as_otlp = otap_to_otlp(&result);
@@ -1337,7 +1360,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
         let result_as_otlp = otap_to_otlp(&result);
 
@@ -1390,7 +1413,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // assert we still have the empty attributes
@@ -1425,7 +1448,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         // just make sure we don't panic/return error and that we end up with zero attrs
         let result = pipeline.execute(input).await.unwrap();
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
@@ -1449,7 +1472,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         // just make sure we don't panic/return error and that we end up with zero attrs
         let result = pipeline.execute(input).await.unwrap();
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
@@ -1472,7 +1495,7 @@ mod test {
                 set value = value * 2
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains("All input rows for attribute assignment must have the same type if value used in expression"),
@@ -1647,7 +1670,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
         let result = pipeline.execute(input.clone()).await.unwrap();

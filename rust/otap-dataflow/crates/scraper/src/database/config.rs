@@ -60,10 +60,12 @@ pub struct PollingConfig {
 
 /// Watermark mode selected by the operator.
 ///
-/// Scalar and composite modes are supported. Snapshot mode is not accepted.
+/// Snapshot mode polls complete results without tracking result columns.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WatermarkConfig {
+    /// Full-result polling without cursor columns or bind parameters.
+    Snapshot {},
     /// One non-null, unique column with strictly increasing values.
     Scalar {
         /// Result column containing the scalar key.
@@ -269,6 +271,7 @@ impl WatermarkConfig {
     /// Validates cursor identifiers, bind names, and timezone semantics.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let (timestamp, tie_breaker) = match self {
+            Self::Snapshot {} => return Ok(()),
             Self::Composite {
                 timestamp,
                 tie_breaker,
@@ -313,7 +316,7 @@ impl WatermarkConfig {
     pub const fn timestamp(&self) -> Option<&TimestampCursorConfig> {
         match self {
             Self::Composite { timestamp, .. } => Some(timestamp),
-            Self::Scalar { .. } => None,
+            Self::Scalar { .. } | Self::Snapshot {} => None,
         }
     }
 
@@ -322,7 +325,7 @@ impl WatermarkConfig {
     pub const fn tie_breaker(&self) -> Option<&TieBreakerCursorConfig> {
         match self {
             Self::Composite { tie_breaker, .. } => Some(tie_breaker),
-            Self::Scalar { .. } => None,
+            Self::Scalar { .. } | Self::Snapshot {} => None,
         }
     }
 }

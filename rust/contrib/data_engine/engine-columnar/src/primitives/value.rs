@@ -239,3 +239,50 @@ impl<'a> From<Value<'a>> for ValueOrRef<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: Integer conversion is requested from native integers, convertible strings, invalid strings, and Null.
+    /// Guarantees: Successful conversions respect the destination range and failed conversions return None.
+    #[test]
+    fn integer_conversion_handles_types_and_ranges() {
+        assert_eq!(ValueOrRef::Integer(255).to_int::<u8>(), Some(255));
+        assert_eq!(ValueOrRef::Integer(256).to_int::<u8>(), None);
+        assert_eq!(
+            ValueOrRef::String(StringValueOrRef::new_ref("-12")).to_int::<i16>(),
+            Some(-12)
+        );
+        assert_eq!(
+            ValueOrRef::String(StringValueOrRef::new_ref("not-a-number")).to_int::<i64>(),
+            None
+        );
+        assert_eq!(ValueOrRef::Null.to_int::<i64>(), None);
+    }
+
+    /// Scenario: Floating-point values include NaNs with identical bits and positive and negative zero.
+    /// Guarantees: Equality follows the exact bit representation used by hashing.
+    #[test]
+    fn double_equality_uses_exact_bits() {
+        let nan_bits = 0x7ff8_0000_0000_0001;
+        assert_eq!(
+            ValueOrRef::Double(f64::from_bits(nan_bits)),
+            ValueOrRef::Double(f64::from_bits(nan_bits))
+        );
+        assert_ne!(ValueOrRef::Double(0.0), ValueOrRef::Double(-0.0));
+    }
+
+    /// Scenario: A regex is alternately borrowed and retained by an owned reference.
+    /// Guarantees: Both forms expose equal values and preserve the Regex value type through AsValue.
+    #[test]
+    fn regex_references_and_owned_values_are_equivalent() {
+        let regex = Regex::new("^otel$").unwrap();
+        let borrowed = ValueOrRef::Regex(RegexValueOrRef::new_ref(&regex));
+        let owned = ValueOrRef::Regex(RegexValueOrRef::new_owned(regex.clone()));
+
+        assert_eq!(borrowed, owned);
+        assert_eq!(borrowed.get_value_type(), ValueType::Regex);
+        assert_eq!(borrowed.to_value().convert_to_string().as_ref(), "^otel$");
+    }
+}

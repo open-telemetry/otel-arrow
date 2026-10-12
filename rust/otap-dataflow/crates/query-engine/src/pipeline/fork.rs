@@ -13,7 +13,7 @@ use otel_arrow_dfe_pdata::{
     otap::{Logs, Metrics, Traces},
 };
 
-use crate::pipeline::{BoxedPipelineStage, PipelineStage, state::ExecutionState};
+use crate::pipeline::{BoxedPipelineStage, ParentBehavior, PipelineStage, state::ExecutionState};
 use crate::{
     error::Result,
     pipeline::concat::{concatenate_logs, concatenate_metrics, concatenate_traces},
@@ -109,6 +109,23 @@ impl PipelineStage for ForkPipelineStage {
                     concatenate_traces(&mut self.branch_results, ConcatOptions::reindex())
                 }
             },
+        }
+    }
+
+    // Forks can duplicate/reindex parents, and a single branch can contain a parent mutation.
+    fn parent_behavior(&self) -> ParentBehavior {
+        let requires_reindex = self.branches.len() > 1
+            || self.branches.iter().any(|branch| {
+                branch
+                    .pipeline_stages
+                    .iter()
+                    .any(|stage| stage.parent_behavior().requires_reindex())
+            });
+
+        if requires_reindex {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
         }
     }
 }

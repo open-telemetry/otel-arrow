@@ -13,7 +13,7 @@ PR=$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")
 PR_HEAD=$(jq -r '.head.ref' <<< "$PR")
 IS_RELEASE_PR=$(jq -r 'any(.labels[]; .name == "release")' <<< "$PR")
 
-if [[ "$PR_HEAD" == otelbot/release-v* && "$IS_RELEASE_PR" == "true" ]]; then
+if [[ "$PR_HEAD" == otelbot/release-* && "$IS_RELEASE_PR" == "true" ]]; then
     OWNER="${REPOSITORY%/*}"
     NAME="${REPOSITORY#*/}"
     OTHER_QUEUED_PRS=$(gh api graphql \
@@ -66,7 +66,7 @@ ACTIVE_RELEASES=$(gh pr list \
     --label release \
     --limit 100 \
     --json number,headRefName,url \
-    --jq '[.[] | select(.headRefName | startswith("otelbot/release-v"))]')
+    --jq '[.[] | select(.headRefName | startswith("otelbot/release-"))]')
 
 if [ "$(jq 'length' <<< "$ACTIVE_RELEASES")" -eq 0 ]; then
     echo "No active release PR; merge may proceed."

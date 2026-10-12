@@ -173,6 +173,23 @@ Doc-only PRs are also excluded from the changelog requirement.
 
 See [`.chloggen/README.md`](.chloggen/README.md) for full details.
 
+## Crypto-provider neutrality
+
+Rust dependencies must not select a cryptographic backend through default
+features. TLS and cryptographic dependencies must use provider-neutral features
+where available and defer backend selection to the workspace `crypto-*`
+features.
+
+When adding or updating crypto-related dependencies:
+
+- disable defaults that implicitly enable Ring, AWS-LC, OpenSSL, or SymCrypt
+- preserve support for `crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, and
+  `crypto-symcrypt` where the dependency supports them
+- forward provider features through affected crates and the root package
+- platform-gate provider-specific dependencies when required
+- verify the relevant OpenSSL Linux and SymCrypt Windows feature sets
+- inspect `cargo tree --edges normal` for unintended crypto providers
+
 ## Before finalizing changes
 
 When all changes are ready, run the full check suite:

@@ -40,7 +40,7 @@ implementations.
 
 The design is scheduled, read-only query polling, not Change Data Capture
 (CDC). The [database receiver RFC][database-rfc] remains broader than the initial
-single-query runtime with scalar and composite watermarks.
+single-query runtime with snapshot, scalar, and composite modes.
 
 ## Architecture and Responsibilities
 
@@ -188,10 +188,39 @@ Earlier pre-release configurations must rename `fetch_size` to
 `fetch_size_rows`; the old name is not accepted as an alias. The row-count
 meaning and bounds are unchanged.
 
+### Snapshot Polling
+
+Use `watermark: { mode: snapshot }` for a complete result on each polling
+interval. No cursor column, initial value, bind, uniqueness, or ordering is
+required. Snapshot results may include duplicate or null values. All selected
+columns are still mapped to the log body; no column is tracked as progress.
+
+A nonempty snapshot is one pending batch. Only its matching ACK followed by a
+successful checkpoint write advances the durable revision. The cursor is JSON
+`null` (no source position), not a row offset, hash, or stored copy of the data.
+The next poll starts after `interval`, regardless of catch-up budgets. An empty
+snapshot emits nothing, leaves the checkpoint unchanged, and waits the interval.
+
+Adapters must return a complete bounded snapshot or fail. They must detect
+results exceeding `max_rows_per_poll` or the normalized-byte limit, rather than
+silently return a prefix. The shared encoder rejects snapshots exceeding the
+serialized-byte limit; it never emits or checkpoints a prefix. Split an oversized
+source into independently configured queries or increase the supported bounds.
+An adapter can classify deterministic overflow as source-pausing: the receiver
+retains ownership and its checkpoint, emits nothing, and remains responsive to
+drain and shutdown while unrelated pipeline sources continue.
+
+NACKs, crashes before commit, and restarts re-execute the full query. Retries read
+the data available at that time; no historical result is retained. Unchanged rows
+are emitted again on every interval, and changes between polls can be missed.
+This is periodic observation, not CDC, deduplication, or guaranteed replay of
+transient rows. The existing source lease, checkpoint identity checks, permanent
+rejection policy, and worker cleanup rules still apply.
+
 ### Watermark Configuration
 
-Both `mode: scalar` and `mode: composite` are supported by the shared runtime.
-Snapshot mode is not implemented. Vendor receivers must explicitly support
+`mode: snapshot`, `mode: scalar`, and `mode: composite` are supported.
+Vendor receivers must explicitly support
 and validate a mode before executing it; these examples are shared contract
 values, not complete runnable receiver configurations.
 
@@ -385,6 +414,7 @@ support does not by itself implement database login.
 | `begin_operation` | Reset operation cancellation state and return a cancellation handle before native work begins. |
 | `validate_query` | Validate single-statement/read-only SQL, cursor binds, keyset predicate, ordering, and non-null cursor metadata before polling. |
 | `execute` | Execute the validated query with bound cursor parameters and return a bounded `QueryPage` strictly after the committed cursor. |
+| `should_pause_source` | Classify deterministic source-local failures that should pause polling without terminating the pipeline; the default is `false`. |
 | `shutdown` | Stop workers and destroy native resources off the pipeline thread. The default is a no-op; an adapter owning such resources must override it. |
 | `classify_error` | Translate an adapter error into an engine `ReceiverErrorKind`; the default is `Other`. |
 | `DriverCancellation::cancel` | Request interruption of one active operation. The handle is cloneable and its future is local (`?Send`). |
@@ -569,9 +599,9 @@ rejections are not implicitly treated as transient failures. Both policies retai
 only bounded controller state, not an encoded-page replay buffer. Replay still
 requires the documented source-retention and stable-row guarantees.
 
-The `database_receiver.source_paused` event explains operator recovery, and the
-`rejection_paused` gauge remains `1` on successive scrapes while paused (`0`
-otherwise). Retry scheduling and recovery emit
+The `database_receiver.source_paused` event explains operator recovery. For
+permanent downstream rejection, the `rejection_paused` gauge remains `1` on
+successive scrapes while paused (`0` otherwise). Retry scheduling and recovery emit
 `database_receiver.rejection_retry_scheduled` and
 `database_receiver.rejection_recovered`. These events never include downstream
 rejection text, which may contain customer data. During drain, either policy
@@ -584,6 +614,11 @@ failure during operation setup, startup validation, query execution, or reconnec
 stays inside the receiver instead of exhausting pipeline/controller recovery.
 Retries continue until the database recovers or the receiver stops. Delays are
 1, 2, 4, 8, 16, then 30 seconds between attempts, capped at 30 seconds thereafter.
+
+`DriverAdapter::should_pause_source` classifies deterministic operation failures
+that should stop only this source. A source-local pause emits and checkpoints
+nothing, retains ownership, and remains alive for telemetry, drain, and shutdown.
+Repair the source query or limits, then restart or reconfigure the receiver.
 These are shared runtime defaults, not configurable fields in this slice.
 The delay resets only after a successful query page, including an empty result,
 not merely after reconnect succeeds.
@@ -810,8 +845,10 @@ leases do not emit these runtime metrics by themselves.
 | `checkpoint_commits`, `checkpoint_failures`, `checkpoint_cleanup_failures` | Durable progress and persistence/cleanup failures. |
 | `cancellations`, `drains`, `shutdowns` | Cancellation attempts and received drain/shutdown requests, including during checkpoint writes and retries; not counts of successful cleanup. |
 
-The `rejection_paused` gauge is `1` while permanent rejection has paused the source
-and `0` otherwise. It remains observable even after counters have been scraped.
+The `rejection_paused` gauge is `1` while permanent rejection has paused the
+source and `0` otherwise. Adapter-classified source pauses do not set this
+downstream-rejection-specific gauge. It remains observable even after counters
+have been scraped.
 
 Measurement attributes are intentionally omitted to keep cardinality bounded.
 The RFC's duration histograms, lag gauges, and broader health signals are not
@@ -821,9 +858,9 @@ error messages must not become metric dimensions.
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Scalar and composite cursor configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
+- Snapshot, scalar, and composite configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
 - File checkpoints, leases, scheduling, mapping, and feedback are shared library functionality; database I/O and node registration remain vendor responsibilities.
-- Multiple named queries, jitter, snapshot polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
+- Multiple named queries, jitter, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
 - Byte-limit validation does not bound RSS or native allocations. Local memory-pressure state gates new fetches, but full global `MemoryAdmission` accounting is not implemented.
 - Authentication capabilities, credential rotation, TLS configuration, distributed ownership, and automatic source partitioning require separate work.
 - Bounded immediate catch-up is the default, with configurable cycle budgets and memory-pressure new-fetch gating. Whole-poll and normal-operation ACK deadlines are not; elapsed catch-up budgets only gate the next fetch.

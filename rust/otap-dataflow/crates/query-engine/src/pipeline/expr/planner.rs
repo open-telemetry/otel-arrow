@@ -101,9 +101,7 @@ impl ExprPlanner {
     /// should return the record scope identifying this data.
     fn record_scope(&self) -> RecordScope {
         match &self.record_type {
-            RecordType::Child(child) => match child {
-                ChildRecordKind::DataPoint => RecordScope::Child(ChildRecordKind::DataPoint),
-            },
+            RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
             // In attributes mode the attributes batch IS the "root" for evaluation,
             // so we use Signal scope -- same as the top-level signal case.
             _ => RecordScope::Signal,
@@ -1627,11 +1625,9 @@ impl ExprPlanner {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
-                if let RecordType::Child(child_kind) = &self.record_type {
+                if let RecordType::DataPoint(_) = &self.record_type {
                     return Err(Error::NotYetSupportedError {
-                        message: format!(
-                            "Checking record type for {child_kind:?} not yet supported"
-                        ),
+                        message: "Checking record type for data points not yet supported".into(),
                     });
                 }
 
@@ -2080,7 +2076,7 @@ impl ScopedExpr {
 
                 if *align_children_to_record {
                     let record_scope = match record_type {
-                        RecordType::Child(child) => RecordScope::Child(*child),
+                        RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                         _ => RecordScope::Signal,
                     };
                     return Ok(Cow::Owned(DataScope::Record(record_scope)));
@@ -2130,7 +2126,7 @@ impl ScopedExpr {
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
                 let record_scope = match record_type {
-                    RecordType::Child(child_kind) => RecordScope::Child(*child_kind),
+                    RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                     _ => RecordScope::Signal,
                 };
                 Ok(Cow::Owned(DataScope::Record(record_scope)))
@@ -2492,7 +2488,7 @@ mod test {
     use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
-    use crate::pipeline::planner::AttributesIdentifier;
+    use crate::pipeline::planner::{AttributesIdentifier, SignalContext};
 
     fn ql() -> QueryLocation {
         QueryLocation::new_fake()
@@ -2561,7 +2557,7 @@ mod test {
 
     #[test]
     fn test_plan_column_reference() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_column_expr("severity_text");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2594,7 +2590,7 @@ mod test {
 
     #[test]
     fn test_plan_attribute_access() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_attr_expr("x");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2632,7 +2628,7 @@ mod test {
 
     #[test]
     fn test_plan_static_literal() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_int_literal(42);
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2664,7 +2660,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_number");
         let right = make_int_literal(2);
         let binary = BinaryMathematicalScalarExpression::new(ql(), left, right);
@@ -2707,7 +2703,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_number");
         let right = make_attr_expr("x");
         let binary = BinaryMathematicalScalarExpression::new(ql(), left, right);
@@ -2721,7 +2717,7 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_comparison() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_text");
         let right = make_string_literal("WARN");
 
@@ -2759,7 +2755,7 @@ mod test {
 
     #[test]
     fn test_plan_and_two_root_predicates() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" AND severity_number > 10
         let left_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -2808,7 +2804,7 @@ mod test {
 
     #[test]
     fn test_plan_signal_type_check() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let get_record_type =
             ScalarExpression::GetRecordType(GetRecordTypeScalarExpression::new(ql()));
@@ -2840,7 +2836,7 @@ mod test {
 
     #[test]
     fn test_plan_scalar_logical() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // Logical(severity_text == "WARN") as a scalar expression
         let inner = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -2876,7 +2872,7 @@ mod test {
 
     #[test]
     fn test_plan_not() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let inner = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -2913,7 +2909,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_string() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["x"] == "a"
         let attr_expr = make_attr_expr("x");
@@ -2953,7 +2949,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_literal_on_left() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // "a" == attributes["x"] (literal on left)
         let literal_expr = make_string_literal("a");
@@ -3012,7 +3008,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["count"] > 7
         let attr_expr = make_attr_expr("count");
@@ -3053,7 +3049,7 @@ mod test {
         // attributes["x"] == "a" AND attributes["x"] == "a" (same key, same value)
         // Both should use fused paths and then BitmapAnd combines them
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let left = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -3115,7 +3111,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["num"] + 2 > 5
         let attr_expr = make_attr_expr("num");
@@ -3168,7 +3164,7 @@ mod test {
     /// the left child is all-false.
     #[test]
     fn test_plan_cross_scope_and_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(true, RecordType::Signal);
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" AND attributes["x"] == "a"
         // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
@@ -3212,7 +3208,7 @@ mod test {
     /// the left child is all-true.
     #[test]
     fn test_plan_cross_scope_or_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(true, RecordType::Signal);
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" OR attributes["x"] == "a"
         // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
@@ -3259,7 +3255,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(true, RecordType::Signal);
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_number + attributes["x"]
         let binary = BinaryMathematicalScalarExpression::new(
