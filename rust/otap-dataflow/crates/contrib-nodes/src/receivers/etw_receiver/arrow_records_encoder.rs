@@ -353,7 +353,7 @@ mod tests {
     fn test_event() -> EtwEventData {
         EtwEventData {
             provider_id: CanonicalGuid([0u8; 16]),
-            provider_name: Some(std::sync::Arc::from("Test.Provider")),
+            provider_name: Some("Test.Provider".to_string()),
             timestamp: 123456789,
             process_id: 1234,
             thread_id: 5678,
