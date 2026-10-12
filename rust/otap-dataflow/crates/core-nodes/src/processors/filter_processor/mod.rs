@@ -94,18 +94,17 @@ pub static FILTER_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<Ota
             },
         context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        // Deserialize and compile so invalid regex patterns are rejected at
-        // config-validation time rather than panicking on the first batch.
         validate_config: |value| {
             let config: Config =
                 otel_arrow_dfe_config::validation::deserialize_typed_config(value)?;
+
+            // Attempt to compile any matchers/regular expressions
             config.compile().map(|_| ())
         },
     };
 
 impl FilterProcessor {
     /// Creates a new FilterProcessor
-    #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Result<Self, ConfigError> {
         let metrics = FilterDropMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
@@ -170,57 +169,52 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     OtapArrowRecords,
                     u64,
                     u64,
-                ) =
-                    effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
-                        match signal {
-                            SignalType::Metrics => {
-                                let (filtered, consumed, filtered_count) = self
-                                    .filters
-                                    .metrics
-                                    .filter(arrow_records, &mut self.metric_id_pool)
-                                    .map_err(|e| {
-                                        let source_detail = format_error_sources(&e);
-                                        Error::ProcessorError {
-                                            processor: effect_handler.processor_id(),
-                                            kind: ProcessorErrorKind::Other,
-                                            error: format!("Filter error: {e}"),
-                                            source_detail,
-                                        }
-                                    })?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                            SignalType::Logs => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.filters.logs.filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                            SignalType::Traces => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.filters.traces.filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
+                ) = effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
+                    match signal {
+                        SignalType::Metrics => {
+                            let (filtered, consumed, filtered_count) = self
+                                .filters
+                                .metrics
+                                .filter(arrow_records, &mut self.metric_id_pool)
+                                .map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
+                            Ok((filtered, consumed, filtered_count))
                         }
-                    })?;
+                        SignalType::Logs => {
+                            let (filtered, consumed, filtered_count) =
+                                self.filters.logs.filter(arrow_records).map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
+                            Ok((filtered, consumed, filtered_count))
+                        }
+                        SignalType::Traces => {
+                            let (filtered, consumed, filtered_count) =
+                                self.filters.traces.filter(arrow_records).map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
+                            Ok((filtered, consumed, filtered_count))
+                        }
+                    }
+                })?;
 
                 self.metrics
                     .with(SignalAttributes { signal })

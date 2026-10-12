@@ -16,7 +16,7 @@ use otel_arrow_dfe_pdata::otap::filter::{
     metrics::{MetricFilter, MetricMatchProperties},
     traces::{TraceFilter, TraceMatchProperties},
 };
-use regex::Regex;
+use regex::{Regex};
 use serde::Deserialize;
 
 /// Top-level filter processor configuration.
