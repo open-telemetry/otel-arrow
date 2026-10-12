@@ -324,6 +324,57 @@ fn rejects_unsupported_statement_shapes() {
     }
 }
 
+/// Scenario: END stops statement parsing before the end of a snapshot, scalar, or composite query.
+/// Guarantees: Unconsumed tokens never reach a prepared plan, and rejection does not expose them.
+#[test]
+fn rejects_unconsumed_statement_suffixes() {
+    for base in [
+        snapshot("SELECT EVENT_ID FROM dbo.EVENTS ORDER BY EVENT_ID"),
+        scalar(json!({"type":"int64","value":0})),
+        composite(),
+    ] {
+        for suffix in [
+            " END",
+            " END;",
+            " END DELETE FROM dbo.SENSITIVE",
+            " END SELECT SENSITIVE FROM dbo.EVENTS",
+            "\nEND\nDELETE FROM dbo.SENSITIVE;",
+        ] {
+            let mut value = base.clone();
+            let statement = format!("{}{suffix}", base["query"]["statement"].as_str().unwrap());
+            value["query"]["statement"] = json!(statement);
+            let result = serde_json::from_value::<SqlServerReceiverConfig>(value);
+            assert!(result.is_err(), "accepted unchecked suffix: {statement}");
+            let error = result.unwrap_err();
+            assert!(!format!("{error} {error:?}").contains("SENSITIVE"));
+        }
+    }
+}
+
+/// Scenario: END appears only inside bracketed identifiers or literals in a complete SELECT.
+/// Guarantees: EOF validation preserves quoted content and accepts one optional trailing semicolon.
+#[test]
+fn accepts_complete_statements_with_quoted_end_tokens() {
+    let statement = "SELECT [END], 'END DELETE FROM dbo.EVENTS' AS MESSAGE, N'END' AS TEXT \
+                     FROM dbo.EVENTS ORDER BY [END]";
+    let expected = parse(snapshot(statement));
+    for suffix in ["", ";", ";\n"] {
+        let config = parse(snapshot(&format!("{statement}{suffix}")));
+        assert_eq!(
+            config.statement().driver_sql(),
+            expected.statement().driver_sql()
+        );
+        assert!(config.statement().driver_sql().contains("[END]"));
+        assert!(
+            config
+                .statement()
+                .driver_sql()
+                .contains("'END DELETE FROM dbo.EVENTS'")
+        );
+        assert!(config.statement().driver_sql().contains("N'END'"));
+    }
+}
+
 /// Scenario: A keyset predicate or ordering resembles the required form but changes its meaning.
 /// Guarantees: No non-strict, reordered, derived, aliased, or collation-dependent cursor is accepted.
 #[test]

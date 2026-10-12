@@ -201,12 +201,14 @@ fn parse(sql: &str) -> Result<(Box<Query>, Vec<Token>), SqlServerConfigError> {
     {
         return Err(unsupported());
     }
-    let mut statements = Parser::new(&dialect)
+    let mut parser = Parser::new(&dialect)
         .with_recursion_limit(MAX_DEPTH)
-        .with_tokens(tokens.clone())
+        .with_tokens(tokens.clone());
+    let mut statements = parser
         .parse_statements()
         .map_err(|_| error("query.statement is invalid, unsupported, or too deeply nested"))?;
-    if statements.len() != 1 {
+    // parse_statements can stop at END before consuming the complete input.
+    if statements.len() != 1 || !matches!(parser.peek_token_ref().token, Token::EOF) {
         return Err(error("query.statement must contain exactly one SELECT"));
     }
     match statements.pop() {
