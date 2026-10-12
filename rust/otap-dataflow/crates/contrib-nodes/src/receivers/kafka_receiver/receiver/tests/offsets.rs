@@ -315,11 +315,7 @@ fn reconcile_folds_commit_callback_metrics() {
 /// `receiver.kafka.offset_commits` metric with `outcome="failure"` (and a
 /// success with `outcome="success"`), driven through the actual
 /// `commit_callback` dispatch method rather than the `record_commit_result_for_test`
-/// seam. This pins the operator-visible contract that a future commit-issuing
-/// change (which must make `commit_callback` actually fire; see
-/// `async_commit_outcome_not_delivered_by_callback_documents_gap`) has to
-/// preserve: when the commit callback reports a broker rejection, operators see
-/// `offset_commits{outcome="failure"}`.
+/// seam.
 #[test]
 fn commit_callback_failure_surfaces_offset_commit_failure_metric() {
     use crate::receivers::kafka_receiver::rebalance::RebalancingConsumerContext;
