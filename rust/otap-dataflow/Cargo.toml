@@ -118,6 +118,7 @@ csv-core = "0.1.13"
 data-encoding = "2.9.0"
 datafusion = { version = "54.0.0", default-features = false }
 dhat = "0.3.3"
+libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 fs2 = "0.4.3"

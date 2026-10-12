@@ -7,14 +7,22 @@ use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::multiline_pattern::{
     BoundaryPattern, ExecutionPolicy, PatternInput, PatternLimits, PatternMode,
 };
 
+#[path = "support/allocation.rs"]
+mod allocation;
+
+fn main() {
+    allocation::run(
+        "worker_scratch_stays_within_model",
+        worker_scratch_stays_within_model,
+    );
+}
+
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 /// Scenario: Fallback, anchored, unanchored, and cache-churning matchers process repeated nonmatches.
 /// Guarantees: Cold allocation and retained cache growth stay within each worker heap bound.
-#[test]
 fn worker_scratch_stays_within_model() {
-    // One test owns DHAT so allocation intervals cannot overlap within this binary.
     let mut state = 1u32;
     let mut churn = Vec::with_capacity(32 * 1024);
     for _ in 0..32 * 1024 {
@@ -27,12 +35,15 @@ fn worker_scratch_stays_within_model() {
     churn[suffix] = b'b';
     verify_churn(&churn);
     let body = vec![b'a'; 8192];
-    for (source, capacity, caches) in [
+    for (case, (source, capacity, caches)) in [
         (r"^[ab]*a[ab]{20}[ab]$", 0, 0),
         (r"^[ab]+[cd]$", 64 * 1024, 1),
         (r"[ab]+[cd]", 64 * 1024, 3),
         (r"^[ab]*a[ab]{20}[ab]$", 64 * 1024, 1),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let program = BoundaryPattern::compile_with_limits(
             source,
             PatternMode::Raw,
@@ -57,19 +68,21 @@ fn worker_scratch_stays_within_model() {
             let suffix = input.len() - 22;
             input[suffix] = b'b';
         }
-        let profiler = dhat::Profiler::builder().testing().build();
+        // Each corpus case owns a profiler session; name it before measurement.
+        let session = format!("worker_scratch_stays_within_model-case-{case}");
+        let profiler = allocation::profiler("filelog_multiline_memory", &session);
         let mut matcher = program.matcher();
         for _ in 0..3 {
             assert!(!matcher.is_match(PatternInput::Raw(&input)).expect("search"));
         }
         let peak = dhat::HeapStats::get().max_bytes;
         drop(matcher);
-        drop(profiler);
-        assert!(
+        dhat::assert!(
             peak <= program.memory_estimate().worker_heap_bound,
             "{source}: peak {peak} exceeds {:?}",
             program.memory_estimate()
         );
+        drop(profiler);
     }
 }
 
