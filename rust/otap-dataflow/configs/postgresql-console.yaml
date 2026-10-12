@@ -42,14 +42,15 @@ groups:
                   )
                   ORDER BY e.event_ts ASC, e.event_id ASC
                 interval: 1m
+                # Required per-page limits, not whole catch-up-cycle limits.
+                max_rows_per_poll: 10000
+                max_batch_bytes: 10 MiB
+                # Defaults: timeout 30s, fetch size 300, interval 1m.
+                timeout: 30s
                 fetch_size_rows: 300
                 catch_up:
                   max_pages: 32
                   max_duration: 10s
-                result_schema:
-                  - {name: event_ts, source_type: timestamptz, nullable: false, type_modifier: 6}
-                  - {name: event_id, source_type: int8, nullable: false, type_modifier: -1}
-                  - {name: actor, source_type: text, nullable: false, type_modifier: -1}
                 output:
                   timestamp_column: event_ts
               watermark:

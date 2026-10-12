@@ -16,7 +16,8 @@ exporters, but does not encrypt the PostgreSQL connection.
 
 Use the [console example](../../../../../configs/postgresql-console.yaml).
 Provision a source table and a least-privilege account with SELECT access, then
-adjust the connection, query, result schema, and initial cursor. Set `PG_HOST`,
+adjust the connection, query, and initial cursor. Output metadata is discovered
+from PostgreSQL; customer-authored result schemas are not supported. Set `PG_HOST`,
 `PG_USERNAME_FILE`, and `PG_PASSWORD_FILE`; the latter two identify readable
 credential files. Provide persistent, writable checkpoint storage.
 
@@ -43,19 +44,48 @@ pipeline. Unknown fields and null configuration values are rejected.
 | `connection.database` | Required name, 1-63 UTF-8 bytes. |
 | `query.statement` | Required read-only incremental SELECT, at most 16 KiB. |
 | `query.interval` | Defaults to `1m`; accepts `1m` through `24h` in whole seconds. `1.5m` is valid. |
-| `query.fetch_size_rows` | Defaults to `300`; accepts `1` through `1000`. Byte limits may reduce a fetch further. |
+| `query.max_rows_per_poll` | Required per-page ceiling, `1` through `10000`; no default. Not a whole catch-up-cycle limit. |
+| `query.max_batch_bytes` | Required separate normalized-page and encoded-OTLP ceilings, `1` byte through `256 MiB`; no default. Accepts integer bytes or byte-unit strings such as `10 MiB`. |
+| `query.timeout` | Defaults to `30s`; accepts `1s` through `5m` in whole seconds. Bounds credential resolution and worker operations; also sets native statement/idle-transaction timeouts. |
+| `query.fetch_size_rows` | Defaults to `300`; accepts `1` through `10000`, no greater than `max_rows_per_poll`. Byte estimates may reduce a fetch further. |
 | `query.catch_up.max_pages` | Defaults to `32`; accepts `1` through `1024`, including empty probes. |
 | `query.catch_up.max_duration` | Defaults to `10s`; accepts `1ms` through `5min`. Gates the next page, not an active page. |
-| `query.result_schema` | Required ordered columns: `name`, native `source_type`, `nullable`, and `type_modifier`. Must match database metadata exactly. |
 | `query.output.timestamp_column` | Optional `timestamp`/`timestamptz` event-time column; omission uses observation time. |
 | `watermark` | Required composite timestamp and signed-integer tie-breaker, as shown in the example. |
 | `checkpoint.directory` | Required persistent storage directory. |
 
 Checkpoint defaults are `on_nack: rewind`, `on_permanent_nack: pause`,
 `nack_backoff: 1s`, and `max_consecutive_failures: 5`. The last setting counts
-checkpoint-write failures, not connection retries. Interval, fetch-size, and
-catch-up changes preserve checkpoint compatibility; source/query/schema changes
-may invalidate it. Result-schema configuration is not automatically discovered.
+checkpoint-write failures, not connection retries. Interval, timeout, page-byte,
+page-row, fetch-size, and catch-up changes preserve checkpoint compatibility;
+connection, query, watermark, and output changes invalidate it.
+
+### Metadata discovery and checkpoint compatibility
+
+Configuration validation derives output names and cursor positions from explicit
+SQL projections, including aliases and reordered columns, without contacting the
+database or guessing types. At startup, bounded catalog queries discover native
+type OIDs, type modifiers, and nullability for the referenced columns. No table
+data scan is used for discovery. Unsupported types, nullable/invalid cursor
+columns, invalid event-time types, and unrepresentable initial cursor values fail
+before the user query is prepared.
+
+Discovery uses the existing per-relation catalog bounds: at most two relation
+matches, requested attributes plus one, and 129 index descriptions (more than
+128 indexes fails). It shares the operation timeout and receive limits, not a
+separate unbounded metadata path. Prepared output names, table/column origins,
+native type OIDs, and modifiers must also agree with the proven catalog metadata.
+
+Each page, including after reconnect, reads fresh catalog metadata before using
+cached decoders. A changed signature fails closed during that receiver's lifetime.
+This baseline is in memory, not persisted in checkpoints: discovery does **not**
+detect schema drift across process restarts. Keep the source schema, grants,
+column semantics, and unique cursor ordering stable across restarts, just as
+source identity and retained rows must remain stable.
+
+Checkpoint identity hashes the connection, authored SQL, watermark, and output
+contract, without guessed or discovered types. Incompatible checkpoints fail;
+they are never silently reset.
 
 ### Authentication
 
@@ -92,13 +122,15 @@ and order by timestamp then tie-breaker ascending:
 
 Native `$1`/`$2` binds are also accepted; do not mix styles. After validating
 the original query, execution uses the equivalent tuple keyset and internal
-`LIMIT 1000`. Values remain bound parameters, and the original SQL defines
+`LIMIT` set to `query.max_rows_per_poll`. Values remain bound parameters, and the original SQL defines
 checkpoint compatibility. Ask the database owner to provision an index starting
 with the timestamp and tie-breaker; the receiver requires no write privileges.
 
 Timestamp cursors use `timestamp` or `timestamptz`, `timezone: UTC`, and an ISO
 8601 initial value with `T` and `Z`, exactly representable at the column's
-precision. Numeric offsets and space-separated values are rejected. Tie-breakers
+precision, without losing microseconds, with at most six fractional digits.
+UTC syntax and PostgreSQL's general microsecond limit are checked locally; narrower native precision is
+checked after discovery. Numeric offsets and space-separated values are rejected. Tie-breakers
 use `int2`, `int4`, or `int8`, with checked ranges.
 
 Views, RLS, partitioned/foreign/temporary tables, system schemas, functions,
@@ -106,7 +138,7 @@ computed projections/casts, stars, outer joins, subqueries, grouping,
 unrestricted OR, user-supplied LIMIT/OFFSET/FETCH, and multiple statements are
 unsupported. Referenced columns, including filter/join columns, are validated.
 Catalog checks run every page; cached statements/decoders do not bypass them.
-Metadata changes fail closed.
+Metadata changes within a receiver lifetime fail closed.
 
 ## Value mapping
 
@@ -133,16 +165,28 @@ body value. Watermark timestamps remain strictly validated.
 
 ## Resource and delivery boundaries
 
-Fixed limits are a 30-second operation budget, 10-second connection budget,
-1,000-row pages, separate 8 MiB normalized/encoded budgets, 128 output columns,
-1 MiB native rows, and 16,384 characters of numeric output.
+Page rows and normalized/encoded bytes are required; the configurable operation
+timeout defaults to `30s`. The example chooses `10000` rows and `10 MiB`; these are not
+defaults. Fixed limits remain a 10-second connection budget (also bounded by the
+operation timeout), 128 output columns, and 16,384 characters of numeric output.
 
 Fetches probe one row, then adapt to the configured count and largest observed
 row size. Abrupt size increases can require discarding/re-reading part of one
-fetch; hard row/page bounds are independent of this estimate. Backend frames
-over 8 MiB are rejected before driver body allocation. Checked frames are
-forwarded individually with fixed 8 KiB socket read-ahead. These are bounded
-buffers, not a process-RSS guarantee.
+fetch; hard row/page bounds are independent of this estimate. Page allocation
+grows with admitted rows and accounts for cursor storage, metadata, and spare
+capacity, rather than reserving the full row ceiling for tiny byte budgets.
+
+Wire size is not normalized size. DataRow frames are bounded before driver body
+allocation by `max_batch_bytes + 519` bytes: one tag, four length bytes, two
+field-count bytes, and four length bytes for each of at most 128 columns.
+Only non-DataRow messages may use a 64 KiB minimum allowance for authentication,
+startup metadata, and control messages. Larger configured budgets raise that
+non-row bound too. Catalog DataRows retain the DataRow bound. Decoded page
+allocations and encoded OTLP are checked separately against `max_batch_bytes`;
+wire admission alone cannot authorize normalization expansion. Checked frames
+are forwarded individually with fixed 8 KiB socket read-ahead. Text and bytea
+have no independent one-MiB ceiling. These are bounded buffers, not a process-RSS
+guarantee.
 
 The Oracle-style catch-up defaults allow at most 32 page fetches or ten seconds
 per cycle, then wait `query.interval`; byte limits and backpressure can reduce

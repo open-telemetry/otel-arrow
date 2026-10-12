@@ -3,10 +3,7 @@
 
 //! Capacity-one local proxy. The shared receiver owns polling and feedback.
 
-use super::{
-    config::{OPERATION_TIMEOUT, Validated},
-    worker,
-};
+use super::{config::Validated, worker};
 use async_trait::async_trait;
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BASIC_AUTH_CREDENTIAL_USABLE_MARGIN;
@@ -21,6 +18,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
+    time::Duration,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -80,6 +78,7 @@ pub(crate) struct PostgreSqlAdapter {
     exit: oneshot::Receiver<Result<()>>,
     exit_result: Option<Result<()>>,
     stopped: bool,
+    timeout: Duration,
 }
 
 impl PostgreSqlAdapter {
@@ -90,6 +89,7 @@ impl PostgreSqlAdapter {
         // The local adapter and its one dedicated worker share only admission
         // and cancellation signals; database state stays on the worker.
         let worker_busy = busy.clone();
+        let timeout = validated.common.timeout();
         let thread = std::thread::Builder::new()
             .name("postgresql-receiver".into())
             .spawn(move || {
@@ -113,15 +113,18 @@ impl PostgreSqlAdapter {
             exit,
             exit_result: None,
             stopped: false,
+            timeout,
         })
     }
 
     async fn request(&mut self, action: Action) -> Result<Reply> {
         self.operation.check()?;
+        // Resolve the local capability here and send only its credential snapshot.
+        // The worker consumes it when connecting, not to replace a healthy session.
         let credential = tokio::select! {
             biased;
             _ = self.operation.notify.notified() => return Err(Error::Cancelled),
-            result = tokio::time::timeout(OPERATION_TIMEOUT, self.credentials.get_credential()) => {
+            result = tokio::time::timeout(self.timeout, self.credentials.get_credential()) => {
                 result.map_err(|_| Error::Credential)?.map_err(|_| Error::Credential)?
             }
         };
@@ -132,6 +135,8 @@ impl PostgreSqlAdapter {
         }) {
             return Err(Error::Credential);
         }
+        // A dropped response future does not mean its database work stopped.
+        // Only the worker releases this gate after completing work and any cleanup.
         if self.busy.swap(true, Ordering::AcqRel) {
             return Err(Error::Cleanup);
         }
@@ -228,6 +233,8 @@ impl DriverAdapter for PostgreSqlAdapter {
         Ok(())
     }
 
+    // Reporting categories do not authorize retries; is_retryable is the narrower
+    // policy, and Cleanup always remains terminal.
     fn classify_error(error: &Error) -> otel_arrow_dfe_engine::error::ReceiverErrorKind {
         use otel_arrow_dfe_engine::error::ReceiverErrorKind;
         match error {

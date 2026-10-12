@@ -3,10 +3,7 @@
 
 //! Bounded parameter compilation, AST allowlist, and fixed catalog queries.
 
-use super::{
-    adapter::{Error, Result, database},
-    config::ExpectedColumn,
-};
+use super::adapter::{Error, Result, database};
 use otel_arrow_dfe_scraper::database::CompiledQuery;
 use sqlparser::{
     ast::{
@@ -19,8 +16,6 @@ use sqlparser::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_postgres::{GenericClient, Transaction, types::Type};
-
-pub(crate) const MAX_PAGE_ROWS: usize = 1000;
 
 const RELATION_SQL: &str = "SELECT c.oid, c.relkind::text, c.relpersistence::text, c.relrowsecurity, \
      EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhrelid=c.oid OR i.inhparent=c.oid) \
@@ -95,10 +90,10 @@ pub(crate) struct Plan {
     pub projections: Vec<ColumnRef>,
     pub referenced: BTreeSet<ColumnRef>,
     pub filters: Vec<(ColumnRef, Option<Value>)>,
-    pub expected: Vec<ExpectedColumn>,
-    pub native_types: Vec<Type>,
+    pub output_names: Vec<String>,
     pub timestamp: usize,
     pub tie: usize,
+    pub output_timestamp: Option<usize>,
 }
 
 fn identifier(id: &Ident) -> Result<String> {
@@ -276,6 +271,8 @@ pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Resul
     if tokens.len() > 4096 {
         return Err(Error::Sql);
     }
+    // Token locations count characters, while string edits need byte offsets.
+    // Preserve UTF-8 literals/comments outside actual parameter tokens verbatim.
     let mut offsets = BTreeMap::new();
     let (mut line, mut col) = (1u64, 1u64);
     for (index, ch) in sql.char_indices() {
@@ -443,12 +440,7 @@ fn joins(expr: &Expr, pairs: &mut Vec<(ColumnRef, ColumnRef)>) -> Result<()> {
 }
 
 impl Plan {
-    pub fn compile(
-        common: &CompiledQuery,
-        expected: &[ExpectedColumn],
-        timestamp: usize,
-        tie: usize,
-    ) -> Result<Self> {
+    pub fn compile(common: &CompiledQuery) -> Result<Self> {
         let watermark = common.watermark().as_composite().ok_or(Error::Config)?;
         let sql = compile_parameters(
             common.sql(),
@@ -462,7 +454,7 @@ impl Plan {
         let SetExpr::Select(select) = query.body.as_ref() else {
             return Err(Error::Sql);
         };
-        if select.from.len() != 1 || select.projection.len() != expected.len() {
+        if select.from.len() != 1 || !(1..=128).contains(&select.projection.len()) {
             return Err(Error::Sql);
         }
         let from = &select.from[0];
@@ -490,18 +482,39 @@ impl Plan {
             relations.push(rel);
         }
         let mut projections = Vec::new();
-        for (item, expected) in select.projection.iter().zip(expected) {
+        let mut output_names = Vec::new();
+        let mut unique_names = BTreeSet::new();
+        for item in &select.projection {
             let (expr, alias) = match item {
                 SelectItem::UnnamedExpr(expr) => (expr, None),
                 SelectItem::ExprWithAlias { expr, alias } => (expr, Some(identifier(alias)?)),
                 _ => return Err(Error::Sql),
             };
             let reference = column(expr)?;
-            if alias.as_ref().unwrap_or(&reference.name) != &expected.name {
+            let name = alias.unwrap_or_else(|| reference.name.clone());
+            if !unique_names.insert(name.to_ascii_lowercase()) {
                 return Err(Error::Sql);
             }
+            output_names.push(name);
             projections.push(reference);
         }
+        let column_index = |name: &str| {
+            output_names
+                .iter()
+                .position(|column| column.eq_ignore_ascii_case(name))
+                .ok_or(Error::Config)
+        };
+        let timestamp = column_index(&watermark.timestamp_column)?;
+        let tie = column_index(&watermark.tie_breaker_column)?;
+        if timestamp == tie {
+            return Err(Error::Config);
+        }
+        let output_timestamp = common
+            .output()
+            .timestamp_column
+            .as_deref()
+            .map(column_index)
+            .transpose()?;
         let ts = &projections[timestamp];
         let id = &projections[tie];
         if ts.alias != relations[0].alias
@@ -546,6 +559,8 @@ impl Plan {
         if allowed != statements {
             return Err(Error::Sql);
         }
+        // Filters and joins can change which rows advance the cursor even when
+        // their columns are not emitted, so they need the same catalog checks.
         let mut referenced: BTreeSet<_> = projections.iter().cloned().collect();
         for rel in &relations {
             for (left, right) in &rel.join {
@@ -567,20 +582,17 @@ impl Plan {
             return Err(Error::Sql);
         };
         canonicalize_keyset(select.selection.as_mut().ok_or(Error::Sql)?, ts, id);
-        let sql = format!("{optimized} LIMIT {MAX_PAGE_ROWS}");
+        let sql = format!("{optimized} LIMIT {}", common.max_rows());
         Ok(Self {
             sql,
             relations,
             projections,
             referenced,
             filters,
-            expected: expected.to_vec(),
-            native_types: expected
-                .iter()
-                .map(|column| super::value::native_type(&column.source_type))
-                .collect::<Result<Vec<_>>>()?,
+            output_names,
             timestamp,
             tie,
+            output_timestamp,
         })
     }
 }
@@ -598,6 +610,68 @@ pub(crate) struct NativeColumn {
 pub(crate) struct Signature {
     pub columns: BTreeMap<ColumnRef, NativeColumn>,
     pub keys: Vec<(u32, Vec<(u32, Vec<i16>)>)>,
+}
+
+pub(crate) struct ResultColumn {
+    pub name: String,
+    pub source_type: String,
+    pub nullable: bool,
+    pub type_modifier: i32,
+}
+
+pub(crate) struct ResolvedSchema {
+    pub columns: Vec<ResultColumn>,
+    pub native_types: Vec<Type>,
+}
+
+impl ResolvedSchema {
+    pub fn discover(plan: &Plan, common: &CompiledQuery, signature: &Signature) -> Result<Self> {
+        if plan.projections.len() != plan.output_names.len() {
+            return Err(Error::Metadata);
+        }
+        let mut columns = Vec::with_capacity(plan.output_names.len());
+        let mut native_types = Vec::with_capacity(plan.output_names.len());
+        for (reference, name) in plan.projections.iter().zip(&plan.output_names) {
+            let source = signature.columns.get(reference).ok_or(Error::Metadata)?;
+            let native = Type::from_oid(source.type_oid).ok_or(Error::Metadata)?;
+            let native = super::value::native_type(native.name())?;
+            if source.modifier < -1
+                || (matches!(native, Type::TIMESTAMP | Type::TIMESTAMPTZ)
+                    && !(-1..=6).contains(&source.modifier))
+            {
+                return Err(Error::Metadata);
+            }
+            columns.push(ResultColumn {
+                name: name.clone(),
+                source_type: native.name().to_owned(),
+                nullable: !source.not_null,
+                type_modifier: source.modifier,
+            });
+            native_types.push(native);
+        }
+        let timestamp = &columns[plan.timestamp];
+        let tie = &columns[plan.tie];
+        if timestamp.nullable
+            || tie.nullable
+            || !matches!(
+                native_types[plan.timestamp],
+                Type::TIMESTAMP | Type::TIMESTAMPTZ
+            )
+            || !matches!(native_types[plan.tie], Type::INT2 | Type::INT4 | Type::INT8)
+            || plan.output_timestamp.is_some_and(|index| {
+                !matches!(native_types[index], Type::TIMESTAMP | Type::TIMESTAMPTZ)
+            })
+        {
+            return Err(Error::Metadata);
+        }
+        let watermark = common.watermark().as_composite().ok_or(Error::Config)?;
+        let _ = super::value::cursor_time(&watermark.initial.timestamp, timestamp.type_modifier)?;
+        super::value::check_tie(watermark.initial.tie_breaker, &tie.source_type)?;
+        Ok(Self {
+            columns,
+            native_types,
+        })
+    }
 }
 
 impl Plan {
@@ -702,6 +776,8 @@ impl Plan {
                     }
                     let _ = joined.insert(r.attribute);
                 }
+                // Covering a unique key on the newly joined side prevents that
+                // join from multiplying a driving row into duplicate cursor positions.
                 if !unique
                     .iter()
                     .any(|(_, k)| k.iter().all(|a| joined.contains(a)))
@@ -710,15 +786,6 @@ impl Plan {
                 }
             }
             keys.push((oid, unique));
-        }
-        for (reference, expected) in self.projections.iter().zip(&self.expected) {
-            let column = columns.get(reference).ok_or(Error::Metadata)?;
-            if column.type_oid != super::value::native_type(&expected.source_type)?.oid()
-                || column.modifier != expected.type_modifier
-                || column.not_null == expected.nullable
-            {
-                return Err(Error::Metadata);
-            }
         }
         for (reference, literal) in &self.filters {
             if let Some(literal) = literal {

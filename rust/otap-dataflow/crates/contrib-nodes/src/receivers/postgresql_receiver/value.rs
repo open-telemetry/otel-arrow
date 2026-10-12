@@ -5,13 +5,12 @@
 
 use super::{
     adapter::{Error, Result},
-    query::Plan,
+    query::{Plan, ResolvedSchema},
 };
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
 use otel_arrow_dfe_scraper::database::{CellValue, CompositeCursor, CursorRow, Row};
 use tokio_postgres::types::{FromSql, Type};
 
-const MAX_ROW_BYTES: usize = 1024 * 1024;
 const MAX_NUMERIC_CHARS: usize = 16_384;
 
 pub(crate) fn native_type(name: &str) -> Result<Type> {
@@ -51,7 +50,7 @@ pub(crate) fn cursor_time(text: &str, modifier: i32) -> Result<DateTime<Utc>> {
         return Err(Error::Value);
     }
     if text.len() < 20
-        || text.len() > 30
+        || text.len() > 27
         || !text.ends_with('Z')
         || text.as_bytes().get(10) != Some(&b'T')
     {
@@ -152,6 +151,8 @@ fn timestamp_text(dt: NaiveDateTime) -> Result<String> {
 
 #[derive(Default)]
 pub(crate) struct CursorTimestampCache {
+    // Sorted rows often share a timestamp. Retain just one native value and its
+    // UTC text; include typmod so reuse cannot bypass a stricter precision check.
     last: Option<(i64, i32, NaiveDateTime)>,
     text: String,
 }
@@ -175,13 +176,12 @@ impl CursorTimestampCache {
 }
 
 fn text(bytes: &[u8]) -> Result<&str> {
-    if bytes.len() > MAX_ROW_BYTES {
-        return Err(Error::Limit);
-    }
     std::str::from_utf8(bytes).map_err(|_| Error::Value)
 }
 
 pub(crate) fn numeric(bytes: &[u8]) -> Result<String> {
+    // PostgreSQL stores base-10000 groups plus an independent display scale.
+    // Render directly to decimal text to preserve large integers and trailing zeros.
     if bytes.len() < 8 {
         return Err(Error::Value);
     }
@@ -200,6 +200,8 @@ pub(crate) fn numeric(bytes: &[u8]) -> Result<String> {
         }
         digits.push(digit);
     }
+    // Digits outside the declared scale must be zero; trimming nonzero digits
+    // would silently turn malformed input into a different numeric value.
     for (i, digit) in digits.iter().enumerate() {
         let fractional_end = -(weight - i as i32) * 4;
         if fractional_end > scale as i32 {
@@ -274,12 +276,7 @@ pub(crate) fn decode(ty: &Type, bytes: &[u8]) -> Result<CellValue> {
             CellValue::Float64(value)
         }
         Type::TEXT | Type::VARCHAR | Type::BPCHAR => CellValue::String(text(bytes)?.into()),
-        Type::BYTEA => {
-            if bytes.len() > MAX_ROW_BYTES {
-                return Err(Error::Limit);
-            }
-            CellValue::Bytes(bytes.into())
-        }
+        Type::BYTEA => CellValue::Bytes(bytes.into()),
         Type::TIMESTAMP => CellValue::Timestamp(timestamp_text(timestamp(bytes)?)?),
         Type::TIMESTAMPTZ => CellValue::TimestampTz(timestamp_text(timestamp(bytes)?)?),
         Type::DATE => {
@@ -315,6 +312,8 @@ pub(crate) fn decode(ty: &Type, bytes: &[u8]) -> Result<CellValue> {
                 bytes
             };
             let text = text(bytes)?;
+            // Validate syntax without materializing numbers through a floating-point
+            // JSON tree; the original numeric lexemes remain the emitted value.
             let _: &serde_json::value::RawValue =
                 serde_json::from_str(text).map_err(|_| Error::Value)?;
             CellValue::String(text.into())
@@ -336,20 +335,26 @@ pub(crate) type CursorPosition = (NaiveDateTime, i64);
 
 pub(crate) struct DecodedRow {
     pub row: CursorRow,
+    // Carry native ordering alongside durable cursor text so the worker need not
+    // reparse formatted timestamps for every row's strict-advance check.
     pub position: CursorPosition,
 }
 
 pub(crate) fn row(
     native: &tokio_postgres::Row,
     plan: &Plan,
+    schema: &ResolvedSchema,
     timestamp_cache: &mut CursorTimestampCache,
+    max_raw_bytes: usize,
 ) -> Result<DecodedRow> {
-    if native.len() != plan.expected.len() || native.raw_size_bytes() > MAX_ROW_BYTES {
+    // raw_size_bytes measures encoded data, not normalized allocations. Framing
+    // bounds receipt; the worker and shared encoder separately admit output bytes.
+    if native.len() != schema.columns.len() || native.raw_size_bytes() > max_raw_bytes {
         return Err(Error::Limit);
     }
     let mut values = Vec::with_capacity(native.len());
     let mut cursor_timestamp = None;
-    for (i, (col, native_type)) in plan.expected.iter().zip(&plan.native_types).enumerate() {
+    for (i, (col, native_type)) in schema.columns.iter().zip(&schema.native_types).enumerate() {
         let value = match native
             .try_get::<_, Option<Raw<'_>>>(i)
             .map_err(|_| Error::Value)?

@@ -10,7 +10,6 @@ mod tests;
 
 mod adapter;
 mod config;
-mod framing;
 mod query;
 mod value;
 mod worker;
@@ -72,6 +71,7 @@ fn create(
             error: "postgresql requires a one-core source pipeline".into(),
         });
     }
+    // Resolve required wiring before acquiring source ownership or starting a worker.
     let credentials = capabilities
         .require_local::<BasicAuthProvider>()
         .map_err(|error| ConfigError::InvalidUserConfig {
@@ -88,6 +88,8 @@ fn create(
         &validated.config.source_id,
         validated.fingerprint.clone(),
     );
+    // Acquire exclusive ownership before driver work starts; the shared receiver
+    // retains the binding through ACK/checkpoint handling and confirmed shutdown.
     let binding =
         SourceBinding::acquire(store).map_err(|_| config_error(adapter::Error::Config))?;
     let query = validated.common.clone();

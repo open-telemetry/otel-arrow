@@ -93,8 +93,7 @@ Exporters send data out of a pipeline.
 - `kafka`: enables both the Kafka receiver and exporter.
 
 Enable `oracle` or `postgresql` explicitly to include those integrations.
-Oracle requires separately provisioned Oracle Client libraries; PostgreSQL is
-development-only while its database transport remains unencrypted.
+Oracle requires separately provisioned Oracle Client libraries.
 
 When these features are enabled in the top-level binary, their factories are
 registered into the OTAP pipeline factory maps.

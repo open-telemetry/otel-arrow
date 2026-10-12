@@ -5,17 +5,14 @@
 
 use super::{
     adapter::{Error, Result},
-    query::{MAX_PAGE_ROWS, Plan},
+    query::Plan,
 };
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, OnNack, OnPermanentNack, OutputConfig,
     PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
-use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, net::IpAddr, time::Duration};
-
-pub(super) const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_BATCH_BYTES: u64 = 8 * 1024 * 1024;
+use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
+use std::{net::IpAddr, time::Duration};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,20 +41,15 @@ pub(crate) struct Query {
     pub interval: Duration,
     #[serde(default = "default_fetch_size_rows")]
     pub fetch_size_rows: usize,
+    pub max_rows_per_poll: usize,
+    #[serde(deserialize_with = "deserialize_byte_size")]
+    pub max_batch_bytes: u64,
+    #[serde(default = "default_timeout", with = "humantime_serde")]
+    pub timeout: Duration,
     #[serde(default)]
     pub catch_up: CatchUpConfig,
-    pub result_schema: Vec<ExpectedColumn>,
     #[serde(default)]
     pub output: Output,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ExpectedColumn {
-    pub name: String,
-    pub source_type: String,
-    pub nullable: bool,
-    pub type_modifier: i32,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -114,6 +106,17 @@ const fn default_interval() -> Duration {
 const fn default_fetch_size_rows() -> usize {
     300
 }
+const fn default_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn deserialize_byte_size<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    otel_arrow_dfe_config::byte_units::deserialize_u64(deserializer)?
+        .ok_or_else(|| DeError::custom("byte size must not be null"))
+}
 
 const fn default_nack_backoff() -> Duration {
     Duration::from_secs(1)
@@ -147,6 +150,8 @@ pub(crate) fn validate_name(value: &str, maximum: usize) -> Result<()> {
 
 impl PostgreSqlReceiverConfig {
     pub fn parse(value: &serde_json::Value) -> Result<Self> {
+        // Omission selects defaults; explicit null must not silently disable an
+        // option. Check nested values too, before serde applies field defaults.
         fn has_null(value: &serde_json::Value) -> bool {
             match value {
                 serde_json::Value::Null => true,
@@ -189,16 +194,8 @@ impl PostgreSqlReceiverConfig {
         if !(60..=86400).contains(&query.interval.as_secs()) || query.interval.subsec_nanos() != 0 {
             return Err(Error::Config);
         }
-        if query.result_schema.is_empty() || query.result_schema.len() > 128 {
+        if !(1..=300).contains(&query.timeout.as_secs()) || query.timeout.subsec_nanos() != 0 {
             return Err(Error::Config);
-        }
-        let mut names = HashSet::new();
-        for column in &query.result_schema {
-            validate_name(&column.name, 63)?;
-            if !names.insert(column.name.to_ascii_lowercase()) || column.type_modifier < -1 {
-                return Err(Error::Config);
-            }
-            let _ = super::value::native_type(&column.source_type)?;
         }
         let Watermark::Composite {
             timestamp,
@@ -209,47 +206,9 @@ impl PostgreSqlReceiverConfig {
         if timestamp.timezone != "UTC" || !timestamp.initial.ends_with('Z') {
             return Err(Error::Config);
         }
-        let column_index = |name: &str| {
-            query
-                .result_schema
-                .iter()
-                .position(|c| c.name.eq_ignore_ascii_case(name))
-                .ok_or(Error::Config)
-        };
-        let timestamp_index = column_index(&timestamp.column)?;
-        let tie_breaker_index = column_index(&tie_breaker.column)?;
-        if timestamp_index == tie_breaker_index
-            || query.result_schema[timestamp_index].nullable
-            || query.result_schema[tie_breaker_index].nullable
-        {
-            return Err(Error::Config);
-        }
-        let timestamp_column = &query.result_schema[timestamp_index];
-        if !matches!(
-            timestamp_column.source_type.as_str(),
-            "timestamp" | "timestamptz"
-        ) || !matches!(
-            query.result_schema[tie_breaker_index].source_type.as_str(),
-            "int2" | "int4" | "int8"
-        ) {
-            return Err(Error::Config);
-        }
-        let _ = super::value::cursor_time(&timestamp.initial, timestamp_column.type_modifier)?;
-        super::value::check_tie(
-            tie_breaker.initial,
-            &query.result_schema[tie_breaker_index].source_type,
-        )?;
-        if let Some(output) = &query.output.timestamp_column {
-            validate_name(output, 63)?;
-            if !matches!(
-                query.result_schema[column_index(output)?]
-                    .source_type
-                    .as_str(),
-                "timestamp" | "timestamptz"
-            ) {
-                return Err(Error::Config);
-            }
-        }
+        // Native typmod and integer range are checked after catalog discovery.
+        // Reject invalid UTC text and submicrosecond precision without I/O.
+        let _ = super::value::cursor_time(&timestamp.initial, 6)?;
         let checkpoint = CheckpointConfig {
             directory: self.checkpoint.directory.clone(),
             on_nack: self.checkpoint.on_nack,
@@ -270,14 +229,16 @@ impl PostgreSqlReceiverConfig {
                 initial: tie_breaker.initial,
             },
         };
+        // Shared compilation validates the configured page/fetch/byte bounds
+        // and catch-up settings, using the same contract as the Oracle receiver.
         let common = CompiledQuery::compile(
             query.statement.clone(),
             PollingConfig {
                 interval: query.interval,
-                timeout: OPERATION_TIMEOUT,
-                max_rows_per_poll: MAX_PAGE_ROWS,
+                timeout: query.timeout,
+                max_rows_per_poll: query.max_rows_per_poll,
                 fetch_size_rows: query.fetch_size_rows,
-                max_batch_bytes: MAX_BATCH_BYTES,
+                max_batch_bytes: query.max_batch_bytes,
                 catch_up: query.catch_up,
             },
             &watermark,
@@ -288,14 +249,13 @@ impl PostgreSqlReceiverConfig {
             },
         )
         .map_err(|_| Error::Config)?;
-        let plan = Plan::compile(
-            &common,
-            &query.result_schema,
-            timestamp_index,
-            tie_breaker_index,
-        )?;
+        let plan = Plan::compile(&common)?;
+        // Hash the authored query and value contract, not the optimized SQL.
+        // Scheduling, resource budgets, catch-up, and checkpoint policy are excluded
+        // so operational tuning does not invalidate a durable cursor.
+        // Discovery never hashes transient catalog state.
         let identity = serde_json::to_vec(&(
-            "postgresql/v3",
+            "postgresql/v4-auto",
             "postgresql",
             &self.connection.host,
             self.connection.port,
@@ -304,7 +264,6 @@ impl PostgreSqlReceiverConfig {
             "named-parameters/v2",
             &self.watermark,
             &query.output,
-            &query.result_schema,
             "UTC/microseconds/native-v2",
         ))
         .map_err(|_| Error::Config)?;
