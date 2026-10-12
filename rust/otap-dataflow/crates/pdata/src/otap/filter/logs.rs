@@ -3,7 +3,6 @@
 
 //! This module focuses on taking a filter definition for Logs and building a filter
 //! as a BooleanArray for the Logs, ResourceAttr, and LogsAttr OTAP Record Batches
-//!
 
 use crate::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array_from_struct_array,

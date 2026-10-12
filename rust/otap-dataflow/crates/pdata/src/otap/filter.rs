@@ -11,7 +11,7 @@ use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt8Type, UInt16Type, UInt
 use regex::Regex;
 use roaring::RoaringBitmap;
 
-use crate::arrays::{MaybeDictArrayAccessor, get_required_array};
+use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
@@ -497,15 +497,7 @@ impl Pattern {
     /// integer key type. Any other column type returns
     /// [`Error::UnsupportedStringColumnType`].
     pub(crate) fn matches(&self, col: &ArrayRef) -> Result<BooleanArray> {
-        let raw = match self {
-            Pattern::Exact(value) => {
-                let value_scalar = StringArray::new_scalar(value);
-                arrow::compute::kernels::cmp::eq(col, &value_scalar)
-                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
-            }
-            Pattern::Regex(regex) => regex_is_match(regex, col)?,
-        };
-        Ok(nulls_to_false(&raw))
+        pattern_match(self, col)
     }
 }
 
@@ -541,15 +533,15 @@ pub struct AttrMatcher {
 ///
 /// This mirrors arrow's `regexp_is_match_scalar` loop except that the compiled
 /// [`Regex`] is supplied by the caller rather than built per call.
-pub fn regex_is_match(regex: &Regex, arr: &ArrayRef) -> Result<BooleanArray> {
+pub fn pattern_match(pattern: &Pattern, arr: &ArrayRef) -> Result<BooleanArray> {
     match arr.data_type() {
-        DataType::Utf8 => Ok(is_match(regex, arr.as_string::<i32>())),
-        DataType::LargeUtf8 => Ok(is_match(regex, arr.as_string::<i64>())),
-        DataType::Utf8View => Ok(is_match(regex, arr.as_string_view())),
+        DataType::Utf8 => Ok(pattern_match_string_array(pattern, arr.as_string::<i32>())),
+        DataType::LargeUtf8 => Ok(pattern_match_string_array(pattern, arr.as_string::<i64>())),
+        DataType::Utf8View => Ok(pattern_match_string_array(pattern, arr.as_string_view())),
         DataType::Dictionary(_, _) => {
             // Evaluate once per distinct value, then expand through the keys.
             let values = arr.as_any_dictionary().values();
-            let evaluated_values = regex_is_match(regex, values)?;
+            let evaluated_values = pattern_match(pattern, values)?;
             downcast_dictionary_array! {
                 arr => {
                     let unpacked = evaluated_values
@@ -568,30 +560,25 @@ pub fn regex_is_match(regex: &Regex, arr: &ArrayRef) -> Result<BooleanArray> {
     }
 }
 
-/// Copy of the loop in `arrow_string::regexp::regexp_is_match_scalar` minus the
-/// per-call `Regex::new`. The result preserves the input's null buffer.
-fn is_match<'a, S>(regex: &Regex, array: &'a S) -> BooleanArray
+/// Mostly a copy of the loop in `arrow_string::regexp::regexp_is_match_scalar`
+/// except:
+///
+///   - The per-call `Regex::new` was eliminated
+///   - All nulls are treated as a false match instead of being preserved as nulls
+fn pattern_match_string_array<'a, S>(pattern: &Pattern, array: &'a S) -> BooleanArray
 where
     &'a S: StringArrayType<'a>,
 {
-    let values = BooleanBuffer::collect_bool(array.len(), |i| regex.is_match(array.value(i)));
-    let nulls = array
-        .nulls()
-        .map(|n| n.inner().sliced())
-        .and_then(|b| NullBuffer::from_unsliced_buffer(b, array.len()));
-    BooleanArray::new(values, nulls)
-}
+    let buf = match pattern {
+        Pattern::Exact(str) => {
+            BooleanBuffer::collect_bool(array.len(), |i| !array.is_null(i) && array.value(i) == str)
+        }
+        Pattern::Regex(regex) => BooleanBuffer::collect_bool(array.len(), |i| {
+            !array.is_null(i) && regex.is_match(array.value(i))
+        }),
+    };
 
-/// Finds all nulls and converts them to false values
-/// null values affect the filter computation as when
-/// we perform the not operation nothing happens to
-/// the null values
-#[must_use]
-fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
-    // is_not_null doesn't error see https://docs.rs/arrow/latest/arrow/compute/fn.is_not_null.html
-    let valid = arrow::compute::is_not_null(a).expect("is_not_null doesn't error"); // BooleanArray with no nulls
-    // the result of boolean array will be a boolean array of equal length so we can guarantee that these two columns have the same length
-    arrow::compute::and_kleene(a, &valid).expect("can combine two columns with equal length") // nulls become false; trues stay true
+    BooleanArray::new(buf, None)
 }
 
 enum IdSet {
@@ -1832,7 +1819,7 @@ mod tests {
             None,
             Some("all good"),
         ]));
-        let out = regex_is_match(&re("(?i)error"), &arr).unwrap();
+        let out = pattern_match(&re("(?i)error"), &arr).unwrap();
         assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
     }
 
@@ -1841,7 +1828,7 @@ mod tests {
     #[test]
     fn test_regex_is_match_utf8_view() {
         let arr: ArrayRef = Arc::new(StringViewArray::from(vec!["a@b.c", "nope"]));
-        let out = regex_is_match(&re("[a-z]+@[a-z.]+"), &arr).unwrap();
+        let out = pattern_match(&re("[a-z]+@[a-z.]+"), &arr).unwrap();
         assert_eq!(out, BooleanArray::from(vec![true, false]));
     }
 
@@ -1856,7 +1843,7 @@ mod tests {
                 .into_iter()
                 .collect::<DictionaryArray<UInt16Type>>(),
         );
-        let out = regex_is_match(&re("panic"), &arr).unwrap();
+        let out = pattern_match(&re("panic"), &arr).unwrap();
         assert_eq!(
             out,
             BooleanArray::from(vec![Some(false), Some(true), None, Some(false)])
@@ -1875,7 +1862,7 @@ mod tests {
             Some("no"),
         ]));
         let sliced = full.slice(1, 3);
-        let out = regex_is_match(&re("match"), &sliced).unwrap();
+        let out = pattern_match(&re("match"), &sliced).unwrap();
         assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
     }
 
@@ -1884,7 +1871,7 @@ mod tests {
     #[test]
     fn test_regex_is_match_unsupported_type() {
         let arr: ArrayRef = Arc::new(UInt16Array::from(vec![1, 2, 3]));
-        let err = regex_is_match(&re("x"), &arr).unwrap_err();
+        let err = pattern_match(&re("x"), &arr).unwrap_err();
         assert!(matches!(err, Error::UnsupportedStringColumnType { .. }));
     }
 
