@@ -129,8 +129,17 @@ expressions can emit their own logs, just as field expressions can in ordinary
 `otel_*` calls. Emission and field encoding still run under tracing's recursion
 guard.
 
-The `logger:` argument is supported only by `otel_debug!`, `otel_info!`,
-`otel_warn!`, and `otel_error!` in an `otel_component_scope!`.
+The `logger:` argument is supported by `otel_debug!`, `otel_info!`,
+`otel_warn!`, and `otel_error!`, either inside an `otel_component_scope!` or
+with an explicit `target:`:
+
+```rust
+// Inside otel_component_scope!, the target is supplied by the scope.
+otel_warn!(logger: sampler, "export.failed", error = %error);
+
+// Elsewhere, pass the target explicitly before `logger:`.
+otel_warn!(target: "my.target", logger: sampler, "export.failed", error = %error);
+```
 
 ```rust
 struct O11y {
