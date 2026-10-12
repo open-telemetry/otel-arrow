@@ -11,8 +11,7 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::raw_batch_store::{
     LOGS_TYPE_MASK, METRICS_TYPE_MASK, POSITION_LOOKUP, RawBatchStore, TRACES_TYPE_MASK,
 };
-use otel_arrow_dfe_pdata::otap::transform::concatenate::concatenate;
-use otel_arrow_dfe_pdata::otap::transform::reindex::reindex;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::{ConcatOptions, concatenate};
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -20,6 +19,7 @@ use crate::error::{Error, Result};
 
 pub(crate) fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
     branch_results: &mut Vec<OtapArrowRecords>,
+    opts: ConcatOptions,
 ) -> Result<OtapArrowRecords>
 where
     T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
@@ -33,7 +33,7 @@ where
         batches.push(batch_store.into_batches())
     }
 
-    let concatenated_batches = concatenate(&mut batches)?;
+    let concatenated_batches = concatenate(&mut batches, opts)?;
     let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(concatenated_batches);
     let result_store = T::try_from(raw_store)?;
 
@@ -42,20 +42,23 @@ where
 
 pub(crate) fn concatenate_logs(
     branch_results: &mut Vec<OtapArrowRecords>,
+    opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
-    concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results)
+    concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results, opts)
 }
 
 pub(crate) fn concatenate_metrics(
     branch_results: &mut Vec<OtapArrowRecords>,
+    opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
-    concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results)
+    concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results, opts)
 }
 
 pub(crate) fn concatenate_traces(
     branch_results: &mut Vec<OtapArrowRecords>,
+    opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
-    concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results)
+    concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results, opts)
 }
 
 pub(crate) fn concatenate_attrs_record_batches(
@@ -64,6 +67,9 @@ pub(crate) fn concatenate_attrs_record_batches(
     // to call schema aware `concatenate` on just the attributes record batch, we stick it in
     // a Logs OTAP batch and treat it as log attributes. This is a bit of a hack until we have
     // a better top-level interface for calling concatenate.
+    //
+    // The attribute batches are disjoint pieces of the same original batch so
+    // their parent IDs must be preserved as-is.
 
     let mut otap_batches = branch_results
         .drain(..)
@@ -73,7 +79,7 @@ pub(crate) fn concatenate_attrs_record_batches(
             Ok(OtapArrowRecords::from(logs_record_batches))
         })
         .collect::<Result<Vec<_>>>()?;
-    let concatenated_logs = concatenate_logs(&mut otap_batches)?;
+    let concatenated_logs = concatenate_logs(&mut otap_batches, ConcatOptions::preserve_ids())?;
     let mut concatenated_logs_batches = Logs::try_from(concatenated_logs)?.into_batches();
     let concatenated_attrs_batch = concatenated_logs_batches
         [POSITION_LOOKUP[ArrowPayloadType::LogAttrs as usize]]
@@ -83,41 +89,4 @@ pub(crate) fn concatenate_attrs_record_batches(
         })?;
 
     Ok(concatenated_attrs_batch)
-}
-
-pub(crate) fn reindex_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
-    branch_results: &mut Vec<OtapArrowRecords>,
-) -> Result<()>
-where
-    T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
-        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otel_arrow_dfe_pdata::error::Error>
-        + TryFrom<OtapArrowRecords, Error = otel_arrow_dfe_pdata::error::Error>,
-    OtapArrowRecords: From<T>,
-{
-    let mut batches = Vec::new();
-    for branch_result in branch_results.drain(..) {
-        let batch_store: T = branch_result.try_into()?;
-        batches.push(batch_store.into_batches())
-    }
-
-    reindex(&mut batches)?;
-    for batch in batches {
-        let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(batch);
-        let result_store = T::try_from(raw_store)?;
-        branch_results.push(OtapArrowRecords::from(result_store))
-    }
-
-    Ok(())
-}
-
-pub(crate) fn reindex_logs(branch_results: &mut Vec<OtapArrowRecords>) -> Result<()> {
-    reindex_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results)
-}
-
-pub(crate) fn reindex_metrics(branch_results: &mut Vec<OtapArrowRecords>) -> Result<()> {
-    reindex_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results)
-}
-
-pub(crate) fn reindex_traces(branch_results: &mut Vec<OtapArrowRecords>) -> Result<()> {
-    reindex_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results)
 }

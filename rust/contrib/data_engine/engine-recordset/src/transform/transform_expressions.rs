@@ -453,6 +453,10 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
         TransformExpression::RenameMapKeys(r) => {
             execute_rename_map_keys_transform_expression(execution_context, r)
         }
+        TransformExpression::Scale(s) => Err(ExpressionError::NotSupported(
+            s.get_query_location().clone(),
+            "Scale is not supported by the recordset engine".into(),
+        )),
     }
 }
 

@@ -16,10 +16,11 @@ use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use crate::error::Result;
-use crate::pipeline::PipelineStage;
+use crate::error::{Error, Result};
+use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// The source for which to apply the pipeline. Records belonging to this source data will be
 /// treated as the main record by execution of the child pipeline stages.
@@ -61,12 +62,21 @@ impl ApplyPipelineStage {
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let attrs_payload_type = match attributes_id {
-            AttributesIdentifier::Root => match otap_batch.root_payload_type() {
-                ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
-                ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
-                _ => ArrowPayloadType::MetricAttrs,
-            },
-            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+            AttributesIdentifier::Record(RecordScope::Signal) => {
+                match otap_batch.root_payload_type() {
+                    ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
+                    ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
+                    _ => ArrowPayloadType::MetricAttrs,
+                }
+            }
+            AttributesIdentifier::Record(RecordScope::Child(ChildRecordKind::DataPoint)) => {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "Applying nested pipeline to metric data point attributes not yet supported"
+                            .into(),
+                });
+            }
+            AttributesIdentifier::NonRecord(payload_type) => payload_type,
         };
 
         let Some(mut curr_batch) = otap_batch.get(attrs_payload_type).cloned() else {
@@ -154,6 +164,18 @@ impl PipelineStage for ApplyPipelineStage {
             }
         }
     }
+
+    // Applying a nested pipeline to scope/resource attributes can rebuild that parent payload.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(
+            self.source,
+            ApplySource::Attributes(AttributesIdentifier::NonRecord(_))
+        ) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
+    }
 }
 
 #[cfg(test)]
@@ -181,7 +203,17 @@ mod test {
     };
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-    use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
+    use crate::parser::default_parser_options;
+    use crate::pipeline::{
+        Pipeline,
+        planner::{PipelinePlanner, RecordType, SignalContext, SignalKind},
+        test::exec_logs_pipeline,
+    };
+
+    /// Create a planner for log signal pipelines (used in tests).
+    fn logs_planner() -> PipelinePlanner {
+        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    }
 
     mod data_point;
 
@@ -404,7 +436,7 @@ mod test {
                 rename attributes "y" as "x"
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
 
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
@@ -415,7 +447,7 @@ mod test {
                 let err_msg = err.to_string();
 
                 assert!(
-                    err_msg.contains("Data expression not supported on Attributes stream: Transform(RenameMapKeys(RenameMapKeysTransformExpression"),
+                    err_msg.contains("Invalid pipeline"),
                     "unexpected error: {}",
                     err_msg
                 );
@@ -437,7 +469,7 @@ mod test {
                 }}"
             );
             let pipeline_expr = OplParser::parse(&query).unwrap().pipeline;
-            let planner = PipelinePlanner::new();
+            let planner = logs_planner();
 
             let session_ctx = Pipeline::create_session_context();
             let otap_batch = OtapArrowRecords::Logs(Logs::default());
@@ -467,7 +499,7 @@ mod test {
                 where value > 5
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline.execute(input.clone()).await.unwrap();
@@ -483,7 +515,7 @@ mod test {
                 where value > 5
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input)
@@ -502,7 +534,7 @@ mod test {
                 where value < 5
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
@@ -625,6 +657,172 @@ mod test {
         assert_equivalent(
             &[OtlpProtoMessage::Logs(result)],
             &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: a filter predicate where the value column used in the predicate can be statically
+    /// predetermined is an optional column that is missing from the batch.
+    /// Guarantees: no error is produced, and the column is treated as a default value
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_statically_determined_value_column_missing() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(0.0)),
+                    KeyValue::new("k2", AnyValue::new_double(0.0)),
+                ])
+                .finish(),
+        ];
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none());
+
+        let query = r#"logs | apply attributes {
+            where value > 10.0
+        }"#;
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(vec![LogRecord::build().attributes(Vec::new()).finish()]);
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+
+        // again, assert on the default column:
+        let query = r#"logs | apply attributes {
+            where value == 0.0
+        }"#;
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(log_records.clone());
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: evaluate filtering using a predicate where the attribute column containing
+    /// the value cannot be statically determined, so the virtual "value" column will be projected
+    /// Guarantees: the predicate can be evaluated on this virtual "value" column
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_value_type_not_statically_determined() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(7.0)),
+                ])
+                .finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let query = r#"logs | apply attributes {
+            where (value as Integer) > 6
+        }"#;
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(7.0))])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: multiple batches where the position of the column used in the predicate changes
+    /// from one batch to the next due to the alternating presence of some optional columns
+    /// Guarantees: the predicate is evaluated on the displaced column
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_schema_changes() {
+        let query = r#"
+            logs | apply attributes {
+                if (key != "k3") {
+                    where value > 10.0
+                }
+            }
+        "#;
+
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let input1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                ])
+                .finish(),
+        ])));
+        let log_attrs = input1.get(ArrowPayloadType::LogAttrs).unwrap();
+        let batch1_pos = log_attrs
+            .schema_ref()
+            .index_of(consts::ATTRIBUTE_DOUBLE)
+            .unwrap();
+
+        let expected1 = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(14.0))])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&pipeline.execute(input1).await.unwrap())],
+            &[OtlpProtoMessage::Logs(expected1)],
+        );
+
+        // next batch, the values column changes position,
+        let input2 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                    KeyValue::new("k3", AnyValue::new_int(18)),
+                ])
+                .finish(),
+        ])));
+        let log_attrs = input2.get(ArrowPayloadType::LogAttrs).unwrap();
+        let batch2_pos = log_attrs
+            .schema_ref()
+            .index_of(consts::ATTRIBUTE_DOUBLE)
+            .unwrap();
+
+        assert_ne!(batch1_pos, batch2_pos);
+
+        let expected2 = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                    KeyValue::new("k3", AnyValue::new_int(18)),
+                ])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&pipeline.execute(input2).await.unwrap())],
+            &[OtlpProtoMessage::Logs(expected2)],
         );
     }
 
@@ -877,6 +1075,67 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_pipeline_set_int_from_logical_with_static() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value > 1
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(false)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+    #[tokio::test]
+    async fn test_pipeline_set_int_from_logical_with_func_call() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("foo")),
+                    KeyValue::new("k2", AnyValue::new_string("bar")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = contains(value, "f")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
     async fn test_pipeline_set_changes_type() {
         let input = to_logs_data(vec![
             LogRecord::build()
@@ -924,10 +1183,10 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
-        // verify we have the correct typ
+        // verify we have the correct type
         let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
         let int_col = logs_attrs.column_by_name(consts::ATTRIBUTE_INT).unwrap();
         assert_eq!(
@@ -957,21 +1216,14 @@ mod test {
         let input = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![
-                    // placeholder values, will replace with nulls
                     KeyValue::new("k1", AnyValue::new_int(0)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(0)),
                 ])
                 .finish(),
         ]);
-        let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
-        let mut log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
-        let (id_col_index, _) = log_attrs
-            .schema()
-            .fields()
-            .find(consts::ATTRIBUTE_INT)
-            .unwrap();
-        _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_INT).is_none());
 
         let query = r#"
             logs | apply attributes {
@@ -979,13 +1231,23 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
-        // null + 2 would evaluate to null, which means the whole column is null which means
-        // the column should not be in the result
-        let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
-        assert!(logs_attrs.column_by_name(consts::ATTRIBUTE_INT).is_none());
+        let result_as_otlp = otap_to_otlp(&result);
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
     }
 
     #[tokio::test]
@@ -995,19 +1257,13 @@ mod test {
                 .attributes(vec![
                     // placeholder values, will replace with nulls
                     KeyValue::new("k1", AnyValue::new_double(0.0)),
-                    KeyValue::new("k2", AnyValue::new_double(1.0)),
+                    KeyValue::new("k2", AnyValue::new_double(0.0)),
                 ])
                 .finish(),
         ]);
-        let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
-        let mut log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
-        let (id_col_index, _) = log_attrs
-            .schema()
-            .fields()
-            .find(consts::ATTRIBUTE_DOUBLE)
-            .unwrap();
-        _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none());
 
         let query = r#"
             logs | apply attributes {
@@ -1015,16 +1271,22 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
+        let result_as_otlp = otap_to_otlp(&result);
 
-        // null + 2.0 would evaluate to null, which means the whole column is null which means
-        // the column should not be in the result
-        let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
-        assert!(
-            logs_attrs
-                .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .is_none()
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(2.0)),
+                    KeyValue::new("k2", AnyValue::new_double(2.0)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
         );
     }
 
@@ -1033,14 +1295,16 @@ mod test {
         let input = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![
-                    // placeholder values, will replace with nulls
                     KeyValue::new("k1", AnyValue::new_bool(false)),
-                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
                 ])
                 .finish(),
         ]);
         let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
         let mut log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+
+        // bool isn't a required column, but the OTAP encoder actually currently always
+        // inserts it, so we need to manually remove it
         let (id_col_index, _) = log_attrs
             .schema()
             .fields()
@@ -1049,19 +1313,30 @@ mod test {
         _ = log_attrs.remove_column(id_col_index);
         input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
 
-        // kind of a useless update, but just trying to test something that will read from
-        // a null column and also produce a null result
         let query = r#"
             logs | apply attributes {
-                set value = value
+                set value = not(value)
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
-        let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
-        assert!(logs_attrs.column_by_name(consts::ATTRIBUTE_BOOL).is_none());
+        let result_as_otlp = otap_to_otlp(&result);
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
     }
 
     #[tokio::test]
@@ -1070,34 +1345,38 @@ mod test {
             LogRecord::build()
                 .attributes(vec![
                     // placeholder values, will replace with nulls
-                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k1", AnyValue::new_string("")),
                     KeyValue::new("k2", AnyValue::new_string("")),
                 ])
                 .finish(),
         ]);
-        let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
-        let mut log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
-        let (id_col_index, _) = log_attrs
-            .schema()
-            .fields()
-            .find(consts::ATTRIBUTE_STR)
-            .unwrap();
-        _ = log_attrs.remove_column(id_col_index);
-        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_STR).is_none());
 
-        // kind of a useless update, but just trying to test something that will read from
-        // a null column and also produce a null result
         let query = r#"
             logs | apply attributes {
-                set value = value
+                set value = concat(value, "hello")
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
+        let result_as_otlp = otap_to_otlp(&result);
 
-        let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
-        assert!(logs_attrs.column_by_name(consts::ATTRIBUTE_STR).is_none());
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("hello")),
+                    KeyValue::new("k2", AnyValue::new_string("hello")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
     }
 
     #[tokio::test]
@@ -1134,7 +1413,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let result = pipeline.execute(input).await.unwrap();
 
         // assert we still have the empty attributes
@@ -1169,7 +1448,31 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        // just make sure we don't panic/return error and that we end up with zero attrs
+        let result = pipeline.execute(input).await.unwrap();
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
+    }
+
+    /// Scenario: filter applied to zero results
+    /// Guarantees: executes without error
+    #[tokio::test]
+    async fn test_pipeline_filter_empty_attrs_batch() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("hello"))])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+
+        // this should filter out all the attributes before calling the next filter operation
+        let query = r#"
+            logs | apply attributes {
+                where not (key == "k1") | where value != "hello"
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         // just make sure we don't panic/return error and that we end up with zero attrs
         let result = pipeline.execute(input).await.unwrap();
         assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
@@ -1192,7 +1495,7 @@ mod test {
                 set value = value * 2
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains("All input rows for attribute assignment must have the same type if value used in expression"),
@@ -1367,7 +1670,7 @@ mod test {
             }"#;
 
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
         let result = pipeline.execute(input.clone()).await.unwrap();
@@ -1447,6 +1750,40 @@ mod test {
                         ),
                     ),
                     KeyValue::new("not_sensitive", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: assign a comparison result when the referenced string value column is omitted.
+    /// Guarantees: omitted default string values compare equal to the empty string.
+    #[tokio::test]
+    async fn test_pipeline_set_attribute_to_result_of_predicate_involving_missing_column() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("")),
+                    KeyValue::new("k2", AnyValue::new_string("")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value == ""
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
                 ])
                 .finish(),
         ]);

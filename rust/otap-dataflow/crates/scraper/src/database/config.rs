@@ -4,42 +4,77 @@
 //! Database-neutral polling, watermark, and checkpoint configuration.
 
 use serde::Deserialize;
+use std::fmt;
 use std::time::Duration;
 
 const MAX_ROWS_PER_POLL: usize = 10_000;
-const MAX_FETCH_SIZE: usize = 10_000;
+const MAX_FETCH_SIZE_ROWS: usize = 10_000;
 const MIN_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_NACK_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const MAX_BYTE_LIMIT: u64 = 256 * 1024 * 1024;
 const MAX_CONSECUTIVE_FAILURES: u32 = 1_000;
+const MAX_CATCH_UP_PAGES: usize = 1024;
+const MAX_CATCH_UP_DURATION: Duration = Duration::from_secs(5 * 60);
+
+/// Budgets for immediately fetching additional acknowledged pages.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CatchUpConfig {
+    /// Maximum query-page fetches admitted in one cycle, including empty probes.
+    pub max_pages: usize,
+    /// Elapsed cycle budget that gates the next fetch, not an in-flight deadline.
+    #[serde(with = "humantime_serde")]
+    pub max_duration: Duration,
+}
+
+impl Default for CatchUpConfig {
+    fn default() -> Self {
+        Self {
+            max_pages: 32,
+            max_duration: Duration::from_secs(10),
+        }
+    }
+}
 
 /// Bounds and timing shared by every database receiver.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PollingConfig {
-    /// Delay between completed query executions.
+    /// Delay after a poll cycle ends, not between its acknowledged pages.
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
     /// Native database call timeout.
     #[serde(with = "humantime_serde")]
     pub timeout: Duration,
-    /// Hard row limit for one poll.
+    /// Hard row limit for one fetched page, including in a catch-up cycle.
     pub max_rows_per_poll: usize,
     /// Target number of rows fetched per native driver round trip.
-    pub fetch_size: usize,
+    pub fetch_size_rows: usize,
     /// Byte ceiling applied separately to normalized rows and serialized OTLP.
     pub max_batch_bytes: u64,
+    /// Cycle budgets; omitted fields use defaults. Set max_pages to 1 for single-page cycles.
+    #[serde(default)]
+    pub catch_up: CatchUpConfig,
 }
 
 /// Watermark mode selected by the operator.
 ///
-/// Only `composite` is implemented. `scalar` and `snapshot` are deliberately
-/// absent from this enum so an operator configuring them receives a schema
-/// error instead of silently inheriting composite behavior.
+/// Snapshot mode polls complete results without tracking result columns.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WatermarkConfig {
+    /// Full-result polling without cursor columns or bind parameters.
+    Snapshot {},
+    /// One non-null, unique column with strictly increasing values.
+    Scalar {
+        /// Result column containing the scalar key.
+        column: String,
+        /// Named parameter carrying the key, without a leading colon.
+        bind: String,
+        /// Explicitly typed starting value; its type is fixed for this query.
+        initial: super::scalar::ScalarValue,
+    },
     /// Ordered timestamp plus a unique non-null `int64` tie-breaker.
     Composite {
         /// Timestamp cursor component.
@@ -50,40 +85,74 @@ pub enum WatermarkConfig {
 }
 
 /// Timestamp component of a composite watermark.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimestampCursorConfig {
     /// Result column holding the ordered timestamp.
     pub column: String,
     /// Named bind carrying the committed timestamp, without a leading colon.
     pub bind: String,
-    /// Timestamp used before any checkpoint exists.
+    /// Timestamp used before any checkpoint exists; redacted in debug output.
     pub initial: String,
     /// Cursor timezone. Only `UTC` is supported.
     pub timezone: String,
 }
 
+impl fmt::Debug for TimestampCursorConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimestampCursorConfig")
+            .field("column", &self.column)
+            .field("bind", &self.bind)
+            .field("initial", &"<redacted>")
+            .field("timezone", &self.timezone)
+            .finish()
+    }
+}
+
 /// Tie-breaker component of a composite watermark.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TieBreakerCursorConfig {
     /// Result column holding the non-null `int64` tie-breaker.
     pub column: String,
     /// Named bind carrying the committed tie-breaker, without a leading colon.
     pub bind: String,
-    /// Tie-breaker used before any checkpoint exists.
+    /// Tie-breaker used before any checkpoint exists; redacted in debug output.
     pub initial: i64,
+}
+
+impl fmt::Debug for TieBreakerCursorConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TieBreakerCursorConfig")
+            .field("column", &self.column)
+            .field("bind", &self.bind)
+            .field("initial", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Behavior applied when a downstream node negatively acknowledges a page.
 ///
-/// Only `rewind` is implemented. A terminal `fail` policy is deferred so an
-/// operator cannot select a mode the receiver does not honor.
+/// Only `rewind` is configurable for retryable feedback. Permanent rejection
+/// is governed separately by [`OnPermanentNack`].
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum OnNack {
-    /// Retain the durable cursor and re-query the same page after a backoff.
+    /// Retain the durable cursor and re-query after a retryable NACK and backoff.
     Rewind,
+}
+
+/// Source-local containment policy for a permanently rejected page.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnPermanentNack {
+    /// Stop polling until this source is repaired and restarted; retain its checkpoint and lease.
+    #[default]
+    Pause,
+    /// Re-query committed progress with capped backoff until downstream accepts it or the source stops.
+    Retry,
 }
 
 /// Durable checkpoint policy.
@@ -94,6 +163,9 @@ pub struct CheckpointConfig {
     pub directory: String,
     /// Behavior on a negative acknowledgement.
     pub on_nack: OnNack,
+    /// Permanent rejection policy; omitted configuration pauses only this source.
+    #[serde(default)]
+    pub on_permanent_nack: OnPermanentNack,
     /// Fixed delay before replaying a negatively acknowledged page.
     #[serde(with = "humantime_serde")]
     pub nack_backoff: Duration,
@@ -143,9 +215,9 @@ impl PollingConfig {
                 "query.max_rows_per_poll must be greater than zero",
             ));
         }
-        if self.fetch_size == 0 {
+        if self.fetch_size_rows == 0 {
             return Err(ConfigError::new(
-                "query.fetch_size must be greater than zero",
+                "query.fetch_size_rows must be greater than zero",
             ));
         }
         if self.max_batch_bytes == 0 {
@@ -158,20 +230,38 @@ impl PollingConfig {
                 "query.max_batch_bytes must not exceed {MAX_BYTE_LIMIT} bytes"
             )));
         }
-        if self.fetch_size > MAX_FETCH_SIZE {
+        if self.fetch_size_rows > MAX_FETCH_SIZE_ROWS {
             return Err(ConfigError::new(format!(
-                "query.fetch_size must not exceed {MAX_FETCH_SIZE}"
+                "query.fetch_size_rows must not exceed {MAX_FETCH_SIZE_ROWS}"
             )));
         }
-        if self.fetch_size > self.max_rows_per_poll {
+        if self.fetch_size_rows > self.max_rows_per_poll {
             return Err(ConfigError::new(
-                "query.fetch_size must not exceed query.max_rows_per_poll",
+                "query.fetch_size_rows must not exceed query.max_rows_per_poll",
             ));
         }
         if self.max_rows_per_poll > MAX_ROWS_PER_POLL {
             return Err(ConfigError::new(format!(
                 "query.max_rows_per_poll must not exceed {MAX_ROWS_PER_POLL}"
             )));
+        }
+        self.catch_up.validate()?;
+        Ok(())
+    }
+}
+
+impl CatchUpConfig {
+    /// Validates the explicit page and elapsed-time budgets.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=MAX_CATCH_UP_PAGES).contains(&self.max_pages) {
+            return Err(ConfigError::new(format!(
+                "query.catch_up.max_pages must be between 1 and {MAX_CATCH_UP_PAGES}"
+            )));
+        }
+        if !(MIN_INTERVAL..=MAX_CATCH_UP_DURATION).contains(&self.max_duration) {
+            return Err(ConfigError::new(
+                "query.catch_up.max_duration must be between 1ms and 5min",
+            ));
         }
         Ok(())
     }
@@ -180,10 +270,24 @@ impl PollingConfig {
 impl WatermarkConfig {
     /// Validates cursor identifiers, bind names, and timezone semantics.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let Self::Composite {
-            timestamp,
-            tie_breaker,
-        } = self;
+        let (timestamp, tie_breaker) = match self {
+            Self::Snapshot {} => return Ok(()),
+            Self::Composite {
+                timestamp,
+                tie_breaker,
+            } => (timestamp, tie_breaker),
+            Self::Scalar {
+                column,
+                bind,
+                initial,
+            } => {
+                validate_name("watermark.column", column)?;
+                validate_bind("watermark.bind", bind)?;
+                return initial
+                    .validate()
+                    .map_err(|error| ConfigError::new(error.to_string()));
+            }
+        };
         validate_name("watermark.timestamp.column", &timestamp.column)?;
         validate_name("watermark.tie_breaker.column", &tie_breaker.column)?;
         validate_bind("watermark.timestamp.bind", &timestamp.bind)?;
@@ -209,16 +313,20 @@ impl WatermarkConfig {
 
     /// Returns the composite timestamp cursor component.
     #[must_use]
-    pub const fn timestamp(&self) -> &TimestampCursorConfig {
-        let Self::Composite { timestamp, .. } = self;
-        timestamp
+    pub const fn timestamp(&self) -> Option<&TimestampCursorConfig> {
+        match self {
+            Self::Composite { timestamp, .. } => Some(timestamp),
+            Self::Scalar { .. } | Self::Snapshot {} => None,
+        }
     }
 
     /// Returns the composite tie-breaker cursor component.
     #[must_use]
-    pub const fn tie_breaker(&self) -> &TieBreakerCursorConfig {
-        let Self::Composite { tie_breaker, .. } = self;
-        tie_breaker
+    pub const fn tie_breaker(&self) -> Option<&TieBreakerCursorConfig> {
+        match self {
+            Self::Composite { tie_breaker, .. } => Some(tie_breaker),
+            Self::Scalar { .. } | Self::Snapshot {} => None,
+        }
     }
 }
 

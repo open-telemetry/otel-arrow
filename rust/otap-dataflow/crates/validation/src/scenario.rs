@@ -152,7 +152,6 @@ impl Scenario {
             .iter()
             .map(|(label, g)| (label.clone(), g.max_signal_count as u64))
             .collect();
-
         let rendered_group = self.render_template()?;
         let containers = self.containers;
 

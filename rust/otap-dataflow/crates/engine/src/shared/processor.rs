@@ -773,10 +773,11 @@ impl<PData> EffectHandler<PData> {
         self.router.try_send_to(port, data)
     }
 
-    /// Print an info message to stdout.
+    /// Print an info message to the engine's diagnostic stream (stderr).
     ///
     /// This method provides a standardized way for processors to output
-    /// informational messages without blocking the async runtime.
+    /// informational messages. It never waits for the console: a full
+    /// diagnostic queue drops the message.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
     }

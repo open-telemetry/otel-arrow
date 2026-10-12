@@ -56,12 +56,11 @@ impl OtapExporterErrorType {
             Code::PermissionDenied => Self::Authorization,
             Code::Cancelled | Code::DeadlineExceeded => Self::Timeout,
             Code::ResourceExhausted => Self::Throttled,
-            Code::Aborted | Code::Unavailable => Self::Unavailable,
+            Code::Aborted | Code::OutOfRange | Code::Unavailable => Self::Unavailable,
             Code::InvalidArgument
             | Code::NotFound
             | Code::AlreadyExists
             | Code::FailedPrecondition
-            | Code::OutOfRange
             | Code::Unimplemented => Self::Rejected,
             Code::Internal | Code::DataLoss => Self::ServerError,
             Code::Unknown => Self::Transport,
@@ -82,6 +81,19 @@ impl OtapExporterErrorType {
             Ok(StatusCode::Unauthenticated) => Self::Authentication,
             Ok(StatusCode::Ok) | Err(_) => Self::Other,
         }
+    }
+
+    /// Whether retrying the same export cannot succeed, so the failure is permanent.
+    #[must_use]
+    pub(super) const fn is_permanent(self) -> bool {
+        matches!(
+            self,
+            Self::Rejected
+                | Self::PayloadConversion
+                | Self::Encoding
+                | Self::Authentication
+                | Self::Authorization
+        )
     }
 }
 
@@ -220,9 +232,46 @@ mod tests {
             OtapExporterErrorType::Throttled
         );
         assert_eq!(
+            OtapExporterErrorType::from_grpc_status(&Status::out_of_range("range")),
+            OtapExporterErrorType::Unavailable
+        );
+        assert_eq!(
             OtapExporterErrorType::from_batch_status(i32::MAX),
             OtapExporterErrorType::Other
         );
+    }
+
+    /// Scenario: a classified export failure is turned into a NACK for the pipeline.
+    /// Guarantees: only failures where resending the same payload cannot succeed are permanent.
+    #[test]
+    fn permanent_failures_are_only_the_unretryable_ones() {
+        for error_type in [
+            OtapExporterErrorType::Rejected,
+            OtapExporterErrorType::PayloadConversion,
+            OtapExporterErrorType::Encoding,
+            OtapExporterErrorType::Authentication,
+            OtapExporterErrorType::Authorization,
+        ] {
+            assert!(
+                error_type.is_permanent(),
+                "{error_type:?} must be permanent"
+            );
+        }
+        for error_type in [
+            OtapExporterErrorType::Timeout,
+            OtapExporterErrorType::Throttled,
+            OtapExporterErrorType::Unavailable,
+            OtapExporterErrorType::ServerError,
+            OtapExporterErrorType::Transport,
+            OtapExporterErrorType::Internal,
+            OtapExporterErrorType::Shutdown,
+            OtapExporterErrorType::Other,
+        ] {
+            assert!(
+                !error_type.is_permanent(),
+                "{error_type:?} must be retryable"
+            );
+        }
     }
 
     /// Scenario: One successful and one failed OTAP export are recorded.

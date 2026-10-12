@@ -51,6 +51,7 @@ hooks:
                 console: {}
 """
 
+import math
 import os
 from typing import ClassVar, Optional, List, Dict, Any, Literal
 from pathlib import Path
@@ -68,6 +69,7 @@ from .....core.telemetry.telemetry_client import TelemetryClient
 from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from .standard_reporting_strategy import StandardReportingStrategy
+from ..otlp_metrics_sink import PUSHED_METRIC_COLUMNS, get_otlp_metrics_sink
 
 
 STRATEGY_NAME = "sql_report"
@@ -118,6 +120,8 @@ class ResultTable(BaseModel):
     name: str
     description: Optional[str] = None
     display: bool = True
+    finite_columns: List[str] = Field(default_factory=list)
+    required_values: Dict[str, List[str]] = Field(default_factory=dict)
 
 
 class SQLReportDetails(BaseModel):
@@ -313,11 +317,18 @@ hooks:
             logger.debug("Running sql query %s", query.name)
             self.conn.execute(query.sql)
 
-    def _register_in_memory_tables(self, metrics, spans, events):
+    def _register_in_memory_tables(self, metrics, spans, events, ctx: BaseContext):
         """Flatten and register in-memory telemetry tables and regaister in duckdb
 
         This method extracts the various attribute dicts into their own columns for easier querying.
         """
+        # Append OTLP-pushed rows (if any) to the framework metrics rows. The
+        # sink already emits MetricRow-shaped rows, so a plain concat lines the
+        # columns up; flatten_columns then explodes the shared attribute dicts.
+        pushed = self._pushed_metrics_rows(ctx)
+        if pushed is not None:
+            metrics = pd.concat([metrics, pushed], ignore_index=True)
+
         # Flatten and register metrics
         metrics = flatten_columns(
             metrics, ["metric_attributes", "resource_attributes", "scope_attributes"]
@@ -335,14 +346,63 @@ hooks:
         events = flatten_columns(events, ["attributes"])
         self.conn.register("events", events)
 
+    @staticmethod
+    def _pushed_metrics_rows(ctx: BaseContext) -> Optional[pd.DataFrame]:
+        """Return OTLP-pushed metric rows from the suite's sink, or an empty
+        frame when no sink is running."""
+        sink = get_otlp_metrics_sink(ctx)
+        if sink is None:
+            return None
+        return sink.to_dataframe().reset_index(drop=True)
+
     def _build_result_dataframes(self):
         """Loop through the result_tables config and convert them to result dataframes"""
         results = {}
         for table in self.config.report_config.result_tables:
-            results[table.name] = self.conn.execute(
+            dataframe = self.conn.execute(
                 f"SELECT * FROM {table.name}"
             ).fetchdf()
+            self._assert_required_values(table, dataframe)
+            self._assert_finite_columns(table, dataframe)
+            results[table.name] = dataframe
         return results
+
+    @staticmethod
+    def _assert_required_values(table: ResultTable, dataframe: pd.DataFrame):
+        """Reject result tables that omit configured values from a column."""
+        for column, required_values in table.required_values.items():
+            if column not in dataframe.columns:
+                raise ValueError(
+                    f"Result table '{table.name}' is missing required column '{column}'"
+                )
+
+            observed_values = set(dataframe[column].dropna().astype(str))
+            missing_values = sorted(set(required_values) - observed_values)
+            if missing_values:
+                raise ValueError(
+                    f"Result table '{table.name}' column '{column}' is missing "
+                    f"required values {missing_values}"
+                )
+
+    @staticmethod
+    def _assert_finite_columns(table: ResultTable, dataframe: pd.DataFrame):
+        """Reject configured result columns containing null, NaN, or infinite values."""
+        for column in table.finite_columns:
+            if column not in dataframe.columns:
+                raise ValueError(
+                    f"Result table '{table.name}' is missing finite column '{column}'"
+                )
+
+            numeric_values = pd.to_numeric(dataframe[column], errors="coerce")
+            finite_values = numeric_values.map(
+                lambda value: pd.notna(value) and math.isfinite(value)
+            )
+            if not finite_values.all():
+                invalid_rows = dataframe.index[~finite_values].tolist()
+                raise ValueError(
+                    f"Result table '{table.name}' column '{column}' contains "
+                    f"non-finite values at rows {invalid_rows}"
+                )
 
     def _build_metadata_table(self, metadata):
         """Register duckdb tables containing context metadata."""
@@ -432,9 +492,11 @@ hooks:
         events = tc.spans.query_span_events(
             where=lambda df: df[df["name"] != "log"].reset_index(drop=True)
         )
-        self._register_in_memory_tables(metrics, spans, events)
+        self._register_in_memory_tables(metrics, spans, events, ctx)
 
         self._run_sql_queries(logger)
+
+        results = self._build_result_dataframes()
 
         if self.config.report_config.write_tables:
             try:
@@ -443,7 +505,6 @@ hooks:
                 logger.error("SQL Report failed to write tables %s", e)
                 raise
 
-        results = self._build_result_dataframes()
         report.set_results(results)
         return report
 

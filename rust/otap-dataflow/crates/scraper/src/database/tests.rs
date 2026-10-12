@@ -9,9 +9,10 @@ fn polling() -> PollingConfig {
     PollingConfig {
         interval: Duration::from_secs(1),
         timeout: Duration::from_secs(1),
-        fetch_size: 100,
+        fetch_size_rows: 100,
         max_rows_per_poll: 100,
         max_batch_bytes: 10 * 1024 * 1024,
+        catch_up: CatchUpConfig::default(),
     }
 }
 
@@ -35,9 +36,265 @@ fn checkpoint_config() -> CheckpointConfig {
     CheckpointConfig {
         directory: "${engine.state_dir}/oracle".to_owned(),
         on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
         nack_backoff: Duration::from_secs(1),
         max_consecutive_failures: 5,
     }
+}
+
+/// Scenario: Permanent-rejection policy is omitted or explicitly selects pause or retry.
+/// Guarantees: Existing configurations default to source-local pause and compilation preserves explicit retry.
+#[test]
+fn permanent_rejection_policy_defaults_and_compiles() {
+    for (configured, expected) in [
+        (None, OnPermanentNack::Pause),
+        (Some("pause"), OnPermanentNack::Pause),
+        (Some("retry"), OnPermanentNack::Retry),
+    ] {
+        let mut value = serde_json::json!({
+            "directory": "./state",
+            "on_nack": "rewind",
+            "nack_backoff": "1s",
+            "max_consecutive_failures": 3
+        });
+        if let Some(configured) = configured {
+            value["on_permanent_nack"] = serde_json::json!(configured);
+        }
+        let checkpoint: CheckpointConfig =
+            serde_json::from_value(value).expect("checkpoint config");
+        assert_eq!(checkpoint.on_permanent_nack, expected);
+        let query = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            polling(),
+            &watermark(),
+            &checkpoint,
+            OutputConfig::default(),
+        )
+        .expect("compiled rejection policy");
+        assert_eq!(query.on_permanent_nack(), expected);
+    }
+}
+
+/// Scenario: Permanent-rejection policy contains an unsupported value or null.
+/// Guarantees: Invalid policies fail deserialization rather than silently enabling replay or dropping progress.
+#[test]
+fn invalid_permanent_rejection_policy_is_rejected() {
+    for policy in [
+        serde_json::json!("fail"),
+        serde_json::json!("drop"),
+        serde_json::json!("rewind"),
+        serde_json::Value::Null,
+        serde_json::json!(true),
+    ] {
+        let value = serde_json::json!({
+            "directory": "./state", "on_nack": "rewind",
+            "on_permanent_nack": policy, "nack_backoff": "1s", "max_consecutive_failures": 3
+        });
+        assert!(serde_json::from_value::<CheckpointConfig>(value).is_err());
+    }
+}
+
+fn polling_json() -> serde_json::Value {
+    serde_json::json!({
+        "interval": "1s",
+        "timeout": "1s",
+        "fetch_size_rows": 100,
+        "max_rows_per_poll": 100,
+        "max_batch_bytes": 10485760
+    })
+}
+
+/// Scenario: Polling configuration omits cycle budgets or overrides only one limit.
+/// Guarantees: Bounded multi-page polling is the default and partial overrides retain the other limit.
+#[test]
+fn default_catch_up_and_partial_overrides_compile() {
+    for (override_value, pages, duration) in [
+        (None, 32, Duration::from_secs(10)),
+        (Some(serde_json::json!({})), 32, Duration::from_secs(10)),
+        (
+            Some(serde_json::json!({"max_pages": 1})),
+            1,
+            Duration::from_secs(10),
+        ),
+        (
+            Some(serde_json::json!({"max_duration": "1s"})),
+            32,
+            Duration::from_secs(1),
+        ),
+    ] {
+        let mut value = polling_json();
+        if let Some(override_value) = override_value {
+            value["catch_up"] = override_value;
+        }
+        let config: PollingConfig = serde_json::from_value(value).expect("polling config");
+        let query = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            config,
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .expect("bounded query");
+        assert_eq!(query.catch_up().max_pages, pages);
+        assert_eq!(query.catch_up().max_duration, duration);
+        assert_eq!(query.interval(), Duration::from_secs(1));
+    }
+}
+
+/// Scenario: Cycle configuration is null, misspelled, or uses a fractional page count.
+/// Guarantees: Invalid settings cannot silently disable bounded paging or bypass validation.
+#[test]
+fn rejects_invalid_catch_up_configuration_shapes() {
+    for (catch_up, field) in [
+        (serde_json::Value::Null, "CatchUpConfig"),
+        (
+            serde_json::json!({"max_pages": 32, "max_duration": "10s", "extra": true}),
+            "extra",
+        ),
+    ] {
+        let mut value = polling_json();
+        value["catch_up"] = catch_up;
+        let error = serde_json::from_value::<PollingConfig>(value).expect_err("invalid schema");
+        assert!(error.to_string().contains(field), "{error}");
+    }
+    for pages in [serde_json::json!(0.5), serde_json::json!(-1)] {
+        let mut value = polling_json();
+        value["catch_up"] = serde_json::json!({"max_pages": pages, "max_duration": "10s"});
+        assert!(serde_json::from_value::<PollingConfig>(value).is_err());
+    }
+}
+
+/// Scenario: Catch-up budgets exceed either bound, including a positive sub-millisecond duration.
+/// Guarantees: Compilation rejects invalid budgets with the explicit offending configuration field.
+#[test]
+fn rejects_invalid_catch_up_bounds() {
+    for (pages, duration, field) in [
+        (0, "10s", "query.catch_up.max_pages"),
+        (1025, "10s", "query.catch_up.max_pages"),
+        (32, "0s", "query.catch_up.max_duration"),
+        (32, "0.5ms", "query.catch_up.max_duration"),
+        (32, "300.001s", "query.catch_up.max_duration"),
+    ] {
+        let mut value = polling_json();
+        value["catch_up"] = serde_json::json!({"max_pages": pages, "max_duration": duration});
+        let config: PollingConfig = serde_json::from_value(value).expect("valid schema");
+        let error = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            config,
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .expect_err("invalid budget");
+        assert!(error.to_string().contains(field), "{error}");
+    }
+}
+
+/// Scenario: Explicit catch-up budgets use inclusive bounds or illustrative intermediate values.
+/// Guarantees: The compiled plan and its clone return the same copyable budgets and expose them in Debug.
+#[test]
+fn accepts_catch_up_bounds_and_preserves_compiled_budgets() {
+    for (pages, duration, expected) in [
+        (1, "1ms", Duration::from_millis(1)),
+        (1024, "5min", Duration::from_secs(300)),
+        (32, "10s", Duration::from_secs(10)),
+        (2, "1.5ms", Duration::from_micros(1500)),
+    ] {
+        let mut value = polling_json();
+        value["catch_up"] = serde_json::json!({"max_pages": pages, "max_duration": duration});
+        let config: PollingConfig = serde_json::from_value(value).expect("explicit config");
+        let query = CompiledQuery::compile(
+            "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+            config,
+            &watermark(),
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .expect("valid budget");
+        for plan in [&query, &query.clone()] {
+            let budget = plan.catch_up();
+            let copied = budget;
+            assert_eq!(budget.max_pages, pages);
+            assert_eq!(copied.max_duration, expected);
+            let debug = format!("{plan:?}");
+            assert!(debug.contains("catch_up: CatchUpConfig"));
+            assert!(debug.contains(&format!("max_pages: {pages}")));
+            assert!(debug.contains(&format!("max_duration: {expected:?}")));
+            assert!(!debug.contains("SELECT"));
+        }
+    }
+}
+
+/// Scenario: Deserialized watermark settings contain a customer timestamp and row identifier.
+/// Guarantees: Direct and nested Debug output redact initial values without changing configuration or query binds.
+#[test]
+fn watermark_debug_redacts_initial_values() {
+    let timestamp = "2037-04-05 06:07:08.987654321";
+    let row_id = 873_654_219_087_321_i64;
+    let config: WatermarkConfig = serde_json::from_value(serde_json::json!({
+        "mode": "composite",
+        "timestamp": {
+            "column": "EVENT_TS",
+            "bind": "last_timestamp",
+            "initial": timestamp,
+            "timezone": "UTC"
+        },
+        "tie_breaker": {
+            "column": "EVENT_ID",
+            "bind": "last_tie_breaker",
+            "initial": row_id
+        }
+    }))
+    .expect("watermark configuration");
+    config.validate().expect("valid watermark");
+    assert_eq!(
+        config.timestamp().expect("composite fixture").initial,
+        timestamp
+    );
+    assert_eq!(
+        config.tie_breaker().expect("composite fixture").initial,
+        row_id
+    );
+
+    for debug in [
+        format!("{:?}", config.timestamp().expect("composite fixture")),
+        format!("{:#?}", config.timestamp().expect("composite fixture")),
+        format!("{:?}", config.tie_breaker().expect("composite fixture")),
+        format!("{:#?}", config.tie_breaker().expect("composite fixture")),
+        format!("{config:?}"),
+        format!("{config:#?}"),
+    ] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(timestamp));
+        assert!(!debug.contains(&row_id.to_string()));
+    }
+
+    let query = CompiledQuery::compile(
+        "SELECT EVENT_TS, EVENT_ID FROM EVENTS".to_owned(),
+        polling(),
+        &config,
+        &checkpoint_config(),
+        OutputConfig::default(),
+    )
+    .expect("compiled query");
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .timestamp,
+        timestamp
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .tie_breaker,
+        row_id
+    );
 }
 
 /// Scenario: A query does not start with SELECT.
@@ -92,7 +349,7 @@ fn rejects_invalid_polling_bounds() {
             ..polling()
         },
         PollingConfig {
-            fetch_size: 0,
+            fetch_size_rows: 0,
             ..polling()
         },
         PollingConfig {
@@ -108,11 +365,11 @@ fn rejects_invalid_polling_bounds() {
             ..polling()
         },
         PollingConfig {
-            fetch_size: 10_001,
+            fetch_size_rows: 10_001,
             ..polling()
         },
         PollingConfig {
-            fetch_size: 101,
+            fetch_size_rows: 101,
             ..polling()
         },
     ] {
@@ -120,9 +377,8 @@ fn rejects_invalid_polling_bounds() {
     }
 }
 
-/// Scenario: watermark mode is configured as scalar or snapshot.
-/// Guarantees: unimplemented modes are rejected by the schema instead of silently inheriting
-/// composite behavior that they do not actually describe.
+/// Scenario: Scalar or snapshot mode is paired with composite-only fields.
+/// Guarantees: Mode-specific fields cannot silently select composite behavior.
 #[test]
 fn rejects_unsupported_watermark_modes() {
     for mode in ["scalar", "snapshot"] {
@@ -156,17 +412,23 @@ fn rejects_invalid_composite_watermarks() {
     let non_utc = WatermarkConfig::Composite {
         timestamp: TimestampCursorConfig {
             timezone: "America/New_York".to_owned(),
-            ..watermark().timestamp().clone()
+            ..watermark().timestamp().expect("composite fixture").clone()
         },
-        tie_breaker: watermark().tie_breaker().clone(),
+        tie_breaker: watermark()
+            .tie_breaker()
+            .expect("composite fixture")
+            .clone(),
     };
     assert!(non_utc.validate().is_err());
 
     let duplicate_bind = WatermarkConfig::Composite {
-        timestamp: watermark().timestamp().clone(),
+        timestamp: watermark().timestamp().expect("composite fixture").clone(),
         tie_breaker: TieBreakerCursorConfig {
             bind: "last_timestamp".to_owned(),
-            ..watermark().tie_breaker().clone()
+            ..watermark()
+                .tie_breaker()
+                .expect("composite fixture")
+                .clone()
         },
     };
     assert!(duplicate_bind.validate().is_err());
@@ -174,16 +436,19 @@ fn rejects_invalid_composite_watermarks() {
     let colon_bind = WatermarkConfig::Composite {
         timestamp: TimestampCursorConfig {
             bind: ":last_timestamp".to_owned(),
-            ..watermark().timestamp().clone()
+            ..watermark().timestamp().expect("composite fixture").clone()
         },
-        tie_breaker: watermark().tie_breaker().clone(),
+        tie_breaker: watermark()
+            .tie_breaker()
+            .expect("composite fixture")
+            .clone(),
     };
     assert!(colon_bind.validate().is_err());
 }
 
 /// Scenario: a NACK policy or checkpoint bound outside the supported contract is configured.
 /// Guarantees: only the implemented rewind policy is accepted, and backoff and failure budgets
-/// remain explicit and finite so a receiver cannot retry forever.
+/// remain explicit and finite for checkpoint-write retries.
 #[test]
 fn rejects_unsupported_checkpoint_policy_and_bounds() {
     assert!(serde_json::from_value::<OnNack>(serde_json::json!("fail")).is_err());
@@ -211,14 +476,14 @@ fn rejects_unsupported_checkpoint_policy_and_bounds() {
     }
 }
 
-/// Scenario: The original polling configuration supplies only max_batch_bytes as its byte limit.
+/// Scenario: A polling configuration supplies only max_batch_bytes as its byte limit.
 /// Guarantees: It deserializes without another setting, bounds both representations, and keeps SQL redacted.
 #[test]
 fn compiles_a_composite_query_plan() {
     let config: PollingConfig = serde_json::from_value(serde_json::json!({
         "interval": "1s",
         "timeout": "1s",
-        "fetch_size": 100,
+        "fetch_size_rows": 100,
         "max_rows_per_poll": 100,
         "max_batch_bytes": 10 * 1024 * 1024
     }))
@@ -232,14 +497,55 @@ fn compiles_a_composite_query_plan() {
     )
     .expect("composite query should compile");
 
-    assert_eq!(query.watermark().timestamp_bind, "last_timestamp");
-    assert_eq!(query.watermark().tie_breaker_bind, "last_tie_breaker");
-    assert_eq!(query.watermark().initial.tie_breaker, 0);
-    assert_eq!(query.fetch_size(), 100);
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .timestamp_bind,
+        "last_timestamp"
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .tie_breaker_bind,
+        "last_tie_breaker"
+    );
+    assert_eq!(
+        query
+            .watermark()
+            .as_composite()
+            .expect("composite fixture")
+            .initial
+            .tie_breaker,
+        0
+    );
+    assert_eq!(query.fetch_size_rows(), 100);
+    assert!(format!("{query:?}").contains("fetch_size_rows: 100"));
     assert_eq!(query.max_batch_bytes(), 10 * 1024 * 1024);
     assert_eq!(query.max_normalized_bytes(), query.max_batch_bytes());
     assert!(format!("{query:?}").contains("<redacted>"));
     assert!(!format!("{query:?}").contains("EVENT_TS ASC"));
+}
+
+/// Scenario: A polling block supplies the old fetch_size spelling instead of, or alongside, fetch_size_rows.
+/// Guarantees: Unknown legacy fields are rejected rather than ignored or interpreted as a second limit.
+#[test]
+fn rejects_legacy_fetch_size_name() {
+    for include_new_name in [false, true] {
+        let mut value = polling_json();
+        value["fetch_size"] = serde_json::json!(50);
+        if !include_new_name {
+            _ = value
+                .as_object_mut()
+                .expect("polling object")
+                .remove("fetch_size_rows");
+        }
+        let error = serde_json::from_value::<PollingConfig>(value).expect_err("legacy field");
+        assert!(error.to_string().contains("unknown field `fetch_size`"));
+    }
 }
 
 /// Scenario: A result contains many NULL values with no dynamic payload bytes.
@@ -259,7 +565,7 @@ fn normalized_size_includes_structural_allocations() {
 fn cursor_debug_redacts_nested_rows_pages_and_queries() {
     let timestamp = "2037-01-02 03:04:05.987654321";
     let tie_breaker = 834_592_176_004_i64;
-    let cursor = CompositeCursor::new(timestamp.to_owned(), tie_breaker);
+    let cursor = Cursor::composite(timestamp.to_owned(), tie_breaker);
     let serialized = serde_json::to_value(&cursor).expect("cursor JSON");
     assert_eq!(serialized["timestamp"], timestamp);
     assert_eq!(serialized["tie_breaker"], tie_breaker);
@@ -292,7 +598,10 @@ fn cursor_debug_redacts_nested_rows_pages_and_queries() {
     let WatermarkConfig::Composite {
         timestamp: configured_time,
         tie_breaker: configured_id,
-    } = &mut watermark;
+    } = &mut watermark
+    else {
+        panic!("composite fixture")
+    };
     configured_time.initial = timestamp.to_owned();
     configured_id.initial = tie_breaker;
     let query = CompiledQuery::compile(

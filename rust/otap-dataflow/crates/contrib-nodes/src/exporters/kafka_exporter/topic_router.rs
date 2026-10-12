@@ -39,7 +39,7 @@ use super::error::KafkaExporterError;
 use super::metrics::{KafkaExporterMetrics, KafkaTopicSource};
 use crate::common::kafka::validate_kafka_topic;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::transport_headers::TransportHeader;
+use otel_arrow_dfe_config::transport_headers::TransportHeaderRef;
 use otel_arrow_dfe_otap::pdata::Context;
 use regex::Regex;
 use std::borrow::Cow;
@@ -101,7 +101,7 @@ impl TopicRouter {
             // static topic, which would misdeliver the data.
             let topic = header.value_as_str().ok_or_else(|| {
                 KafkaExporterError::invalid_header_topic(
-                    String::from_utf8_lossy(&header.value.bytes),
+                    String::from_utf8_lossy(header.value.bytes),
                     "value is not valid UTF-8",
                 )
             })?;
@@ -158,7 +158,7 @@ impl TopicRouter {
     fn header_topic<'a>(
         signal_config: &SignalConfig,
         context: &'a Context,
-    ) -> Option<&'a TransportHeader> {
+    ) -> Option<TransportHeaderRef<'a>> {
         let header_key = signal_config.topic_from_transport_header()?.as_str();
         context
             .transport_headers()?

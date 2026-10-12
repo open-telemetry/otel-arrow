@@ -9,6 +9,7 @@ from lib.impl.strategies.deployment.docker import (
     DockerDeploymentConfig,
     DockerVolumeMapping,
     DockerPortMapping,
+    _split_volume_mount_string,
     build_port_bindings,
     build_volume_bindings,
 )
@@ -99,6 +100,39 @@ def test_start_successful(
     )
     assert mock_runtime.container_id == "container123"
     mock_set_runtime.assert_called_once_with(mock_context, mock_runtime)
+
+
+# Scenario: A docker deployment config specifies extra_hosts (e.g. mapping
+#   host.docker.internal to host-gateway).
+# Guarantees: The mapping is forwarded unchanged to containers.run as the
+#   extra_hosts kwarg so containers can reach services on the docker host.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_passes_extra_hosts(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        extra_hosts={"host.docker.internal": "host-gateway"},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    kwargs = mock_client.containers.run.call_args.kwargs
+    assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
 
 
 @patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
@@ -272,111 +306,81 @@ def test_build_volume_bindings_param_string_modes(mount, expected_mode):
 
 
 @pytest.mark.parametrize(
-    "mount,expected_source,expected_target,expected_mode",
+    "mount,expected_bind,expected_mode",
     [
-        (
-            "./config:C:/dataflow/config:ro",
-            "./config",
-            "C:/dataflow/config",
-            "ro",
-        ),
-        ("./data:C:/dataflow/data", "./data", "C:/dataflow/data", "rw"),
-        (
-            "C:/host/config:C:/dataflow/config:ro",
-            "C:/host/config",
-            "C:/dataflow/config",
-            "ro",
-        ),
-        ("C:/host/data:C:/dataflow/data", "C:/host/data", "C:/dataflow/data", "rw"),
-        (
-            r"C:\host\config:C:\dataflow\config:ro",
-            r"C:\host\config",
-            r"C:\dataflow\config",
-            "ro",
-        ),
-        (
-            r"C:\host\data:C:\dataflow\data",
-            r"C:\host\data",
-            r"C:\dataflow\data",
-            "rw",
-        ),
+        ("./data:C:/app/data", "C:/app/data", "rw"),
+        ("./data:C:\\app\\data", "C:\\app\\data", "rw"),
+        ("./config:C:/app/config:ro", "C:/app/config", "ro"),
+        ("./config:C:\\app\\config:ro", "C:\\app\\config", "ro"),
     ],
 )
-# Scenario: Docker volume strings contain Windows drive-letter paths on the host or container side.
-# Guarantees: Drive-letter colons are preserved as path content and do not break mode parsing.
-def test_build_volume_bindings_windows_drive_letter_paths(
+# Scenario: a volume mount string whose container target is a Windows
+# drive-letter path, with and without an explicit ':ro' mode suffix.
+# Guarantees: the drive letter stays attached to its path instead of being
+# parsed as a separate ':'-delimited field, so the container bind target and
+# the mode are both recovered correctly.
+def test_build_volume_bindings_windows_container_target(
+    mount, expected_bind, expected_mode
+):
+    host_path = os.path.abspath(mount.split(":")[0])
+
+    result = build_volume_bindings([mount])
+
+    assert result == {host_path: {"bind": expected_bind, "mode": expected_mode}}
+
+
+@pytest.mark.parametrize(
+    "mount,expected_source,expected_target,expected_mode",
+    [
+        ("./host:C:/container", "./host", "C:/container", "rw"),
+        ("./host:C:\\container", "./host", "C:\\container", "rw"),
+        ("./host:C:/container:ro", "./host", "C:/container", "ro"),
+        ("C:/host:D:/container", "C:/host", "D:/container", "rw"),
+        (
+            "C:\\host:D:\\container:ro",
+            "C:\\host",
+            "D:\\container",
+            "ro",
+        ),
+        ("/host:/container", "/host", "/container", "rw"),
+        ("/host:/container:ro", "/host", "/container", "ro"),
+        ("./host:/container:rw", "./host", "/container", "rw"),
+        ("x:/container", "x", "/container", "rw"),
+        ("x:/container:ro", "x", "/container", "ro"),
+    ],
+)
+# Scenario: volume mount strings cover Windows drive letters, Linux-style
+# paths, explicit modes, and single-character relative host paths.
+# Guarantees: only field-separator colons split SOURCE from TARGET and mode,
+# while drive-letter colons remain inside their respective paths.
+def test_split_volume_mount_string(
     mount, expected_source, expected_target, expected_mode
+):
+    assert _split_volume_mount_string(mount) == (
+        expected_source,
+        expected_target,
+        expected_mode,
+    )
+
+
+@pytest.mark.parametrize(
+    "mount,expected_mode",
+    [
+        ("x:/container", "rw"),
+        ("x:/container:ro", "ro"),
+    ],
+)
+# Scenario: a valid volume mount uses a single-character relative source path.
+# Guarantees: the parser preserves pre-existing behavior by treating `x` as
+# the host source, not as a Windows drive-qualified source path.
+def test_build_volume_bindings_single_character_relative_host(
+    mount, expected_mode
 ):
     result = build_volume_bindings([mount])
 
     assert result == {
-        os.path.abspath(expected_source): {
-            "bind": expected_target,
-            "mode": expected_mode,
-        }
+        os.path.abspath("x"): {"bind": "/container", "mode": expected_mode}
     }
-
-
-def _stats_payload(
-    *,
-    cpu_total: int,
-    precpu_total: int,
-    read: str = "2026-09-18T12:00:02.500000000Z",
-    preread: str = "2026-09-18T12:00:00.000000000Z",
-    system_total: Optional[int] = None,
-    presystem_total: Optional[int] = None,
-) -> dict:
-    payload = {
-        "read": read,
-        "preread": preread,
-        "cpu_stats": {"cpu_usage": {"total_usage": cpu_total}},
-        "precpu_stats": {"cpu_usage": {"total_usage": precpu_total}},
-    }
-    if system_total is not None and presystem_total is not None:
-        payload["cpu_stats"].update(
-            {"system_cpu_usage": system_total, "online_cpus": 4}
-        )
-        payload["precpu_stats"].update({"system_cpu_usage": presystem_total})
-    return payload
-
-
-# Scenario: Docker emits RFC3339Nano timestamps in stats responses.
-# Guarantees: Nanosecond precision timestamps are accepted and measured in seconds.
-def test_docker_stats_interval_uses_read_and_preread_timestamps():
-    payload = _stats_payload(
-        cpu_total=0,
-        precpu_total=0,
-        read="2026-09-18T12:00:02.123456789Z",
-        preread="2026-09-18T12:00:00.023456789Z",
-    )
-
-    assert _docker_stats_interval_seconds(payload) == pytest.approx(2.1)
-
-
-# Scenario: Windows Docker stats omit system_cpu_usage.
-# Guarantees: CPU usage is normalized with the stats sample window, not poll cadence.
-def test_calculate_cpu_usage_for_windows_uses_stats_sample_interval():
-    payload = _stats_payload(
-        cpu_total=60_000_000,
-        precpu_total=10_000_000,
-        read="2026-09-18T12:00:02.500000000Z",
-        preread="2026-09-18T12:00:00.000000000Z",
-    )
-
-    assert _calculate_cpu_usage(payload) == pytest.approx(2.0)
-
-
-# Scenario: Linux Docker stats include system_cpu_usage.
-# Guarantees: Existing system-delta CPU normalization remains unchanged.
-def test_calculate_cpu_usage_for_linux_uses_system_cpu_delta():
-    payload = _stats_payload(
-        cpu_total=30_000,
-        precpu_total=10_000,
-        system_total=250_000,
-        presystem_total=50_000,
-    )
-
-    assert _calculate_cpu_usage(payload) == pytest.approx(0.4)
 
 
 def test_build_port_bindings_simple_string():
