@@ -1,0 +1,8 @@
+type: azure_data_explorer
+status:
+  class: exporter
+  codeowners:
+    active:
+      - JacksonWeber
+      - lzchen
+      - MSNev
