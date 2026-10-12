@@ -834,11 +834,21 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
-            if let Some(probe) = receiver.take_startup_readiness_probe() {
+            let startup_error_slot = if let Some(probe) = receiver.take_startup_readiness_probe() {
+                let error_slot = Rc::new(RefCell::new(None));
                 let readiness_node_id = node_id.clone();
-                receiver_readiness
-                    .push(async move { (readiness_node_id, probe.wait_ready().await) });
-            }
+                let readiness_error_slot = Rc::clone(&error_slot);
+                receiver_readiness.push(async move {
+                    (
+                        readiness_node_id,
+                        probe.wait_ready().await,
+                        readiness_error_slot,
+                    )
+                });
+                Some(error_slot)
+            } else {
+                None
+            };
             let node_config = pipeline_config
                 .nodes()
                 .get(node_id.name.as_ref())
@@ -891,15 +901,30 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         .await;
                         Ok(())
                     }
-                    Err(err) => {
-                        flush_metrics_reporter(
-                            &final_metrics_reporter,
-                            "terminal_error",
-                            &receiver_terminal_metrics_deadline,
-                        )
-                        .await;
-                        Err(err)
-                    }
+                    Err(err) => match startup_error_slot {
+                        Some(error_slot) => {
+                            *error_slot.borrow_mut() = Some(err);
+                            flush_metrics_reporter(
+                                &final_metrics_reporter,
+                                "terminal_error",
+                                &receiver_terminal_metrics_deadline,
+                            )
+                            .await;
+                            match error_slot.borrow_mut().take() {
+                                Some(err) => Err(err),
+                                None => Ok(()),
+                            }
+                        }
+                        None => {
+                            flush_metrics_reporter(
+                                &final_metrics_reporter,
+                                "terminal_error",
+                                &receiver_terminal_metrics_deadline,
+                            )
+                            .await;
+                            Err(err)
+                        }
+                    },
                 }
             };
             if let Some(handle) = telemetry_handle {
@@ -1036,10 +1061,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                         }
                                     }
                                 }
-                                Some((receiver, result)) = receiver_readiness.next(),
+                                Some((receiver, result, startup_error_slot)) = receiver_readiness.next(),
                                     if !receiver_readiness.is_empty() =>
                                 {
                                     if let Err(ReadinessProbeError::SignallerDropped) = result {
+                                        if let Some(error) = startup_error_slot.borrow_mut().take() {
+                                            return Err(error);
+                                        }
                                         return Err(Error::ReceiverReadinessSignallerDropped {
                                             receiver,
                                         });
@@ -1242,6 +1270,8 @@ mod tests {
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+    use tokio::sync::oneshot;
+    use tokio::time::{Duration, timeout};
 
     /// Scenario: completion duration, item counts, and size are enabled without message interests.
     /// Guarantees: optional node measurements register independently without input/output message sets.
@@ -1370,5 +1400,91 @@ mod tests {
                 .expect_err("collector task should be cancelled")
                 .is_cancelled()
         );
+    }
+
+    /// Scenario: receiver binding fails while terminal metrics flushing waits for collector
+    /// acknowledgement.
+    /// Guarantees: the original bind error remains observable and readiness does not report
+    /// SignallerDropped before the receiver task publishes that error.
+    #[tokio::test(flavor = "current_thread")]
+    async fn receiver_bind_error_wins_over_signaller_drop_during_metrics_flush() {
+        let (signaller, probe) = crate::readiness::ReadinessSignaller::pair(Duration::from_secs(1));
+        let startup_error_slot = Rc::new(RefCell::new(None));
+        let task_error_slot = Rc::clone(&startup_error_slot);
+        let (flush_ack_tx, flush_ack_rx) = oneshot::channel();
+        let bind_error = Error::IoError {
+            node: crate::testing::test_node("receiver"),
+            error: std::io::Error::new(std::io::ErrorKind::AddrInUse, "address in use"),
+        };
+
+        let receiver_task = async move {
+            drop(signaller);
+            *task_error_slot.borrow_mut() = Some(bind_error);
+            flush_ack_rx
+                .await
+                .expect("test collector should acknowledge terminal metrics");
+            match task_error_slot.borrow_mut().take() {
+                Some(error) => Err::<(), Error>(error),
+                None => Ok(()),
+            }
+        };
+        tokio::pin!(receiver_task);
+        let readiness = probe.wait_ready();
+        tokio::pin!(readiness);
+
+        let selected_error = tokio::select! {
+            biased;
+            result = &mut receiver_task => {
+                result.expect_err("receiver task should preserve its bind error")
+            }
+            result = &mut readiness => {
+                assert_eq!(
+                    result,
+                    Err(ReadinessProbeError::SignallerDropped)
+                );
+                startup_error_slot
+                    .borrow_mut()
+                    .take()
+                    .expect("startup error must be captured before metrics flushing")
+            }
+        };
+        let Error::IoError { error, .. } = selected_error else {
+            panic!("receiver startup returned the wrong error");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+
+        flush_ack_tx
+            .send(())
+            .expect("receiver task should still await collector acknowledgement");
+        assert!(
+            receiver_task.await.is_ok(),
+            "runtime already consumed the captured startup error"
+        );
+    }
+
+    /// Scenario: a receiver drops its readiness signaller but remains running without producing a
+    /// startup error.
+    /// Guarantees: the readiness probe still reports SignallerDropped immediately instead of
+    /// being kept open by engine-owned state.
+    #[tokio::test(flavor = "current_thread")]
+    async fn receiver_signaller_drop_is_not_masked_while_task_remains_running() {
+        let (signaller, probe) = crate::readiness::ReadinessSignaller::pair(Duration::from_secs(1));
+        let receiver_task = async move {
+            drop(signaller);
+            std::future::pending::<()>().await;
+        };
+        tokio::pin!(receiver_task);
+
+        let result = timeout(Duration::from_millis(20), async {
+            tokio::select! {
+                biased;
+                _ = &mut receiver_task => panic!("receiver task must remain running"),
+                result = probe.wait_ready() => result,
+            }
+        })
+        .await
+        .expect("signaller drop should be observed without waiting for the receiver task");
+
+        assert_eq!(result, Err(ReadinessProbeError::SignallerDropped));
     }
 }
