@@ -3809,6 +3809,49 @@ fn startup_readiness_marker_wins_over_later_runtime_exit() {
         .expect("readiness marker should win over a later runtime exit");
 }
 
+/// Scenario: candidate startup fails and cleanup reports failures for multiple runtime instances.
+/// Guarantees: cleanup attempts every candidate and classifies the rollout as rollback-failed
+/// while retaining both the startup and cleanup diagnostics.
+#[test]
+fn candidate_cleanup_failures_are_aggregated_as_rollback_failure() {
+    let runtime = test_runtime(&empty_engine_config());
+    let first_key = deployed_key("g1", "p1", 0, 1);
+    let second_key = deployed_key("g1", "p1", 1, 1);
+    let _first = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        1,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("first cleanup failure".to_owned()),
+        )),
+    );
+    let _second = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        1,
+        1,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("second cleanup failure".to_owned()),
+        )),
+    );
+
+    let result = runtime.cleanup_candidates_after_failure(
+        &[first_key, second_key],
+        1,
+        "receiver startup failed".to_owned(),
+    );
+
+    let RolloutExecutionError::RollbackFailed(reason) = result else {
+        panic!("candidate cleanup failure must be reported as rollback failure");
+    };
+    assert!(reason.contains("receiver startup failed"));
+    assert!(reason.contains("first cleanup failure"));
+    assert!(reason.contains("second cleanup failure"));
+}
+
 /// Scenario: a resize rollback must clean up cores that were already started
 /// before a later step fails.
 /// Guarantees: rollback sends shutdown to those started cores instead of

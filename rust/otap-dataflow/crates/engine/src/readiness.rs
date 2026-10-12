@@ -58,6 +58,13 @@ impl ReadinessSignaller {
         (sig, probe)
     }
 
+    /// Constructs an observable readiness pair for receiver tests in downstream crates.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn pair_for_test(timeout: Duration) -> (Self, ReadinessProbe) {
+        Self::pair(timeout)
+    }
+
     /// Construct a matched pair whose timeout is owned by the caller.
     ///
     /// Receiver startup uses the controller's rollout or recovery deadline

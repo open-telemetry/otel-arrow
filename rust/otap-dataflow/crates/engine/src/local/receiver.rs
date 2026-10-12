@@ -261,6 +261,14 @@ impl<PData> EffectHandler<PData> {
         self.readiness = readiness;
     }
 
+    /// Attaches an observable readiness signal to a receiver effect handler in tests.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_readiness_signaller_for_test(mut self, readiness: ReadinessSignaller) -> Self {
+        self.readiness = Some(readiness);
+        self
+    }
+
     /// Signals that fallible receiver startup has completed.
     ///
     /// This is a no-op for receivers that did not opt into startup readiness.

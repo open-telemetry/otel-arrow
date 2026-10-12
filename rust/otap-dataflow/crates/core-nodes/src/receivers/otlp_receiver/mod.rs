@@ -1086,6 +1086,10 @@ mod tests {
         let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
         let _ctrl_tx = ctrl_tx;
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (readiness_signaller, readiness_probe) =
+            otel_arrow_dfe_engine::readiness::ReadinessSignaller::pair_for_test(
+                Duration::from_secs(1),
+            );
         let (_metrics_rx, metrics_reporter) =
             otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
         let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
@@ -1095,9 +1099,10 @@ mod tests {
             runtime_ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        )
+        .with_readiness_signaller_for_test(readiness_signaller);
 
-        match <OTLPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
+        let error = match <OTLPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
             Box::new(receiver),
             shared_receiver::ControlChannel::new(SharedReceiver::mpsc(ctrl_rx)),
             effect_handler,
@@ -1106,7 +1111,13 @@ mod tests {
         {
             Err(error) => error,
             Ok(_) => panic!("receiver startup should fail"),
-        }
+        };
+        assert_eq!(
+            readiness_probe.wait_ready().await,
+            Err(otel_arrow_dfe_engine::readiness::ReadinessProbeError::SignallerDropped),
+            "failed startup must not signal readiness"
+        );
+        error
     }
 
     /// Scenario: The OTLP gRPC listening address is already owned by another TCP listener.
