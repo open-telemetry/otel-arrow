@@ -105,10 +105,10 @@ fn bench_filter_regex(c: &mut Criterion) {
     let attr_filter = LogFilter::new(
         Some(LogMatchProperties::new(
             Vec::new(),
-            vec![AttrMatcher::new(
-                "msg".to_string(),
-                ValueMatcher::String(error_regex()),
-            )],
+            vec![AttrMatcher {
+                key: "msg".to_string(),
+                value: ValueMatcher::String(error_regex()),
+            }],
             Vec::new(),
             None,
             Vec::new(),

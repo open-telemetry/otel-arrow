@@ -538,14 +538,6 @@ pub struct AttrMatcher {
     pub value: ValueMatcher,
 }
 
-impl AttrMatcher {
-    /// Create a new attribute matcher.
-    #[must_use]
-    pub const fn new(key: String, value: ValueMatcher) -> Self {
-        Self { key, value }
-    }
-}
-
 /// Apply a precompiled regex to a string column, returning a boolean array of the
 /// same length. Null inputs produce null outputs (callers that want null-free
 /// results should run the output through [`nulls_to_false`]).
@@ -1214,10 +1206,7 @@ enum ValueFilterOutcome {
 /// per-row value selection (or [`ValueFilterOutcome::ColumnAbsent`] when the
 /// required typed column is missing). String matching goes through
 /// [`Pattern::matches`], so the returned array is null-free.
-fn value_matcher_filter(
-    attrs: &RecordBatch,
-    value: &ValueMatcher,
-) -> Result<ValueFilterOutcome> {
+fn value_matcher_filter(attrs: &RecordBatch, value: &ValueMatcher) -> Result<ValueFilterOutcome> {
     let filter = match value {
         ValueMatcher::String(pattern) => {
             let string_column = get_required_array(attrs, consts::ATTRIBUTE_STR)?;
@@ -1896,10 +1885,7 @@ mod tests {
         ]));
         let sliced = full.slice(1, 3);
         let out = regex_is_match(&re("match"), &sliced).unwrap();
-        assert_eq!(
-            out,
-            BooleanArray::from(vec![Some(true), None, Some(false)])
-        );
+        assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
     }
 
     // Scenario: regex_is_match applied to a non-string column.
@@ -1917,11 +1903,7 @@ mod tests {
     // selects false.
     #[test]
     fn test_pattern_matches_is_null_free() {
-        let arr: ArrayRef = Arc::new(StringArray::from(vec![
-            Some("error"),
-            None,
-            Some("warn"),
-        ]));
+        let arr: ArrayRef = Arc::new(StringArray::from(vec![Some("error"), None, Some("warn")]));
 
         let exact = Pattern::Exact("error".to_string()).matches(&arr).unwrap();
         assert_eq!(exact.null_count(), 0);

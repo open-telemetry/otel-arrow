@@ -496,19 +496,17 @@ mod test {
 
     /// Compile a list of strings into exact-match patterns.
     fn exact(values: &[&str]) -> Vec<Pattern> {
-        values.iter().map(|v| Pattern::Exact((*v).to_string())).collect()
+        values
+            .iter()
+            .map(|v| Pattern::Exact((*v).to_string()))
+            .collect()
     }
 
     #[test]
     fn test_filter_include_no_attributes() {
         // Filter only for WARN logs
-        let include = LogMatchProperties::new(
-            Vec::new(),
-            Vec::new(),
-            exact(&["WARN"]),
-            None,
-            Vec::new(),
-        );
+        let include =
+            LogMatchProperties::new(Vec::new(), Vec::new(), exact(&["WARN"]), None, Vec::new());
 
         let filter = LogFilter::new(Some(include), None);
 
@@ -551,13 +549,8 @@ mod test {
     #[test]
     fn test_filter_exclude_no_attributes() {
         // Filter only for WARN logs
-        let exclude = LogMatchProperties::new(
-            Vec::new(),
-            Vec::new(),
-            exact(&["WARN"]),
-            None,
-            Vec::new(),
-        );
+        let exclude =
+            LogMatchProperties::new(Vec::new(), Vec::new(), exact(&["WARN"]), None, Vec::new());
 
         let filter = LogFilter::new(None, Some(exclude));
 

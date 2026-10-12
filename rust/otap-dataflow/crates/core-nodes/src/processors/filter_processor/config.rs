@@ -20,45 +20,21 @@ use regex::Regex;
 use serde::Deserialize;
 
 /// Top-level filter processor configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
-    metrics: MetricFilterConfig,
+    pub metrics: MetricFilterConfig,
     #[serde(default)]
-    logs: LogFilterConfig,
+    pub logs: LogFilterConfig,
     #[serde(default)]
-    traces: TraceFilterConfig,
+    pub traces: TraceFilterConfig,
 }
 
 impl Config {
-    /// Build a config directly from logs and traces filters (used by tests).
-    #[must_use]
-    pub fn new(logs: LogFilterConfig, traces: TraceFilterConfig) -> Self {
-        Self {
-            metrics: MetricFilterConfig::default(),
-            logs,
-            traces,
-        }
-    }
-
-    /// Build a config from metrics, logs and traces filters (used by tests).
-    #[must_use]
-    pub fn new_with_metrics(
-        metrics: MetricFilterConfig,
-        logs: LogFilterConfig,
-        traces: TraceFilterConfig,
-    ) -> Self {
-        Self {
-            metrics,
-            logs,
-            traces,
-        }
-    }
-
     /// Compile the config into the precompiled filter types, compiling every
     /// regex pattern once. Returns a [`ConfigError`] if any pattern is invalid.
-    pub fn compile(&self) -> Result<CompiledFilters, ConfigError> {
-        Ok(CompiledFilters {
+    pub fn compile(&self) -> Result<Filters, ConfigError> {
+        Ok(Filters {
             metrics: self.metrics.compile()?,
             logs: self.logs.compile()?,
             traces: self.traces.compile()?,
@@ -68,7 +44,7 @@ impl Config {
 
 /// The compiled filters for each signal.
 #[derive(Debug, Clone)]
-pub struct CompiledFilters {
+pub struct Filters {
     /// Compiled metrics filter.
     pub metrics: MetricFilter,
     /// Compiled logs filter.
@@ -152,10 +128,10 @@ impl KeyValueConfig {
     }
 
     fn compile(&self, match_type: &MatchType) -> Result<AttrMatcher, ConfigError> {
-        Ok(AttrMatcher::new(
-            self.key.clone(),
-            self.value.compile(match_type)?,
-        ))
+        Ok(AttrMatcher {
+            key: self.key.clone(),
+            value: self.value.compile(match_type)?,
+        })
     }
 }
 
@@ -433,18 +409,19 @@ mod tests {
     // the error to the first batch (where it would previously panic).
     #[test]
     fn test_compile_rejects_invalid_regex() {
-        let config = Config::new_with_metrics(
-            MetricFilterConfig::new(
+        let config = Config {
+            metrics: MetricFilterConfig::new(
                 Some(MetricMatchPropertiesConfig::new(
                     MatchType::Regexp,
                     vec!["(".to_string()],
                 )),
                 None,
             ),
-            LogFilterConfig::default(),
-            TraceFilterConfig::default(),
-        );
-        let err = config.compile().expect_err("invalid regex should be rejected");
+            ..Default::default()
+        };
+        let err = config
+            .compile()
+            .expect_err("invalid regex should be rejected");
         assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
     }
 
@@ -454,17 +431,16 @@ mod tests {
     // compile, even when they contain regex metacharacters.
     #[test]
     fn test_compile_strict_pattern_is_literal() {
-        let config = Config::new_with_metrics(
-            MetricFilterConfig::new(
+        let config = Config {
+            metrics: MetricFilterConfig::new(
                 Some(MetricMatchPropertiesConfig::new(
                     MatchType::Strict,
                     vec!["(".to_string()],
                 )),
                 None,
             ),
-            LogFilterConfig::default(),
-            TraceFilterConfig::default(),
-        );
+            ..Default::default()
+        };
         let _ = config.compile().expect("strict patterns always compile");
     }
 

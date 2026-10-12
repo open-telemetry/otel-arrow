@@ -13,7 +13,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.processor.filter",
 );
 
-use self::config::{CompiledFilters, Config};
+use self::config::{Config, Filters};
 use self::metrics::FilterDropMetrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -50,7 +50,7 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
-    filters: CompiledFilters,
+    filters: Filters,
     metrics: MeasurementMetricSet<FilterDropMetrics>,
     compute_duration: ComputeDuration,
     /// Reusable paged-bitmap pool for filtering metric child batches across
@@ -983,7 +983,11 @@ mod tests {
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1068,10 +1072,11 @@ mod tests {
             None,
             Vec::new(),
         );
-        let config = Config::new(
-            LogFilter::new(Some(include_props), None, Vec::new()),
-            TraceFilter::new(None, None),
-        );
+        let config = Config {
+            logs: LogFilter::new(Some(include_props), None, Vec::new()),
+            traces: TraceFilter::new(None, None),
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1102,7 +1107,11 @@ mod tests {
         let log_filter = LogFilter::new(None, None, Vec::new());
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new_with_metrics(metric_filter, log_filter, trace_filter);
+        let config = Config {
+            metrics: metric_filter,
+            logs: log_filter,
+            traces: trace_filter,
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1136,11 +1145,11 @@ mod tests {
             )),
             None,
         );
-        let config = Config::new_with_metrics(
-            metric_filter,
-            LogFilter::new(None, None, Vec::new()),
-            TraceFilter::new(None, None),
-        );
+        let config = Config {
+            metrics: metric_filter,
+            logs: LogFilter::new(None, None, Vec::new()),
+            traces: TraceFilter::new(None, None),
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1247,7 +1256,11 @@ mod tests {
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1348,7 +1361,11 @@ mod tests {
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1457,7 +1474,11 @@ mod tests {
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1606,7 +1627,11 @@ mod tests {
 
         let log_filter = LogFilter::new(None, None, vec![]);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1722,7 +1747,11 @@ mod tests {
         let trace_filter = TraceFilter::new(Some(include_only), None);
         let log_filter = LogFilter::new(None, None, vec![]);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1900,10 +1929,11 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let config = Config::new(
-            LogFilter::new(None, None, Vec::new()),
-            TraceFilter::new(Some(include_only), None),
-        );
+        let config = Config {
+            logs: LogFilter::new(None, None, Vec::new()),
+            traces: TraceFilter::new(Some(include_only), None),
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1965,7 +1995,11 @@ mod tests {
 
         let log_filter = LogFilter::new(None, None, vec![]);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
