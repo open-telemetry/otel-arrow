@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791835077565,
+  "lastUpdate": 1791836586572,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -59927,6 +59927,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/54cd7900515686d57d200d5ac5794a4727e48448"
         },
         "date": 1791835056613,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "brian.sapozhnikov@gmail.com",
+            "name": "Brian Sapozhnikov",
+            "username": "bsapozhnikov"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "298846b57cb7e4d09479ef206572c92604665a4a",
+          "message": "feat(kafka): consume SASL credentials from provider (#4304)\n\n# Change summary\n\nAdd initial capability-backed credential acquisition for Kafka receiver\nPLAIN and SCRAM authentication while preserving inline credentials as\nthe default.\n\nThe new `auth.sasl.credential_source` setting defaults to `inline`,\npreserving existing configurations. When set to `capability`, the\nreceiver resolves the bound `sasl_credential_provider`, acquires a\nusable credential during startup, and applies it before creating the\nKafka consumer.\n\nThe change also:\n\n- Rejects configurations that combine capability-provided and inline\ncredentials.\n- Rejects capability credentials for unsupported mechanisms, including\nAWS MSK IAM.\n- Rejects capability credentials in the Kafka exporter, where they are\nnot yet supported.\n- Rejects credentials that expire within the existing usability margin.\n- Avoids exposing credentials or provider error details in startup\nerrors.\n- Documents that runtime credential rotation and consumer recreation are\nnot yet supported.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n\n## Related issue\n\nCloses open-telemetry/otel-arrow#4276\n\n## Validation\n\nPassed in a Linux Docker environment:\n\n- `cargo test -p otel-arrow-dfe-contrib-nodes --features kafka,aws\ncommon::kafka::auth::tests` - passed\n- `cargo test -p otel-arrow-dfe-contrib-nodes --features kafka,aws\nreceivers::kafka_receiver::receiver::tests::credentials` - passed\n- Focused Kafka exporter rejection, AWS compatibility, and existing\nKafka receiver compatibility tests - passed\n- `cargo clippy -p otel-arrow-dfe-contrib-nodes --all-targets --features\nkafka,aws -- -D warnings` - passed\n- `cargo fmt --all -- --check` - passed\n- `npx markdownlint-cli2\ncrates/contrib-nodes/src/receivers/kafka_receiver/README.md` - passed\n- `make chlog-validate` - passed\n- `python3 tools/sanitycheck.py` - passed in a clean Linux overlay\n\n`cargo xtask check` was attempted but could not complete because of\nunrelated repository/environment issues present at the branch base:\ncomponent inventory drift for `flat_file_api_key_auth` and missing\n`proto/opentelemetry-proto` files required by `query-engine-playground`\n\n## User-facing changes\n\nKafka receivers can now obtain their initial PLAIN or SCRAM username and\npassword from a bound `sasl_credential_provider`:\n\n```yaml\nkafka-receiver: type: urn:otel:receiver:kafka capabilities:\n    sasl_credential_provider: kafka-credentials config:\n    auth:\n      sasl:\n        mechanism: SCRAM-SHA-512\n        credential_source: capability\n```\n\nExisting inline configurations remain unchanged because\n`credential_source` defaults to `inline`. Runtime credential rotation is\nnot included in this change.\n\nA changelog entry is included in\n`.chloggen/kafka-receiver-sasl-credential-provider.yaml`.\n\n---------\n\nCopilot-Session: c537c35e-38b8-48bb-8f24-fdfbecb1ae9f",
+          "timestamp": "2026-10-12T19:13:41Z",
+          "tree_id": "1638cdb15b22e80b9ca13a3281fceaa4a2f81fac",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/298846b57cb7e4d09479ef206572c92604665a4a"
+        },
+        "date": 1791836571291,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
