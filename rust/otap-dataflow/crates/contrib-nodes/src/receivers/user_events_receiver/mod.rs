@@ -35,13 +35,14 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use serde_json::Value;
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
 use self::decoder::DecodedUserEventsRecord;
-use self::metrics::UserEventsReceiverMetrics;
+use self::metrics::{
+    DropAttributes, DropReason, SampleAttributes, SampleOutcome, UserEventsReceiverMetrics,
+};
 use self::session::SessionInitError;
 use self::session::{RawUserEventsRecord, SessionDrainStats, UserEventsSession};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
@@ -451,11 +452,9 @@ fn drop_batch(metrics: &Rc<RefCell<UserEventsReceiverMetrics>>, builder: &mut Ar
     metrics
         .borrow_mut()
         .dropped
-        .with(
-            crate::receivers::user_events_receiver::metrics::DropAttributes {
-                reason: crate::receivers::user_events_receiver::metrics::DropReason::MemoryPressure,
-            },
-        )
+        .with(DropAttributes {
+            reason: DropReason::MemoryPressure,
+        })
         .dropped
         .add(dropped);
 }
@@ -465,11 +464,9 @@ fn add_dropped_send_error(metrics: &Rc<RefCell<UserEventsReceiverMetrics>>, drop
         metrics
             .borrow_mut()
             .dropped
-            .with(
-                crate::receivers::user_events_receiver::metrics::DropAttributes {
-                    reason: crate::receivers::user_events_receiver::metrics::DropReason::SendError,
-                },
-            )
+            .with(DropAttributes {
+                reason: DropReason::SendError,
+            })
             .dropped
             .add(dropped);
     }
@@ -513,11 +510,9 @@ async fn flush_batch(
     }
     guard
         .samples
-        .with(
-            crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Forwarded,
-            },
-        )
+        .with(SampleAttributes {
+            outcome: SampleOutcome::Forwarded,
+        })
         .samples
         .add(item_count);
     guard.other.flushed_batches.inc();
@@ -569,52 +564,45 @@ async fn process_drained_records(
     if drain_stats.lost_samples > 0 {
         metrics
             .samples
-            .with(
-                crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                    outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Lost,
-                },
-            )
+            .with(SampleAttributes {
+                outcome: SampleOutcome::Lost,
+            })
             .samples
             .add(drain_stats.lost_samples);
     }
     if drain_stats.dropped_pending_overflow > 0 {
         metrics
-            .dropped_pending_overflow
+            .dropped
+            .with(DropAttributes {
+                reason: DropReason::PendingOverflow,
+            })
+            .dropped
             .add(drain_stats.dropped_pending_overflow);
     }
     if received_samples > 0 {
         metrics
             .samples
-            .with(
-                crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                    outcome:
-                        crate::receivers::user_events_receiver::metrics::SampleOutcome::Received,
-                },
-            )
+            .with(SampleAttributes {
+                outcome: SampleOutcome::Received,
+            })
             .samples
             .add(received_samples);
     }
     if dropped_memory_pressure > 0 {
         metrics
             .dropped
-            .with(
-                crate::receivers::user_events_receiver::metrics::DropAttributes {
-                    reason:
-                        crate::receivers::user_events_receiver::metrics::DropReason::MemoryPressure,
-                },
-            )
+            .with(DropAttributes {
+                reason: DropReason::MemoryPressure,
+            })
             .dropped
             .add(dropped_memory_pressure);
     }
     if dropped_no_subscription > 0 {
         metrics
             .dropped
-            .with(
-                crate::receivers::user_events_receiver::metrics::DropAttributes {
-                    reason:
-                        crate::receivers::user_events_receiver::metrics::DropReason::NoSubscription,
-                },
-            )
+            .with(DropAttributes {
+                reason: DropReason::NoSubscription,
+            })
             .dropped
             .add(dropped_no_subscription);
     }
@@ -695,7 +683,7 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                     match ctrl {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             let mut metrics = self.metrics.borrow_mut();
-                            let _ = metrics_reporter.report(&mut metrics);
+                            let _ = metrics.report(&mut metrics_reporter);
                         }
                         Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
                             self.admission_state.apply(update);
@@ -1197,6 +1185,8 @@ mod config_tests {
     use otel_arrow_dfe_pdata::OtapPayload;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
+    use super::metrics::{DropAttributes, DropReason, SampleAttributes, SampleOutcome};
+
     fn test_metrics() -> Rc<RefCell<UserEventsReceiverMetrics>> {
         let (pipeline_ctx, _) = test_pipeline_ctx();
         Rc::new(RefCell::new(UserEventsReceiverMetrics::register(
@@ -1310,31 +1300,43 @@ mod config_tests {
         assert_eq!(
             metrics
                 .samples
-                .with(
-                    crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                        outcome:
-                            crate::receivers::user_events_receiver::metrics::SampleOutcome::Received
-                    }
-                )
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Received,
+                })
                 .samples
                 .get(),
             2
         );
-        assert_eq!(metrics.dropped.with(crate::receivers::user_events_receiver::metrics::DropAttributes{reason: crate::receivers::user_events_receiver::metrics::DropReason::MemoryPressure}).dropped.get(), 2);
+        assert_eq!(
+            metrics
+                .dropped
+                .get(DropAttributes {
+                    reason: DropReason::MemoryPressure,
+                })
+                .dropped
+                .get(),
+            2
+        );
         assert_eq!(
             metrics
                 .samples
-                .with(
-                    crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                        outcome:
-                            crate::receivers::user_events_receiver::metrics::SampleOutcome::Lost
-                    }
-                )
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Lost,
+                })
                 .samples
                 .get(),
             1
         );
-        assert_eq!(metrics.dropped.with(crate::receivers::user_events_receiver::metrics::DropAttributes{reason: crate::receivers::user_events_receiver::metrics::DropReason::PendingOverflow}).dropped.get(), 1);
+        assert_eq!(
+            metrics
+                .dropped
+                .get(DropAttributes {
+                    reason: DropReason::PendingOverflow,
+                })
+                .dropped
+                .get(),
+            1
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1369,7 +1371,16 @@ mod config_tests {
 
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
-        assert_eq!(metrics.samples.with(crate::receivers::user_events_receiver::metrics::SampleAttributes{outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Forwarded}).samples.get(), 1);
+        assert_eq!(
+            metrics
+                .samples
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Forwarded,
+                })
+                .samples
+                .get(),
+            1
+        );
         assert_eq!(metrics.other.flushed_batches.get(), 1);
         assert!(metrics.other.downstream_send_blocked_ns.get() > 0);
     }
@@ -1407,17 +1418,23 @@ mod config_tests {
         }
 
         let metrics = metrics.borrow();
-        assert_eq!(metrics.samples.with(crate::receivers::user_events_receiver::metrics::SampleAttributes{outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Forwarded}).samples.get(), 0);
+        assert_eq!(
+            metrics
+                .samples
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Forwarded,
+                })
+                .samples
+                .get(),
+            0
+        );
         assert_eq!(metrics.other.flushed_batches.get(), 0);
         assert_eq!(
             metrics
                 .dropped
-                .with(
-                    crate::receivers::user_events_receiver::metrics::DropAttributes {
-                        reason:
-                            crate::receivers::user_events_receiver::metrics::DropReason::SendError
-                    }
-                )
+                .get(DropAttributes {
+                    reason: DropReason::SendError,
+                })
                 .dropped
                 .get(),
             1
@@ -1457,17 +1474,23 @@ mod config_tests {
         assert_eq!(
             metrics
                 .samples
-                .with(
-                    crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                        outcome:
-                            crate::receivers::user_events_receiver::metrics::SampleOutcome::Received
-                    }
-                )
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Received,
+                })
                 .samples
                 .get(),
             1
         );
-        assert_eq!(metrics.samples.with(crate::receivers::user_events_receiver::metrics::SampleAttributes{outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Forwarded}).samples.get(), 1);
+        assert_eq!(
+            metrics
+                .samples
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Forwarded,
+                })
+                .samples
+                .get(),
+            1
+        );
         assert_eq!(metrics.other.flushed_batches.get(), 1);
     }
 
@@ -1506,17 +1529,23 @@ mod config_tests {
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
         assert!(drained_records.is_empty());
-        assert_eq!(metrics.samples.with(crate::receivers::user_events_receiver::metrics::SampleAttributes{outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Forwarded}).samples.get(), 0);
+        assert_eq!(
+            metrics
+                .samples
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Forwarded,
+                })
+                .samples
+                .get(),
+            0
+        );
         assert_eq!(metrics.other.flushed_batches.get(), 0);
         assert_eq!(
             metrics
                 .dropped
-                .with(
-                    crate::receivers::user_events_receiver::metrics::DropAttributes {
-                        reason:
-                            crate::receivers::user_events_receiver::metrics::DropReason::SendError
-                    }
-                )
+                .get(DropAttributes {
+                    reason: DropReason::SendError,
+                })
                 .dropped
                 .get(),
             3
@@ -1561,17 +1590,23 @@ mod config_tests {
         assert_eq!(
             metrics
                 .samples
-                .with(
-                    crate::receivers::user_events_receiver::metrics::SampleAttributes {
-                        outcome:
-                            crate::receivers::user_events_receiver::metrics::SampleOutcome::Received
-                    }
-                )
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Received,
+                })
                 .samples
                 .get(),
             1
         );
-        assert_eq!(metrics.samples.with(crate::receivers::user_events_receiver::metrics::SampleAttributes{outcome: crate::receivers::user_events_receiver::metrics::SampleOutcome::Forwarded}).samples.get(), 1);
+        assert_eq!(
+            metrics
+                .samples
+                .get(SampleAttributes {
+                    outcome: SampleOutcome::Forwarded,
+                })
+                .samples
+                .get(),
+            1
+        );
         assert_eq!(metrics.other.flushed_batches.get(), 1);
     }
 
