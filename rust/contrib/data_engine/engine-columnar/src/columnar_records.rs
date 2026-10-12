@@ -66,7 +66,7 @@ pub trait ColumnarRecords<'pipeline>: RecordTable<'pipeline> {
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
-        self.len() > 0
+        self.len() == 0
     }
 
     fn get_attached_records(&self, name: &str) -> Option<&dyn RecordTable<'pipeline>>;
