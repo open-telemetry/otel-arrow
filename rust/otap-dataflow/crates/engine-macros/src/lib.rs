@@ -24,9 +24,8 @@ mod pipeline_factory;
 /// Declare a XYZ_FACTORY_PIPELINE static and annotate it with a prefix and data type.
 /// An optional third argument installs the data-type-specific context materializer:
 /// ```rust,ignore
-/// use otel_arrow_dfe_engine::{
-///     ContextMaterializationPlan, PipelineFactory, build_factory,
-/// };
+/// use otel_arrow_dfe_engine::{PipelineFactory, build_factory};
+/// use otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan;
 /// use otel_arrow_dfe_engine_macros::pipeline_factory;
 ///
 /// // Define your data type (this would be defined elsewhere)
