@@ -1,11 +1,11 @@
 ---
 Proposal Name: pdata-permissions
 Start Date: 2026-10-01
-RFC PR: open-telemetry/otel-arrow#0000
+RFC PR: open-telemetry/otel-arrow#4371
 Tracking Issue: open-telemetry/otel-arrow#4227
 ---
 
-# RFC 0005: PData Permissions
+# RFC 0005: Permission Policy Validation
 
 ## Summary
 
