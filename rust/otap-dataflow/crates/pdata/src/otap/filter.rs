@@ -477,16 +477,12 @@ impl Default for IdBitmapPool {
     }
 }
 
-/// A compiled string matcher: either an exact literal or a precompiled regex.
-///
-/// The regex is compiled once (typically at config-validation time) rather than
-/// on every batch, which is what the arrow `regexp_is_match_scalar` kernel does
-/// internally via `Regex::new`.
+/// A compiled string matcher: either an exact literal or a regular expression.
 #[derive(Debug, Clone)]
 pub enum Pattern {
     /// Match the value exactly.
     Exact(String),
-    /// Match the value against a precompiled regex.
+    /// Match the value against a [`Regex`].
     Regex(Regex),
 }
 
@@ -524,9 +520,6 @@ pub enum ValueMatcher {
     Double(f64),
     /// Match against a boolean column.
     Bool(bool),
-    /// Value type that the filter does not support (e.g. array or nested
-    /// key-value). Such values match nothing.
-    Unsupported,
 }
 
 /// A compiled matcher for a single attribute: a key plus a value matcher.
@@ -1236,8 +1229,6 @@ fn value_matcher_filter(attrs: &RecordBatch, value: &ValueMatcher) -> Result<Val
             }
             None => return Ok(ValueFilterOutcome::ColumnAbsent),
         },
-        // Array / nested key-value values are not supported and match nothing.
-        ValueMatcher::Unsupported => return Ok(ValueFilterOutcome::ColumnAbsent),
     };
     Ok(ValueFilterOutcome::Filter(filter))
 }

@@ -22,16 +22,15 @@ use arrow::array::{BooleanArray, Float64Array, Int32Array, Int64Array};
 use arrow::buffer::BooleanBuffer;
 use std::collections::HashMap;
 
-/// Compiled filter that describes the overall requirements used to filter logs.
+/// Describes which logs should be kept or excluded from a batch. Includes are
+/// processed first, then the excludes are applied to the remaining records.
 #[derive(Debug, Clone)]
 pub struct LogFilter {
-    // Include match properties describe logs that should be included in the Collector Service pipeline,
-    // all other logs should be dropped from further processing.
-    // If both Include and Exclude are specified, Include filtering occurs first.
+    // Include match properties describe logs that should be retained and are
+    // applied first
     include: Option<LogMatchProperties>,
-    // Exclude match properties describe logs that should be excluded from the Collector Service pipeline,
-    // all other logs should be included.
-    // If both Include and Exclude are specified, Include filtering occurs first.
+    // Exclude match properties describe logs that should be excluded and are
+    // applied second.
     exclude: Option<LogMatchProperties>,
 }
 
@@ -423,8 +422,6 @@ impl LogMatchProperties {
                             None => continue,
                         }
                     }
-                    // Array / nested key-value bodies are not supported.
-                    ValueMatcher::Unsupported => continue,
                 };
                 bodies_filter = arrow::compute::or_kleene(&body_filter, &bodies_filter)
                     .map_err(|e| Error::ColumnLengthMismatch { source: e })?;

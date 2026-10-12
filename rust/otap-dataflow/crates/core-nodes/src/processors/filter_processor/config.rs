@@ -16,7 +16,7 @@ use otel_arrow_dfe_pdata::otap::filter::{
     metrics::{MetricFilter, MetricMatchProperties},
     traces::{TraceFilter, TraceMatchProperties},
 };
-use regex::{Regex};
+use regex::Regex;
 use serde::Deserialize;
 
 /// Top-level filter processor configuration.
@@ -91,22 +91,17 @@ pub enum AnyValueConfig {
     Double(f64),
     /// Boolean value.
     Boolean(bool),
-    /// Array of values.
-    Array(Vec<AnyValueConfig>),
-    /// Nested key-value pairs.
-    KeyValue(Vec<KeyValueConfig>),
 }
 
 impl AnyValueConfig {
     /// Compile this value into a [`ValueMatcher`]. Array and nested key-value
-    /// values are not supported and compile to [`ValueMatcher::Unsupported`].
+    /// attributes are not supported.
     fn compile(&self, match_type: &MatchType) -> Result<ValueMatcher, ConfigError> {
         Ok(match self {
             AnyValueConfig::String(value) => ValueMatcher::String(match_type.compile(value)?),
             AnyValueConfig::Int(value) => ValueMatcher::Int(*value),
             AnyValueConfig::Double(value) => ValueMatcher::Double(*value),
             AnyValueConfig::Boolean(value) => ValueMatcher::Bool(*value),
-            AnyValueConfig::Array(_) | AnyValueConfig::KeyValue(_) => ValueMatcher::Unsupported,
         })
     }
 }
