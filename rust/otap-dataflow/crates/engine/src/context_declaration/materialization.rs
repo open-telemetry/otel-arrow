@@ -466,10 +466,15 @@ impl MaterializedContext {
         plan: &'a ContextMaterializationPlan,
         projection: &'a ContextProjection,
     ) -> Option<MaterializedContextProjection<'a>> {
-        let ContextProjection::Composite { entry, members } = projection else {
+        let ContextProjection::Composite {
+            layout,
+            entry,
+            members,
+        } = projection
+        else {
             return None;
         };
-        let layout = plan.layout.entries().get(entry.index())?;
+        let layout = plan.layout.projected_entry(layout, *entry, members)?;
         let declaration = plan.declaration(*entry)?;
         let materialized = self.entry(&layout.name)?;
         if !materialized.matches_declaration(declaration.as_ref()) {
@@ -780,5 +785,58 @@ mod tests {
         resolved.visit_members(|member| selected.push(member.name().clone()));
 
         assert_eq!(selected, [name("route")]);
+    }
+
+    /// Scenario: a projection from an independently compiled layout is resolved against this plan.
+    /// Guarantees: layout-local entry identifiers cannot select an unrelated materialized entry.
+    #[test]
+    fn rejects_projection_from_another_layout() {
+        let declaration = declaration(vec![ContextEntryPart::Constant {
+            name: name("route"),
+            value: "otlp-http-json".to_owned(),
+        }]);
+        let plan = ContextMaterializationPlan::compile(std::slice::from_ref(&declaration))
+            .expect("plan compiles");
+        let other_plan =
+            ContextMaterializationPlan::compile(&[declaration]).expect("other plan compiles");
+        let projection = other_plan
+            .layout()
+            .resolve_member(&name("request"), &name("route"))
+            .expect("projection resolves");
+        let mut context = MaterializedContext::default();
+        context.materialize(&plan, &TestSource::default());
+
+        assert!(context.resolve(&plan, &projection).is_none());
+    }
+
+    /// Scenario: a caller alters the descriptors in a projection from the correct layout.
+    /// Guarantees: resolution accepts only canonical members selected from that layout.
+    #[test]
+    fn rejects_projection_with_tampered_members() {
+        let plan =
+            ContextMaterializationPlan::compile(&[declaration(vec![ContextEntryPart::Constant {
+                name: name("route"),
+                value: "otlp-http-json".to_owned(),
+            }])])
+            .expect("plan compiles");
+        let projection = plan
+            .layout()
+            .resolve_member(&name("request"), &name("route"))
+            .expect("projection resolves");
+        let ContextProjection::Composite { layout, entry, .. } = projection else {
+            panic!("member projection must be composite");
+        };
+        let projection = ContextProjection::Composite {
+            layout,
+            entry,
+            members: Box::new([crate::context_declaration::ContextMember {
+                name: name("route"),
+                source: ContextMemberSource::Constant("altered".into()),
+            }]),
+        };
+        let mut context = MaterializedContext::default();
+        context.materialize(&plan, &TestSource::default());
+
+        assert!(context.resolve(&plan, &projection).is_none());
     }
 }
