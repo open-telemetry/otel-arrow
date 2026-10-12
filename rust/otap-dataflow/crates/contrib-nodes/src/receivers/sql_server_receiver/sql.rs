@@ -578,13 +578,23 @@ fn validate_function(
     if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
         return Err(unsupported());
     }
+    let valid_arity = match name.as_str() {
+        "COALESCE" => arguments.args.len() >= 2,
+        "ISNULL" => arguments.args.len() == 2,
+        _ => arguments.args.len() == 1,
+    };
+    if !valid_arity {
+        return Err(error(
+            "query.statement uses an unsupported function argument count",
+        ));
+    }
     for arg in &arguments.args {
         match arg {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
                 validate_expr(expr, false, depth)?;
             }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
-                if matches!(name.as_str(), "COUNT" | "COUNT_BIG") && arguments.args.len() == 1 => {}
+                if matches!(name.as_str(), "COUNT" | "COUNT_BIG") => {}
             _ => return Err(unsupported()),
         }
     }

@@ -173,6 +173,72 @@ fn snapshot_queries_use_complete_result_probe() {
     }
 }
 
+/// Scenario: Every allowlisted function is called with zero through three arguments.
+/// Guarantees: COALESCE accepts two or more, ISNULL exactly two, and other functions exactly one.
+#[test]
+fn validates_supported_function_arities() {
+    for name in [
+        "ABS",
+        "COALESCE",
+        "ISNULL",
+        "LOWER",
+        "UPPER",
+        "LEN",
+        "DATALENGTH",
+        "COUNT",
+        "COUNT_BIG",
+        "MIN",
+        "MAX",
+        "SUM",
+        "AVG",
+        "abs",
+        "coalesce",
+        "isnull",
+    ] {
+        for (count, arguments) in ["", "EVENT_ID", "EVENT_ID, 1", "EVENT_ID, 1, 2"]
+            .into_iter()
+            .enumerate()
+        {
+            let statement = format!("SELECT {name}({arguments}) AS RESULT FROM dbo.EVENTS");
+            let expected = match name.to_ascii_uppercase().as_str() {
+                "COALESCE" => count >= 2,
+                "ISNULL" => count == 2,
+                _ => count == 1,
+            };
+            assert_eq!(
+                serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_ok(),
+                expected,
+                "unexpected preparation result for: {statement}"
+            );
+        }
+    }
+}
+
+/// Scenario: Function calls contain wildcards or invalid nested calls.
+/// Guarantees: Only single-argument COUNT wildcards pass, and nested calls also enforce arity.
+#[test]
+fn validates_wildcard_and_nested_function_arities() {
+    for expression in ["COUNT(*)", "COUNT_BIG(*)", "ABS(ABS(EVENT_ID))"] {
+        _ = parse(snapshot(&format!(
+            "SELECT {expression} AS RESULT FROM dbo.EVENTS"
+        )));
+    }
+    for expression in [
+        "COUNT(*, EVENT_ID)",
+        "COUNT_BIG(*, EVENT_ID)",
+        "SUM(*)",
+        "COALESCE(*, EVENT_ID)",
+        "ABS(ABS())",
+        "COALESCE(EVENT_ID, ISNULL(EVENT_ID))",
+    ] {
+        let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
+        assert!(
+            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_err(),
+            "accepted invalid function call: {statement}"
+        );
+    }
+}
+
 /// Scenario: Cursor-like text appears inside quoted strings or bracketed identifiers.
 /// Guarantees: Only real configured parameters are rewritten; literals retain their exact content.
 #[test]
