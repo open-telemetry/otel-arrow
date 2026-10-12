@@ -3,7 +3,7 @@
 
 use std::fmt::{Debug, Display};
 
-use arrow::{array::*, datatypes::*};
+use arrow::array::*;
 use otel_arrow_contrib_data_engine_expressions::Expression;
 use roaring::RoaringBitmap;
 
@@ -61,7 +61,7 @@ pub enum ColumnarEngineSelectionPath<'a> {
 pub trait ColumnarRecords<'pipeline>: RecordTable<'pipeline> {
     fn get_diagnostic_level(&self) -> Option<ColumnarEngineDiagnosticLevel>;
 
-    fn get_key_data_type(&self) -> DataType;
+    fn get_key_data_type(&self) -> DictionaryKeyType;
 
     fn len(&self) -> usize;
 

@@ -42,7 +42,7 @@ impl FromStr for ColumnarEngineDiagnosticLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Verbose" | "verbose" => Ok(ColumnarEngineDiagnosticLevel::Verbose),
-            "Info" | "info" => Ok(ColumnarEngineDiagnosticLevel::Verbose),
+            "Info" | "info" => Ok(ColumnarEngineDiagnosticLevel::Info),
             "Warn" | "warn" => Ok(ColumnarEngineDiagnosticLevel::Warn),
             "Error" | "error" => Ok(ColumnarEngineDiagnosticLevel::Error),
             _ => Err(()),
