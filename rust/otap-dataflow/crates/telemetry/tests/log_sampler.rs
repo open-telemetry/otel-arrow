@@ -6,9 +6,9 @@
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_telemetry::event::{ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
-use otel_arrow_dfe_telemetry::log_sampler::Sampler;
 use otel_arrow_dfe_telemetry::self_tracing::{LogContext, LogRecord};
 use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
+use otel_arrow_dfe_telemetry::{Logger, Sampler};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -93,7 +93,9 @@ impl Sampler for Outcome<'_> {
         self.state.started_at = self.started_at;
         std::mem::replace(&mut self.state.failed, self.failed) != self.failed
     }
+}
 
+impl Logger for Outcome<'_> {
     fn emit(&mut self, event: &Event<'_>, dispatch: &Dispatch) {
         if self.failed {
             self.state.sample = Some(LogRecord::new(event, LogContext::new()));
@@ -167,6 +169,7 @@ fn outcome_sampling() {
 fn macro_forms() {
     struct Keep;
     impl Sampler for Keep {}
+    impl Logger for Keep {}
 
     let (setup, _, receiver) = setup("trace");
     let mut sampler = Keep;
@@ -197,6 +200,7 @@ fn macro_forms() {
 #[test]
 fn nested_logging_preserves_lazy_evaluation() {
     struct Select(bool);
+    impl Logger for Select {}
     impl Sampler for Select {
         fn should_sample(&mut self, _metadata: &Metadata<'_>) -> bool {
             otel_warn!("test.decision");
@@ -206,6 +210,7 @@ fn nested_logging_preserves_lazy_evaluation() {
 
     struct Keep;
     impl Sampler for Keep {}
+    impl Logger for Keep {}
 
     let (other, _, other_receiver) = setup("warn");
     let (setup, handle, receiver) = setup("off");

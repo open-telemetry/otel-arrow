@@ -113,10 +113,15 @@ otel_info!(
 
 ### Logging suppression and sampling
 
-The `otel_arrow_dfe_telemetry::log_sampler::Sampler` interface
-supports custom logs sampling. After standard `tracing` filters, the macro
-mutably borrows the expression supplied as `logger:`, enabling stateful
-observation of the event before its body and attributes are evaluated.
+The `otel_arrow_dfe_telemetry::Sampler` and `Logger` traits
+support custom logs sampling and delivery. `Sampler::should_sample` decides
+from metadata whether to build the event; `Logger::emit` controls how a
+selected event is delivered. Both have defaults (keep, forward to the active
+subscriber), so a sampling-only policy implements `Sampler` and an empty
+`impl Logger`. After standard `tracing` filters, the macro mutably borrows the
+object supplied as `logger:` once and calls both methods in turn, enabling
+stateful observation of the event before its body and attributes are
+evaluated.
 
 Filtering skips the logger expression and fields; sampling rejection skips
 the fields. Logger expressions, sampling decisions, and field-producing
