@@ -17,7 +17,10 @@
 //! [`shared::extension`](crate::shared::extension).
 
 pub mod builder;
-pub mod readiness;
+/// Extension-facing compatibility exports for readiness primitives.
+pub mod readiness {
+    pub use crate::readiness::*;
+}
 pub mod wrapper;
 
 #[cfg(test)]
