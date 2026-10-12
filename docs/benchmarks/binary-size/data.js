@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791826140930,
+  "lastUpdate": 1791828751278,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -59510,6 +59510,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a33b1fc8626264c4c1463e98323041261939f0fa",
+          "message": "feat(wasm-host): add bounded async WASIp3 plugin runtime (#4211)\n\n# Change summary\n\n- Update the experimental WASM processor to Wasmtime 49 and the async\n`wasm32-wasip3` component model, removing the separate guest runtime\ncrate.\n- Add synchronous guest initialization, directly awaited processing,\nbounded host services and resources, failure telemetry, and restricted\nWASI CLI and clock-read interfaces. Future clock waits are rejected in\nevery guest phase.\n- Prevent guests from retaining host-side pdata across process calls,\nbound marked log messages to the documented maximum, and enforce an\nexact project-interface import allowlist.\n- Use Rust `std` in the minimal severity-filter reference plugin and\nisolate synthetic failures and resource-limit scenarios in a dedicated\ntest plugin.\n- Add integration coverage, operator/plugin documentation, and WASM\nfeature coverage to Windows Rust CI.\n\n## Related issue\n\n* Related to #2973\n* Related to #3227\n\n## Validation\n\n* `cd rust/otap-dataflow && cargo test -p otel-arrow-dfe-wasm-host\n--features wasm` - passed.\n* `cd rust/otap-dataflow && cargo clippy -p otel-arrow-dfe-wasm-host\n--features wasm --all-targets -- -D warnings` - passed.\n\n## User-facing changes\n\nThe opt-in experimental WASM processor now supports WASI Preview 3 guest\ninitialization, directly awaited process calls, bounded host services\nand resources, guest telemetry, real clock reads, and Rust `std` guests.\nFuture clock waits such as `std::thread::sleep` are rejected, and guest\nfinalization remains deferred until the processor lifecycle has an\nexplicit post-drain phase.",
+          "timestamp": "2026-10-12T17:15:48Z",
+          "tree_id": "5b7ab06c7ba5133c07cdd69bc50b65a56facb844",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a33b1fc8626264c4c1463e98323041261939f0fa"
+        },
+        "date": 1791828731489,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.08,
             "unit": "MB"
           },
           {
