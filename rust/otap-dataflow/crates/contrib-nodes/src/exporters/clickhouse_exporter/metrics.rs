@@ -5,8 +5,9 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalAttributes};
 use otel_arrow_dfe_telemetry::error::Error;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
@@ -61,24 +62,47 @@ pub struct ClickhouseBatchMetrics {
 
 /// Clickhouse exporter metrics.
 pub struct ClickhouseExporterMetrics {
+    /// Shared exporter boundary metrics (attempted, duration, payload, items).
+    pub boundary: ExporterMetrics,
     row_metrics: MeasurementMetricSet<ClickhouseRowMetrics>,
     batch_metrics: MeasurementMetricSet<ClickhouseBatchMetrics>,
 }
 
 impl ClickhouseExporterMetrics {
     /// Creates and registers a new ClickhouseExporterMetrics instance.
+    #[must_use]
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self::register(pipeline_ctx)
+    }
+
+    /// Registers Clickhouse exporter metrics with the pipeline context.
+    #[must_use]
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            boundary: ExporterMetrics::register(pipeline_ctx),
             row_metrics: ClickhouseRowMetrics::register(pipeline_ctx),
             batch_metrics: ClickhouseBatchMetrics::register(pipeline_ctx),
         }
     }
 
+    /// Records one completed exporter attempt.
+    pub async fn record_attempt(&mut self, attempt: ExporterAttempt, outcome: Outcome) {
+        let completed = attempt
+            .run(async |attempt| match outcome {
+                Outcome::Success => Ok(()),
+                Outcome::Failure => Err(attempt.failed(())),
+                Outcome::Refused => Err(attempt.refused(())),
+            })
+            .await;
+        _ = self.boundary.record(completed);
+    }
+
     /// Reports measurements to the metrics reporter.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
-        reporter
-            .report_measurement(&mut self.row_metrics)
-            .and_then(|()| reporter.report_measurement(&mut self.batch_metrics))
+        self.boundary.report(reporter)?;
+        reporter.report_measurement(&mut self.row_metrics)?;
+        reporter.report_measurement(&mut self.batch_metrics)?;
+        Ok(())
     }
 
     /// Increments the row counter for the given payload type.
@@ -138,7 +162,7 @@ impl ClickhouseExporterMetrics {
     pub fn terminal_snapshots(
         &mut self,
     ) -> Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
-        let mut snapshots = Vec::new();
+        let mut snapshots = self.boundary.terminal_snapshots();
         snapshots.extend(self.row_metrics.terminal_snapshots());
         snapshots.extend(self.batch_metrics.terminal_snapshots());
         snapshots
@@ -148,7 +172,9 @@ impl ClickhouseExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
@@ -548,5 +574,32 @@ mod tests {
 
         metrics.report(&mut reporter).unwrap();
         assert_eq!(receiver.try_iter().count(), 2);
+    }
+
+    /// Scenario: ClickHouse export attempts are recorded via the shared boundary.
+    /// Guarantees: Successful and failed export attempts emit exporter.attempted metrics in terminal snapshots.
+    #[tokio::test]
+    async fn record_attempt_emits_boundary_metrics() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let mut metrics = ClickhouseExporterMetrics::new(&pipeline_ctx);
+
+        let attempt_success = metrics.boundary.attempt(SignalType::Logs);
+        metrics
+            .record_attempt(attempt_success, Outcome::Success)
+            .await;
+
+        let attempt_failure = metrics.boundary.attempt(SignalType::Traces);
+        metrics
+            .record_attempt(attempt_failure, Outcome::Failure)
+            .await;
+
+        let snapshots = metrics.terminal_snapshots();
+        assert!(!snapshots.is_empty());
+
+        let attempted_snapshots: Vec<_> = snapshots
+            .iter()
+            .filter(|s| s.descriptor().name == "exporter.attempted")
+            .collect();
+        assert_eq!(attempted_snapshots.len(), 2);
     }
 }
