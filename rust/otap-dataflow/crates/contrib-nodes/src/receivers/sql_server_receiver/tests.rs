@@ -263,6 +263,87 @@ fn validates_wildcard_and_nested_function_arities() {
     }
 }
 
+/// Scenario: Snapshot projections, HAVING, and ORDER BY wrap aggregates in allowed scalar functions.
+/// Guarantees: Scalar wrappers preserve aggregate permission, including through multiple wrappers.
+#[test]
+fn accepts_snapshot_aggregate_wrappers() {
+    for expression in [
+        "COALESCE(SUM(AMOUNT), 0)",
+        "ABS(AVG(AMOUNT))",
+        "ISNULL(MIN(AMOUNT), 0)",
+        "LOWER(MAX(PAYLOAD))",
+        "UPPER(MIN(PAYLOAD))",
+        "LEN(MAX(PAYLOAD))",
+        "DATALENGTH(MIN(PAYLOAD))",
+        "COALESCE(COUNT(*), 0)",
+        "ISNULL(COUNT_BIG(*), 0)",
+        "ABS(COALESCE(SUM(AMOUNT), 0))",
+        "coalesce(sum(AMOUNT), 0)",
+        "COALESCE(SUM(AMOUNT), MAX(AMOUNT), 0)",
+        "COALESCE(SUM(ABS(AMOUNT)), 0)",
+        "ABS(CAST(SUM(AMOUNT) AS decimal(19,4)) + 1)",
+    ] {
+        let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
+        let config = parse(snapshot(&statement));
+        assert_eq!(config.statement().parameters(), [Parameter::PageLimit]);
+        assert_eq!(config.page_limit(), 1001);
+    }
+    _ = parse(snapshot(
+        "SELECT STATUS, COALESCE(SUM(AMOUNT), 0) AS TOTAL FROM dbo.EVENTS \
+         GROUP BY STATUS HAVING COALESCE(SUM(AMOUNT), 0) > 0 \
+         ORDER BY ABS(SUM(AMOUNT))",
+    ));
+}
+
+/// Scenario: An aggregate contains another aggregate directly or through scalar wrappers.
+/// Guarantees: Allowing wrappers never permits nested aggregates at any argument depth.
+#[test]
+fn rejects_nested_aggregate_wrappers() {
+    for expression in [
+        "SUM(AVG(AMOUNT))",
+        "SUM(ABS(AVG(AMOUNT)))",
+        "SUM(COALESCE(AMOUNT, AVG(AMOUNT)))",
+        "SUM(ABS(COALESCE(AVG(AMOUNT), 0)))",
+        "COALESCE(SUM(ABS(AVG(AMOUNT))), 0)",
+        "COUNT(ISNULL(COUNT_BIG(*), 0))",
+        "MAX(LEN(MIN(PAYLOAD)))",
+        "SUM(CAST(AVG(AMOUNT) AS decimal(19,4)))",
+    ] {
+        let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
+        assert!(
+            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_err(),
+            "accepted nested aggregate: {statement}"
+        );
+    }
+}
+
+/// Scenario: Scalar wrappers appear where aggregates are disallowed by the query contract.
+/// Guarantees: Scalar/composite projections and snapshot GROUP BY cannot hide an aggregate.
+#[test]
+fn rejects_aggregate_wrappers_in_nonaggregate_contexts() {
+    for expression in [
+        "COALESCE(SUM(EVENT_ID), 0)",
+        "ABS(COALESCE(SUM(EVENT_ID), 0))",
+    ] {
+        for mut value in [scalar(json!({"type":"int64","value":0})), composite()] {
+            let statement = value["query"]["statement"]
+                .as_str()
+                .unwrap()
+                .replace("PAYLOAD", &format!("{expression} AS TOTAL"));
+            value["query"]["statement"] = json!(statement);
+            assert!(
+                serde_json::from_value::<SqlServerReceiverConfig>(value).is_err(),
+                "accepted aggregate in incremental query: {statement}"
+            );
+        }
+        let statement = format!("SELECT COUNT(*) AS TOTAL FROM dbo.EVENTS GROUP BY {expression}");
+        assert!(
+            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_err(),
+            "accepted aggregate in GROUP BY: {statement}"
+        );
+    }
+}
+
 /// Scenario: Cursor-like text appears inside quoted strings or bracketed identifiers.
 /// Guarantees: Only real configured parameters are rewritten; literals retain their exact content.
 #[test]

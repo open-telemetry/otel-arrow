@@ -107,6 +107,11 @@ two, and every other allowed function exactly one. `COUNT(*)` and `COUNT_BIG(*)`
 are supported. Decimal casts require explicit valid precision and scale;
 `ARRAY` modifiers are unsupported.
 
+Snapshot projections, `HAVING`, and `ORDER BY` may wrap aggregates in scalar
+functions, for example `COALESCE(SUM(AMOUNT), 0)`. Aggregates cannot contain
+other aggregates, even through scalar wrappers. Wrapping an aggregate does not
+allow it in incremental queries or `GROUP BY`.
+
 Writes, extra statements, comments, wildcard projections, operator-provided
 `TOP`, offsets, hints, joins, subqueries, CTEs, table aliases, external sources,
 user-defined functions, and undeclared parameters are rejected. Identifiers may

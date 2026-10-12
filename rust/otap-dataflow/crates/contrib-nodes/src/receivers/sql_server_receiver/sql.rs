@@ -593,7 +593,7 @@ fn validate_function(
     for arg in &arguments.args {
         match arg {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
-                validate_expr(expr, false, depth)?;
+                validate_expr(expr, aggregates && !aggregate, depth)?;
             }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
                 if matches!(name.as_str(), "COUNT" | "COUNT_BIG") => {}
