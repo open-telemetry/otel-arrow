@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791830017882,
+  "lastUpdate": 1791835077565,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -59858,6 +59858,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "54870357+MSNev@users.noreply.github.com",
+            "name": "Nev",
+            "username": "MSNev"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "54cd7900515686d57d200d5ac5794a4727e48448",
+          "message": "chore(azure-data-explorer): Skeleton for a Azure Data Explorer exporter for logs, metrics, and traces using streaming ingestion. (#4311)\n\n- Non-Functional, only includes framework, documentation\n\n# Change summary\n\nAdds an Azure Data Explorer exporter to the Rust OTAP Dataflow Engine.\n\nThe exporter:\n\n- exports logs, metrics, and traces to ADX through the streaming\ningestion REST API\n- accepts both OTAP Arrow records and OTLP protobuf request bytes\n- obtains bearer tokens from a bound `azure_identity_auth` extension\n- writes gzip-compressed JSON Lines to signal-specific tables\n- supports optional ADX JSON ingestion mappings\n- bounds row size, request size, retained messages, and concurrent\nrequests\n- retries transient network, throttling, and server failures within an\noperation deadline\n- supports optional request coalescing while retaining source ACK and\nNACK ownership\n- reports the shared exporter boundary metrics and ADX-specific HTTP\ndiagnostics\n- provides default and legacy log schemas, including a legacy layout\nwithout `EventName`\n- documents the KQL required to create tables and mappings and enable\nstreaming ingestion\n\nThis implementation uses direct streaming ingestion. Queued ingestion is\nnot included in this change. Delivery is at least once because a\nconnection failure after ADX accepts a request can cause the upstream\nsource to replay it.\n\n## Related issue\n\n* Initial skeleton for #4159 \n\n## Validation\n\n- `cargo fmt --all` - passed\n- `cargo fmt --all -- --check` - passed\n- `cargo build -p otel-arrow-dfe --bin df_engine --features\nazure-data-explorer` - passed\n- `cargo test -p otel-arrow-dfe-contrib-nodes --features\nazure-data-explorer azure_data_explorer_exporter` - passed, 96 tests\n- `cargo xtask check` - passed, including workspace structure, component\ninventory, formatting, Clippy, unit tests, integration tests, and\ndoctests\n- `npx markdownlint-cli2\nrust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/README.md`\n- passed\n- `chloggen validate --config rust/otap-dataflow/.chloggen/config.yaml`\n- passed\n- `git diff --check` - passed\n\n`python tools/sanitycheck.py` was not run because the local Windows\nenvironment only provides the Microsoft Store Python alias.\n\n## User-facing changes\n\n\n- Adds the `azure-data-explorer` Cargo feature.\n- Registers `urn:microsoft:exporter:azure_data_explorer` for logs,\nmetrics, and traces.\n- Requires a bound `bearer_token_provider`, normally supplied by\n`azure_identity_auth`.\n- Adds configuration for ADX database, table, mapping, retry, timeout,\ncompression, concurrency, and request coalescing behavior.\n- Adds KQL setup instructions for default logs, legacy string-based\nlogs, metrics, traces, and internal telemetry tables.\n- Adds `rust/otap-dataflow/.chloggen/azure-data-explorer-exporter.yaml`.",
+          "timestamp": "2026-10-12T18:47:54Z",
+          "tree_id": "7c691760f2f7d6307873b0c867c2af37bd2838a0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/54cd7900515686d57d200d5ac5794a4727e48448"
+        },
+        "date": 1791835056613,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
             "unit": "MB"
           },
           {
