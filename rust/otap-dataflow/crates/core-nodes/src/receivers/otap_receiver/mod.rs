@@ -222,7 +222,8 @@ pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 node,
                 node_config,
                 receiver_config,
-            ))
+            )
+            .with_startup_readiness())
         },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -712,6 +713,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             }
         };
         tokio::pin!(server_task);
+        effect_handler.signal_ready();
 
         let mut server_task_done = false;
         let mut draining_deadline: Option<Instant> = None;
@@ -907,8 +909,13 @@ mod tests {
     use async_stream::stream;
     use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::PipelineContext;
+    use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+    use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind};
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+    use otel_arrow_dfe_engine::shared::receiver as shared_receiver;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
@@ -928,6 +935,7 @@ mod tests {
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
     use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::future::Future;
     use std::net::SocketAddr;
@@ -935,6 +943,101 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
+
+    fn test_pipeline_context() -> PipelineContext {
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle)
+            .pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+    }
+
+    async fn start_receiver_expect_error(receiver: OTAPReceiver) -> Error {
+        let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+        let _ctrl_tx = ctrl_tx;
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
+            test_node("otap_startup_failure"),
+            HashMap::new(),
+            None,
+            runtime_ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        match <OTAPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
+            Box::new(receiver),
+            shared_receiver::ControlChannel::new(SharedReceiver::mpsc(ctrl_rx)),
+            effect_handler,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("receiver startup should fail"),
+        }
+    }
+
+    /// Scenario: The OTAP listening address is already owned by another TCP listener.
+    /// Guarantees: OTAP startup returns the original bind failure before signaling readiness.
+    #[tokio::test]
+    async fn otap_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve OTAP listen address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = OTAPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "listening_addr": addr.to_string(),
+                "response_stream_channel_size": 1
+            }),
+        )
+        .expect("valid OTAP config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: OTAP startup receives incomplete server TLS material.
+    /// Guarantees: TLS configuration fails before the receiver signals readiness or serves traffic.
+    #[tokio::test]
+    async fn otap_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let receiver = OTAPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "listening_addr": "127.0.0.1:0",
+                "response_stream_channel_size": 1,
+                "tls": {
+                    "cert_pem": "incomplete TLS material"
+                }
+            }),
+        )
+        .expect("syntactically valid OTAP TLS config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    ..
+                }
+            ),
+            "expected OTAP TLS configuration error, got {error}"
+        );
+    }
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
