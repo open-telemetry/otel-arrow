@@ -276,7 +276,8 @@ pub struct EtwEventData {
     /// registered-provider database when available; unregistered providers or
     /// lookup failures leave this as `None`. The owned string avoids a shared
     /// cross-core reference count at the cost of one allocation and copy per
-    /// named event.
+    /// named event. Event-metadata provider names are not discovered yet; a
+    /// startup lookup miss remains `None` even if later events contain a name.
     pub provider_name: Option<String>,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
@@ -562,9 +563,11 @@ fn collect_provider_lookup<E: std::fmt::Display>(
         names_by_guid: HashMap::with_capacity(wanted_guids.len()),
     };
     enumerate(&mut |name, provider| {
-        let name_lc = name.to_ascii_lowercase();
-        if wanted_names.contains(name_lc.as_str()) {
-            let _ = found.by_name.entry(name_lc).or_insert(provider);
+        if found.by_name.len() < wanted_names.len() {
+            let name_lc = name.to_ascii_lowercase();
+            if wanted_names.contains(name_lc.as_str()) {
+                let _ = found.by_name.entry(name_lc).or_insert(provider);
+            }
         }
 
         let guid = CanonicalGuid::from(provider.guid);
@@ -1370,6 +1373,14 @@ fn spawn_etw_session(
                         // (Provider, Id, Version) cache key.
                         match decoder.borrow_mut().decode(record) {
                             Ok(result) => {
+                                // TODO(etw-provider-name-metadata): Extend one_collect's
+                                // CachedSchema to extract TRACE_EVENT_INFO.ProviderNameOffset
+                                // and expose the cached optional name in TdhDecodedEvent.
+                                // When no configured/startup name exists, retain that name
+                                // in this provider's callback for subsequent events. Reuse
+                                // schema discovery; do not add per-event OS lookups.
+                                // Cover GUID-only TraceLogging, absent/invalid offsets,
+                                // cache reuse, and configured/startup-name precedence.
                                 event_name = result.event_name.unwrap_or("").to_owned();
                                 decoded_fields = extract_decoded_fields(
                                     result.event_data.format(),
@@ -2364,6 +2375,37 @@ mod tests {
             Some(&"Registered.By.Guid".to_string())
         );
         assert_eq!(visited.get(), 2);
+    }
+
+    /// Scenario: A GUID-only subscription identifies the registered Windows
+    /// kernel-process provider in the real TDH provider database.
+    /// Guarantees: Startup enumeration discovers its registered name without
+    /// a configured name, an event-metadata lookup, or an elevated ETW session.
+    #[test]
+    fn registered_guid_name_discovery_uses_windows_provider_database() {
+        let provider = ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: None,
+        };
+        let wanted_guids =
+            wanted_lookup_guids(std::slice::from_ref(&provider)).expect("valid GUID");
+        let lookup = collect_provider_lookup(&HashSet::new(), &wanted_guids, |visit| {
+            for_each_registered_provider(visit)
+        });
+        assert!(
+            lookup.is_ok(),
+            "Windows provider database enumeration must succeed"
+        );
+        let guid =
+            parse_guid(provider.guid.as_deref().expect("GUID configured")).expect("valid GUID");
+        assert_eq!(
+            resolve_provider_name(&provider, guid, &lookup).as_deref(),
+            Some("Microsoft-Windows-Kernel-Process")
+        );
     }
 
     /// Scenario: A configured provider name differs from the registered name

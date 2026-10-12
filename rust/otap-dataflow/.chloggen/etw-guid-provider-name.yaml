@@ -2,4 +2,4 @@ change_type: enhancement
 component: pipeline
 note: "Add best-effort etw.provider.name attributes for ETW providers configured by GUID."
 issues: [4325]
-subtext: "Registered provider names are discovered once at session startup. Capture continues without the optional name when discovery is unavailable."
+subtext: "Names come from configuration or the registered-provider database at startup. Event-metadata name discovery is not yet supported; unregistered GUID-only providers omit the name. Capture continues when name discovery is unavailable."
