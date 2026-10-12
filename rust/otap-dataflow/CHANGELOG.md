@@ -12,6 +12,26 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.62.0
+
+### :bulb: Enhancements :bulb:
+
+- `pipeline`: Add full-result snapshot polling to the Oracle receiver without watermark columns or cursor binds. ([#4206](https://github.com/open-telemetry/otel-arrow/issues/4206))
+- `query-engine`: Compile regex patterns used by matches() once per pipeline instead of once per batch, improving throughput for small batches. ([#4329](https://github.com/open-telemetry/otel-arrow/issues/4329))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `observability`: Allow internal log event encoding to grow beyond its initial 256-byte capacity, up to 2KiB, before truncating. ([#1746](https://github.com/open-telemetry/otel-arrow/issues/1746))
+  Previously the encoding buffer had a hard 256-byte cap with no growth, so
+  oversized log events were truncated far more often than necessary. The
+  buffer now starts at 256 bytes but can grow up to 2KiB, matching the common
+  case's single-allocation cost while still truncating safely past 2KiB.
+
+- `otap`: Reject empty or malformed custom CA bundles during OTLP exporter client TLS setup. ([#4025](https://github.com/open-telemetry/otel-arrow/issues/4025), [#4160](https://github.com/open-telemetry/otel-arrow/issues/4160))
+- `otap`: Watched mTLS client CA files now reload whenever their contents change, fixing missed CA rotations on Windows when the file timestamp did not change. ([#4313](https://github.com/open-telemetry/otel-arrow/issues/4313))
+
+<!-- previous-version -->
+
 ## v0.61.0
 
 ### :stop_sign: Breaking changes :stop_sign:
