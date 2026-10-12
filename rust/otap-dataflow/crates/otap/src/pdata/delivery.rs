@@ -17,8 +17,7 @@ use std::fmt;
 ///
 /// This inline owner is deliberately not Clone. Consume it to attach an output
 /// or recover a message for Ack/Nack. Its methods construct messages; they do not
-/// send them. Dropping it performs no I/O or automatic acknowledgement. Without
-/// RETURN_DATA, only an empty payload of the original signal is retained.
+/// send them. Dropping it performs no I/O or automatic acknowledgement.
 #[must_use = "delivery ownership must be forwarded, reported, or explicitly discarded"]
 pub struct PdataDelivery {
     pdata: OtapPdata,

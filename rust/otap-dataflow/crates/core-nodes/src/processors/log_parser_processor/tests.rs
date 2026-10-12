@@ -1271,7 +1271,7 @@ fn test_parse_logs_non_log_passthrough() {
             let (actual_context, payload) = output.pop().unwrap().into_parts();
             assert_eq!(actual_context, context);
             match payload.into_data() {
-                PayloadData::OtapArrowRecords(actual) => assert_eq!(actual, original),
+                PayloadData::OtapRecords(actual) => assert_eq!(actual, original),
                 other => panic!("unexpected output {other:?}"),
             }
             ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {

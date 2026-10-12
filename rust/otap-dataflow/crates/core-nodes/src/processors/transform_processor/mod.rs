@@ -1654,7 +1654,7 @@ mod test {
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
                 match payload.into_data() {
-                    PayloadData::OtapArrowRecords(result) => {
+                    PayloadData::OtapRecords(result) => {
                         assert_eq!(result, input)
                     }
                     _ => panic!("unexpected payload type"),
@@ -2116,7 +2116,7 @@ mod test {
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
                 match payload.into_data() {
-                    PayloadData::OtapArrowRecords(result) => {
+                    PayloadData::OtapRecords(result) => {
                         // ensure the routed record was "sanitized"
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch
@@ -2144,7 +2144,7 @@ mod test {
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
                 match payload.into_data() {
-                    PayloadData::OtapArrowRecords(result) => {
+                    PayloadData::OtapRecords(result) => {
                         assert_logs_records_equal(result, info_log_record);
                     }
                     _ => panic!("unexpected payload type"),
@@ -3251,7 +3251,7 @@ mod test {
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
                 match payload.into_data() {
-                    PayloadData::OtapArrowRecords(result) => {
+                    PayloadData::OtapRecords(result) => {
                         // check sanitization was skipped on routed record
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch

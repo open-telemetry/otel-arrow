@@ -2263,7 +2263,7 @@ mod tests {
                 let first = out.into_iter().next().expect("one output").payload();
 
                 let otap_batch = match first.into_data() {
-                    PayloadData::OtapArrowRecords(otap_batch) => otap_batch,
+                    PayloadData::OtapRecords(otap_batch) => otap_batch,
                     _ => panic!("unexpected output payload type"),
                 };
 

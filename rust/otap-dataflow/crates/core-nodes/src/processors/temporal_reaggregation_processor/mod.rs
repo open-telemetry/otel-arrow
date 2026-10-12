@@ -2743,7 +2743,7 @@ mod tests {
             // Both streams should be present: verify by converting the output
             // to OTLP and checking we have 2 resource_metrics entries.
             let actual = match output[0].payload_ref().data() {
-                PayloadData::OtapArrowRecords(r) => r,
+                PayloadData::OtapRecords(r) => r,
                 _ => panic!("expected OtapArrowRecords payload"),
             };
             let otlp = otap_to_otlp(actual);

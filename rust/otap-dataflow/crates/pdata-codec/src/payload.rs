@@ -24,7 +24,7 @@ pub enum PayloadStorage {
     /// Independently decodable bytes and their resolved codec identity.
     Encoded(EncodedPdata),
     /// Native mutable OTAP Arrow records.
-    OtapArrowRecords(OtapArrowRecords),
+    OtapRecords(OtapArrowRecords),
 }
 
 impl PayloadStorage {
@@ -32,7 +32,7 @@ impl PayloadStorage {
         match self {
             Self::OtlpBytes(bytes) => bytes.signal_type(),
             Self::Encoded(encoded) => encoded.signal_type(),
-            Self::OtapArrowRecords(records) => records.signal_type(),
+            Self::OtapRecords(records) => records.signal_type(),
         }
     }
 
@@ -40,7 +40,7 @@ impl PayloadStorage {
         match self {
             Self::OtlpBytes(bytes) => bytes.is_empty(),
             Self::Encoded(encoded) => encoded.bytes().is_empty(),
-            Self::OtapArrowRecords(records) => records.is_empty(),
+            Self::OtapRecords(records) => records.is_empty(),
         }
     }
 
@@ -48,7 +48,7 @@ impl PayloadStorage {
         match self {
             Self::OtlpBytes(bytes) => bytes.retained_memory_bytes(),
             Self::Encoded(encoded) => encoded.bytes().len(),
-            Self::OtapArrowRecords(records) => records.retained_memory_bytes(),
+            Self::OtapRecords(records) => records.retained_memory_bytes(),
         }
     }
 }
@@ -192,7 +192,7 @@ impl PdataPayload {
     /// Constructs native OTAP storage.
     #[must_use]
     pub fn from_otap(records: OtapArrowRecords) -> Self {
-        Self::from_storage(PayloadStorage::OtapArrowRecords(records))
+        Self::from_storage(PayloadStorage::OtapRecords(records))
     }
 
     /// Wraps admitted encoded bytes without copying or decoding them.
@@ -216,7 +216,7 @@ impl PdataPayload {
                 PdataFormat::encoded(otlp_codec(bytes.signal_type()))
             }
             PayloadStorage::Encoded(encoded) => PdataFormat::encoded(encoded.codec()),
-            PayloadStorage::OtapArrowRecords(_) => PdataFormat::OTAP,
+            PayloadStorage::OtapRecords(_) => PdataFormat::OTAP,
         }
     }
 
@@ -232,7 +232,7 @@ impl PdataPayload {
         match &self.storage {
             PayloadStorage::OtlpBytes(bytes) => Some(bytes.bytes()),
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes()),
-            PayloadStorage::OtapArrowRecords(_) => None,
+            PayloadStorage::OtapRecords(_) => None,
         }
     }
 
@@ -257,7 +257,7 @@ impl PdataPayload {
                 encoded.signal_type(),
                 encoded.bytes(),
             )),
-            PayloadStorage::OtapArrowRecords(_) => None,
+            PayloadStorage::OtapRecords(_) => None,
         }
     }
 
@@ -267,7 +267,7 @@ impl PdataPayload {
         match self.storage {
             PayloadStorage::OtlpBytes(bytes) => Some(bytes.into_bytes()),
             PayloadStorage::Encoded(encoded) => Some(encoded.into_bytes()),
-            PayloadStorage::OtapArrowRecords(_) => None,
+            PayloadStorage::OtapRecords(_) => None,
         }
     }
 
@@ -275,7 +275,7 @@ impl PdataPayload {
     #[must_use]
     pub fn otap_ref(&self) -> Option<&OtapArrowRecords> {
         match &self.storage {
-            PayloadStorage::OtapArrowRecords(records) => Some(records),
+            PayloadStorage::OtapRecords(records) => Some(records),
             _ => None,
         }
     }
@@ -316,7 +316,7 @@ impl PdataPayload {
         match self.storage {
             PayloadStorage::OtlpBytes(_) => SignalFormat::OtlpBytes,
             PayloadStorage::Encoded(_) => SignalFormat::Encoded,
-            PayloadStorage::OtapArrowRecords(_) => SignalFormat::OtapRecords,
+            PayloadStorage::OtapRecords(_) => SignalFormat::OtapRecords,
         }
     }
 
@@ -330,7 +330,7 @@ impl PdataPayload {
     #[must_use]
     pub fn known_item_count(&self) -> Option<usize> {
         match &self.storage {
-            PayloadStorage::OtapArrowRecords(records) => Some(records.num_items()),
+            PayloadStorage::OtapRecords(records) => Some(records.num_items()),
             _ => self.item_count.get(),
         }
     }
@@ -355,7 +355,7 @@ impl PdataPayload {
                 };
                 count
             }
-            PayloadStorage::OtapArrowRecords(records) => records.num_items(),
+            PayloadStorage::OtapRecords(records) => records.num_items(),
         };
         self.item_count.set(count);
         count
@@ -366,7 +366,7 @@ impl PdataPayload {
         match &self.storage {
             PayloadStorage::OtlpBytes(bytes) => Some(bytes.bytes().len()),
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes().len()),
-            PayloadStorage::OtapArrowRecords(records) => {
+            PayloadStorage::OtapRecords(records) => {
                 if let Some(size) = self.size.get() {
                     return Some(size);
                 }
@@ -396,8 +396,8 @@ impl PdataPayload {
                 );
                 PayloadStorage::Encoded(std::mem::replace(encoded, empty))
             }
-            PayloadStorage::OtapArrowRecords(records) => {
-                PayloadStorage::OtapArrowRecords(records.take_payload())
+            PayloadStorage::OtapRecords(records) => {
+                PayloadStorage::OtapRecords(records.take_payload())
             }
         };
         Self {
@@ -418,7 +418,7 @@ impl PdataPayload {
             size,
         } = self;
         match storage {
-            PayloadStorage::OtapArrowRecords(records) => Ok(records),
+            PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::OtlpBytes(bytes) => {
                 let codec = otlp_codec(bytes.signal_type());
                 let payload = Self {
@@ -457,9 +457,7 @@ impl PdataPayload {
                 accepted_encodings,
             ),
             PayloadStorage::Encoded(encoded) => codecs.view(encoded, accepted_encodings),
-            PayloadStorage::OtapArrowRecords(records) => {
-                Ok(PdataView::Native(Cow::Borrowed(records)))
-            }
+            PayloadStorage::OtapRecords(records) => Ok(PdataView::Native(Cow::Borrowed(records))),
         }
     }
 
@@ -480,7 +478,7 @@ impl PdataPayload {
                 plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
             }
-            PayloadStorage::OtapArrowRecords(records) => {
+            PayloadStorage::OtapRecords(records) => {
                 // Encoders can normalize transport IDs even when encoding fails.
                 // Invalidate before exposing mutable records, not just on success.
                 self.size = CachedMeasurement::unknown();
@@ -575,7 +573,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords
         options: otel_arrow_dfe_config::ConversionOptions,
     ) -> Result<Self, Self::Error> {
         match value.into_storage() {
-            PayloadStorage::OtapArrowRecords(records) => Ok(records),
+            PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::OtlpBytes(bytes) => {
                 Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
                     OtlpProtoBytes,
@@ -609,7 +607,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
                     OtapArrowRecords,
                 >>::try_from_with_options(records, options)?)
             }
-            PayloadStorage::OtapArrowRecords(records) => {
+            PayloadStorage::OtapRecords(records) => {
                 Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
                     OtapArrowRecords,
                 >>::try_from_with_options(records, options)?)

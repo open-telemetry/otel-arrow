@@ -835,7 +835,7 @@ impl BatchProcessor {
         let (ctx, payload) = request.into_parts();
 
         match payload.into_data() {
-            PayloadData::OtapArrowRecords(otap) => {
+            PayloadData::OtapRecords(otap) => {
                 if let Some(mut otap_format) = self.otap_format() {
                     otap_format
                         .for_signal(signal)

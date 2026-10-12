@@ -3654,7 +3654,7 @@ mod test {
                                 ack_count += 1;
 
                                 match nack.refused.payload().into_data() {
-                                    PayloadData::OtapArrowRecords(otap_batch) => {
+                                    PayloadData::OtapRecords(otap_batch) => {
                                         let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
                                         assert!(
                                             logs_batch.num_rows() > 0,

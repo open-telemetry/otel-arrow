@@ -55,7 +55,7 @@ pub struct RecordsetKqlProcessor {
     pipeline: BridgePipeline,
     compute_duration: ComputeDuration,
     /// Resolved on first use because processors currently receive codec services
-    /// only while processing messages. A future PR will expose the pipeline registry
+    /// only while processing messages. TODO(#3452): expose the pipeline registry
     /// at construction so this plan can be required instead of optional.
     encoding_plan: Option<EncodingPlan>,
 }

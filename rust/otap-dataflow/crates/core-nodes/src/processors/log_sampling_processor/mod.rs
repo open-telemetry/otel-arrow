@@ -331,7 +331,7 @@ mod tests {
                 let output_payload = msgs[0].clone().into_parts().1.take_payload();
                 let output_otap = match output_payload.into_data() {
                     PayloadData::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
-                    PayloadData::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
+                    PayloadData::OtapRecords(otap_arrow_records) => otap_arrow_records,
                     PayloadData::Encoded(_) => panic!("Unexpected encoded bytes"),
                 };
 
