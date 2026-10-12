@@ -41,6 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
+          persist-credentials: false
 
       - name: Free disk space
         shell: pwsh
@@ -82,8 +83,8 @@ jobs:
           Pop-Location
           $meta = [ordered]@{
             timestamp_utc    = (Get-Date).ToUniversalTime().ToString("o")
-            commit_sha       = "${{ github.sha }}"
-            ref              = "${{ github.ref }}"
+            commit_sha       = $env:GITHUB_SHA
+            ref              = $env:GITHUB_REF
             runner_os        = "${{ runner.os }}"
             runner_image     = "windows-latest"
             os_version       = $os.Version
@@ -210,4 +211,3 @@ jobs:
             tools/pipeline_perf_test/results/windows_idle_variance/**/*.json
             tools/pipeline_perf_test/results/windows-idle-variance.json
             tools/pipeline_perf_test/results/windows-idle-memory-scaling.json
-
