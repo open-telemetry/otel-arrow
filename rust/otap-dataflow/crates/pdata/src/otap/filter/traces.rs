@@ -686,7 +686,10 @@ mod test {
 
     /// Compile a list of strings into exact-match patterns.
     fn exact(values: &[&str]) -> Vec<Pattern> {
-        values.iter().map(|v| Pattern::Exact((*v).to_string())).collect()
+        values
+            .iter()
+            .map(|v| Pattern::Exact((*v).to_string()))
+            .collect()
     }
 
     #[test]

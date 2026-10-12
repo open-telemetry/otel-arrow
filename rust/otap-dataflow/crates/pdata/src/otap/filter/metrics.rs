@@ -129,7 +129,6 @@ mod test {
     use super::*;
     use crate::otap::Metrics;
     use crate::proto::OtlpProtoMessage;
-    use regex::Regex;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::metrics::v1::{
@@ -139,10 +138,14 @@ mod test {
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+    use regex::Regex;
 
     /// Compile a list of names into exact-match patterns.
     fn exact(names: &[&str]) -> Vec<Pattern> {
-        names.iter().map(|n| Pattern::Exact((*n).to_string())).collect()
+        names
+            .iter()
+            .map(|n| Pattern::Exact((*n).to_string()))
+            .collect()
     }
 
     /// Compile a list of regex patterns.
@@ -326,7 +329,10 @@ mod test {
         assert_eq!(rows(&input, ArrowPayloadType::NumberDataPoints), 3);
 
         let filter = MetricFilter::new(
-            Some(MetricMatchProperties::new(exact(&["test.counter1", "test.counter3"]))),
+            Some(MetricMatchProperties::new(exact(&[
+                "test.counter1",
+                "test.counter3",
+            ]))),
             None,
         );
         let mut pool = IdBitmapPool::new();

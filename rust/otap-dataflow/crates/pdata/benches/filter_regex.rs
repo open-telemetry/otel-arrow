@@ -70,9 +70,7 @@ fn bench_filter(c: &mut Criterion, group_name: &str, filter: &LogFilter, batch_s
             &batch_size,
             |b, _| {
                 b.iter(|| {
-                    let result = filter
-                        .filter(batch.clone())
-                        .expect("filter succeeds");
+                    let result = filter.filter(batch.clone()).expect("filter succeeds");
                     std::hint::black_box(result)
                 });
             },

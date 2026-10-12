@@ -19,7 +19,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::scalar::ScalarValue;
-use otel_arrow_dfe_pdata::otap::filter::regex_is_match;
+use otel_arrow_dfe_pdata::otap::filter::Pattern;
 use regex::Regex;
 
 const FUNC_NAME: &str = "regex_match";
@@ -28,14 +28,14 @@ const FUNC_NAME: &str = "regex_match";
 /// precompiled pattern. Null inputs produce null outputs.
 #[derive(Debug)]
 pub struct RegexMatchFunc {
-    regex: Regex,
+    pattern: Pattern,
     signature: Signature,
 }
 
 impl RegexMatchFunc {
     pub fn new(regex: Regex) -> Self {
         Self {
-            regex,
+            pattern: Pattern::Regex(regex),
             signature: Signature::any(1, Volatility::Immutable),
         }
     }
@@ -79,25 +79,26 @@ impl ScalarUDFImpl for RegexMatchFunc {
 
         match &args.args[0] {
             ColumnarValue::Array(arr) => {
-                // The shared kernel preserves input nulls (as this UDF does); the
+                // `Pattern::matches` preserves input nulls (as this UDF does); the
                 // query engine resolves nulls later via `coerce_nulls_for_predicate`.
-                let out = regex_is_match(&self.regex, arr)
-                    .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
+                let out = self.pattern.matches(arr).map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!("{FUNC_NAME}: {e}"))
+                })?;
                 Ok(ColumnarValue::Array(Arc::new(out)))
             }
             ColumnarValue::Scalar(s) => {
-                Ok(ColumnarValue::Scalar(regex_match_scalar(&self.regex, s)?))
+                Ok(ColumnarValue::Scalar(regex_match_scalar(&self.pattern, s)?))
             }
         }
     }
 }
 
-fn regex_match_scalar(regex: &Regex, s: &ScalarValue) -> Result<ScalarValue> {
+fn regex_match_scalar(pattern: &Pattern, s: &ScalarValue) -> Result<ScalarValue> {
     match s {
         ScalarValue::Utf8(v) | ScalarValue::LargeUtf8(v) | ScalarValue::Utf8View(v) => Ok(
-            ScalarValue::Boolean(v.as_deref().map(|v| regex.is_match(v))),
+            ScalarValue::Boolean(v.as_deref().map(|v| pattern.is_match(v))),
         ),
-        ScalarValue::Dictionary(_, inner) => regex_match_scalar(regex, inner),
+        ScalarValue::Dictionary(_, inner) => regex_match_scalar(pattern, inner),
         other => exec_err!(
             "{FUNC_NAME}: unsupported haystack type {}",
             other.data_type()
@@ -109,8 +110,8 @@ fn regex_match_scalar(regex: &Regex, s: &ScalarValue) -> Result<ScalarValue> {
 mod tests {
     use super::*;
 
-    fn re(p: &str) -> Regex {
-        Regex::new(p).unwrap()
+    fn re(p: &str) -> Pattern {
+        Pattern::Regex(Regex::new(p).unwrap())
     }
 
     /// Scenario: match a pattern against scalar Utf8 values, including a null scalar.
