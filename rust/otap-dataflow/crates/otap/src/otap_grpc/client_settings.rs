@@ -172,7 +172,7 @@ pub struct GrpcClientSettings {
     /// `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the OTAP
     /// (Arrow) exporter. The OTLP/gRPC exporter applies them as per-request
     /// metadata; the OTAP exporter applies them once as the initial metadata of
-    /// each Arrow stream (see [`build_static_metadata`]).
+    /// each Arrow stream (see [`GrpcClientSettings::build_static_metadata`]).
     #[serde(default)]
     pub headers: HashMap<String, SecretString>,
 }

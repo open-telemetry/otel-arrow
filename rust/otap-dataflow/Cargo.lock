@@ -3605,6 +3605,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "escape8259"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f1f0d310082fd5de539d4f41601182241147498444a7695c520288a0cdbead6"
+
+[[package]]
 name = "etcetera"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6190,6 +6196,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libtest-mimic"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14e6ba06f0ade6e504aff834d7c34298e5155c6baca353cc6a4aaff2f9fd7f33"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap",
+ "escape8259",
+]
+
+[[package]]
 name = "libz-sys"
 version = "1.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7516,6 +7534,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-scraper",
  "otel-arrow-dfe-state",
@@ -7537,6 +7556,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smallvec",
+ "sqlparser",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
@@ -7637,6 +7657,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "libtest-mimic",
  "linkme",
  "nix 0.31.3",
  "object_store",
@@ -7647,6 +7668,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-query-engine",
  "otel-arrow-dfe-query-engine-languages",
@@ -7663,6 +7685,7 @@ dependencies = [
  "rand 0.10.3",
  "regex",
  "regex-automata",
+ "regex-syntax",
  "reqwest 0.13.5",
  "secrecy",
  "serde",
@@ -7725,6 +7748,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "prost 0.14.4",
@@ -7806,6 +7830,7 @@ name = "otel-arrow-dfe-filelog-checkpoint"
 version = "0.61.0"
 dependencies = [
  "crc",
+ "dhat",
  "hex",
  "sha2 0.11.0",
  "thiserror 2.0.21",
@@ -7841,6 +7866,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
@@ -7972,6 +7998,7 @@ dependencies = [
  "otel-arrow-contrib-data-engine-parser-abstractions",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-query-engine-languages",
  "parking_lot",
  "pretty_assertions",
@@ -8076,6 +8103,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "prost 0.14.4",
@@ -8119,6 +8147,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-expohisto",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-telemetry-macros",
  "parking_lot",
@@ -8174,6 +8203,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-quiver",
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
@@ -8212,6 +8242,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "serde",

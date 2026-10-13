@@ -1,11 +1,12 @@
-# Filelog checkpoint codec
+# Filelog checkpoint codec and replay
 
 `otel-arrow-dfe-filelog-checkpoint` defines the durable checkpoint format used
 by the Filelog receiver.
 
 It converts checkpoint values between Rust types and their exact on-disk byte
-representation. The crate is specific to Filelog; it is not a general-purpose
-storage or WAL library.
+representation and replays validated transactions against an in-memory file
+table. The crate is specific to Filelog; it is not a general-purpose storage
+or WAL library.
 
 ## What this crate provides
 
@@ -40,24 +41,22 @@ the version 1 byte format remains compatible.
 
 ## Scope
 
-This crate only handles checkpoint values and bytes. It does not:
+This crate handles checkpoint values, bytes, and in-memory replay. It does not:
 
 - access the filesystem;
 - create or lock checkpoint directories;
 - append or synchronize a WAL;
 - publish checkpoint generations;
-- apply operations to previously stored state;
 - compact or recover a checkpoint store; or
 - implement the Filelog receiver.
 
-Filesystem storage, replay, compaction, and receiver integration are separate
-layers built on this codec.
+Filesystem storage, compaction, and receiver integration remain separate layers.
 
 ## Decoding and replay
 
-The codec validates the structure of each operation and transaction. Rules
-that depend on a previously stored record are checked later while replaying the
-operation against the checkpoint table.
+The codec validates the structure of each operation and transaction.
+`ReplayState` additionally checks rules that depend on previously stored records.
+See [transactional replay](docs/replay.md) for its API and caller obligations.
 
 For example, the decoder preserves structurally decodable `keep_failed` values
 for later replay checks. The current producer rejects the locally impossible

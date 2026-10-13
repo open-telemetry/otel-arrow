@@ -26,11 +26,9 @@
 //!
 //! `OtapArrowRecords` does not cache these sizes. Its stores are cloneable and
 //! mutable through `set()` and `remove()`, so a cache owned by the records could
-//! become stale. [`crate::OtapPayload`] safely caches logical size at the wrapper
-//! level because accessing records for mutation consumes the wrapper; wrapping
-//! the resulting records again starts with a fresh cache. Consumers retaining
-//! bare records should compute once when retention starts and store the value
-//! with their retained state or ticket.
+//! become stale. Runtime payload wrappers cache logical size outside this
+//! low-level data model. Consumers retaining bare records should compute once
+//! when retention starts and store the value with their retained state or ticket.
 //!
 //! Sizing performance is proportional to the number of arrays and buffers, not
 //! to the number of rows or byte values. Each column calls `to_data()`, which
@@ -107,18 +105,8 @@ fn array_data_pinned_bytes(data: &ArrayData, seen: &mut CountedAllocations) -> u
 mod tests {
     use std::{mem::size_of, sync::Arc};
 
-    use arrow::array::{
-        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
-        UInt32Array, UInt32Builder,
-    };
-    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
-    use bytes::Bytes;
-
     use crate::otap::{Logs, OtapArrowRecords};
-    use crate::otlp::OtlpProtoBytes;
-    use crate::payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
     use crate::proto::OtlpProtoMessage;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -126,6 +114,11 @@ mod tests {
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
+    use arrow::array::{
+        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
+        UInt32Array, UInt32Builder,
+    };
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
 
     use super::{CountedAllocations, record_batch_logical_bytes, record_batch_pinned_bytes};
 
@@ -382,35 +375,6 @@ mod tests {
             assert_eq!(records.get(*payload_type), None);
         }
         assert_eq!(records.retained_memory_bytes(), 0);
-    }
-
-    /// Scenario: a serialized OTLP payload is wrapped in the opaque payload type.
-    /// Guarantees: OTLP logical and retained byte estimates both equal the protobuf length.
-    #[test]
-    fn otlp_payload_num_bytes_matches_retained_memory_bytes() {
-        let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(b"abc"));
-        let mut otlp_payload: OtapPayload = otlp_bytes.clone().into();
-
-        assert_eq!(otlp_bytes.num_bytes(), otlp_bytes.retained_memory_bytes());
-        assert_eq!(
-            otlp_payload.num_bytes(),
-            Some(otlp_payload.retained_memory_bytes())
-        );
-    }
-
-    /// Scenario: an empty OTAP logs payload is converted into and out of the opaque payload type.
-    /// Guarantees: the conversion preserves the payload's logs root type.
-    #[test]
-    fn empty_otap_payload_preserves_root_type() {
-        let arrow_payload: OtapPayload = OtapArrowRecords::Logs(Logs::default()).into();
-
-        assert_eq!(
-            match arrow_payload.into_data() {
-                PayloadData::OtapArrowRecords(records) => records.root_payload_type(),
-                PayloadData::OtlpBytes(_) => unreachable!(),
-            },
-            ArrowPayloadType::Logs
-        );
     }
 
     /// Scenario: a ListArray slice selects one list while retaining its original child array.

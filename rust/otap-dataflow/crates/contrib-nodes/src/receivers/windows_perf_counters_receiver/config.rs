@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Configuration parsing, validation, and exact-path normalization.
+//!
+//! Metric kind defaults to Gauge. Sum requires explicit aggregation and defaults
+//! to non-monotonic. Only cumulative, non-monotonic Sum is supported.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -26,8 +29,16 @@ const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
 pub(super) enum MetricKind {
     /// A point-in-time Gauge.
     Gauge,
-    /// A cumulative, non-monotonic Sum representing an UpDownCounter.
-    UpDownCounter,
+    /// A cumulative, non-monotonic Sum.
+    Sum,
+}
+
+/// OTel Sum aggregation temporality.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Aggregation {
+    Cumulative,
+    Delta,
 }
 
 /// One normalized exact counter path and its metric mapping.
@@ -80,8 +91,8 @@ struct MetricConfig {
     unit: String,
     #[serde(default, deserialize_with = "present_marker")]
     gauge: Option<EmptyConfig>,
-    #[serde(default, deserialize_with = "present_marker")]
-    up_down_counter: Option<EmptyConfig>,
+    #[serde(default, deserialize_with = "present_sum")]
+    sum: Option<SumConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -98,15 +109,48 @@ where
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SumConfig {
+    aggregation: Aggregation,
+    #[serde(default)]
+    monotonic: bool,
+}
+
+fn present_sum<'de, D>(deserializer: D) -> Result<Option<SumConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SumConfig>::deserialize(deserializer)?
+        .ok_or_else(|| {
+            serde::de::Error::custom(
+                "sum must be a mapping with explicit aggregation: cumulative; null Sum is invalid",
+            )
+        })
+        .map(Some)
+}
+
 impl MetricConfig {
     fn kind(&self, name: &str) -> Result<MetricKind, Error> {
-        match (self.gauge.is_some(), self.up_down_counter.is_some()) {
-            (true, false) => Ok(MetricKind::Gauge),
-            (false, true) => Ok(MetricKind::UpDownCounter),
-            _ => Err(invalid(format!(
-                "metrics.{name} must contain exactly one of gauge or up_down_counter"
-            ))),
+        if self.gauge.is_some() && self.sum.is_some() {
+            return Err(invalid(format!(
+                "metrics.{name} must not contain both gauge and sum"
+            )));
         }
+        let Some(sum) = &self.sum else {
+            return Ok(MetricKind::Gauge);
+        };
+        if sum.aggregation == Aggregation::Delta {
+            return Err(invalid(format!(
+                "metrics.{name}: delta Sum is not supported yet; use gauge or sum with aggregation: cumulative and monotonic: false"
+            )));
+        }
+        if sum.monotonic {
+            return Err(invalid(format!(
+                "metrics.{name}: monotonic Sum (monotonic: true) is not supported yet; use gauge or sum with aggregation: cumulative and monotonic: false"
+            )));
+        }
+        Ok(MetricKind::Sum)
     }
 }
 
@@ -478,7 +522,7 @@ mod tests {
             "private": {
                 "description": "Committed private memory.",
                 "unit": "By",
-                "up_down_counter": {}
+                "sum": {"aggregation": "cumulative", "monotonic": false}
             }
         })
     }
@@ -540,7 +584,7 @@ mod tests {
         assert_eq!(config.counters[0].path, r"\Memory\Available Bytes");
         assert_eq!(config.counters[0].kind, MetricKind::Gauge);
         assert_eq!(config.counters[1].path, r"\Process(app)\Private Bytes");
-        assert_eq!(config.counters[1].kind, MetricKind::UpDownCounter);
+        assert_eq!(config.counters[1].kind, MetricKind::Sum);
         assert_eq!(config.collection_interval, Duration::from_secs(30));
         assert_eq!(config.initial_delay, Duration::from_secs(1));
     }
@@ -553,7 +597,7 @@ mod tests {
             "metrics": {"private": {
                 "description": "Committed private memory.",
                 "unit": "By",
-                "up_down_counter": {}
+                "sum": {"aggregation": "cumulative", "monotonic": false}
             }},
             "perfcounters": [{
                 "object": "Process",
@@ -609,14 +653,14 @@ mod tests {
                     "description": "Value.",
                     "unit": "1",
                     "gauge": {},
-                    "up_down_counter": {}
+                    "sum": {"aggregation": "cumulative"}
                 }},
                 "perfcounters": [{
                     "object": "Memory",
                     "counters": [{"name": "Available Bytes", "metric": "value"}]
                 }]
             }),
-            "metrics.value must contain exactly one of gauge or up_down_counter",
+            "metrics.value must not contain both gauge and sum",
         );
     }
 
@@ -1035,58 +1079,124 @@ mod tests {
         );
     }
 
-    /// Scenario: A metric kind is written as a bare YAML key (`gauge:`), which parses as null.
-    /// Guarantees: A present-but-null kind selects that kind, and still conflicts with the other.
+    /// Scenario: Gauge is written as a bare YAML key or an empty map.
+    /// Guarantees: Both shorthands select Gauge and still conflict with an explicit Sum.
     #[test]
     fn accepts_null_metric_kind_shorthand() {
+        for gauge in [json!(null), json!({})] {
+            let mut value = config_with_timing("30s", "1s");
+            value["metrics"]["available"]["gauge"] = gauge;
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert_eq!(config.counters[0].kind, MetricKind::Gauge);
+            value["metrics"]["available"]["sum"] = json!({"aggregation": "cumulative"});
+            assert_config_error(value, "must not contain both gauge and sum");
+        }
+    }
+
+    /// Scenario: A metric definition selects no metric kind.
+    /// Guarantees: Omission selects Gauge without overriding metric metadata or collection timing.
+    #[test]
+    fn defaults_missing_metric_kind_to_gauge() {
         let config = RuntimeConfig::from_json(&json!({
-            "metrics": {
-                "available": {"description": "Available.", "unit": "By", "gauge": null},
-                "private": {"description": "Private.", "unit": "By", "up_down_counter": null}
-            },
+            "metrics": {"value": {"description": "Value.", "unit": "1"}},
             "perfcounters": [{
                 "object": "Memory",
-                "counters": [
-                    {"name": "Available Bytes", "metric": "available"},
-                    {"name": "Committed Bytes", "metric": "private"}
-                ]
+                "counters": [{"name": "Available Bytes", "metric": "value"}]
             }]
         }))
         .unwrap();
         assert_eq!(config.counters[0].kind, MetricKind::Gauge);
-        assert_eq!(config.counters[1].kind, MetricKind::UpDownCounter);
-
-        assert_config_error(
-            json!({
-                "metrics": {"value": {
-                    "description": "Value.",
-                    "unit": "1",
-                    "gauge": {},
-                    "up_down_counter": null
-                }},
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "value"}]
-                }]
-            }),
-            "metrics.value must contain exactly one of gauge or up_down_counter",
-        );
+        assert_eq!(config.counters[0].unit, "1");
+        assert_eq!(config.counters[0].description.as_ref(), "Value.");
+        assert_eq!(config.collection_interval, Duration::from_secs(30));
     }
 
-    /// Scenario: A metric definition selects no metric kind.
-    /// Guarantees: Validation rejects a metric whose projection is unspecified.
+    /// Scenario: A cumulative Sum omits monotonicity or explicitly sets it to false.
+    /// Guarantees: Both forms normalize to the supported cumulative non-monotonic Sum.
     #[test]
-    fn rejects_missing_metric_kind() {
-        assert_config_error(
-            json!({
-                "metrics": {"value": {"description": "Value.", "unit": "1"}},
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "value"}]
-                }]
-            }),
-            "metrics.value must contain exactly one of gauge or up_down_counter",
-        );
+    fn defaults_sum_monotonicity_to_false() {
+        for sum in [
+            json!({"aggregation": "cumulative"}),
+            json!({"aggregation": "cumulative", "monotonic": false}),
+        ] {
+            let mut value = config_with_timing("45s", "2s");
+            let _ = value["metrics"]["available"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gauge");
+            value["metrics"]["available"]["sum"] = sum;
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert_eq!(config.counters[0].kind, MetricKind::Sum);
+            assert_eq!(config.collection_interval, Duration::from_secs(45));
+            assert_eq!(config.initial_delay, Duration::from_secs(2));
+        }
+    }
+
+    /// Scenario: Sum is null, empty, lacks aggregation or selects an invalid aggregation.
+    /// Guarantees: Sum never silently becomes Gauge or defaults its aggregation.
+    #[test]
+    fn rejects_missing_or_invalid_sum_aggregation() {
+        for (sum, expected) in [
+            (json!(null), "null Sum is invalid"),
+            (json!({}), "missing field `aggregation`"),
+            (json!({"monotonic": false}), "missing field `aggregation`"),
+            (json!({"aggregation": null}), "expected string or map"),
+            (json!({"aggregation": ""}), "unknown variant"),
+            (json!({"aggregation": "invalid"}), "unknown variant"),
+        ] {
+            let mut value = config_with_timing("30s", "1s");
+            let _ = value["metrics"]["available"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gauge");
+            value["metrics"]["available"]["sum"] = sum;
+            assert_config_error(value, expected);
+        }
+    }
+
+    /// Scenario: Sum selects delta temporality or monotonic execution.
+    /// Guarantees: Unsupported selections fail with supported alternatives in the error.
+    #[test]
+    fn rejects_unsupported_sum_execution() {
+        for (aggregation, monotonic, expected) in [
+            ("delta", false, "delta Sum is not supported yet"),
+            ("delta", true, "delta Sum is not supported yet"),
+            (
+                "cumulative",
+                true,
+                "monotonic Sum (monotonic: true) is not supported yet",
+            ),
+        ] {
+            let mut value = config_with_timing("30s", "1s");
+            let _ = value["metrics"]["available"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gauge");
+            value["metrics"]["available"]["sum"] = json!({
+                "aggregation": aggregation, "monotonic": monotonic
+            });
+            let error = RuntimeConfig::from_json(&value).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("metrics.available"), "{error}");
+            assert!(
+                error
+                    .contains("use gauge or sum with aggregation: cumulative and monotonic: false"),
+                "{error}"
+            );
+        }
+    }
+
+    /// Scenario: A metric definition uses an unrecognized up_down_counter field.
+    /// Guarantees: Only gauge and sum are accepted as metric-kind fields.
+    #[test]
+    fn rejects_removed_metric_kind_alias() {
+        let mut value = config_with_timing("30s", "1s");
+        let _ = value["metrics"]["available"]
+            .as_object_mut()
+            .unwrap()
+            .remove("gauge");
+        value["metrics"]["available"]["up_down_counter"] = json!({});
+        assert_config_error(value, "unknown field `up_down_counter`");
     }
 
     /// Scenario: Counter paths are at and beyond the PDH path limit, including non-BMP text.
