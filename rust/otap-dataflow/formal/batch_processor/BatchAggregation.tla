@@ -29,11 +29,14 @@ CONSTANTS
     OutboundLimits,  \* candidate outbound_request_limit values
     Overheads,       \* bytes mode: header units repeated per fragment
     AllowBatchError, \* may make_batches fail (mod.rs 1151-1164)?
-    AllowFallback    \* bytes mode: may a split be refused by a budget?
+    AllowFallback,   \* bytes mode: may a split be refused by a budget?
+    FreeSplit        \* bytes mode: TRUE explores every fragment layout;
+                     \* FALSE uses equal blocks with overhead cfg.h
 
 ASSUME Mode \in {"aligned", "rows", "bytes"}
 ASSUME NumRequests \in Nat \ {0} /\ MaxReqSize \in Nat \ {0}
 ASSUME AllowBatchError \in BOOLEAN /\ AllowFallback \in BOOLEAN
+ASSUME FreeSplit \in BOOLEAN
 
 Requests == 1..NumRequests
 NoKey == 0          \* BatchPortion.inkey = None
@@ -140,7 +143,9 @@ MakePayload(r, c) ==
 (* [chunks, real, own]: its payload, its real size, and its ownership     *)
 (* weight. Batches come out in input order.                               *)
 
-ItemBatch(b) == [chunks |-> b, real |-> PSize(b), own |-> PSize(b)]
+(* frag is a ghost flag: TRUE for a split fragment.                      *)
+ItemBatch(b) ==
+    [chunks |-> b, real |-> PSize(b), own |-> PSize(b), frag |-> FALSE]
 
 (* generic_concatenate (crates/pdata/src/otap/groups.rs 244): join pieces *)
 (* greedily, starting a new batch when the next piece would exceed Max.  *)
@@ -181,43 +186,82 @@ ItemBatches(pieces) ==
     LET bs == Concat(pieces, <<>>) IN [i \in 1..Len(bs) |-> ItemBatch(bs[i])]
 
 (* make_bytes_batches_owned (crates/pdata/src/otlp/batching.rs 560).      *)
-Header == [j \in 1..cfg.h |-> <<0, j>>]
-
 FlushCur(cur) == IF cur = <<>> THEN <<>> ELSE <<ItemBatch(cur)>>
 
 (* push_resource_entry (185) for an entry larger than Max: split it into *)
-(* standalone fragments that each repeat the header                      *)
-(* (split_resource_entry 251), then reset ownership to even shares       *)
-(* (rescale_ownership 144). A refused split (fb, or no room next to the  *)
-(* header) emits the entry whole.                                         *)
-SplitEntry(e, fb) ==
-    IF fb \/ Max - cfg.h < 1
-    THEN <<[chunks |-> <<e>>, real |-> Len(e), own |-> Len(e)]>>
-    ELSE LET bl == Blocks(e, Max - cfg.h, Max - cfg.h)
-             n == Len(bl)
-         IN [i \in 1..n |->
-               [chunks |-> <<Header \o bl[i]>>,
-                real |-> cfg.h + Len(bl[i]),
-                own |-> (Len(e) \div n) + (IF i <= Len(e) % n THEN 1 ELSE 0)]]
+(* standalone fragments (split_resource_entry 251, split_scope_entry),   *)
+(* then reset ownership to even shares (rescale_ownership 144). A        *)
+(* refused split (fb) emits the entry whole.                              *)
+(*                                                                         *)
+(* The real split packs whole scopes first and only splits an oversize    *)
+(* scope into records, so fragment sizes depend on scope and record sizes *)
+(* and each fragment repeats either the resource header or the resource   *)
+(* and scope headers. With FreeSplit, the model allows every layout: any  *)
+(* data block sizes, each fragment with its own overhead in 0..cfg.h, as  *)
+(* long as it fits in Max. This includes every layout the code produces.  *)
+(* Without FreeSplit, blocks are equal and every overhead is cfg.h.       *)
+Whole(e) == <<[chunks |-> <<e>>, real |-> Len(e), own |-> Len(e),
+               frag |-> FALSE]>>
 
+Share(total, n, i) == (total \div n) + (IF i <= total % n THEN 1 ELSE 0)
+
+HeaderOf(h) == [j \in 1..h |-> <<0, j>>]
+
+(* A layout is a seq of [c : data units, h : header units]. *)
+RECURSIVE FragLayouts(_)
+FragLayouts(n) ==
+    IF n = 0 THEN {<<>>}
+    ELSE UNION {{<<[c |-> kj[1], h |-> kj[2]]>> \o rest :
+                    rest \in FragLayouts(n - kj[1])} :
+                kj \in {x \in (1..n) \X (0..cfg.h) : x[1] + x[2] <= Max}}
+
+RECURSIVE LayoutOffset(_, _)
+LayoutOffset(lay, i) ==
+    IF i = 0 THEN 0 ELSE LayoutOffset(lay, i - 1) + lay[i].c
+
+Fragments(e, lay) ==
+    [i \in 1..Len(lay) |->
+        [chunks |-> <<HeaderOf(lay[i].h)
+                      \o SubSeq(e, LayoutOffset(lay, i - 1) + 1,
+                                LayoutOffset(lay, i))>>,
+         real |-> lay[i].h + lay[i].c,
+         own |-> Share(Len(e), Len(lay), i),
+         frag |-> TRUE]]
+
+EqualSplit(e) ==
+    LET bl == Blocks(e, Max - cfg.h, Max - cfg.h) IN
+    Fragments(e, [i \in 1..Len(bl) |-> [c |-> Len(bl[i]), h |-> cfg.h]])
+
+SplitChoices(e, fb) ==
+    IF fb THEN {Whole(e)}
+    ELSE IF FreeSplit THEN {Fragments(e, lay) : lay \in FragLayouts(Len(e))}
+    ELSE IF Max - cfg.h < 1 THEN {Whole(e)}
+    ELSE {EqualSplit(e)}
+
+(* The set of possible outputs of make_bytes_batches_owned.               *)
 RECURSIVE BytesPack(_, _, _)
 BytesPack(es, cur, fb) ==
-    IF es = <<>> THEN FlushCur(cur)
+    IF es = <<>> THEN {FlushCur(cur)}
     ELSE LET e == Head(es) IN
          IF PSize(cur) + Len(e) <= Max
          THEN BytesPack(Tail(es), Append(cur, e), fb)
          ELSE IF Len(e) <= Max
-         THEN FlushCur(cur) \o BytesPack(Tail(es), <<e>>, fb)
-         ELSE FlushCur(cur) \o SplitEntry(e, fb)
-                \o BytesPack(Tail(es), <<>>, fb)
+         THEN {FlushCur(cur) \o r : r \in BytesPack(Tail(es), <<e>>, fb)}
+         ELSE {FlushCur(cur) \o fr \o r :
+                 fr \in SplitChoices(e, fb),
+                 r \in BytesPack(Tail(es), <<>>, fb)}
 
-MakeBatches(payloads, fb) ==
+(* The set of possible outputs of Batcher::make_batches (890, 931). Only *)
+(* bytes mode with splitting has more than one.                           *)
+Batchings(payloads, fb) ==
     IF Mode = "bytes"
-    THEN IF Max = 0 THEN <<ItemBatch(Flatten(payloads))>>
+    THEN IF Max = 0 THEN {<<ItemBatch(Flatten(payloads))>>}
          ELSE BytesPack(Flatten(payloads), <<>>, fb)
-    ELSE IF Max = 0 THEN ItemBatches(payloads)
-    ELSE IF Mode = "aligned" THEN ItemBatches(AlignedPieces(payloads, 0))
-    ELSE ItemBatches(RowPieces(payloads))
+    ELSE IF Max = 0 THEN {ItemBatches(payloads)}
+    ELSE IF Mode = "aligned" THEN {ItemBatches(AlignedPieces(payloads, 0))}
+    ELSE {ItemBatches(RowPieces(payloads))}
+
+Payloads(b) == [i \in 1..Len(b) |-> b[i].p]
 
 -----------------------------------------------------------------------------
 (* State transformers. St is the processor state (plus ghosts) as one   *)
@@ -303,10 +347,8 @@ SendLoop(bs, ctx, pos, S) ==
 
 (* flush_signal_impl, batching succeeded (1166-1297), with take_remaining *)
 (* (1589) when a size flush leaves a small last batch.                    *)
-FlushOk(S, reason, fb) ==
-    LET payloads == [i \in 1..Len(S.buf) |-> S.buf[i].p]
-        bs == MakeBatches(payloads, fb)
-        n == Len(bs)
+FlushOk(S, reason, bs) ==
+    LET n == Len(bs)
         last == bs[n]
         li == S.buf[Len(S.buf)]
         cand == reason = "size" /\ Max # 0 /\ n > 1          \* 1174-1177
@@ -314,7 +356,8 @@ FlushOk(S, reason, fb) ==
         k == li.inkey
         holds == retain /\ k # NoKey /\ k \in S.live           \* 1632-1637
         newPart == [p |-> last.chunks, inkey |-> k, w |-> last.real,
-                    ret |-> holds, src |-> li.src]             \* 1627, 1641
+                    ret |-> holds, src |-> li.src,
+                    frag |-> last.frag]                        \* 1627, 1641
         toSend == IF retain THEN SubSeq(bs, 1, n - 1) ELSE bs
         flags ==
             (IF cand /\ Mode = "aligned" /\ bs[1].real < Lower  \* 1189
@@ -339,10 +382,15 @@ FlushErr(S) ==
                    [S EXCEPT !.buf = <<>>, !.lost = @ \cup data])
 
 (* flush_signal_impl (1083). An empty buffer is a no-op (1096).          *)
-Flush(S, reason, err, fb) ==
+(* bs is the batcher output chosen from Batchings; unused on error.       *)
+Flush(S, reason, err, bs) ==
     IF S.buf = <<>> THEN S
     ELSE IF err THEN FlushErr(S)
-    ELSE FlushOk(S, reason, fb)
+    ELSE FlushOk(S, reason, bs)
+
+(* Batcher outputs to choose from for a flush of buffer b.               *)
+BatchChoices(b, err, fb) ==
+    IF err \/ b = <<>> THEN {<<>>} ELSE Batchings(Payloads(b), fb)
 
 ErrChoices == IF AllowBatchError THEN BOOLEAN ELSE {FALSE}
 FbChoices == IF Mode = "bytes" /\ AllowFallback THEN BOOLEAN ELSE {FALSE}
@@ -381,10 +429,15 @@ AcceptPayload ==
                 [S EXCEPT
                     !.buf = Append(@, [p |-> p,
                                        inkey |-> IF t THEN r ELSE NoKey,
-                                       w |-> w, ret |-> FALSE, src |-> r]),
+                                       w |-> w, ret |-> FALSE, src |-> r,
+                                       frag |-> FALSE]),
                     !.live = IF t THEN @ \cup {r} ELSE @,
                     !.cnt = IF t THEN [@ EXCEPT ![r] = 0] ELSE @]
-            S1 ==
+            flushes ==
+                /\ w # 0 /\ ~PassThrough(w)
+                /\ ~(t /\ Cardinality(S.live) >= cfg.inl)
+                /\ SumW(buffered.buf) >= Lower
+            S1(bs) ==
                 IF w = 0                                     \* 979-987
                 THEN (IF t THEN Outcome(S, r, TRUE) ELSE S)
                 ELSE IF PassThrough(w)                       \* 991-993
@@ -393,9 +446,11 @@ AcceptPayload ==
                 ELSE IF t /\ Cardinality(S.live) >= cfg.inl  \* 1008-1020
                 THEN Outcome(S, r, FALSE)
                 ELSE IF SumW(buffered.buf) >= Lower          \* 1041-1058
-                THEN Flush(buffered, "size", err, fb)
+                THEN Flush(buffered, "size", err, bs)
                 ELSE buffered
-        IN /\ SetSt(S1)
+        IN \E bs \in IF flushes THEN BatchChoices(buffered.buf, err, fb)
+                     ELSE {<<>>} :
+           /\ SetSt(S1(bs))
            /\ arrived' = arrived \cup {r}
            /\ trk' = IF t THEN trk \cup {r} ELSE trk
            /\ reqSize' = [reqSize EXCEPT ![r] = w]
@@ -406,7 +461,8 @@ AcceptPayload ==
 TimerFlush ==
     /\ buf # <<>>
     /\ \E err \in ErrChoices, fb \in FbChoices :
-        SetSt(Flush(St, "timer", err, fb))
+        \E bs \in BatchChoices(buf, err, fb) :
+            SetSt(Flush(St, "timer", err, bs))
     /\ UNCHANGED <<cfg, arrived, trk, reqSize, shutdown>>
 
 (* Shutdown -> flush_shutdown (756). No input is accepted afterwards.    *)
@@ -414,7 +470,8 @@ Shutdown ==
     /\ ~shutdown
     /\ shutdown' = TRUE
     /\ \E err \in ErrChoices, fb \in FbChoices :
-        SetSt(Flush(St, "shutdown", err, fb))
+        \E bs \in BatchChoices(buf, err, fb) :
+            SetSt(Flush(St, "shutdown", err, bs))
     /\ UNCHANGED <<cfg, arrived, trk, reqSize>>
 
 (* Downstream answers one in-flight batch: handle_ack / handle_nack       *)

@@ -19,7 +19,7 @@ status=0
 for mode in aligned rows bytes; do
     mode_labels="$labels"
     if [ "$mode" = bytes ]; then
-        mode_labels="$labels fragment"
+        mode_labels="$labels fragment fragment_retained fragment_residual_acked"
     fi
     for label in $mode_labels; do
         cat > "$work/c.cfg" <<EOF
@@ -36,6 +36,7 @@ CONSTANTS
     Overheads = {0, 1}
     AllowBatchError = TRUE
     AllowFallback = TRUE
+    FreeSplit = TRUE
 INVARIANT TargetUnreached
 CHECK_DEADLOCK FALSE
 EOF

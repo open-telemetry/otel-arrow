@@ -17,15 +17,18 @@ CONSTANT Target
 VARIABLES
     splitEver,  \* requests that ever had two or more references
     retEver,    \* requests that ever had a residual retained
+    fragEver,   \* requests that ever had a split fragment retained
     sent        \* units that were ever sent downstream
 
-covVars == <<vars, splitEver, retEver, sent>>
+covVars == <<vars, splitEver, retEver, fragEver, sent>>
 
 Labels ==
     {"residual_retained", "split_request", "split_request_acked",
      "residual_request_acked", "outbound_full_nack", "inbound_full_nack",
      "batch_error", "downstream_nack", "tracked_pass_through"}
-    \cup (IF Mode = "bytes" THEN {"fragment"} ELSE {})
+    \cup (IF Mode = "bytes"
+          THEN {"fragment", "fragment_retained", "fragment_residual_acked"}
+          ELSE {})
 
 ASSUME Target \in Labels
 
@@ -56,11 +59,16 @@ Reached(l) ==
              \E b \in inflight : b.pt # NoKey
       [] l = "fragment" ->
              \E b \in inflight : <<0, 1>> \in b.units
+      [] l = "fragment_retained" ->
+             \E i \in DOMAIN buf : buf[i].ret /\ buf[i].frag
+      [] l = "fragment_residual_acked" ->
+             \E r \in fragEver : nAck[r] = 1
 
 CovInit ==
     /\ Init
     /\ splitEver = {}
     /\ retEver = {}
+    /\ fragEver = {}
     /\ sent = {}
 
 CovNext ==
@@ -68,6 +76,9 @@ CovNext ==
     /\ splitEver' = splitEver \cup {r \in live' : cnt'[r] >= 2}
     /\ retEver' = retEver \cup {buf'[i].inkey : i \in {j \in DOMAIN buf' :
                                                         buf'[j].ret}}
+    /\ fragEver' = fragEver \cup {buf'[i].inkey :
+                                  i \in {j \in DOMAIN buf' :
+                                          buf'[j].ret /\ buf'[j].frag}}
     /\ sent' = sent \cup UNION {b.units : b \in inflight'}
 
 CovSpec == CovInit /\ [][CovNext]_covVars

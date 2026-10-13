@@ -97,11 +97,15 @@ modes because the counting logic relies on how batches are cut.
 3. **Bytes** (OTLP). `make_bytes_batches_owned`
    (`crates/pdata/src/otlp/batching.rs`) packs whole resource entries in
    order. An entry that does not fit starts a new batch. An entry that is
-   larger than `max_size` on its own is split into standalone fragments; each
-   fragment repeats the resource and scope headers, so the fragments' real
-   sizes add up to more than the entry. Their ownership weights are reset to
-   an even share of the entry size (`rescale_ownership`). An entry that would
-   exceed the split budgets is emitted whole, above `max_size`.
+   larger than `max_size` on its own is split into standalone fragments
+   (`split_resource_entry`): whole scopes are packed first, and only a scope
+   that is too large is split into records. Each fragment repeats the
+   resource header, or the resource and scope headers, so the fragments'
+   real sizes add up to more than the entry, and they need not be equal.
+   Their ownership weights are reset to an even share of the entry size
+   (`rescale_ownership`), so a fragment can own more or less than its real
+   size. An entry that would exceed the split budgets is emitted whole,
+   above `max_size`.
 
 In all modes the batches come out in input order, and ownership weights add
 up to the total input weight. `drain_context` relies on both facts: it walks

@@ -16,6 +16,7 @@ answers within small bounds, and checks the properties in
 | `logs_traces.cfg` | OTAP items, aligned splitting (logs and traces). |
 | `metrics.cfg` | OTAP items, split on metric rows (metrics). |
 | `bytes.cfg` | OTLP bytes, whole entries and header-repeating fragments. |
+| `bytes_fragment.cfg` | OTLP bytes, one larger request, every fragment layout. |
 | `Coverage.tla`, `coverage.sh` | Vacuity check: every risky path is reachable. |
 
 ## What is checked
@@ -54,11 +55,11 @@ Each action is one message handled by `BatchProcessor::process`.
 | `SendLoop` | send loop 1236-1290 |
 | `NackParts` | outbound slots exhausted 1257-1278 |
 | `HandleParts` | `handle_partial_responses` 1702 |
-| `MakeBatches` | `Batcher::make_batches` 890, 931 |
+| `Batchings` | `Batcher::make_batches` 890, 931 |
 | `AlignedPieces` | `plan_split` (`crates/pdata/src/otap/transform/split.rs`) |
 | `RowSplit` | `plan_metrics_split` (same file, 152) |
 | `Concat` | `generic_concatenate` (`crates/pdata/src/otap/groups.rs` 244) |
-| `BytesPack`, `SplitEntry` | `make_bytes_batches_owned`, `push_resource_entry`, `rescale_ownership` (`crates/pdata/src/otlp/batching.rs`) |
+| `BytesPack`, `SplitChoices`, `Fragments` | `make_bytes_batches_owned`, `push_resource_entry`, `rescale_ownership` (`crates/pdata/src/otlp/batching.rs`) |
 
 Abstractions:
 
@@ -70,14 +71,29 @@ Abstractions:
   buffered, which covers early and late timers.
 - Split budgets in bytes mode are a nondeterministic choice per flush
   (`AllowFallback`).
+- Fragment layout in bytes mode. The real split packs whole scopes first and
+  only splits an oversize scope into records, so fragment sizes depend on
+  scope and record sizes, and a fragment repeats either the resource header
+  or the resource and scope headers. With `FreeSplit = TRUE` the model
+  allows every layout: any data block sizes, each fragment with its own
+  overhead from 0 to `cfg.h`, as long as it fits in `max_size`. That
+  includes every layout the code can produce. With `FreeSplit = FALSE`,
+  blocks are equal and every fragment repeats `cfg.h` header units.
 - `make_batches` failure is a nondeterministic choice per flush
   (`AllowBatchError`).
 - Slot keys are never reused, as with the generational slot map.
 
-Bounds (each `.cfg` explores all combinations in one run): 3 requests of
-0 to 4 units, tracked or not; `min_size` 2 or 3; `max_size` unset, 3, or 4;
-inbound limit 1 to 3; outbound limit 1 or 2; header overhead 0 or 1 (bytes
-mode only).
+Bounds. Each `.cfg` explores all combinations of its settings in one run.
+
+| Config | Requests | Units each | `min_size` | `max_size` | Inbound | Outbound | Overhead | Fragment layouts |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `logs_traces.cfg`, `metrics.cfg` | 3 | 0-4 | 2, 3 | unset, 3, 4 | 1-3 | 1, 2 | - | - |
+| `bytes.cfg` | 3 | 0-4 | 2, 3 | unset, 3, 4 | 1-3 | 1, 2 | 0, 1 | equal blocks |
+| `bytes_fragment.cfg` | 1 | 0-7 | 3 | 4 | 1, 2 | 1, 2 | 1 | every layout |
+| `coverage.sh` | 2 | 0-4 | 2, 3 | unset, 3, 4 | 1, 2 | 1, 2 | 0, 1 | every layout |
+
+Requests may be tracked or untracked, batching may fail, and in bytes mode a
+split may be refused by its budget.
 
 ## Known limits
 
@@ -85,9 +101,12 @@ mode only).
   they are not a proof for larger inputs or more requests.
 - One signal and one format at a time. The three sizing modes are checked
   separately.
-- Bytes mode: a split fragment is retained only when its even ownership share
-  happens to equal its real size. That needs an entry larger than 4 units, so
-  this path is modeled but not reached at these bounds.
+- Bytes mode: every fragment layout is checked exhaustively only for one
+  request (`bytes_fragment.cfg`). Running three requests with every layout
+  did not finish in reasonable time, so `bytes.cfg` uses equal blocks. For
+  two requests, `coverage.sh` shows that retained fragments and their Acks
+  are reached with every layout, but the properties are not checked
+  exhaustively there.
 - Bytes mode: only resource entries are modeled. Unparseable or non-resource
   top-level fields (`push_opaque`) are not.
 - Metric rows always carry at least one data point.
@@ -96,14 +115,15 @@ mode only).
 
 ## Results
 
-All properties hold in all three modes, at the bounds above, with the
-metrics `debug_assert!` fix applied (see "Findings" in [spec.md](spec.md)).
+All properties hold in every config, at the bounds above, with the metrics
+`debug_assert!` fix applied (see "Findings" in [spec.md](spec.md)).
 
 | Config | Distinct states | Depth | Time |
 | --- | --- | --- | --- |
-| `logs_traces.cfg` | 6,709,806 | 13 | 48s |
-| `metrics.cfg` | 25,403,565 | 13 | 4m45s |
-| `bytes.cfg` | 76,303,186 | 13 | 23m46s |
+| `logs_traces.cfg` | 6,709,806 | 13 | 46s |
+| `metrics.cfg` | 25,403,565 | 13 | 5m25s |
+| `bytes.cfg` | 76,303,186 | 13 | 25m25s |
+| `bytes_fragment.cfg` | 3,098,668 | 10 | 27s |
 
 Times are for 10 workers on a 10-core Apple silicon laptop with `-Xmx6g`.
 
@@ -112,8 +132,9 @@ Two further checks guard against a vacuous pass:
 - **Coverage.** `coverage.sh` checks that each risky path is reachable in
   each mode: residuals, requests split across batches and Acked, outbound
   and inbound slot exhaustion, batching errors, downstream Nacks, tracked
-  pass-through, and byte fragments. Expected output: every line starts with
-  `reached` (28 lines, about 30s).
+  pass-through, byte fragments, and retained fragments that are later
+  Acked. Expected output: every line starts with `reached` (30 lines, about
+  2.5 minutes).
 - **Mutation.** Removing the residual's reference in `FlushOk` (replace the
   `!.cnt = IF holds ...` update with `!.cnt = @,`) makes TLC report a
   violation of `NoPrematureAck` even with `ExactCounts` disabled. The ground
