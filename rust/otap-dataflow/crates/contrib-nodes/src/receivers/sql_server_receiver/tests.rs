@@ -108,6 +108,57 @@ fn composite_defaults_and_native_binding_plan() {
     assert!(!config.statement().driver_sql().contains("2026"));
 }
 
+/// Scenario: Snapshot, scalar, and composite queries omit fetch size at small and large row limits.
+/// Guarantees: The default is capped by the row limit and matches an explicit equivalent configuration.
+#[test]
+fn omitted_fetch_size_respects_row_limit() {
+    for base in [
+        snapshot("SELECT EVENT_ID FROM dbo.EVENTS"),
+        scalar(json!({"type":"int64","value":0})),
+        composite(),
+    ] {
+        for limit in [1, 100, 299, 300, 301, 10_000] {
+            let mut raw = base.clone();
+            raw["query"]["max_rows_per_poll"] = json!(limit);
+            let defaulted = parse(raw.clone());
+            let expected = usize::min(300, limit);
+            assert_eq!(defaulted.query().fetch_size_rows(), expected);
+            raw["query"]["fetch_size_rows"] = json!(expected);
+            let explicit = parse(raw);
+            assert_eq!(explicit.query().fetch_size_rows(), expected);
+            assert_eq!(
+                defaulted.config_fingerprint(),
+                explicit.config_fingerprint()
+            );
+        }
+    }
+}
+
+/// Scenario: A query explicitly supplies fetch sizes below, at, and above its row limit.
+/// Guarantees: Valid values are preserved; oversized, zero, null, and mistyped values are not defaulted.
+#[test]
+fn explicit_fetch_size_is_never_clamped_or_defaulted() {
+    let mut raw = composite();
+    raw["query"]["max_rows_per_poll"] = json!(100);
+    for size in [1, 50, 100] {
+        raw["query"]["fetch_size_rows"] = json!(size);
+        assert_eq!(parse(raw.clone()).query().fetch_size_rows(), size);
+    }
+    for size in [
+        json!(101),
+        json!(300),
+        json!(0),
+        Value::Null,
+        json!("100"),
+        json!(1.5),
+        json!(-1),
+        json!(false),
+    ] {
+        raw["query"]["fetch_size_rows"] = size;
+        rejects(raw.clone());
+    }
+}
+
 /// Scenario: Scalar keys are signed integers or exactly representable datetime2 timestamps.
 /// Guarantees: Binding order and event-time mapping reflect the declared scalar type.
 #[test]
@@ -1145,11 +1196,7 @@ fn rejects_invalid_operational_values() {
             "timeout",
             vec![json!("0s"), json!("301s"), json!("1.5s"), Value::Null],
         ),
-        (
-            "query",
-            "max_rows_per_poll",
-            vec![json!(0), json!(10001), json!(299)],
-        ),
+        ("query", "max_rows_per_poll", vec![json!(0), json!(10001)]),
         (
             "query",
             "fetch_size_rows",

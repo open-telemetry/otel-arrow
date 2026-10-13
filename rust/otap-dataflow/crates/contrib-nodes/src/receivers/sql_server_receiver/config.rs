@@ -404,8 +404,8 @@ struct QueryConfig {
     interval: Duration,
     #[serde(default = "default_query_timeout", with = "humantime_serde")]
     timeout: Duration,
-    #[serde(default = "default_fetch_size")]
-    fetch_size_rows: usize,
+    #[serde(default, deserialize_with = "deserialize_optional_fetch_size")]
+    fetch_size_rows: Option<usize>,
     max_rows_per_poll: usize,
     #[serde(deserialize_with = "deserialize_bytes")]
     max_batch_bytes: u64,
@@ -418,7 +418,9 @@ impl QueryConfig {
         PollingConfig {
             interval: self.interval,
             timeout: self.timeout,
-            fetch_size_rows: self.fetch_size_rows,
+            fetch_size_rows: self
+                .fetch_size_rows
+                .unwrap_or_else(|| default_fetch_size().min(self.max_rows_per_poll)),
             max_rows_per_poll: self.max_rows_per_poll,
             max_batch_bytes: self.max_batch_bytes,
             catch_up: self.catch_up,
@@ -543,6 +545,12 @@ fn deserialize_optional_string<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_optional_fetch_size<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    usize::deserialize(deserializer).map(Some)
 }
 
 fn whole_seconds(

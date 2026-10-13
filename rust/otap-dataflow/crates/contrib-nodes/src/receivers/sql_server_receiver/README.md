@@ -39,8 +39,9 @@ than replaced with defaults. The required top-level objects are `connection`,
   settings below. Credentials, connection strings, and instance discovery are
   rejected.
 - `query`: `statement`, `max_rows_per_poll`, and `max_batch_bytes` are required.
-  `interval` defaults to 60s, `timeout` to 30s, and `fetch_size_rows` to 300.
-  Shared `catch_up` defaults are 32 pages and 10s.
+  `interval` defaults to 60s, `timeout` to 30s, and `fetch_size_rows` to
+  `min(300, max_rows_per_poll)`. An explicit fetch size above the row limit is
+  rejected, not reduced. Shared `catch_up` defaults are 32 pages and 10s.
 - `watermark`: an explicit supported mode and initial cursor where applicable.
 - `checkpoint`: the shared directory, retry, and feedback policy. Preparation
   does not create directories, acquire leases, or read/write checkpoints.
