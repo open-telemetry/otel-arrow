@@ -13,7 +13,7 @@ pub mod kafka_receiver;
 #[cfg(feature = "oracle")]
 pub mod oracle_receiver;
 
-/// SQL Server configuration and query preparation without a runtime factory.
+/// SQL Server configuration and injected driver adapter without a runtime factory.
 #[cfg(feature = "sql-server")]
 pub mod sql_server_receiver;
 

@@ -15,6 +15,8 @@ use std::error::Error;
 pub enum DatabaseSystem {
     /// Oracle Database.
     Oracle,
+    /// Microsoft SQL Server.
+    SqlServer,
 }
 
 impl DatabaseSystem {
@@ -23,6 +25,7 @@ impl DatabaseSystem {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Oracle => "oracle.db",
+            Self::SqlServer => "microsoft.sql_server",
         }
     }
 }

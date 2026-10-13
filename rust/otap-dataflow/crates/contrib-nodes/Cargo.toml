@@ -45,6 +45,7 @@ base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
+tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
@@ -154,7 +155,7 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
-# Independently opt-in preparation only; no SQL Server runtime is registered yet.
+# Independently opt-in adapter; the production connector and factory are deferred.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
     "dep:sqlparser",
@@ -162,6 +163,7 @@ sql-server = [
     "dep:chrono",
     "dep:humantime-serde",
     "dep:secrecy",
+    "dep:tiberius",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
