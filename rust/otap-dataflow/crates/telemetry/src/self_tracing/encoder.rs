@@ -125,25 +125,22 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         self.dropped_count
     }
 
+    /// Encodes one attribute within the per-attribute budget, counting a hard
+    /// failure or a truncation as one dropped attribute.
     fn write_attribute(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
-        let budget = attr_budget(self.buf);
-        let mut truncated = false;
-        let result = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|buf| {
-                truncated = encode(buf)?;
-                Ok::<_, EncodeFailure>(())
-            })
-        });
-        if result.is_err() || truncated {
+        if bounded(self.buf, encode).unwrap_or(true) {
             self.dropped_count = self.dropped_count.saturating_add(1);
         }
     }
 
-    /// Appends a bounded integer attribute without constructing a tracing event.
+    /// Appends a bounded signed integer attribute.
+    pub fn write_i64(&mut self, key: &str, value: i64) {
+        self.write_attribute(|buf| Self::encode_int_attribute_to(buf, key, value).map(|()| false));
+    }
+
+    /// Appends a bounded unsigned integer attribute, encoded as its i64 bit pattern.
     pub fn write_u64(&mut self, key: &str, value: u64) {
-        self.write_attribute(|buf| {
-            Self::encode_int_attribute_to(buf, key, value as i64).map(|()| false)
-        });
+        self.write_i64(key, value as i64);
     }
 
     /// Appends a bounded floating-point attribute.
@@ -153,16 +150,24 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         });
     }
 
-    /// Appends a string attribute using ordinary truncation rules.
+    /// Appends a bounded boolean attribute.
+    pub fn write_bool(&mut self, key: &str, value: bool) {
+        self.write_attribute(|buf| Self::encode_bool_attribute_to(buf, key, value).map(|()| false));
+    }
+
+    /// Appends a string attribute, truncating the value if it does not fit.
     pub fn write_str(&mut self, key: &str, value: &str) {
         self.write_attribute(|buf| Self::encode_string_attribute_truncating_to(buf, key, value));
     }
 
+    /// Appends a Debug-formatted attribute, truncating the value if it does not fit.
+    pub fn write_debug(&mut self, key: &str, value: &dyn std::fmt::Debug) {
+        self.write_attribute(|buf| Self::encode_debug_attribute_to(buf, key, value));
+    }
+
     /// Formats an attribute directly into the bounded writer.
     pub fn write_display(&mut self, key: &str, value: &impl std::fmt::Display) {
-        self.write_attribute(|buf| {
-            Self::encode_debug_attribute_to(buf, key, &format_args!("{value}"))
-        });
+        self.write_debug(key, &format_args!("{value}"));
     }
 
     /// Encodes a saved record as a map, borrowing its body and attribute values.
@@ -171,69 +176,41 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// nested truncation counts this top-level attribute once, like a truncated
     /// string. The saved record's own dropped count is included inside the map.
     pub fn record_log_record(&mut self, key: &str, record: &LogRecord) {
-        let budget = attr_budget(self.buf);
-        let mut truncated = false;
-        let result = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|buf| {
-                buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-                    buf.encode_string(KEY_VALUE_KEY, key)?;
-                    buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                        buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
-                            let view = RawLogRecord::new(&record.body_attrs_bytes);
-                            truncated |= Self::map_entry(buf, b"event_name", |buf| {
-                                buf.encode_string_truncating(
-                                    ANY_VALUE_STRING_VALUE,
-                                    record.callsite().name(),
-                                )
+        let view = RawLogRecord::new(&record.body_attrs_bytes);
+        let callsite = record.callsite();
+        let severity = i64::from(level_to_severity_number(callsite.level()));
+        self.write_attribute(|buf| {
+            let mut lost = false;
+            buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+                buf.encode_string(KEY_VALUE_KEY, key)?;
+                buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+                    buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
+                        lost |= Self::map_entry(buf, b"event_name", |buf| {
+                            Self::encode_str_value(buf, callsite.name())
+                        });
+                        lost |= Self::map_entry(buf, b"severity_number", |buf| {
+                            Self::encode_int_value(buf, severity)
+                        });
+                        lost |= Self::map_entry(buf, b"scope", |buf| {
+                            Self::encode_str_value(buf, callsite.target())
+                        });
+                        if let Some(body) = view.body() {
+                            lost |= Self::map_entry(buf, b"body", |buf| {
+                                Self::encode_value_view(buf, &body, 0)
                             });
-                            truncated |= Self::map_entry(buf, b"severity_number", |buf| {
-                                buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                                buf.encode_varint(u64::from(level_to_severity_number(
-                                    record.callsite().level(),
-                                )))?;
-                                Ok(false)
-                            });
-                            truncated |= Self::map_entry(buf, b"scope", |buf| {
-                                buf.encode_string_truncating(
-                                    ANY_VALUE_STRING_VALUE,
-                                    record.callsite().target(),
-                                )
-                            });
-                            if let Some(body) = view.body() {
-                                truncated |= Self::map_entry(buf, b"body", |buf| {
-                                    Self::encode_value_view(buf, &body, 0)
-                                });
-                            }
-                            truncated |= Self::map_entry(buf, b"attributes", |buf| {
-                                let mut lost = false;
-                                buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
-                                    for attr in view.attributes() {
-                                        lost |= Self::map_entry(buf, attr.key(), |buf| match attr
-                                            .value()
-                                        {
-                                            Some(value) => Self::encode_value_view(buf, &value, 0),
-                                            None => Ok(false),
-                                        });
-                                    }
-                                    Ok::<_, EncodeFailure>(())
-                                })?;
-                                Ok(lost)
-                            });
-                            truncated |= Self::map_entry(buf, b"dropped_attributes_count", |buf| {
-                                buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                                buf.encode_varint(u64::from(record.dropped_attributes_count))?;
-                                Ok(false)
-                            });
-                            Ok::<_, EncodeFailure>(())
-                        })
+                        }
+                        lost |= Self::map_entry(buf, b"attributes", |buf| {
+                            Self::encode_attributes_view(buf, view.attributes(), 0)
+                        });
+                        lost |= Self::map_entry(buf, b"dropped_attributes_count", |buf| {
+                            Self::encode_int_value(buf, i64::from(record.dropped_attributes_count))
+                        });
+                        Ok::<_, EncodeFailure>(())
                     })
-                })?;
-                Ok::<_, EncodeFailure>(())
-            })
+                })
+            })?;
+            Ok(lost)
         });
-        if result.is_err() || truncated {
-            self.dropped_count = self.dropped_count.saturating_add(1);
-        }
     }
 
     /// Encode a string attribute, truncating the value if it doesn't fit.
@@ -271,26 +248,53 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     }
 
     /// Writes one whole map entry, rolling it back if even its framing cannot fit.
+    /// Returns true if the entry was dropped or truncated.
     fn map_entry(
         buf: &mut B,
         key: &[u8],
         value: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
     ) -> bool {
-        let budget = attr_budget(buf);
-        let mut truncated = false;
-        let result = buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|buf| {
-                buf.encode_len_delimited(KEY_VALUE_LIST_VALUES, |buf| {
-                    buf.encode_bytes(KEY_VALUE_KEY, key)?;
-                    buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                        truncated = value(buf)?;
-                        Ok::<_, EncodeFailure>(())
-                    })
-                })?;
-                Ok::<_, EncodeFailure>(())
-            })
+        let mut lost = false;
+        let result = bounded(buf, |buf| {
+            buf.encode_len_delimited(KEY_VALUE_LIST_VALUES, |buf| {
+                buf.encode_bytes(KEY_VALUE_KEY, key)?;
+                buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
+                    lost = value(buf)?;
+                    Ok::<_, EncodeFailure>(())
+                })
+            })?;
+            Ok(false)
         });
-        result.is_err() || truncated
+        result.is_err() || lost
+    }
+
+    fn encode_int_value(buf: &mut B, value: i64) -> Result<bool, EncodeFailure> {
+        buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+        buf.encode_varint(value as u64)?;
+        Ok(false)
+    }
+
+    fn encode_str_value(buf: &mut B, value: &str) -> Result<bool, EncodeFailure> {
+        buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value)
+    }
+
+    /// Encodes borrowed attributes as a map value.
+    fn encode_attributes_view<'a, A: AttributeView + 'a>(
+        buf: &mut B,
+        attributes: impl Iterator<Item = A>,
+        depth: usize,
+    ) -> Result<bool, EncodeFailure> {
+        let mut lost = false;
+        buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
+            for attr in attributes {
+                lost |= Self::map_entry(buf, attr.key(), |buf| match attr.value() {
+                    Some(value) => Self::encode_value_view(buf, &value, depth + 1),
+                    None => Ok(false),
+                });
+            }
+            Ok::<_, EncodeFailure>(())
+        })?;
+        Ok(lost)
     }
 
     /// Converts borrowed values directly to bounded protobuf without a value tree.
@@ -303,67 +307,54 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
             return Err(EncodeFailure::Dropped);
         }
         match value.value_type() {
-            ValueType::Empty => {}
+            ValueType::Empty => Ok(false),
             ValueType::String => {
                 let text = std::str::from_utf8(value.as_string().expect("string view"))
                     .map_err(|_| EncodeFailure::Dropped)?;
-                return buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, text);
+                Self::encode_str_value(buf, text)
             }
             ValueType::Bool => {
                 buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
                 buf.encode_varint(u64::from(value.as_bool().expect("bool view")))?;
+                Ok(false)
             }
             ValueType::Int64 => {
-                buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                buf.encode_varint(value.as_int64().expect("integer view") as u64)?;
+                Self::encode_int_value(buf, value.as_int64().expect("integer view"))
             }
             ValueType::Double => {
                 buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
                 buf.extend_from_slice(&value.as_double().expect("double view").to_le_bytes())?;
+                Ok(false)
             }
             ValueType::Bytes => {
                 buf.encode_bytes(ANY_VALUE_BYTES_VALUE, value.as_bytes().expect("bytes view"))?;
+                Ok(false)
             }
             ValueType::Array => {
-                let mut truncated = false;
+                let mut lost = false;
                 buf.encode_len_delimited(ANY_VALUE_ARRAY_VALUE, |buf| {
                     for child in value.as_array().expect("array view") {
-                        let budget = attr_budget(buf);
-                        let mut lost = false;
-                        let result = buf.with_max_remaining(budget, |buf| {
-                            buf.try_encode(|buf| {
-                                buf.encode_len_delimited(ARRAY_VALUE_VALUES, |buf| {
-                                    lost = Self::encode_value_view(buf, &child, depth + 1)?;
-                                    Ok::<_, EncodeFailure>(())
-                                })?;
+                        let result = bounded(buf, |buf| {
+                            buf.encode_len_delimited(ARRAY_VALUE_VALUES, |buf| {
+                                lost |= Self::encode_value_view(buf, &child, depth + 1)?;
                                 Ok::<_, EncodeFailure>(())
-                            })
+                            })?;
+                            Ok(false)
                         });
-                        truncated |= result.is_err() || lost;
                         if result.is_err() {
                             // Keep a prefix rather than changing array element positions.
+                            lost = true;
                             break;
                         }
                     }
                     Ok::<_, EncodeFailure>(())
                 })?;
-                return Ok(truncated);
+                Ok(lost)
             }
             ValueType::KeyValueList => {
-                let mut truncated = false;
-                buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
-                    for child in value.as_kvlist().expect("map view") {
-                        truncated |= Self::map_entry(buf, child.key(), |buf| match child.value() {
-                            Some(value) => Self::encode_value_view(buf, &value, depth + 1),
-                            None => Ok(false),
-                        });
-                    }
-                    Ok::<_, EncodeFailure>(())
-                })?;
-                return Ok(truncated);
+                Self::encode_attributes_view(buf, value.as_kvlist().expect("map view"), depth)
             }
         }
-        Ok(false)
     }
 
     /// Encode an i64 attribute into a buffer.
@@ -595,119 +586,61 @@ fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
     buf.remaining().div_ceil(2)
 }
 
+/// Runs `encode` transactionally within the per-attribute budget. `Ok(true)`
+/// means it succeeded but truncated; `Err` means it was rolled back.
+fn bounded<B: BoundedBuf>(
+    buf: &mut B,
+    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+) -> Result<bool, EncodeFailure> {
+    let budget = attr_budget(buf);
+    let mut truncated = false;
+    buf.with_max_remaining(budget, |buf| {
+        buf.try_encode(|buf| {
+            truncated = encode(buf)?;
+            Ok::<_, EncodeFailure>(())
+        })
+    })?;
+    Ok(truncated)
+}
+
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value)
-            })
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_f64(field.name(), value);
         }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value))
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_i64(field.name(), value);
         }
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
-            })
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_u64(field.name(), value);
         }
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value))
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_bool(field.name(), value);
         }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             self.encode_body_string(value);
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let key = field.name();
-        let mut truncated = false;
-        // Attempt the encoding (with truncation as needed) within the scoped
-        // budget, transactionally so a hard failure rolls back any partial
-        // KeyValue bytes. Truncation status is reported via the captured
-        // `truncated` flag rather than via Err, so the transaction commits.
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                truncated =
-                    DirectFieldVisitor::encode_string_attribute_truncating_to(b, key, value)?;
-                Ok::<(), EncodeFailure>(())
-            })
-        });
-        match (fit, truncated) {
-            (Ok(()), false) => {} // Fully encoded.
-            (Ok(()), true) => {
-                // Truncated; bytes were preserved.
-                self.dropped_count += 1;
-            }
-            (Err(_), _) => {
-                // Hard failure; everything rolled back.
-                self.dropped_count += 1;
-            }
+        } else {
+            self.write_str(field.name(), value);
         }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.encode_body_debug(value);
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let key = field.name();
-        let mut truncated = false;
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                truncated = DirectFieldVisitor::encode_debug_attribute_to(b, key, value)?;
-                Ok::<(), EncodeFailure>(())
-            })
-        });
-        match (fit, truncated) {
-            (Ok(()), false) => {} // Fully encoded.
-            (Ok(()), true) => {
-                // Truncated; bytes were preserved with [...] suffix.
-                self.dropped_count += 1;
-            }
-            (Err(_), _) => {
-                // Hard failure; everything rolled back.
-                self.dropped_count += 1;
-            }
+        } else {
+            self.write_debug(field.name(), value);
         }
     }
 }
