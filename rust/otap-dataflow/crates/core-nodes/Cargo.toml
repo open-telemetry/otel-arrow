@@ -225,6 +225,10 @@ path = "benches/filelog_multiline/allocations.rs"
 name = "filelog_multiline_memory"
 harness = false
 
+[[test]]
+name = "filelog_multiline_grouping_memory"
+harness = false
+
 [[bench]]
 name = "filelog_grouping"
 harness = false

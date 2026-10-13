@@ -13,6 +13,16 @@ use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::{
 };
 use std::hint::black_box;
 
+#[path = "support/allocation.rs"]
+mod allocation;
+
+fn main() {
+    allocation::run(
+        "grouping_payload_and_discard_are_bounded",
+        grouping_payload_and_discard_are_bounded,
+    );
+}
+
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
@@ -32,7 +42,6 @@ fn feed(framer: &mut MultilineFramer, matcher: &mut BoundaryMatcher, mut input: 
 
 /// Scenario: Lines fit or overflow records under preserve/replace, followed by a long oversized tail.
 /// Guarantees: Measured payload peaks fit the configured estimate and tail scans allocate nothing.
-#[test]
 fn grouping_payload_and_discard_are_bounded() {
     let input = [b'a'; 4096];
     for max_record_bytes in [1024, 32 * 1024] {
@@ -62,7 +71,11 @@ fn grouping_payload_and_discard_are_bounded() {
                 let _ = matcher
                     .is_match(PatternInput::Text("warm the worker scratch"))
                     .expect("warm cache");
-                let profiler = dhat::Profiler::builder().testing().build();
+                // Name each configuration before measurement to exclude its allocation.
+                let session = format!(
+                    "grouping_payload_and_discard_are_bounded-{max_record_bytes}-{on_decode_error:?}-{policy:?}"
+                );
+                let profiler = allocation::profiler("filelog_multiline_grouping_memory", &session);
                 let mut framer =
                     MultilineFramer::new(config, pattern, RecordStart::NewStream).expect("framer");
                 feed(&mut framer, &mut matcher, b"prefix\n");
@@ -82,11 +95,14 @@ fn grouping_payload_and_discard_are_bounded() {
                 }
                 feed(&mut framer, &mut matcher, b"\n");
                 let peak = dhat::HeapStats::get().max_bytes;
-                assert!(framer.retained_capacity() <= config.payload_peak_bytes().unwrap());
+                assert!(
+                    framer.retained_capacity()
+                        <= config.payload_peak_bytes().expect("valid payload bound")
+                );
                 drop(framer);
                 drop(profiler);
                 assert!(
-                    peak <= config.payload_peak_bytes().unwrap(),
+                    peak <= config.payload_peak_bytes().expect("valid payload bound"),
                     "peak {peak} exceeds {:?}",
                     config.payload_peak_bytes()
                 );
