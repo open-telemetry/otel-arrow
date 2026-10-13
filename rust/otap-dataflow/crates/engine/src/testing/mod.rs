@@ -160,6 +160,34 @@ pub fn test_extension_effect_handler(
     )
 }
 
+/// Creates an effect handler with an observable readiness probe for extension tests.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler_with_readiness(
+    name: otel_arrow_dfe_config::ExtensionId,
+    timeout: std::time::Duration,
+) -> (
+    crate::extension::EffectHandler,
+    crate::extension::readiness::ReadinessProbe,
+) {
+    let (signaller, probe) = crate::extension::readiness::ReadinessSignaller::pair(timeout);
+    let (tx, _rx) = flume::bounded(1);
+    let effects = crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        Some(signaller),
+    );
+    (effects, probe)
+}
+
+/// Takes a factory-built extension's readiness probe for offline wiring tests.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn take_test_extension_readiness_probe(
+    wrapper: &mut crate::extension::ExtensionWrapper,
+) -> Option<crate::extension::readiness::ReadinessProbe> {
+    wrapper.take_readiness_probe()
+}
+
 /// A test message type used in component tests.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TestMsg(pub String);
