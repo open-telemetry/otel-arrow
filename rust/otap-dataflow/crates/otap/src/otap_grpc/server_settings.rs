@@ -45,11 +45,8 @@ pub struct GrpcServerSettings {
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
 
-    /// Upper bound on concurrently active HTTP/2 streams per connection.
-    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
-    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
-    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
-    /// default.
+    /// Upper bound on concurrently active HTTP/2 streams per connection. The
+    /// effect of leaving this unset is receiver-specific.
     #[serde(default)]
     pub max_concurrent_streams: Option<u32>,
 

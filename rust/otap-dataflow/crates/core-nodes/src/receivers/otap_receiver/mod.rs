@@ -70,6 +70,11 @@ use tonic_middleware::MiddlewareLayer;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 
+/// Minimum number of streams per connection. Users should configure at least
+/// this many to be compatible with the OTAP exporter, less than this might
+/// stall as the client keep at least one stream open per signal.
+const MIN_CONCURRENT_STREAMS: u32 = 3;
+
 /// Configuration for the OTAP Receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,14 +241,25 @@ impl OTAPReceiver {
             }
         })?;
 
-        // Validate the deprecated `compression_method` alias without mutating the config.
         config.validate_compression()?;
-
         if config.compression_method.is_some() {
             otel_warn!(
                 "otap_receiver.deprecated_compression_method",
                 message = "`compression_method` is deprecated; use `request_compression` and \
                            `response_compression` instead"
+            );
+        }
+
+        if let Some(value) = config.grpc.max_concurrent_streams
+            && value > 0
+            && value < MIN_CONCURRENT_STREAMS
+        {
+            otel_warn!(
+                "otap_receiver.low_max_concurrent_streams",
+                max_concurrent_streams = value,
+                message = "`max_concurrent_streams` is below 3. OTAP exporters connected to \
+                            this receiver may stall with unopened streams if all three \
+                            signals are utilized."
             );
         }
 
@@ -625,7 +641,25 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         }
 
         // Also applies the request timeout, if configured.
-        let server_builder = common::apply_server_tuning(Server::builder(), &self.config.grpc);
+        let mut server_builder = common::apply_server_tuning(Server::builder(), &self.config.grpc);
+
+        // Apply the HTTP/2 `max_concurrent_streams` limit with OTAP-specific policy.
+        //
+        // OTAP uses long-lived bidirectional streams: each client holds one persistent HTTP/2
+        // stream per signal (and `streams_per_signal` of them), all multiplexed on a single
+        // connection. If the advertised limit is below the number of streams a client opens, the
+        // excess stream-opens sit in the client's HTTP/2 pending-open queue indefinitely with no
+        // error, timeout, or connection spillover, silently starving whole signals. Because the
+        // receiver cannot know a client's `streams_per_signal`, it does not derive this limit from
+        // `max_concurrent_requests`. When unset (or `0`), the limit is left uncapped so this
+        // starvation cannot happen by default. An explicit value is honored as-is.
+        match self.config.grpc.max_concurrent_streams {
+            Some(value) if value > 0 => {
+                server_builder = server_builder.max_concurrent_streams(Some(value));
+            }
+            // `None` or `Some(0)`: leave uncapped (tonic's native default).
+            _ => {}
+        }
 
         let maybe_tls_acceptor = build_tls_acceptor(self.config.grpc.tls.as_ref())
             .await
@@ -1896,6 +1930,8 @@ mod tests {
         assert!(receiver.config.grpc.response_compression.is_none());
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.grpc.timeout.is_none());
+        // Omitted: the OTAP receiver leaves the HTTP/2 stream limit uncapped by default.
+        assert!(receiver.config.grpc.max_concurrent_streams.is_none());
 
         // Explicit request/response compression: single value and list forms.
         let config_compression = json!({
@@ -1975,6 +2011,56 @@ mod tests {
             "not_a_real_field": true
         });
         assert!(OTAPReceiver::from_config(pipeline_ctx, &config_unknown_field).is_err());
+    }
+
+    /// Scenario: The OTAP receiver accepts every `max_concurrent_streams` value without rejecting.
+    /// Guarantees: Omitted and `0` parse as uncapped (`None`/`Some(0)`), an explicit positive value
+    /// is preserved, and a value below the signal count is still accepted (it only warns).
+    #[test]
+    fn max_concurrent_streams_policy_accepts_all_values() {
+        use serde_json::json;
+
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // Omitted: uncapped (None).
+        let config_omitted = json!({
+            "listening_addr": "127.0.0.1:4350",
+            "response_stream_channel_size": 100
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_omitted).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, None);
+
+        // Explicit 0: parsed as Some(0); the receiver treats it as uncapped at serve time.
+        let config_zero = json!({
+            "listening_addr": "127.0.0.1:4351",
+            "response_stream_channel_size": 100,
+            "max_concurrent_streams": 0
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_zero).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(0));
+
+        // A positive value is preserved as-is.
+        let config_large = json!({
+            "listening_addr": "127.0.0.1:4352",
+            "response_stream_channel_size": 100,
+            "max_concurrent_streams": 64
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_large).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(64));
+
+        // A value below the signal count is accepted (it emits a warning, but is not an error).
+        let config_too_low = json!({
+            "listening_addr": "127.0.0.1:4353",
+            "response_stream_channel_size": 100,
+            "max_concurrent_streams": 2
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_too_low).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(2));
     }
 
     /// Scenario: The deprecated `compression_method` alias drives effective compression purely.

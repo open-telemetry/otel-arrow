@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "OTAP receiver now accepts the shared gRPC server settings: request/response compression, concurrency and stream limits, message size, and TCP/HTTP2 tuning."
+note: "OTAP receiver now accepts the shared gRPC server settings: request/response compression, concurrency limits, message size, HTTP/2 stream limit, and TCP/HTTP2 tuning."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: []
@@ -19,4 +19,4 @@ issues: []
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  `max_concurrent_requests` now defaults to the downstream pdata channel capacity instead of 1000, and larger values are clamped to it. When request compression is not configured, zstd, gzip, and deflate are all accepted.
+  `max_concurrent_requests` now defaults to the downstream pdata channel capacity instead of 1000, and larger values are clamped to it. Omitted request compression accepts zstd, gzip, and deflate. `max_concurrent_streams` is uncapped by default to avoid stalling long-lived OTAP streams.

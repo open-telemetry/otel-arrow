@@ -59,6 +59,11 @@ config:
   # Wait for immediate downstream outcome (default: false).
   wait_for_result: false
 
+  # Upper bound on concurrently active HTTP/2 streams per connection (optional).
+  # Unset (or 0) means no limit. See the warning in "Limits" before setting this
+  # to an explicit value
+  max_concurrent_streams: 0
+
   # Optional RPC timeout.
   timeout: 30s
 
@@ -68,9 +73,9 @@ config:
   #   key_file: /path/to/server.key
 ```
 
-Other shared gRPC server fields (for example `max_concurrent_streams`,
-`max_decoding_message_size`, and the TCP/HTTP2 tuning fields) are also accepted;
-see the [OTLP receiver](../otlp_receiver/README.md) for the full list.
+Other shared gRPC server fields (for example `max_decoding_message_size` and the
+TCP/HTTP2 tuning fields) are also accepted; see the
+[OTLP receiver](../otlp_receiver/README.md) for the full list.
 
 ### Deprecated fields
 
@@ -131,6 +136,13 @@ not a terminal-only metric that cannot be handed off on an error return.
   to `max_concurrent_requests` at runtime.
 - `max_concurrent_requests` defaults to the downstream pdata channel capacity
   (configured value `0`); any larger configured value is clamped to it.
+- `max_concurrent_streams` is the HTTP/2 per-connection stream limit. OTAP clients
+  hold one long-lived stream per signal (3 total), and `3 * streams_per_signal`
+  when an OTAP exporter sets `streams_per_signal > 1`. A limit below that count can
+  silently stall exporters, whose extra streams wait forever to open. The OTAP
+  receiver therefore leaves it **uncapped by default** (unset or `0`), unlike the
+  OTLP receiver. If you set it, use at least `3 * streams_per_signal`; the receiver
+  logs a warning when it is set below `3`.
 - `wait_for_result` defaults to `false`; `wait_for_result: false` suppresses
   downstream failures from client responses.
 - The server accepts OTAP Arrow stream clients, not standard OTLP clients.
