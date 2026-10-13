@@ -1,39 +1,45 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Capacity-one local proxy. The shared receiver owns polling and feedback.
+//! Pipeline-local PostgreSQL adapter.
 
-use super::{config::Validated, worker};
+use super::{
+    config::Validated,
+    query::{ResolvedSchema, Signature},
+    value,
+    worker::{CancelSlot, FetchSize, Session},
+};
 use async_trait::async_trait;
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BASIC_AUTH_CREDENTIAL_USABLE_MARGIN;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledQuery, CompositeCursor, Cursor, DatabaseSystem, DriverAdapter,
-    DriverCancellation, QueryPage,
+    ColumnMetadata, CompiledQuery, Cursor, DatabaseSystem, DriverAdapter, DriverCancellation,
+    QueryPage,
 };
+use secrecy::SecretString;
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::JoinHandle,
+    cell::{Cell, RefCell},
+    rc::Rc,
     time::Duration,
 };
-use tokio::sync::{Notify, mpsc, oneshot};
 
 #[derive(Default)]
 pub(crate) struct Operation {
-    pub cancelled: AtomicBool,
-    pub notify: Notify,
+    cancelled: Cell<bool>,
+    active: Cell<bool>,
+    abandoned: Cell<bool>,
+    pub(crate) notify: tokio::sync::Notify,
 }
+
 impl Operation {
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+    pub(crate) fn cancel(&self) {
+        self.cancelled.set(true);
         self.notify.notify_one();
     }
-    pub fn check(&self) -> Result<()> {
-        if self.cancelled.load(Ordering::Acquire) {
+
+    pub(crate) fn check(&self) -> Result<()> {
+        if self.cancelled.get() {
             Err(Error::Cancelled)
         } else {
             Ok(())
@@ -41,151 +47,177 @@ impl Operation {
     }
 }
 
+struct OperationGuard {
+    operation: Rc<Operation>,
+    completed: bool,
+}
+
+impl OperationGuard {
+    fn start(operation: Rc<Operation>) -> Result<Self> {
+        operation.check()?;
+        if operation.active.replace(true) {
+            return Err(Error::Cleanup);
+        }
+        Ok(Self {
+            operation,
+            completed: false,
+        })
+    }
+
+    fn complete(mut self) {
+        self.operation.active.set(false);
+        self.completed = true;
+    }
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            // A dropped operation cannot prove that PostgreSQL stopped its work.
+            // Quarantine this adapter until shutdown confirms session cleanup.
+            self.operation.abandoned.set(true);
+            self.operation.cancel();
+        }
+    }
+}
+
 #[derive(Clone)]
-pub(crate) struct Cancellation(Arc<Operation>);
+pub(crate) struct Cancellation(Rc<Operation>);
+
 #[async_trait(?Send)]
 impl DriverCancellation for Cancellation {
     type Error = Error;
+
     async fn cancel(&self) -> Result<()> {
         self.0.cancel();
         Ok(())
     }
 }
 
-pub(crate) enum Action {
-    Validate,
-    Reconnect,
-    Execute(CompositeCursor),
-    Shutdown,
+pub(crate) struct CachedSchema {
+    pub(crate) signature: Signature,
+    pub(crate) resolved: ResolvedSchema,
 }
-pub(crate) enum Reply {
-    Columns(Vec<ColumnMetadata>),
-    Page(QueryPage),
-    Done,
-}
-pub(crate) struct Command {
-    pub action: Action,
-    pub operation: Arc<Operation>,
-    pub reply: oneshot::Sender<Result<Reply>>,
-    pub credential: Option<BasicAuthCredential>,
-}
+
 pub(crate) struct PostgreSqlAdapter {
-    credentials: Box<dyn BasicAuthProvider>,
-    commands: mpsc::Sender<Command>,
-    operation: Arc<Operation>,
-    busy: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-    exit: oneshot::Receiver<Result<()>>,
-    exit_result: Option<Result<()>>,
+    pub(crate) credentials: Box<dyn BasicAuthProvider>,
+    pub(crate) validated: Validated,
+    pub(crate) session: Option<Session>,
+    pub(crate) schema: Option<CachedSchema>,
+    pub(crate) cancel: CancelSlot,
+    pub(crate) poisoned: bool,
+    pub(crate) principal: Option<SecretString>,
+    pub(crate) fetch_size: FetchSize,
+    pub(crate) timestamp_cache: value::CursorTimestampCache,
+    pub(crate) operation: Rc<Operation>,
     stopped: bool,
+    shutdown_result: Option<Result<()>>,
     timeout: Duration,
 }
 
 impl PostgreSqlAdapter {
-    pub fn new(validated: Validated, credentials: Box<dyn BasicAuthProvider>) -> Result<Self> {
-        let (commands, rx) = mpsc::channel(1);
-        let (exit_tx, exit) = oneshot::channel();
-        let busy = Arc::new(AtomicBool::new(false));
-        // The local adapter and its one dedicated worker share only admission
-        // and cancellation signals; database state stays on the worker.
-        let worker_busy = busy.clone();
+    pub(crate) fn new(
+        validated: Validated,
+        credentials: Box<dyn BasicAuthProvider>,
+    ) -> Result<Self> {
         let timeout = validated.common.timeout();
-        let thread = std::thread::Builder::new()
-            .name("postgresql-receiver".into())
-            .spawn(move || {
-                let outcome = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|_| Error::Cleanup)
-                    .and_then(|runtime| {
-                        tokio::task::LocalSet::new()
-                            .block_on(&runtime, worker::run(validated, rx, worker_busy))
-                    });
-                let _ = exit_tx.send(outcome);
-            })
-            .map_err(|_| Error::Cleanup)?;
         Ok(Self {
             credentials,
-            commands,
-            operation: Arc::new(Operation::default()),
-            busy,
-            thread: Some(thread),
-            exit,
-            exit_result: None,
+            validated,
+            session: None,
+            schema: None,
+            cancel: Rc::new(RefCell::new(None)),
+            poisoned: false,
+            principal: None,
+            fetch_size: FetchSize::default(),
+            timestamp_cache: value::CursorTimestampCache::default(),
+            operation: Rc::new(Operation::default()),
             stopped: false,
+            shutdown_result: None,
             timeout,
         })
     }
 
-    async fn request(&mut self, action: Action) -> Result<Reply> {
-        self.operation.check()?;
-        // Resolve the local capability here and send only its credential snapshot.
-        // The worker consumes it when connecting, not to replace a healthy session.
+    async fn credential(&self, operation: &Operation) -> Result<BasicAuthCredential> {
+        operation.check()?;
         let credential = tokio::select! {
             biased;
-            _ = self.operation.notify.notified() => return Err(Error::Cancelled),
+            _ = operation.notify.notified() => return Err(Error::Cancelled),
             result = tokio::time::timeout(self.timeout, self.credentials.get_credential()) => {
                 result.map_err(|_| Error::Credential)?.map_err(|_| Error::Credential)?
             }
         };
-        self.operation.check()?;
+        operation.check()?;
         if credential.expires_on().is_some_and(|expiry| {
             expiry.saturating_duration_since(std::time::Instant::now())
                 <= BASIC_AUTH_CREDENTIAL_USABLE_MARGIN
         }) {
             return Err(Error::Credential);
         }
-        // A dropped response future does not mean its database work stopped.
-        // Only the worker releases this gate after completing work and any cleanup.
-        if self.busy.swap(true, Ordering::AcqRel) {
-            return Err(Error::Cleanup);
-        }
-        let (reply, result) = oneshot::channel();
-        self.commands
-            .send(Command {
-                action,
-                operation: self.operation.clone(),
-                reply,
-                credential: Some(credential),
-            })
-            .await
-            .map_err(|_| Error::Cleanup)?;
-        result.await.map_err(|_| Error::Cleanup)?
+        Ok(credential)
+    }
+
+    async fn run(
+        &mut self,
+        action: worker::Action,
+        operation: Rc<Operation>,
+    ) -> Result<worker::Reply> {
+        let guard = OperationGuard::start(operation.clone())?;
+        let result = match self.credential(&operation).await {
+            Ok(credential) => self.run_worker(action, &operation, &credential).await,
+            Err(error) => Err(error),
+        };
+        guard.complete();
+        result
     }
 }
+
+use super::worker;
 
 #[async_trait(?Send)]
 impl DriverAdapter for PostgreSqlAdapter {
     type Error = Error;
     type Cancellation = Cancellation;
+
     fn system(&self) -> DatabaseSystem {
         DatabaseSystem::PostgreSQL
     }
+
     fn begin_operation(&mut self) -> Result<Cancellation> {
-        if self.stopped || self.exit_result.is_some() || self.busy.load(Ordering::Acquire) {
+        if self.stopped
+            || self.poisoned
+            || self.operation.active.get()
+            || self.operation.abandoned.get()
+        {
             return Err(Error::Cleanup);
         }
-        self.operation = Arc::new(Operation::default());
+        self.operation = Rc::new(Operation::default());
         Ok(Cancellation(self.operation.clone()))
     }
+
     fn is_retryable(error: &Error) -> bool {
         matches!(
             error,
             Error::Unavailable | Error::Cancelled | Error::Timeout
         )
     }
+
     async fn reconnect(&mut self, _: &CompiledQuery) -> Result<()> {
-        match self.request(Action::Reconnect).await? {
-            Reply::Done => Ok(()),
+        let operation = self.operation.clone();
+        match self.run(worker::Action::Reconnect, operation).await? {
+            worker::Reply::Done => Ok(()),
             _ => Err(Error::Cleanup),
         }
     }
+
     async fn validate_query(&mut self, _: &CompiledQuery) -> Result<Vec<ColumnMetadata>> {
-        match self.request(Action::Validate).await? {
-            Reply::Columns(columns) => Ok(columns),
+        let operation = self.operation.clone();
+        match self.run(worker::Action::Validate, operation).await? {
+            worker::Reply::Columns(columns) => Ok(columns),
             _ => Err(Error::Cleanup),
         }
     }
+
     async fn execute(&mut self, query: &CompiledQuery, cursor: &Cursor) -> Result<QueryPage> {
         query
             .watermark()
@@ -195,46 +227,31 @@ impl DriverAdapter for PostgreSqlAdapter {
             Cursor::Composite(cursor) => cursor,
             Cursor::Snapshot | Cursor::Scalar(_) => return Err(Error::Config),
         };
-        match self.request(Action::Execute(cursor.clone())).await? {
-            Reply::Page(page) => Ok(page),
+        let operation = self.operation.clone();
+        match self
+            .run(worker::Action::Execute(cursor.clone()), operation)
+            .await?
+        {
+            worker::Reply::Page(page) => Ok(page),
             _ => Err(Error::Cleanup),
         }
     }
+
     async fn shutdown(&mut self) -> Result<()> {
-        if self.stopped {
-            return Ok(());
-        }
-        self.operation.cancel();
-        let (reply, _result) = oneshot::channel();
-        if self.exit_result.is_none() {
-            let _ = self
-                .commands
-                .send(Command {
-                    action: Action::Shutdown,
-                    operation: self.operation.clone(),
-                    reply,
-                    credential: None,
-                })
-                .await;
-            self.exit_result = Some((&mut self.exit).await.unwrap_or(Err(Error::Cleanup)));
-        }
-        self.exit_result.ok_or(Error::Cleanup)??;
-        // Exit acknowledgment precedes the final thread return by a few instructions.
-        while self.thread.as_ref().is_some_and(|t| !t.is_finished()) {
-            tokio::task::yield_now().await;
-        }
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            self.exit_result = Some(Err(Error::Cleanup));
-            return Err(Error::Cleanup);
+        if let Some(result) = self.shutdown_result {
+            return result;
         }
         self.stopped = true;
-        Ok(())
+        self.operation.cancel();
+        let result = self.close_session().await.and(if self.poisoned {
+            Err(Error::Cleanup)
+        } else {
+            Ok(())
+        });
+        self.shutdown_result = Some(result);
+        result
     }
 
-    // Reporting categories do not authorize retries; is_retryable is the narrower
-    // policy, and Cleanup always remains terminal.
     fn classify_error(error: &Error) -> otel_arrow_dfe_engine::error::ReceiverErrorKind {
         use otel_arrow_dfe_engine::error::ReceiverErrorKind;
         match error {
@@ -289,7 +306,6 @@ pub(crate) fn database(error: tokio_postgres::Error) -> Error {
     } else if error.is_closed() {
         Error::Unavailable
     } else {
-        // Only actual transport I/O is retryable.
         use std::error::Error as _;
         let mut source = error.source();
         while let Some(value) = source {

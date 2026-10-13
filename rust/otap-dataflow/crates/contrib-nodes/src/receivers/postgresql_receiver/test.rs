@@ -266,6 +266,75 @@ macro_rules! postgresql_module_tests {
                     Err(Error::Limit)
                 );
             }
+
+            /// Scenario: One large row is followed by a sustained run of small rows.
+            /// Guarantees: Fetch sizing stays conservative for recent data, then regrows after the large sample ages out.
+            #[test]
+            fn fetch_size_recovers_after_recent_small_rows() {
+                let mut size = FetchSize::default();
+                size.observe(1024 * 1024);
+                assert_eq!(size.target(300, 300 * 1024), 0);
+                for _ in 0..FETCH_SIZE_WINDOW - 1 {
+                    size.observe(1024);
+                }
+                assert_eq!(size.target(300, 300 * 1024), 0);
+                size.observe(1024);
+                assert_eq!(size.target(300, 300 * 1024), 300);
+            }
+
+            /// Scenario: The retained PostgreSQL connection driver exits with an observed transport failure.
+            /// Guarantees: Joining the completed task confirms cleanup without poisoning the adapter.
+            #[tokio::test]
+            async fn completed_failed_connection_driver_confirms_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = PostgreSqlAdapter::new(
+                            super::super::tests::test_validated(),
+                            super::super::tests::test_provider(),
+                        )
+                        .expect("adapter");
+                        adapter.session = Some(Session {
+                            client: None,
+                            driver: tokio::task::spawn_local(async { Err(Error::Unavailable) }),
+                            statement: None,
+                            catalog: None,
+                            receive_failure: ReceiveFailure::default(),
+                        });
+                        adapter.close_session().await.expect("joined failure");
+                        assert!(!adapter.poisoned);
+                        adapter.shutdown().await.expect("clean shutdown");
+                    })
+                    .await;
+            }
+
+            /// Scenario: The retained PostgreSQL connection driver panics before cleanup.
+            /// Guarantees: An unconfirmed JoinError poisons the adapter and remains terminal.
+            #[tokio::test]
+            async fn panicked_connection_driver_poisons_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = PostgreSqlAdapter::new(
+                            super::super::tests::test_validated(),
+                            super::super::tests::test_provider(),
+                        )
+                        .expect("adapter");
+                        adapter.session = Some(Session {
+                            client: None,
+                            driver: tokio::task::spawn_local(async {
+                                panic!("injected driver panic");
+                            }),
+                            statement: None,
+                            catalog: None,
+                            receive_failure: ReceiveFailure::default(),
+                        });
+                        assert_eq!(adapter.close_session().await, Err(Error::Cleanup));
+                        assert!(adapter.poisoned);
+                        assert_eq!(adapter.shutdown().await, Err(Error::Cleanup));
+                    })
+                    .await;
+            }
         }
     };
     () => {
@@ -724,8 +793,8 @@ fn exact_numeric() {
     assert!(convert::numeric(&number(4096, 0, 0, &[1])).is_err());
 }
 
-/// Scenario: A worker receives shutdown without ever connecting to a database.
-/// Guarantees: Exit is acknowledged, the thread is joined, and repeated shutdown is idempotent.
+/// Scenario: A pipeline-local adapter receives shutdown without ever connecting to a database.
+/// Guarantees: Local cleanup is confirmed and repeated shutdown remains idempotent.
 #[tokio::test]
 async fn disconnected_worker_shutdown() {
     let mut adapter =
@@ -738,8 +807,44 @@ async fn disconnected_worker_shutdown() {
     assert!(adapter.begin_operation().is_err());
 }
 
+/// Scenario: Cancellation from a completed operation arrives after a new operation begins.
+/// Guarantees: The stale handle cannot cancel or otherwise alter the current operation.
+#[tokio::test]
+async fn stale_cancellation_is_operation_scoped() {
+    use otel_arrow_dfe_scraper::database::DriverCancellation;
+    let mut adapter =
+        super::adapter::PostgreSqlAdapter::new(test_validated(), test_provider()).expect("adapter");
+    let stale = adapter.begin_operation().expect("old operation");
+    let current = adapter.begin_operation().expect("current operation");
+    stale.cancel().await.expect("stale cancellation");
+    adapter.operation.check().expect("current remains active");
+    current.cancel().await.expect("current cancellation");
+    assert_eq!(adapter.operation.check(), Err(Error::Cancelled));
+    adapter.shutdown().await.expect("local shutdown");
+}
+
+/// Scenario: A caller drops an in-flight credential wait before cancellation cleanup completes.
+/// Guarantees: A replacement operation is rejected until shutdown confirms local session cleanup.
+#[tokio::test]
+async fn dropped_operation_quarantines_adapter() {
+    let validated = test_validated();
+    let query = validated.common.clone();
+    let mut adapter =
+        super::adapter::PostgreSqlAdapter::new(validated, Box::new(TestCredentials::Pending))
+            .expect("adapter");
+    _ = adapter.begin_operation().expect("operation");
+    {
+        let operation = adapter.validate_query(&query);
+        tokio::pin!(operation);
+        assert!(futures::poll!(&mut operation).is_pending());
+    }
+    assert_eq!(adapter.begin_operation().err(), Some(Error::Cleanup));
+    adapter.shutdown().await.expect("confirmed local cleanup");
+    adapter.shutdown().await.expect("idempotent shutdown");
+}
+
 /// Scenario: A provider waits indefinitely before the first database connection and shutdown cancels its operation.
-/// Guarantees: The credential wait ends promptly and the idle worker can be joined without opening a connection.
+/// Guarantees: The credential wait ends promptly and local shutdown completes without opening a connection.
 #[tokio::test]
 async fn provider_wait_is_cancellable() {
     use otel_arrow_dfe_scraper::database::DriverCancellation;
@@ -761,7 +866,10 @@ async fn provider_wait_is_cancellable() {
             Err(Error::Cancelled),
         ));
     }
-    adapter.shutdown().await.expect("worker joined");
+    _ = adapter
+        .begin_operation()
+        .expect("replacement after confirmed cancellation");
+    adapter.shutdown().await.expect("local shutdown");
 }
 
 /// Scenario: A credential capability returns sensitive provider details in its error.

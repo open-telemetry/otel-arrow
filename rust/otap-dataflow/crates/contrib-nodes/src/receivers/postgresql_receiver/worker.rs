@@ -4,8 +4,7 @@
 //! Single connection owner with read-only portal pages and observed cleanup.
 
 use super::{
-    adapter::{Action, Command, Error, Operation, Reply, Result, database},
-    config::Validated,
+    adapter::{CachedSchema, Error, Operation, PostgreSqlAdapter, Result, database},
     query::{CatalogStatements, ResolvedSchema, Signature},
     value as convert,
 };
@@ -19,25 +18,21 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     task::{Context, Poll, ready},
     time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::mpsc,
     task::JoinHandle,
 };
 use tokio_postgres::{
     CancelToken, Client, IsolationLevel, NoTls, Statement, config::SslMode, types::ToSql,
 };
 
-type CancelSlot = Rc<RefCell<Option<(CancelToken, SocketAddr)>>>;
+pub(crate) type CancelSlot = Rc<RefCell<Option<(CancelToken, SocketAddr)>>>;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const FETCH_SIZE_WINDOW: usize = 32;
 const CANCEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const CANCEL_COMPLETION_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECTION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
@@ -247,32 +242,16 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for BoundedBackend<S> {
     }
 }
 
-struct Session {
+pub(crate) struct Session {
     client: Option<Client>,
     driver: JoinHandle<Result<()>>,
     statement: Option<Statement>,
     catalog: Option<CatalogStatements>,
     receive_failure: ReceiveFailure,
 }
-struct Worker {
-    validated: Validated,
-    session: Option<Session>,
-    schema: Option<CachedSchema>,
-    cancel: CancelSlot,
-    poisoned: bool,
-    principal: Option<secrecy::SecretString>,
-    fetch_size: FetchSize,
-    timestamp_cache: convert::CursorTimestampCache,
-}
-
-struct CachedSchema {
-    signature: Signature,
-    resolved: ResolvedSchema,
-}
-
 fn resolve_schema<'a>(
     cache: &'a mut Option<CachedSchema>,
-    validated: &Validated,
+    validated: &super::config::Validated,
     signature: Signature,
 ) -> Result<&'a CachedSchema> {
     if let Some(cached) = cache {
@@ -290,51 +269,67 @@ fn resolve_schema<'a>(
 }
 
 #[derive(Default)]
-struct FetchSize {
-    largest_row_bytes: Option<u64>,
+pub(crate) struct FetchSize {
+    recent_row_bytes: [u64; FETCH_SIZE_WINDOW],
+    observed: usize,
+    next: usize,
 }
 
 impl FetchSize {
     fn target(&self, row_limit: usize, bytes_left: u64) -> usize {
-        self.largest_row_bytes
+        self.recent_row_bytes[..self.observed]
+            .iter()
+            .copied()
+            .max()
             .map_or(1, |size| bytes_left / size)
             .min(row_limit as u64) as usize
     }
 
     fn observe(&mut self, row_bytes: u64) {
-        self.largest_row_bytes = Some(self.largest_row_bytes.unwrap_or(1).max(row_bytes));
+        self.recent_row_bytes[self.next] = row_bytes.max(1);
+        self.next = (self.next + 1) % FETCH_SIZE_WINDOW;
+        self.observed = self.observed.saturating_add(1).min(FETCH_SIZE_WINDOW);
     }
 }
 
-pub(crate) async fn run(
-    validated: Validated,
-    mut commands: mpsc::Receiver<Command>,
-    busy: Arc<AtomicBool>,
-) -> Result<()> {
-    let mut worker = Worker {
-        validated,
-        session: None,
-        schema: None,
-        cancel: Rc::new(RefCell::new(None)),
-        poisoned: false,
-        principal: None,
-        fetch_size: FetchSize::default(),
-        timestamp_cache: convert::CursorTimestampCache::default(),
-    };
-    while let Some(command) = commands.recv().await {
-        if matches!(command.action, Action::Shutdown) {
-            return worker.close().await.and(if worker.poisoned {
-                Err(Error::Cleanup)
-            } else {
-                Ok(())
-            });
-        }
-        let cancel = worker.cancel.clone();
-        let operation = command.operation.clone();
-        let timeout = worker.validated.common.timeout();
+pub(crate) enum Action {
+    Validate,
+    Reconnect,
+    Execute(otel_arrow_dfe_scraper::database::CompositeCursor),
+}
+
+pub(crate) enum Reply {
+    Columns(Vec<ColumnMetadata>),
+    Page(QueryPage),
+    Done,
+}
+
+async fn cancel_native(slot: &CancelSlot) {
+    let token = slot.borrow().clone();
+    if let Some((token, address)) = token {
+        // This is only a request. The operation and driver are still awaited.
+        let _ = tokio::time::timeout(CANCEL_REQUEST_TIMEOUT, async {
+            let stream = tokio::net::TcpStream::connect(address).await?;
+            token
+                .cancel_query_raw(stream, NoTls)
+                .await
+                .map_err(io::Error::other)
+        })
+        .await;
+    }
+}
+
+impl PostgreSqlAdapter {
+    pub(crate) async fn run_worker(
+        &mut self,
+        action: Action,
+        operation: &Operation,
+        credential: &BasicAuthCredential,
+    ) -> Result<Reply> {
+        let cancel = self.cancel.clone();
+        let timeout = self.validated.common.timeout();
         let mut result = {
-            let credential = command.credential.ok_or(Error::Credential)?;
-            let future = worker.perform(command.action, &operation, &credential);
+            let future = self.perform(action, operation, credential);
             tokio::pin!(future);
             tokio::select! {
                 biased;
@@ -357,10 +352,10 @@ pub(crate) async fn run(
                 }
             }
         };
-        // Requests see only a closed driver channel after a framing failure.
-        // Preserve the actual receive limit instead of retrying an unavailable DB.
+        // Requests see only a closed driver after a framing failure. Preserve the
+        // actual receive limit instead of retrying an unavailable database.
         if result.as_ref().err() != Some(&Error::Cleanup)
-            && let Some(error) = worker
+            && let Some(error) = self
                 .session
                 .as_ref()
                 .and_then(|session| session.receive_failure.get())
@@ -369,44 +364,20 @@ pub(crate) async fn run(
         }
         if result.as_ref().err() == Some(&Error::Cleanup) {
             // A later successful close cannot prove an earlier abandoned operation
-            // stopped. Keep shutdown terminal so shared source ownership is quarantined.
-            worker.poisoned = true;
+            // stopped. Keep shutdown terminal so source ownership is quarantined.
+            self.poisoned = true;
         }
         if result.is_err() {
             operation.cancel();
-            if worker.close().await.is_err() {
-                worker.poisoned = true;
+            if self.close_session().await.is_err() {
+                self.poisoned = true;
                 result = Err(Error::Cleanup);
             }
         }
-        busy.store(false, Ordering::Release);
-        let _ = command.reply.send(result);
+        result
     }
-    worker.close().await?;
-    if worker.poisoned {
-        Err(Error::Cleanup)
-    } else {
-        Ok(())
-    }
-}
 
-async fn cancel_native(slot: &CancelSlot) {
-    let token = slot.borrow().clone();
-    if let Some((token, address)) = token {
-        // This is only a request. The operation and driver are still awaited.
-        let _ = tokio::time::timeout(CANCEL_REQUEST_TIMEOUT, async {
-            let stream = tokio::net::TcpStream::connect(address).await?;
-            token
-                .cancel_query_raw(stream, NoTls)
-                .await
-                .map_err(io::Error::other)
-        })
-        .await;
-    }
-}
-
-impl Worker {
-    async fn close(&mut self) -> Result<()> {
+    pub(crate) async fn close_session(&mut self) -> Result<()> {
         let _ = self.cancel.borrow_mut().take();
         if let Some(session) = self.session.as_mut() {
             let _ = session.statement.take();
@@ -418,6 +389,8 @@ impl Worker {
             )
             .await
             {
+                // Either task result confirms the driver stopped. Only a
+                // JoinError means cleanup itself was not observed completing.
                 Ok(joined) => joined.is_ok(),
                 Err(_) => {
                     // Aborting is not proof that the server operation stopped.
@@ -531,7 +504,7 @@ impl Worker {
             return Err(Error::Cleanup);
         }
         if matches!(action, Action::Reconnect) {
-            self.close().await?;
+            self.close_session().await?;
             self.connect(op, credential).await?;
             return Ok(Reply::Done);
         }
