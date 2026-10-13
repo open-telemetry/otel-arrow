@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791924218196,
+  "lastUpdate": 1791927805828,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -61152,6 +61152,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bce21e7ebf43e73b63ea60372f789705a5b82cf8",
+          "message": "chore: migrate Windows performance counter kinds to Gauge/Sum (#4377)\n\n# Chore Summary\n\nReplace `up_down_counter` with Go-style Gauge/Sum configuration:\n- Omitted kind defaults to Gauge.\n- Sum requires explicit aggregation; omitted monotonicity defaults to\nfalse.\n- Only `sum: {aggregation: cumulative, monotonic: false}` is supported.\n- `aggregation: delta` or `monotonic: true` is rejected with a \"not\nsupported yet\" error; support will follow in a later PR.\n\nThe internal metric type represents only Gauge or cumulative\nnon-monotonic Sum. Unsupported settings are rejected when reading\nconfiguration. Configurations converted from `up_down_counter` to\ncumulative non-monotonic `sum` produce the same output.\n\nDifferences from Go:\n- A `sum` without an aggregation (null, `{}`, or `{monotonic: false}`)\nis an error. Go treats it as a Gauge.\n- Setting both `gauge` and `sum` is an error. Go doesn't detect it.\n\nThe new regression test checks that parsed Sum configuration preserves\ndecoded OTAP output: cumulative temporality, non-monotonicity,\nnames/metadata, integer and scaled values, attributes and timestamps.\n\n## Related issue\n\nRelated to #4074. Updates the metric-kind configuration introduced in\n#4209.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 6fc928d8-f505-4605-89e9-18ec07e7d58a",
+          "timestamp": "2026-10-13T20:44:30Z",
+          "tree_id": "4b3a3d2be1a61b42344f8f66cce3f045e5cfa39d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/bce21e7ebf43e73b63ea60372f789705a5b82cf8"
+        },
+        "date": 1791927786961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.62,
             "unit": "MB"
           },
           {
