@@ -6,7 +6,7 @@ The `profiling` build profile uses the level `3`, fat LTO, and single codegen
 unit settings from `release-perf`, while retaining full debug information and
 symbols. This enables profiling with the production optimization settings.
 
-The three custom release profiles remove debug information and retain function
+The custom release profiles remove debug information and retain function
 symbols. On Linux, this preserves application function names in backtraces and
 live CPU profiles. Source file/line information requires a build with debug
 information. Package the configured release output directly; an additional

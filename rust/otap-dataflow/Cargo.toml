@@ -501,13 +501,6 @@ codegen-units = 1
 panic = "unwind"
 incremental = false
 
-# Favor a compact binary while retaining speed-oriented optimizations.
-[profile.release-balanced]
-inherits = "release-perf"
-opt-level = 2
-debug = 0
-strip = "debuginfo"
-
 # Favor the smallest binary, accepting potential processing throughput loss.
 [profile.release-size]
 inherits = "release-perf"
