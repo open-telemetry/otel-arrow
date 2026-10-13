@@ -77,11 +77,7 @@ impl SqlServerStatement {
         watermark: &WatermarkConfig,
     ) -> Result<Self, SqlServerConfigError> {
         let (query, tokens) = parse(sql)?;
-        validate_shape(&query)?;
-        let select = match query.body.as_ref() {
-            SetExpr::Select(select) => select,
-            _ => return Err(unsupported()),
-        };
+        let select = validate_shape(&query)?;
         let snapshot = matches!(watermark, WatermarkConfig::Snapshot {});
         validate_projections(select, snapshot)?;
         let mut parameters = Vec::new();
@@ -225,7 +221,7 @@ fn parse(sql: &str) -> Result<(Box<Query>, Vec<Token>), SqlServerConfigError> {
     }
 }
 
-fn validate_shape(query: &Query) -> Result<(), SqlServerConfigError> {
+fn validate_shape(query: &Query) -> Result<&Select, SqlServerConfigError> {
     let Query {
         with,
         body,
@@ -329,7 +325,8 @@ fn validate_shape(query: &Query) -> Result<(), SqlServerConfigError> {
             "query.statement requires one schema-qualified table or view without aliases, joins, arguments, or hints",
         ));
     }
-    validate_object_name(name)
+    validate_object_name(name)?;
+    Ok(select)
 }
 
 fn validate_projections(select: &Select, snapshot: bool) -> Result<(), SqlServerConfigError> {
