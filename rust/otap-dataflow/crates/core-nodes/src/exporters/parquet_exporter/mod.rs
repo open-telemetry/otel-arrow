@@ -46,21 +46,21 @@ use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
@@ -326,14 +326,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
                 Message::PData(pdata) => {
                     let export_start = Instant::now();
-                    // Capture signal type before moving pdata into try_from
+                    // Capture signal type before recoverable materialization.
                     let signal_type = pdata.signal_type();
 
-                    // Note: context is not used
-                    let (_context, payload) = pdata.into_parts();
-
-                    let mut otap_batch: OtapArrowRecords =
-                        payload.try_into_with_default().inspect_err(|_| {
+                    let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
+                        Ok(arrow_pdata) => arrow_pdata,
+                        Err(error) => {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics
                                     .with(SignalOutcomeAttributes {
@@ -342,7 +340,15 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     })
                                     .record(export_start.elapsed());
                             }
-                        })?;
+                            let (error, pdata) = error.into_parts();
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                .await?;
+                            continue;
+                        }
+                    };
+                    // Note: context is not used by this terminal exporter.
+                    let (_context, mut otap_batch) = arrow_pdata.into_parts();
 
                     // decode the transport optimized IDs before converting
                     // to unvalidated parquet records
@@ -600,6 +606,96 @@ mod test {
                     .await
                     .unwrap();
             })
+        }
+    }
+
+    /// Scenario: Legacy and generalized malformed OTLP batches precede valid Parquet input.
+    /// Guarantees: Permanent Nacks retain the exact bytes and delivery context, and export continues.
+    #[test]
+    fn malformed_otlp_is_nacked_without_stopping_export() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_config::SignalType;
+        use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata_codec::{CodecRegistry, OtapPayload, PdataEncoding};
+
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+
+        for generalized in [false, true] {
+            let runtime = TestRuntime::<OtapPdata>::new();
+            let dir = tempfile::tempdir().unwrap();
+            let base_dir = dir.path().to_str().unwrap().to_owned();
+            let exporter = ParquetExporter::new(config::Config {
+                storage: object_store::StorageType::File {
+                    base_uri: base_dir.clone(),
+                },
+                retry: None,
+                partitioning_strategies: None,
+                writer_options: None,
+            });
+            let exporter = ExporterWrapper::local(
+                exporter,
+                test_node(runtime.config().name.clone()),
+                Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN)),
+                runtime.config(),
+            );
+            let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+            let pointer = bytes.as_ptr();
+            let payload: OtapPayload = if generalized {
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into()
+            } else {
+                OtlpProtoBytes::ExportLogsRequest(bytes.clone()).into()
+            };
+            let peer = "127.0.0.1:4317".parse().unwrap();
+            let pdata = OtapPdata::new_default(payload)
+                .with_peer_addr(peer)
+                .test_subscribe_to(
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    TestCallData::new_with(7, 0).into(),
+                    999,
+                );
+            runtime
+                .set_exporter(exporter)
+                .run_test(move |ctx| async move {
+                    ctx.send_pdata(pdata).await.unwrap();
+                    ctx.send_pdata(fixtures::create_single_logs_pdata_with_attrs(vec![]))
+                        .await
+                        .unwrap();
+                    ctx.send_shutdown(Instant::now() + Duration::from_secs(10), "test complete")
+                        .await
+                        .unwrap();
+                })
+                .run_validation(move |mut ctx, result| async move {
+                    result.unwrap();
+                    let mut completions = ctx.take_pipeline_completion_receiver().unwrap();
+                    let completion =
+                        tokio::time::timeout(Duration::from_secs(3), completions.recv())
+                            .await
+                            .expect("timed out waiting for Parquet codec Nack")
+                            .expect("completion channel closed before Parquet codec Nack");
+                    let PipelineCompletionMsg::DeliverNack { nack } = completion else {
+                        panic!("expected a permanent Nack");
+                    };
+                    let (subscriber, nack) = next_nack(nack).expect("original Nack subscription");
+                    assert_eq!(subscriber, 999);
+                    assert_eq!(
+                        TestCallData::try_from(nack.unwind.route.calldata.clone()).unwrap(),
+                        TestCallData::new_with(7, 0)
+                    );
+                    assert!(nack.permanent);
+                    assert_eq!(nack.refused.peer_addr(), Some(peer));
+                    assert_eq!(nack.refused.signal_type(), SignalType::Logs);
+                    let payload = nack.refused.payload_ref();
+                    assert_eq!(payload.encoding(), Some(codec.encoding()));
+                    let recovered = payload.encoded_bytes().unwrap();
+                    assert_eq!(recovered.as_ptr(), pointer);
+                    assert_eq!(recovered, &bytes);
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 1).await;
+                });
         }
     }
 
