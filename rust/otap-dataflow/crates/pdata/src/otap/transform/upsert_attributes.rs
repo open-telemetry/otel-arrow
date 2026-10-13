@@ -475,14 +475,14 @@ fn merge_parent_id_column<T: ArrowPrimitiveType>(
     // Bulk copy existing rows.
     mutable
         .try_extend(0, 0, num_existing)
-        .expect("valid array extension");
+        .map_err(|source| Error::Batching { source })?;
 
     // Append insert portions from each upsert.
     for (i, r) in resolved.iter().enumerate() {
         if r.num_inserts > 0 {
             mutable
                 .try_extend(i + 1, r.num_updates, r.num_updates + r.num_inserts)
-                .expect("valid array extension");
+                .map_err(|source| Error::Batching { source })?;
         }
     }
 
@@ -1209,7 +1209,7 @@ fn merge_value_column<T: ArrowPrimitiveType>(
             None => {
                 mutable
                     .try_extend(0, run.start, run.end)
-                    .expect("valid array extension");
+                    .map_err(|source| Error::Batching { source })?;
             }
             Some(owner_idx) => {
                 if let Some(active) = &active_sources[owner_idx] {
@@ -1217,19 +1217,19 @@ fn merge_value_column<T: ArrowPrimitiveType>(
                         for _ in 0..count {
                             mutable
                                 .try_extend(active.source_idx, 0, 1)
-                                .expect("valid array extension");
+                                .map_err(|source| Error::Batching { source })?;
                         }
                     } else {
                         let counter = &mut update_counters[owner_idx];
                         mutable
                             .try_extend(active.source_idx, *counter, *counter + count)
-                            .expect("valid array extension");
+                            .map_err(|source| Error::Batching { source })?;
                         *counter += count;
                     }
                 } else {
                     mutable
                         .try_extend_nulls(count)
-                        .expect("valid null extension");
+                        .map_err(|source| Error::Batching { source })?;
                 }
             }
         }
@@ -1245,7 +1245,7 @@ fn merge_value_column<T: ArrowPrimitiveType>(
                 for _ in 0..r.num_inserts {
                     mutable
                         .try_extend(active.source_idx, 0, 1)
-                        .expect("valid array extension");
+                        .map_err(|source| Error::Batching { source })?;
                 }
             } else {
                 mutable
@@ -1254,12 +1254,12 @@ fn merge_value_column<T: ArrowPrimitiveType>(
                         active.num_updates,
                         active.num_updates + active.num_inserts,
                     )
-                    .expect("valid array extension");
+                    .map_err(|source| Error::Batching { source })?;
             }
         } else {
             mutable
                 .try_extend_nulls(r.num_inserts)
-                .expect("valid null extension");
+                .map_err(|source| Error::Batching { source })?;
         }
     }
 
@@ -1520,7 +1520,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                     let _ = value_to_idx.insert(key, idx);
                     unified_builder
                         .try_extend(0, i, i + 1)
-                        .expect("valid array extension");
+                        .map_err(|source| Error::Batching { source })?;
                     old_to_new[i] = idx;
                     num_distinct += 1;
                 }
@@ -1552,7 +1552,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                         let _ = value_to_idx.insert(key, idx);
                         unified_builder
                             .try_extend(0, row, row + 1)
-                            .expect("valid array extension");
+                            .map_err(|source| Error::Batching { source })?;
                         num_distinct += 1;
                         remap[row] = idx;
                     }
@@ -1589,7 +1589,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                 let _ = value_to_idx.insert(key_byte, idx);
                 unified_builder
                     .try_extend(mutable_source_idx, 0, 1)
-                    .expect("valid array extension");
+                    .map_err(|source| Error::Batching { source })?;
                 num_distinct += 1;
                 idx
             };
@@ -1682,7 +1682,7 @@ fn build_values_remap<'a>(
         let _ = value_to_idx.insert(key, idx);
         unified_builder
             .try_extend(source_idx, i, i + 1)
-            .expect("valid array extension");
+            .map_err(|source| Error::Batching { source })?;
         *num_distinct += 1;
         remap.push(idx);
     }
@@ -1924,24 +1924,24 @@ fn merge_passthrough_column(
         if pos < start {
             mutable
                 .try_extend(0, pos, start)
-                .expect("valid array extension");
+                .map_err(|source| Error::Batching { source })?;
         }
         mutable
             .try_extend_nulls(end - start)
-            .expect("valid null extension");
+            .map_err(|source| Error::Batching { source })?;
         pos = end;
     }
     if pos < existing_col.len() {
         mutable
             .try_extend(0, pos, existing_col.len())
-            .expect("valid array extension");
+            .map_err(|source| Error::Batching { source })?;
     }
 
     // append nulls for inserts
     if num_inserts > 0 {
         mutable
             .try_extend_nulls(num_inserts)
-            .expect("valid null extension");
+            .map_err(|source| Error::Batching { source })?;
     }
 
     let result = make_array(mutable.freeze());
@@ -1968,7 +1968,8 @@ fn values_column_supports_dictionary_encoding(col_name: &str) -> bool {
 ///
 /// Strategy: if dictionary encoding is supported for the column, try to build a unified
 /// dictionary first. If that succeeds (cardinality fits in u16), use the dict path. If it
-/// fails (overflow) or dict encoding is not supported, fall back to primitive merge.
+/// exceeds the supported cardinality or dict encoding is not supported, fall back to primitive
+/// merge. Arrow offset overflow is returned as an error.
 fn create_new_value_column_batched<T: ArrowPrimitiveType>(
     target_col_name: &str,
     resolved: &[ResolvedUpsert<'_, T>],
@@ -2049,7 +2050,7 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
                 // For ranges we are not updating, insert nulls (column didn't exist before).
                 mutable
                     .try_extend_nulls(count)
-                    .expect("valid null extension");
+                    .map_err(|source| Error::Batching { source })?;
             }
             Some(owner_idx) => {
                 if let Some(active) = &active_sources[owner_idx] {
@@ -2057,20 +2058,20 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
                         for _ in 0..count {
                             mutable
                                 .try_extend(active.source_idx, 0, 1)
-                                .expect("valid array extension");
+                                .map_err(|source| Error::Batching { source })?;
                         }
                     } else {
                         let counter = &mut update_counters[owner_idx];
                         mutable
                             .try_extend(active.source_idx, *counter, *counter + count)
-                            .expect("valid array extension");
+                            .map_err(|source| Error::Batching { source })?;
                         *counter += count;
                     }
                 } else {
                     // inactive: update must be for a different column. write nulls in this column
                     mutable
                         .try_extend_nulls(count)
-                        .expect("valid null extension");
+                        .map_err(|source| Error::Batching { source })?;
                 }
             }
         }
@@ -2086,7 +2087,7 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
                 for _ in 0..r.num_inserts {
                     mutable
                         .try_extend(active.source_idx, 0, 1)
-                        .expect("valid array extension");
+                        .map_err(|source| Error::Batching { source })?;
                 }
             } else {
                 mutable
@@ -2095,13 +2096,13 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
                         active.num_updates,
                         active.num_updates + active.num_inserts,
                     )
-                    .expect("valid array extension");
+                    .map_err(|source| Error::Batching { source })?;
             }
         } else {
             // inactive: insert must be for a different column. write nulls in this column
             mutable
                 .try_extend_nulls(r.num_inserts)
-                .expect("valid null extension");
+                .map_err(|source| Error::Batching { source })?;
         }
     }
 

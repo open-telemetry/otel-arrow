@@ -3269,7 +3269,7 @@ where
     for range in ranges {
         mutable
             .try_extend(0, range.start, range.end)
-            .expect("valid array extension");
+            .map_err(|source| Error::Batching { source })?;
     }
 
     let data = mutable.freeze();

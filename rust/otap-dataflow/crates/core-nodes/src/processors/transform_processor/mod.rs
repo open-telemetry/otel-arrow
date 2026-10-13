@@ -253,7 +253,10 @@ impl TransformProcessor {
         effect_handler.record_flow_dropped_items(signal, counters.filtered as u64);
 
         if self.sanitize_results {
-            sanitize_otap_batch(&mut default_otap_batch);
+            sanitize_otap_batch(&mut default_otap_batch).map_err(|error| {
+                router_impl.routed.clear();
+                TransformOperationError::new(TransformErrorType::Sanitization, error.into())
+            })?;
         }
 
         // Empty named outputs must not consume downstream capacity or participate
@@ -288,11 +291,10 @@ impl TransformProcessor {
             return Ok(());
         }
 
-        // Validate every route before emitting anything or allocating completion
-        // state. Otherwise a missing route discovered after the default output is
-        // sent can leave a partially dispatched request awaiting completion.
+        // Validate every route and sanitize its output before emitting anything or allocating
+        // completion state, so a failure cannot leave a partially dispatched request.
         let mut routed_outputs = Vec::with_capacity(router_impl.routed.len());
-        for (route_name, otap_batch) in router_impl.routed.drain(..) {
+        for (route_name, mut otap_batch) in router_impl.routed.drain(..) {
             let port_name = effect_handler
                 .connected_ports()
                 .iter()
@@ -312,6 +314,11 @@ impl TransformProcessor {
                     )
                 })?
                 .clone();
+            if self.sanitize_results {
+                sanitize_otap_batch(&mut otap_batch).map_err(|error| {
+                    TransformOperationError::new(TransformErrorType::Sanitization, error.into())
+                })?;
+            }
             routed_outputs.push((port_name, otap_batch));
         }
 
@@ -382,11 +389,7 @@ impl TransformProcessor {
 
         // handle any batches that need to be forwarded to a specific output port thanks to invocation
         // of a "route_to" operator call
-        for (port_name, mut otap_batch) in routed_outputs {
-            if self.sanitize_results {
-                sanitize_otap_batch(&mut otap_batch);
-            }
-
+        for (port_name, otap_batch) in routed_outputs {
             // setup the pdata with the new outbound context
             let payload = OtapPayload::from(otap_batch);
             let mut pdata = OtapPdata::new(outbound_context.clone(), payload);

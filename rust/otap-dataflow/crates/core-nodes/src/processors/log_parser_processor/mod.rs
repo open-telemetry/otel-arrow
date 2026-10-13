@@ -104,7 +104,9 @@ impl LogParserProcessor {
             .await
             .map_err(|error| (ParserErrorType::Internal, error.into()))?;
         if self.sanitize_results {
-            sanitize_otap_batch_cooperative(&mut batch).await;
+            sanitize_otap_batch_cooperative(&mut batch)
+                .await
+                .map_err(|error| (ParserErrorType::Sanitization, error.into()))?;
         }
         self.metrics
             .record_parsing(self.log_parser.format(), counts);
