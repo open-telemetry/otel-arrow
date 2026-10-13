@@ -77,6 +77,7 @@ Exporters send data out of a pipeline.
 
 | Type | Feature | Stability | Description |
 | --- | --- | --- | --- |
+| [`urn:microsoft:exporter:azure_data_explorer`](src/exporters/azure_data_explorer_exporter/README.md) | `azure-data-explorer` | In-Progress; Not Operational; logs, metrics, and traces | Streams OpenTelemetry data to Azure Data Explorer. |
 | [`urn:microsoft:exporter:azure_monitor`](src/exporters/azure_monitor_exporter/README.md) | `azure-monitor` | Alpha; supports logs | Sends OpenTelemetry logs to Azure Monitor. |
 | [`exporter:clickhouse`](src/exporters/clickhouse_exporter/README.md) | `clickhouse` | Experimental | Writes logs and traces to ClickHouse. |
 | [`urn:microsoft:exporter:geneva`](src/exporters/geneva_exporter/README.md) | `geneva` | Alpha; logs and traces | Sends telemetry to Microsoft's Geneva backend. |
@@ -85,8 +86,8 @@ Exporters send data out of a pipeline.
 ## Feature Aggregates
 
 - `contrib-nodes`: enables contrib receivers, processors, and exporters, except
-  the explicitly opt-in Oracle receiver.
-- `contrib-receivers`: enables contrib receivers except Oracle.
+  the explicitly opt-in Oracle and SQL Server integrations.
+- `contrib-receivers`: enables contrib receivers except Oracle and SQL Server.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
 - `kafka`: enables both the Kafka receiver and exporter.
@@ -95,8 +96,12 @@ Enable `oracle` explicitly to include Oracle. It is excluded from both
 `contrib-receivers` and `contrib-nodes` because Oracle Client libraries must be
 provisioned separately.
 
-When these features are enabled in the top-level binary, their factories are
-registered into the OTAP pipeline factory maps.
+The `sql-server` feature is also explicitly opt-in and excluded from all
+aggregates. See the [SQL Server README](src/receivers/sql_server_receiver/README.md)
+for its capabilities and usage.
+
+When implemented node features are enabled in the top-level binary, their
+factories are registered into the OTAP pipeline factory maps.
 
 Features describe what the build includes rather than implementation
 directions. Each uses an unsuffixed name so future source or destination nodes
