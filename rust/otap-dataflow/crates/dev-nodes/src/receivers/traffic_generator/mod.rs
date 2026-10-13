@@ -39,9 +39,9 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::OtapPayload;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;

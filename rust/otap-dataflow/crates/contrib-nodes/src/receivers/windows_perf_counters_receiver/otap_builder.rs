@@ -181,7 +181,8 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         AggregationTemporality, metric, number_data_point,
     };
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use prost::Message;
     use std::sync::Arc;
 
@@ -209,6 +210,7 @@ mod tests {
             start_time_unix_nano: start,
             timestamp_unix_nano: timestamp,
             points,
+            failures: Vec::new(),
         }
     }
 

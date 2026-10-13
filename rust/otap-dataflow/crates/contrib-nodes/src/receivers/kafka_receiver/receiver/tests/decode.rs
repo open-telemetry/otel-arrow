@@ -67,7 +67,7 @@ fn decode_traces_payload_otap_proto() {
     assert!(
         matches!(
             payload.into_data(),
-            PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
+            PayloadData::OtapRecords(OtapArrowRecords::Traces(_))
         ),
         "expected OtapArrowRecords::Traces"
     );
@@ -87,7 +87,7 @@ fn decode_metrics_payload_otap_proto() {
     assert!(
         matches!(
             payload.into_data(),
-            PayloadData::OtapArrowRecords(OtapArrowRecords::Metrics(_))
+            PayloadData::OtapRecords(OtapArrowRecords::Metrics(_))
         ),
         "expected OtapArrowRecords::Metrics"
     );
@@ -107,7 +107,7 @@ fn decode_logs_payload_otap_proto() {
     assert!(
         matches!(
             payload.into_data(),
-            PayloadData::OtapArrowRecords(OtapArrowRecords::Logs(_))
+            PayloadData::OtapRecords(OtapArrowRecords::Logs(_))
         ),
         "expected OtapArrowRecords::Logs"
     );

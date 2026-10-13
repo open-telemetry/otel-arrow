@@ -46,20 +46,20 @@ use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 
 use std::io::ErrorKind;
@@ -319,81 +319,137 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
-                    // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
+                    let attempt = self
+                        .io_metrics
+                        .as_ref()
+                        .map(|io| io.boundary.attempt(signal_type));
 
-                    // Note: context is not used
-                    let (_context, payload) = pdata.into_parts();
+                    let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
+                        Ok(arrow_pdata) => arrow_pdata,
+                        Err(error) => {
+                            if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                                let err = attempt.failed(error.to_string());
+                                let completed = attempt.complete::<(), String>(Err(err));
+                                _ = io.boundary.record(completed);
+                            }
+                            let (error, pdata) = error.into_parts();
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                .await?;
+                            continue;
+                        }
+                    };
+                    // Note: context is not used by this terminal exporter.
+                    let (_context, mut otap_batch) = arrow_pdata.into_parts();
 
-                    if let Some(io) = self.io_metrics.as_mut() {
-                        let completed = io
-                            .boundary
-                            .attempt(signal_type)
-                            .run(async |attempt| {
-                                let mut otap_batch: OtapArrowRecords =
-                                    payload.try_into_with_default().map_err(|e| {
-                                        attempt.failed(format!("Payload conversion failed: {e}"))
-                                    })?;
+                    // decode the transport optimized IDs before converting
+                    // to unvalidated parquet records
+                    if let Err(e) = otap_batch.decode_transport_optimized_ids() {
+                        if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                            let err = attempt.failed(e.to_string());
+                            let completed = attempt.complete::<(), String>(Err(err));
+                            _ = io.boundary.record(completed);
+                        }
+                        let source_detail = format_error_sources(&e);
+                        return Err(Error::ExporterError {
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
+                            error: format!("Failed to decode transport optimized IDs: {e}"),
+                            source_detail,
+                        });
+                    }
 
-                                // decode the transport optimized IDs before converting
-                                // to unvalidated parquet records
-                                otap_batch.decode_transport_optimized_ids().map_err(|e| {
-                                    attempt.failed(format!(
-                                        "Failed to decode transport optimized IDs: {e}"
-                                    ))
-                                })?;
+                    // convert to parquet-local records for unvalidated access
+                    let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
 
-                                // convert to parquet-local records for unvalidated access
-                                let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
+                    // generate unique IDs
+                    let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
+                    if let Err(e) = id_gen_result {
+                        if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                            let err = attempt.failed(e.to_string());
+                            let completed = attempt.complete::<(), String>(Err(err));
+                            _ = io.boundary.record(completed);
+                        }
+                        // TODO - this is not the error handling we want long term.
+                        // eventually we should have the concept of retryable & non-retryable errors and
+                        // use Nack message + a Retry processor to handle this gracefully
+                        // https://github.com/open-telemetry/otel-arrow/issues/504
+                        let source_detail = format_error_sources(&e);
+                        return Err(Error::ExporterError {
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
+                            error: format!("ID Generation failed: {e}"),
+                            source_detail,
+                        });
+                    }
 
-                                // generate unique IDs
-                                id_generator
-                                    .generate_unique_ids(&mut otap_batch)
-                                    .map_err(|e| {
-                                        attempt.failed(format!("ID Generation failed: {e}"))
-                                    })?;
+                    // ensure the batches has the schema the parquet writer expects
+                    if let Err(e) = transform_to_known_schema(&mut otap_batch) {
+                        if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                            let err = attempt.failed(e.to_string());
+                            let completed = attempt.complete::<(), String>(Err(err));
+                            _ = io.boundary.record(completed);
+                        }
+                        // TODO - Ack/Nack instead of returning error
+                        let source_detail = format_error_sources(&e);
+                        return Err(Error::ExporterError {
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
+                            error: format!("Schema transformation failed: {e}"),
+                            source_detail,
+                        });
+                    }
 
-                                // ensure the batches has the schema the parquet writer expects
-                                transform_to_known_schema(&mut otap_batch).map_err(|e| {
-                                    attempt.failed(format!("Schema transformation failed: {e}"))
-                                })?;
+                    // compute any partitions
+                    let partitions = match self.config.partitioning_strategies.as_ref() {
+                        Some(strategies) => partition(otap_batch, strategies),
+                        None => vec![Partition {
+                            otap_batch,
+                            attributes: None,
+                        }],
+                    };
 
-                                // compute any partitions
-                                let partitions = match self.config.partitioning_strategies.as_ref()
-                                {
-                                    Some(strategies) => partition(otap_batch, strategies),
-                                    None => vec![Partition {
-                                        otap_batch,
-                                        attributes: None,
-                                    }],
-                                };
-
-                                // write the data
-                                let writes = partitions
-                                    .iter()
-                                    .map(|partition| {
-                                        WriteBatch::new(
-                                            batch_id,
-                                            &partition.otap_batch,
-                                            partition.attributes.as_deref(),
-                                        )
-                                    })
-                                    .collect::<Vec<_>>();
-                                batch_id += 1;
-                                let stats = writer.write(&writes).await.map_err(|e| {
-                                    record_io_metrics(io, e.stats);
-                                    attempt.failed(format!("Parquet write failed: {e}"))
-                                })?;
+                    // write the data
+                    let writes = partitions
+                        .iter()
+                        .map(|partition| {
+                            WriteBatch::new(
+                                batch_id,
+                                &partition.otap_batch,
+                                partition.attributes.as_deref(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    batch_id += 1;
+                    match writer.write(&writes).await {
+                        Ok(stats) => {
+                            if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, stats);
-                                Ok::<(), otel_arrow_dfe_otap::metrics::ErrorWithOutcome<String>>(())
-                            })
-                            .await;
-                        if let Err(error_detail) = io.boundary.record(completed) {
-                            let source_detail = error_detail.to_string();
+                                if let Some(attempt) = attempt {
+                                    let completed = attempt.complete::<(), String>(Ok(()));
+                                    _ = io.boundary.record(completed);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(io) = self.io_metrics.as_mut() {
+                                record_io_metrics(io, e.stats);
+                                if let Some(attempt) = attempt {
+                                    let err = attempt.failed(e.to_string());
+                                    let completed = attempt.complete::<(), String>(Err(err));
+                                    _ = io.boundary.record(completed);
+                                }
+                            }
+                            // TODO - this is not the error handling we want long term.
+                            // eventually we should have the concept of retryable & non-retryable errors and
+                            // use Nack message + a Retry processor to handle this gracefully
+                            // https://github.com/open-telemetry/otel-arrow/issues/504
+                            let source_detail = format_error_sources(&e);
                             return Err(Error::ExporterError {
-                                exporter: exporter_id.clone(),
-                                kind: ExporterErrorKind::Other,
-                                error: source_detail.clone(),
+                                exporter: effect_handler.exporter_id(),
+                                kind: ExporterErrorKind::Transport,
+                                error: format!("Parquet write failed: {e}"),
                                 source_detail,
                             });
                         }
@@ -553,6 +609,96 @@ mod test {
                     .await
                     .unwrap();
             })
+        }
+    }
+
+    /// Scenario: Legacy and generalized malformed OTLP batches precede valid Parquet input.
+    /// Guarantees: Permanent Nacks retain the exact bytes and delivery context, and export continues.
+    #[test]
+    fn malformed_otlp_is_nacked_without_stopping_export() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_config::SignalType;
+        use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata_codec::{CodecRegistry, OtapPayload, PdataEncoding};
+
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+
+        for generalized in [false, true] {
+            let runtime = TestRuntime::<OtapPdata>::new();
+            let dir = tempfile::tempdir().unwrap();
+            let base_dir = dir.path().to_str().unwrap().to_owned();
+            let exporter = ParquetExporter::new(config::Config {
+                storage: object_store::StorageType::File {
+                    base_uri: base_dir.clone(),
+                },
+                retry: None,
+                partitioning_strategies: None,
+                writer_options: None,
+            });
+            let exporter = ExporterWrapper::local(
+                exporter,
+                test_node(runtime.config().name.clone()),
+                Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN)),
+                runtime.config(),
+            );
+            let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+            let pointer = bytes.as_ptr();
+            let payload: OtapPayload = if generalized {
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into()
+            } else {
+                OtlpProtoBytes::ExportLogsRequest(bytes.clone()).into()
+            };
+            let peer = "127.0.0.1:4317".parse().unwrap();
+            let pdata = OtapPdata::new_default(payload)
+                .with_peer_addr(peer)
+                .test_subscribe_to(
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    TestCallData::new_with(7, 0).into(),
+                    999,
+                );
+            runtime
+                .set_exporter(exporter)
+                .run_test(move |ctx| async move {
+                    ctx.send_pdata(pdata).await.unwrap();
+                    ctx.send_pdata(fixtures::create_single_logs_pdata_with_attrs(vec![]))
+                        .await
+                        .unwrap();
+                    ctx.send_shutdown(Instant::now() + Duration::from_secs(10), "test complete")
+                        .await
+                        .unwrap();
+                })
+                .run_validation(move |mut ctx, result| async move {
+                    result.unwrap();
+                    let mut completions = ctx.take_pipeline_completion_receiver().unwrap();
+                    let completion =
+                        tokio::time::timeout(Duration::from_secs(3), completions.recv())
+                            .await
+                            .expect("timed out waiting for Parquet codec Nack")
+                            .expect("completion channel closed before Parquet codec Nack");
+                    let PipelineCompletionMsg::DeliverNack { nack } = completion else {
+                        panic!("expected a permanent Nack");
+                    };
+                    let (subscriber, nack) = next_nack(nack).expect("original Nack subscription");
+                    assert_eq!(subscriber, 999);
+                    assert_eq!(
+                        TestCallData::try_from(nack.unwind.route.calldata.clone()).unwrap(),
+                        TestCallData::new_with(7, 0)
+                    );
+                    assert!(nack.permanent);
+                    assert_eq!(nack.refused.peer_addr(), Some(peer));
+                    assert_eq!(nack.refused.signal_type(), SignalType::Logs);
+                    let payload = nack.refused.payload_ref();
+                    assert_eq!(payload.encoding(), Some(codec.encoding()));
+                    let recovered = payload.encoded_bytes().unwrap();
+                    assert_eq!(recovered.as_ptr(), pointer);
+                    assert_eq!(recovered, &bytes);
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 1).await;
+                });
         }
     }
 
