@@ -911,6 +911,9 @@ impl ContextValueSource for PdataContextValueSource<'_> {
                         )
                     })
                     .collect::<Vec<_>>();
+                if values.is_empty() {
+                    return None;
+                }
                 let cardinality = if values.len() == 1 {
                     ContextValueCardinality::One
                 } else {
@@ -2592,6 +2595,48 @@ mod test {
                 ("route".to_owned(), "dedicated".to_owned()),
             ]
         );
+    }
+
+    /// Scenario: a selected authorized identity claim is a present empty multi-valued list.
+    /// Guarantees: materialization retains the zero-value member instead of omitting its composite.
+    #[test]
+    fn materializes_empty_multi_valued_identity_claim() {
+        let member_name = ContextEntryName::try_from("access_groups").expect("valid member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("groups").expect("valid claim name"),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "groups",
+                "store_as": "groups"
+            }]))
+            .expect("valid identity policy");
+        let identity =
+            AuthorizedIdentity::new().with_claim_values("groups", std::iter::empty::<&str>());
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_empty_groups = false;
+        resolved.visit_members(|member| {
+            if member.name() == &member_name {
+                found_empty_groups = true;
+                assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+                assert!(member.values().values().is_empty());
+            }
+        });
+        assert!(found_empty_groups);
     }
 
     /// Scenario: repeated captured binary headers retain their complete source representation.

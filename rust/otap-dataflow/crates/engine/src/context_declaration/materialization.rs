@@ -193,17 +193,23 @@ impl fmt::Debug for MaterializedContextValues {
 }
 
 impl MaterializedContextValues {
-    /// Creates a non-empty value collection.
+    /// Creates a cardinality-preserving value collection.
+    ///
+    /// Multi-valued sources may be present with no values. Scalar sources must
+    /// contain exactly one value.
     #[must_use]
     pub fn new(
         cardinality: ContextValueCardinality,
         values: impl Into<Box<[MaterializedContextValue]>>,
     ) -> Option<Self> {
         let values = values.into();
-        (!values.is_empty()).then_some(Self {
-            cardinality,
-            values,
-        })
+        match cardinality {
+            ContextValueCardinality::One if values.len() != 1 => None,
+            ContextValueCardinality::One | ContextValueCardinality::Many => Some(Self {
+                cardinality,
+                values,
+            }),
+        }
     }
 
     fn text(value: impl Into<Box<[u8]>>) -> Self {
