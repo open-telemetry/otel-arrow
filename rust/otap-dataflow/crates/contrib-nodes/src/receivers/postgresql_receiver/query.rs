@@ -262,7 +262,12 @@ pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Resul
                 .enumerate()
                 .all(|(i, b)| b == b'_' || b.is_ascii_lowercase() || (i > 0 && b.is_ascii_digit()))
     }
-    if sql.is_empty()     || sql.len() > MAX_QUERY_BYTES || timestamp == tie || !valid(timestamp) || !valid(tie) {
+    if sql.is_empty()
+        || sql.len() > MAX_QUERY_BYTES
+        || timestamp == tie
+        || !valid(timestamp)
+        || !valid(tie)
+    {
         return Err(Error::Sql);
     }
     let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
