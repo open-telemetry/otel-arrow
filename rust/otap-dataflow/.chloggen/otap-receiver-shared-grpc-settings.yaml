@@ -8,7 +8,7 @@ change_type: deprecation
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "OTAP receiver now uses the shared gRPC server settings; `compression_method` is deprecated in favor of `request_compression` and `response_compression`."
+note: "The OTAP receiver `compression_method` setting is deprecated in favor of `request_compression` and `response_compression`."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: []
@@ -19,4 +19,4 @@ issues: []
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  The OTAP receiver accepts the shared gRPC tuning fields (TCP/HTTP2, message size, stream limits). `max_concurrent_requests` now defaults to the downstream channel capacity instead of 1000, and omitted request compression accepts zstd, gzip, and deflate.
+  `compression_method` still works and applies a single method (or "none") to both directions, but it cannot be combined with `request_compression` or `response_compression`. Replace it with those fields.
