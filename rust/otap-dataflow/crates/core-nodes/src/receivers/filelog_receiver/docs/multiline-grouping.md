@@ -56,6 +56,14 @@ authority made the line eligible. Earlier complete records keep their own
 completion reasons, including `StartPattern` when the partial line begins a new
 record. `PatternNotMatched` denotes fallback for a complete unmatched line.
 
+Use `RecordFrame::pattern_not_matched` for fallback counting. A complete bounded
+unmatched line in seeking state sets it on its first emitted frame, including
+when the line needs byte-limited split/truncate output. Count this observation
+once rather than also counting `RecordEnding::PatternNotMatched`. Later
+fragments and recovered continuations do not repeat it. Partial-line completion
+and oversized physical lines do not set it. This is framing evidence, not a
+durable counter or an instruction to recount a retained frame on delivery retry.
+
 ## Decoding and failures
 
 A bounded line retains decoded text and exact source bytes. When it fits in the

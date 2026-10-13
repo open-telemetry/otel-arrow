@@ -141,6 +141,9 @@ pub struct RecordFrame {
     pub frame_range: SourceRange,
     /// Completion reason for bounded telemetry and lifecycle evidence.
     pub ending: RecordEnding,
+    /// A complete unmatched line fell back in start mode. True only on its first
+    /// emitted frame, independently of the ending. Not reconstructed on recovery.
+    pub pattern_not_matched: bool,
     /// Present on every split fragment, including a recovered final fragment.
     pub fragment: Option<RecordFragment>,
     /// Proposed resume after a nonfinal fragment.
@@ -251,6 +254,7 @@ pub struct MultilineFramer {
     separator: Option<DecodeEvent>,
     ready: Option<LineEnd>,
     line_match: Option<bool>,
+    pattern_not_matched: bool,
     oversize: bool,
     replay: Option<Replay>,
     pending: Option<DecodeEvent>,
@@ -316,6 +320,7 @@ impl MultilineFramer {
             separator: None,
             ready: None,
             line_match: None,
+            pattern_not_matched: false,
             oversize: false,
             replay: None,
             pending: None,
@@ -568,11 +573,18 @@ impl MultilineFramer {
         // A bounded start line belongs to the next record, so close the old
         // record before considering their combined size. Keep the match cached
         // while the caller handles that output; no source bytes are replayed.
-        if self.config.mode == GroupingMode::Start
-            && self.body.has_progress()
-            && self.match_line(end, matcher)?
-        {
+        let start_match = if self.config.mode == GroupingMode::Start {
+            Some(self.match_line(end, matcher)?)
+        } else {
+            None
+        };
+        if start_match == Some(true) && self.body.has_progress() {
             return self.emit(RecordEnding::StartPattern, true).map(Some);
+        }
+        // Completion authority is distinct from the fallback observation. A
+        // bounded unmatched line may still need several byte-limited fragments.
+        if start_match == Some(false) && !self.body.has_progress() && matches!(end, LineEnd::Lf) {
+            self.pattern_not_matched = true;
         }
         let separator = self.separator.map_or(0, |e| {
             if self.config.line.encoding == Encoding::Raw {
@@ -835,9 +847,13 @@ impl MultilineFramer {
                 .ok_or(MultilineError::FragmentIndexOverflow)?;
             Some(c)
         };
-        let frame = self
-            .body
-            .take(self.config.line, ending, fragment, continuation);
+        let frame = self.body.take(
+            self.config.line,
+            ending,
+            fragment,
+            continuation,
+            std::mem::take(&mut self.pattern_not_matched),
+        );
         self.sequence = continuation;
         if last {
             self.lines = 0;

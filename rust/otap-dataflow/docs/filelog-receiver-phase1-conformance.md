@@ -713,6 +713,7 @@ while their semantic and format definitions remain normative from version 1.
 | Decoding | UTF-8/ASCII/UTF-16LE/UTF-16BE/raw | Expected body and source offsets |
 | Decoding | Matching initial BOM | Stripped body; frame owns BOM |
 | Decoding | Conflicting BOM | Configured decode-error policy |
+| Decoding | First line with matching/conflicting BOM overflows line or record bounds | Replay strips matching BOMs and preserves conflicting-BOM malformed grouping and source ranges under split/truncate |
 | Decoding | BOM away from stream start | Ordinary content/error semantics |
 | Decoding | NUL in every encoding | Preserved as data |
 | Decoding | Split source unit across reads | No premature emit/commit |
@@ -726,6 +727,7 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Empty line | Empty body; LF progress |
 | Framing | Multiline | Internal LFs retained |
 | Framing | Start-pattern fallback | Newline record and bounded counter |
+| Framing | Complete unmatched seeking-state line exceeds the record limit but fits the line limit | One fallback observation on its first frame; byte-limit endings remain intact; continuation recovery does not recount it |
 | Framing | Next start match | Previous record emits; match starts next |
 | Framing | Bounded start match would overflow buffered record | Previous record emits `StartPattern` at its own LF; matching line starts a new record and splits/truncates independently if it alone exceeds the record limit |
 | Framing | End match | Matching line included |
@@ -735,6 +737,7 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Split crosses Ack boundary | Durable continuation reproduces next fragment |
 | Framing | Restart mid-split oversize physical line with `record_end_offset == 0` | Seek committed offset; suppress fresh framing; bounded-scan and fragment through next decoded/raw LF |
 | Framing | Scan-to-LF continuation reaches temporary EOF | Remains pending; no fabricated final fragment |
+| Framing | Scan-to-LF continuation receives idle/permanent-EOF authority | Empty recovery remains pending; a nonempty suffix completes with correct ranges, final fragment index, and completion evidence; decode-fail suppresses malformed suffix output |
 | Framing | Restart mid-split start-pattern multiline | Existing sequence continues without requiring another start match; stored end determines `is_last` |
 | Framing | Restart mid-split end-pattern multiline | Existing sequence continues without re-evaluating end pattern; stored end determines `is_last` |
 | Framing | Restart continuation committed inside a physical line | Safe-unit fragments continue from committed offset without rereading the prefix |

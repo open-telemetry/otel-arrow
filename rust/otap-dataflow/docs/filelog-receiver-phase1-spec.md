@@ -1880,6 +1880,16 @@ In `seeking`:
 - a complete nonmatching line is emitted under newline framing; and
 - each such fallback increments bounded `pattern_not_matched` telemetry.
 
+Match complete physical lines within `max_line_bytes` even when they exceed
+`max_record_bytes` in seeking state. An unmatched line still counts as one
+fallback when it must split or truncate. Fallback evidence is independent of
+completion reason: byte-limited fragments retain their byte-limit reason, and
+only the first emitted frame carries the fallback observation. Do not count
+both that observation and the completion reason. Stored continuations do not
+reconstruct the original match result or produce another fallback observation.
+Partial lines completed by idle/permanent EOF and oversized physical lines do
+not produce this complete-line fallback evidence.
+
 In `buffering`:
 
 - a nonmatching line is appended with its internal LF;

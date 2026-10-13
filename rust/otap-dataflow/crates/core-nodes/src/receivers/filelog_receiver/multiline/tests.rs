@@ -774,10 +774,10 @@ fn permanent_eof_decode_policies() {
     }
 }
 
-/// Scenario: A new stream begins with a conflicting BOM and later matches an end line.
-/// Guarantees: Bounded replay preserves the decoder's original malformed-unit grouping and replacement text.
+/// Scenario: A conflicting BOM begins a stream whose lines fit the record limit.
+/// Guarantees: Direct append preserves the decoder's malformed-unit grouping and replacement text.
 #[test]
-fn conflicting_bom_replay() {
+fn conflicting_bom_direct_append() {
     let mut c = config(GroupingMode::End);
     c.line.on_decode_error = OnDecodeError::Replace;
     let (mut f, mut m) = make(c, "^E$", RecordStart::NewStream);
@@ -786,6 +786,247 @@ fn conflicting_bom_replay() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].body, LineBody::Text("\u{fffd}\nx\nE".into()));
     assert_eq!(out[0].malformed_units, 1);
+}
+
+/// Scenario: A first line with a matching or conflicting BOM exceeds the record or physical-line bound.
+/// Guarantees: Replay strips matching BOMs, preserves conflicting-BOM grouping, and retains exact source ownership.
+#[test]
+fn bom_overflow_replay() {
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+        for conflicting in [false, true] {
+            for oversize in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+                for line_limit in [4, 64] {
+                    let mut c = config(GroupingMode::End);
+                    c.line.encoding = encoding;
+                    c.line.on_decode_error = OnDecodeError::Replace;
+                    c.line.max_line_bytes = line_limit;
+                    c.line.max_record_bytes = 4;
+                    c.line.oversize = oversize;
+                    let bom: &[u8] = match (encoding, conflicting) {
+                        (Encoding::Utf8, false) => b"\xef\xbb\xbf",
+                        (Encoding::Utf8, true)
+                        | (Encoding::Utf16Le, false)
+                        | (Encoding::Utf16Be, true) => b"\xff\xfe",
+                        _ => b"\xfe\xff",
+                    };
+                    let mut source = bom.to_vec();
+                    source.extend(encoded("abcdef\n", encoding));
+                    let wanted = if conflicting {
+                        "\u{fffd}abcdef"
+                    } else {
+                        "abcdef"
+                    };
+                    let mut baseline = None;
+                    for cut in 0..=source.len() {
+                        let (mut f, mut m) = make(c, "END", RecordStart::NewStream);
+                        let mut out = vec![];
+                        feed(&mut f, &mut m, &source[..cut], &mut out).unwrap();
+                        feed(&mut f, &mut m, &source[cut..], &mut out).unwrap();
+                        assert_eq!(f.pending_source_start(), None);
+                        assert_eq!(
+                            out.iter().map(|frame| frame.malformed_units).sum::<u64>(),
+                            u64::from(conflicting)
+                        );
+                        assert_eq!(
+                            out[0].body_range.start,
+                            if conflicting { 0 } else { bom.len() as u64 }
+                        );
+                        let mut offset = 0;
+                        let mut body = vec![];
+                        for frame in &out {
+                            assert_eq!(frame.frame_range.start, offset);
+                            offset = frame.frame_range.end;
+                            body.extend_from_slice(bytes(frame));
+                        }
+                        assert_eq!(offset, source.len() as u64);
+                        if oversize == OversizeBehavior::Split {
+                            assert_eq!(body, wanted.as_bytes());
+                            assert!(out.len() > 1);
+                            assert_eq!(
+                                out[0].continuation.unwrap().record_end_offset,
+                                if line_limit == 4 {
+                                    0
+                                } else {
+                                    source.len() as u64
+                                }
+                            );
+                        } else {
+                            assert_eq!(out.len(), 1);
+                            assert!(out[0].truncated);
+                            assert_eq!(
+                                body,
+                                if conflicting {
+                                    "\u{fffd}a".as_bytes()
+                                } else {
+                                    b"abcd"
+                                }
+                            );
+                        }
+                        if let Some(expected) = &baseline {
+                            assert_eq!(
+                                &out, expected,
+                                "{encoding:?}, conflicting={conflicting}, cut={cut}"
+                            );
+                        } else {
+                            baseline = Some(out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: An unmatched complete line in seeking state exceeds the record bound but fits the physical-line bound.
+/// Guarantees: Fallback evidence appears once per line, byte-limit endings remain intact, and recovery does not recount it.
+#[test]
+fn unmatched_overflow_reports_fallback_once() {
+    for encoding in [Encoding::Raw, Encoding::Utf8, Encoding::Utf16Le] {
+        for oversize in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+            let mut c = config(GroupingMode::Start);
+            c.line.encoding = encoding;
+            c.line.max_record_bytes = 4;
+            c.line.oversize = oversize;
+            let source = encoded("abcdefghi\n", encoding);
+            let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+            let mut out = vec![];
+            feed(&mut f, &mut m, &source, &mut out).unwrap();
+            assert!(out[0].pattern_not_matched);
+            assert_eq!(
+                out.iter().filter(|frame| frame.pattern_not_matched).count(),
+                1
+            );
+            assert!(
+                out.iter()
+                    .all(|frame| frame.ending == RecordEnding::ByteLimit)
+            );
+            assert_partitions_and_restarts(c, &source, &out);
+        }
+    }
+}
+
+/// Scenario: Matching, appended, partial, and physically oversized lines are processed in start mode.
+/// Guarantees: Only complete unmatched seeking-state lines produce fallback evidence, independent of completion reasons.
+#[test]
+fn fallback_evidence_excludes_nonfallback_lines() {
+    let mut c = config(GroupingMode::Start);
+    c.line.max_record_bytes = 4;
+    for (source, count) in [
+        (&b"x\n"[..], 1),
+        (&b"Sabcdef\n"[..], 0),
+        (&b"S\nabcdef\n"[..], 0),
+        (&b"abcdef"[..], 0),
+    ] {
+        let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+        let mut out = vec![];
+        feed(&mut f, &mut m, source, &mut out).unwrap();
+        complete(&mut f, &mut m, PartialCompletion::Idle, &mut out).unwrap();
+        assert_eq!(
+            out.iter().filter(|frame| frame.pattern_not_matched).count(),
+            count
+        );
+    }
+    c.line.max_line_bytes = 4;
+    let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+    let mut out = vec![];
+    feed(&mut f, &mut m, b"abcdef\n", &mut out).unwrap();
+    assert!(out.iter().all(|frame| !frame.pattern_not_matched));
+}
+
+/// Scenario: Scan-to-LF recovery reaches temporary EOF before any new bytes, then completes an unterminated suffix.
+/// Guarantees: Empty completion preserves recovery; authorized completion emits one final fragment and resets framing.
+#[test]
+fn scan_to_lf_recovery_completion() {
+    for reason in [PartialCompletion::Idle, PartialCompletion::PermanentEof] {
+        for policy in [
+            OnDecodeError::PreserveRaw,
+            OnDecodeError::Replace,
+            OnDecodeError::Fail,
+        ] {
+            for suffix in [&b"xy"[..], &b"x\xe2"[..]] {
+                let mut c = config(GroupingMode::Start);
+                c.line.max_line_bytes = 4;
+                c.line.on_decode_error = policy;
+                let continuation = RecordContinuation {
+                    record_start_offset: 0,
+                    record_end_offset: 0,
+                    next_fragment_index: 1,
+                };
+                let (mut f, mut m) = make(
+                    c,
+                    "^S",
+                    RecordStart::Continuation {
+                        offset: 4,
+                        continuation,
+                    },
+                );
+                let mut out = vec![];
+                feed(&mut f, &mut m, b"", &mut out).unwrap();
+                complete(&mut f, &mut m, reason, &mut out).unwrap();
+                assert!(out.is_empty());
+                assert!(f.recovering);
+                assert_eq!(f.sequence, Some(continuation));
+                assert_eq!(f.next_expected_input_offset(), 4);
+                feed(&mut f, &mut m, suffix, &mut out).unwrap();
+                assert!(out.is_empty());
+                let result = complete(&mut f, &mut m, reason, &mut out);
+                if suffix.ends_with(b"\xe2") && policy == OnDecodeError::Fail {
+                    assert!(matches!(
+                        result.unwrap_err().error,
+                        MultilineError::Decode(DecodeError::FatalMalformed { .. })
+                    ));
+                    assert!(out.is_empty());
+                    assert!(f.terminal_error().is_some());
+                    continue;
+                }
+                result.unwrap();
+                assert_eq!(out.len(), 1);
+                let frame = &out[0];
+                let end = 4 + suffix.len() as u64;
+                assert_eq!(frame.frame_range, SourceRange { start: 4, end });
+                assert_eq!(frame.body_range, SourceRange { start: 4, end });
+                assert_eq!(
+                    frame.fragment,
+                    Some(RecordFragment {
+                        record_start_offset: 0,
+                        index: 1,
+                        is_last: true
+                    })
+                );
+                assert_eq!(frame.continuation, None);
+                assert!(!frame.pattern_not_matched);
+                assert_eq!(
+                    frame.ending,
+                    if reason == PartialCompletion::Idle {
+                        RecordEnding::Idle
+                    } else {
+                        RecordEnding::PermanentEof
+                    }
+                );
+                let wanted = if suffix.ends_with(b"\xe2") && policy == OnDecodeError::Replace {
+                    "x\u{fffd}".as_bytes()
+                } else {
+                    suffix
+                };
+                assert_eq!(bytes(frame), wanted);
+                assert_eq!(frame.malformed_units, u64::from(suffix.ends_with(b"\xe2")));
+                assert_eq!(f.pending_source_start(), None);
+                // A new unmatched line must use ordinary seeking semantics.
+                feed(&mut f, &mut m, b"z\n", &mut out).unwrap();
+                assert_eq!(out.len(), 2);
+                assert_eq!(
+                    out[1].frame_range,
+                    SourceRange {
+                        start: end,
+                        end: end + 2
+                    }
+                );
+                assert_eq!(out[1].ending, RecordEnding::PatternNotMatched);
+                assert!(out[1].pattern_not_matched);
+                assert!(out[1].fragment.is_none());
+            }
+        }
+    }
 }
 
 /// Scenario: Split recovery starts at the maximum fragment index.

@@ -253,6 +253,7 @@ impl Body {
         ending: RecordEnding,
         fragment: Option<RecordFragment>,
         continuation: Option<RecordContinuation>,
+        pattern_not_matched: bool,
     ) -> RecordFrame {
         let bytes = config.encoding == Encoding::Raw
             || (config.on_decode_error == OnDecodeError::PreserveRaw
@@ -272,6 +273,7 @@ impl Body {
                 end: self.frame_end,
             },
             ending,
+            pattern_not_matched,
             fragment,
             continuation,
             truncated: self.truncated,
