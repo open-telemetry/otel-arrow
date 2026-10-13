@@ -6,9 +6,12 @@ from docker.errors import DockerException, APIError
 from lib.impl.strategies.deployment.docker import (
     DockerDeployment,
     DockerDeploymentConfig,
+    DockerUlimit,
     DockerVolumeMapping,
     DockerPortMapping,
+    _split_volume_mount_string,
     build_port_bindings,
+    build_ulimits,
     build_volume_bindings,
 )
 from lib.core.component import Component
@@ -91,9 +94,256 @@ def test_start_successful(
         volumes={"/host": {"bind": "/container", "mode": "rw"}},
         environment=sample_config.environment,
         command=sample_config.command,
+        ulimits=[{"Name": "nofile", "Soft": 16384, "Hard": 16384}],
     )
     assert mock_runtime.container_id == "container123"
     mock_set_runtime.assert_called_once_with(mock_context, mock_runtime)
+
+
+# Scenario: A docker deployment config specifies extra_hosts (e.g. mapping
+#   host.docker.internal to host-gateway).
+# Guarantees: The mapping is forwarded unchanged to containers.run as the
+#   extra_hosts kwarg so containers can reach services on the docker host.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_passes_extra_hosts(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        extra_hosts={"host.docker.internal": "host-gateway"},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    kwargs = mock_client.containers.run.call_args.kwargs
+    assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+
+
+# Scenario: A docker deployment config specifies a ulimit as a bare int that
+#   differs from the default (e.g. {"nofile": 65536}).
+# Guarantees: The explicit value replaces the default and is forwarded to
+#   containers.run as a single Ulimit with matching soft and hard limits, so
+#   the container's file-descriptor ceiling is raised as requested.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_passes_ulimit_int(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nofile": 65536},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    assert len(ulimits) == 1
+    assert ulimits[0]["Name"] == "nofile"
+    assert ulimits[0]["Soft"] == 65536
+    assert ulimits[0]["Hard"] == 65536
+
+
+# Scenario: A docker deployment config specifies a ulimit with explicit soft
+#   and hard values (e.g. {"nofile": {"soft": 4096, "hard": 65536}}).
+# Guarantees: The soft and hard limits are forwarded independently to
+#   containers.run so a lower soft limit can coexist with a higher hard ceiling.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_passes_ulimit_soft_hard(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nofile": {"soft": 4096, "hard": 65536}},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    assert len(ulimits) == 1
+    assert ulimits[0]["Name"] == "nofile"
+    assert ulimits[0]["Soft"] == 4096
+    assert ulimits[0]["Hard"] == 65536
+
+
+# Scenario: A docker deployment config leaves ulimits unset.
+# Guarantees: The default nofile limit (16384) is still forwarded to
+#   containers.run, so every container gets a raised file-descriptor ceiling
+#   without having to opt in.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_applies_default_ulimits_when_unset(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    assert len(ulimits) == 1
+    assert ulimits[0]["Name"] == "nofile"
+    assert ulimits[0]["Soft"] == 16384
+    assert ulimits[0]["Hard"] == 16384
+
+
+# Scenario: A docker deployment config sets a ulimit for a key other than the
+#   defaulted one (e.g. {"nproc": 1024}).
+# Guarantees: The configured limit is merged on top of the default nofile
+#   limit, so the container keeps the raised file-descriptor ceiling while also
+#   getting the explicitly configured limit.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_merges_ulimits_with_default(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nproc": 1024},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    by_name = {u["Name"]: u for u in ulimits}
+    assert by_name["nofile"]["Soft"] == 16384
+    assert by_name["nofile"]["Hard"] == 16384
+    assert by_name["nproc"]["Soft"] == 1024
+    assert by_name["nproc"]["Hard"] == 1024
+
+
+# Scenario: A docker deployment config overrides the defaulted key itself
+#   (e.g. {"nofile": 4096}).
+# Guarantees: The explicit value replaces the default for that key, so a
+#   component can lower (or raise) the nofile limit from the default.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_ulimit_overrides_default_nofile(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nofile": 4096},
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    ulimits = mock_client.containers.run.call_args.kwargs["ulimits"]
+    assert len(ulimits) == 1
+    assert ulimits[0]["Name"] == "nofile"
+    assert ulimits[0]["Soft"] == 4096
+    assert ulimits[0]["Hard"] == 4096
+
+
+# Scenario: build_ulimits is given a mix of bare-int and explicit soft/hard
+#   ulimit specs.
+# Guarantees: Each entry becomes one docker.types.Ulimit with the correct
+#   name, soft, and hard values; bare ints apply to both soft and hard.
+def test_build_ulimits_int_and_object():
+    result = build_ulimits(
+        {"nofile": 65536, "nproc": DockerUlimit(soft=1024, hard=2048)}
+    )
+    by_name = {u["Name"]: u for u in result}
+    assert by_name["nofile"]["Soft"] == 65536
+    assert by_name["nofile"]["Hard"] == 65536
+    assert by_name["nproc"]["Soft"] == 1024
+    assert by_name["nproc"]["Hard"] == 2048
+
+
+# Scenario: build_ulimits is given None or an empty mapping.
+# Guarantees: It returns an empty list so callers skip the ulimits kwarg
+#   entirely rather than passing an empty/invalid value to the docker SDK.
+@pytest.mark.parametrize("value", [None, {}])
+def test_build_ulimits_empty(value):
+    assert build_ulimits(value) == []
+
+
+# Scenario: build_ulimits receives a boolean, which is a subclass of int.
+# Guarantees: It raises TypeError instead of silently coercing True/False into
+#   a file-descriptor limit.
+def test_build_ulimits_rejects_bool():
+    with pytest.raises(TypeError):
+        build_ulimits({"nofile": True})
 
 
 @patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
@@ -264,6 +514,84 @@ def test_build_volume_bindings_param_string_modes(mount, expected_mode):
     result = build_volume_bindings([mount])
     host_path = os.path.abspath(mount.split(":")[0])
     assert result == {host_path: {"bind": "/container", "mode": expected_mode}}
+
+
+@pytest.mark.parametrize(
+    "mount,expected_bind,expected_mode",
+    [
+        ("./data:C:/app/data", "C:/app/data", "rw"),
+        ("./data:C:\\app\\data", "C:\\app\\data", "rw"),
+        ("./config:C:/app/config:ro", "C:/app/config", "ro"),
+        ("./config:C:\\app\\config:ro", "C:\\app\\config", "ro"),
+    ],
+)
+# Scenario: a volume mount string whose container target is a Windows
+# drive-letter path, with and without an explicit ':ro' mode suffix.
+# Guarantees: the drive letter stays attached to its path instead of being
+# parsed as a separate ':'-delimited field, so the container bind target and
+# the mode are both recovered correctly.
+def test_build_volume_bindings_windows_container_target(
+    mount, expected_bind, expected_mode
+):
+    host_path = os.path.abspath(mount.split(":")[0])
+
+    result = build_volume_bindings([mount])
+
+    assert result == {host_path: {"bind": expected_bind, "mode": expected_mode}}
+
+
+@pytest.mark.parametrize(
+    "mount,expected_source,expected_target,expected_mode",
+    [
+        ("./host:C:/container", "./host", "C:/container", "rw"),
+        ("./host:C:\\container", "./host", "C:\\container", "rw"),
+        ("./host:C:/container:ro", "./host", "C:/container", "ro"),
+        ("C:/host:D:/container", "C:/host", "D:/container", "rw"),
+        (
+            "C:\\host:D:\\container:ro",
+            "C:\\host",
+            "D:\\container",
+            "ro",
+        ),
+        ("/host:/container", "/host", "/container", "rw"),
+        ("/host:/container:ro", "/host", "/container", "ro"),
+        ("./host:/container:rw", "./host", "/container", "rw"),
+        ("x:/container", "x", "/container", "rw"),
+        ("x:/container:ro", "x", "/container", "ro"),
+    ],
+)
+# Scenario: volume mount strings cover Windows drive letters, Linux-style
+# paths, explicit modes, and single-character relative host paths.
+# Guarantees: only field-separator colons split SOURCE from TARGET and mode,
+# while drive-letter colons remain inside their respective paths.
+def test_split_volume_mount_string(
+    mount, expected_source, expected_target, expected_mode
+):
+    assert _split_volume_mount_string(mount) == (
+        expected_source,
+        expected_target,
+        expected_mode,
+    )
+
+
+@pytest.mark.parametrize(
+    "mount,expected_mode",
+    [
+        ("x:/container", "rw"),
+        ("x:/container:ro", "ro"),
+    ],
+)
+# Scenario: a valid volume mount uses a single-character relative source path.
+# Guarantees: the parser preserves pre-existing behavior by treating `x` as
+# the host source, not as a Windows drive-qualified source path.
+def test_build_volume_bindings_single_character_relative_host(
+    mount, expected_mode
+):
+    result = build_volume_bindings([mount])
+
+    assert result == {
+        os.path.abspath("x"): {"bind": "/container", "mode": expected_mode}
+    }
 
 
 def test_build_port_bindings_simple_string():

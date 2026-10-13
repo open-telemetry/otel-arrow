@@ -86,14 +86,15 @@ impl From<ContextEntryName> for String {
 
 /// The name of a context entry, one of two forms:
 ///
-///  1. Single unqualified name like `X-Tenant-Id` which must resolve
-///     to a regular non-composite context entry.
-///  2. Qualified pair of names like `Customer:Workspace` which must
-///     resolve to a composite entry named field.
+/// 1. Primitive names resolve within a domain inferred from its
+///    containing policy or explicitly configured.
+/// 2. Qualified names resolve to a composite entry named field, which
+///    defines the domain.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct ContextEntryRef {
     scope: Option<ContextEntryName>,
     name: ContextEntryName,
@@ -254,6 +255,16 @@ mod tests {
             serde_json::to_string(&scoped).expect("serialize"),
             "\"Product_User:Customer_ID\""
         );
+    }
+
+    /// Scenario: JSON schema is generated for a context entry reference.
+    /// Guarantees: the schema matches the string representation used by serde.
+    #[test]
+    fn context_entry_ref_schema_is_string() {
+        let schema = serde_json::to_value(schemars::schema_for!(ContextEntryRef))
+            .expect("schema should serialize");
+
+        assert_eq!(schema["type"], "string");
     }
 
     /// Scenario: a context entry name is converted into a reference.

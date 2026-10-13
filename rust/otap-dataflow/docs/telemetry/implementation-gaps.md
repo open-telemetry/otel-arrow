@@ -36,9 +36,6 @@ Goal:
 | Service identity | `process.instance.id` used instead of `service.instance.id`       |
 | Execution engine | `thread.id` not set                                               |
 | Execution engine | `core.id` used instead of `cpu.logical_number`                    |
-| Execution engine | `numa.node.id` used instead of `otelcol.numa_node.logical_number` |
-| Channels         | `otelcol.channel.sender.out.port` not set                         |
-| Channels         | Channel id format not enforced                                    |
 
 ### Tooling and process
 

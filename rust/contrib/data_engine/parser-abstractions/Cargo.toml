@@ -20,4 +20,4 @@ pest = { workspace = true }
 pest_derive = { workspace = true }
 thiserror = { workspace = true }
 
-otel-arrow-contrib-data-engine-expressions = { path = "../expressions", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-expressions = { path = "../expressions", version = "=0.1.1" }

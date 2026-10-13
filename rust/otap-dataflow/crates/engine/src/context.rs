@@ -20,6 +20,7 @@ use crate::node::NodeId as EngineNodeId;
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
+use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_config::{
     NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId, PipelineKey,
 };
@@ -95,6 +96,7 @@ pub struct ControllerContext {
     /// Container identifier, when available (e.g. Docker or containerd container ID).
     container_id: Cow<'static, str>,
     memory_pressure_state: MemoryPressureState,
+    state_directory: Option<crate::state_dir::StateDirectory>,
 }
 
 /// Parameters required to create a pipeline context.
@@ -126,6 +128,7 @@ pub struct PipelineContext {
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_interests: Interests,
+    node_duration_distribution: DistributionTier,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     admission: crate::admission::AdmissionBinder,
 
@@ -158,6 +161,20 @@ pub struct EntityMetricSetRegistrar<'a> {
 }
 
 impl ControllerContext {
+    /// Installs the startup-provisioned root before contexts are distributed.
+    #[must_use]
+    pub fn with_state_directory(mut self, root: crate::state_dir::StateDirectory) -> Self {
+        self.state_directory = Some(root);
+        self
+    }
+
+    /// Returns the engine [StateDirectory](crate::state_dir::StateDirectory),
+    /// or `None` when no state root is configured.
+    #[must_use]
+    pub fn state_directory(&self) -> Option<&crate::state_dir::StateDirectory> {
+        self.state_directory.as_ref()
+    }
+
     /// Creates a new `ControllerContext`.
     #[must_use]
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
@@ -167,6 +184,7 @@ impl ControllerContext {
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
             memory_pressure_state: MemoryPressureState::default(),
+            state_directory: None,
         }
     }
 
@@ -188,6 +206,7 @@ impl ControllerContext {
             host_id: host_id.into(),
             container_id: container_id.into(),
             memory_pressure_state: MemoryPressureState::default(),
+            state_directory: None,
         }
     }
 
@@ -312,6 +331,13 @@ impl From<&PipelineContextParams> for PipelineKey {
 }
 
 impl PipelineContext {
+    /// Returns the engine [StateDirectory](crate::state_dir::StateDirectory),
+    /// or `None` when no state root is configured.
+    #[must_use]
+    pub fn state_directory(&self) -> Option<&crate::state_dir::StateDirectory> {
+        self.controller_context.state_directory()
+    }
+
     /// Creates a new `PipelineContext`.
     #[allow(dead_code)]
     pub(crate) fn new(
@@ -335,6 +361,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             node_interests: Interests::empty(),
+            node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs: HashMap::new(),
             admission: crate::admission::AdmissionBinder::none(),
             pipeline_telemetry_attrs: HashMap::new(),
@@ -538,6 +565,19 @@ impl PipelineContext {
         }
     }
 
+    /// Returns a registrar for metric sets scoped by an additional `topic` attribute.
+    #[must_use]
+    pub fn metric_set_registrar_with_topic(
+        &self,
+        topic: Cow<'static, str>,
+    ) -> EntityMetricSetRegistrar<'_> {
+        let entity_key = self.register_topic_entity(topic);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_entity(entity_key);
+        }
+        self.metric_set_registrar_for_entity(entity_key)
+    }
+
     /// Registers an entity and tracks it for cleanup with the current node, if present.
     #[must_use]
     pub fn register_entity(
@@ -610,54 +650,6 @@ impl PipelineContext {
                     topic,
                 })
         }
-    }
-
-    /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
-    ///
-    /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
-    #[must_use]
-    pub fn register_metrics_with_topic<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-        topic: Cow<'static, str>,
-    ) -> MetricSet<T> {
-        let entity_key = self.register_topic_entity(topic);
-
-        let metrics = self
-            .controller_context
-            .telemetry_registry_handle
-            .register_metric_set_for_entity::<T>(entity_key);
-
-        if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.track_metric_set(metrics.metric_set_key());
-            telemetry.track_entity(entity_key);
-        }
-
-        metrics
-    }
-
-    /// Registers a measurement metric set for the current node entity, scoped by an additional `topic` attribute.
-    ///
-    /// This is used by topic-aware nodes so their measurement metric series can be filtered by `topic`.
-    #[must_use]
-    pub fn register_measurement_metrics_with_topic<
-        T: MeasurementMetricSetHandler + Debug + Send + Sync,
-    >(
-        &self,
-        topic: Cow<'static, str>,
-    ) -> MeasurementMetricSet<T> {
-        let entity_key = self.register_topic_entity(topic);
-
-        let metrics = self
-            .controller_context
-            .telemetry_registry_handle
-            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
-
-        if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.track_metric_set(metrics.metric_set_key());
-            telemetry.track_entity(entity_key);
-        }
-
-        metrics
     }
 
     /// Registers the pipeline entity for this context.
@@ -815,6 +807,17 @@ impl PipelineContext {
         self.node_interests = interests;
     }
 
+    /// Returns the aggregation fidelity for node-local duration measurements.
+    #[must_use]
+    pub const fn node_duration_distribution(&self) -> DistributionTier {
+        self.node_duration_distribution
+    }
+
+    /// Sets the aggregation fidelity for node-local duration measurements.
+    pub(crate) fn set_node_duration_distribution(&mut self, tier: DistributionTier) {
+        self.node_duration_distribution = tier;
+    }
+
     /// Returns a new pipeline context with the given node identifiers.
     #[must_use]
     pub fn with_node_context(
@@ -833,6 +836,7 @@ impl PipelineContext {
             node_urn,
             node_kind,
             node_interests: Interests::empty(),
+            node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs,
             admission: crate::admission::AdmissionBinder::none(),
             internal_telemetry: None,
@@ -1120,6 +1124,25 @@ mod tests {
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
 
+    /// Scenario: contexts across cores and generations have no configured root.
+    /// Guarantees: contexts have no state capability or fallback directory.
+    #[test]
+    fn state_directory_is_optional_across_generations() {
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        assert!(controller.state_directory().is_none());
+        for generation in [0, 1, 2] {
+            let context = controller.pipeline_context_with_generation(
+                "g".into(),
+                "p".into(),
+                generation as usize,
+                3,
+                generation as usize,
+                generation,
+            );
+            assert!(context.state_directory().is_none());
+        }
+    }
+
     /// Scenario: explicit process, host, and container identities are available.
     /// Guarantees: resource attributes map all identities to stable semantic-convention keys.
     #[test]
@@ -1392,19 +1415,18 @@ mod tests {
         );
     }
 
-    /// Scenario: a node registers a measurement metric set with a topic dimension.
+    /// Scenario: a node registers a measurement metric set through a topic registrar.
     /// Guarantees: the registered measurement set links to the topic entity, preserving
     /// topic, node, and custom identity attributes when configured, and omitting empty custom attributes when not.
     #[test]
-    fn register_measurement_metrics_with_topic_links_entity_with_and_without_custom_attrs() {
+    fn topic_metric_registrar_links_entity_with_and_without_custom_attrs() {
         use crate::flow_metrics::FlowInputMessageMetrics;
 
         // Without custom attributes
         let registry = TelemetryRegistryHandle::new();
         let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
-        let metrics = ctx.register_measurement_metrics_with_topic::<FlowInputMessageMetrics>(
-            Cow::Borrowed("test-topic"),
-        );
+        let registrar = ctx.metric_set_registrar_with_topic(Cow::Borrowed("test-topic"));
+        let metrics = FlowInputMessageMetrics::register(&registrar);
         let key = metrics.entity_key();
         let (schema, rendered) = registry
             .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
@@ -1427,9 +1449,8 @@ mod tests {
             TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
         );
         let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
-        let metrics = ctx.register_measurement_metrics_with_topic::<FlowInputMessageMetrics>(
-            Cow::Borrowed("test-topic"),
-        );
+        let registrar = ctx.metric_set_registrar_with_topic(Cow::Borrowed("test-topic"));
+        let metrics = FlowInputMessageMetrics::register(&registrar);
         let key = metrics.entity_key();
         let (schema, rendered) = registry
             .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))

@@ -249,6 +249,7 @@ mod tests {
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
     use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::{
         AgentFedCredentialProvider as AgentFedCredentialProviderCap, AgentFedCredentialSnapshot,
+        AgentFedCredentialSnapshotStream,
     };
     use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
     use serde_json::{Map, Value, json};
@@ -271,6 +272,10 @@ mod tests {
                 self.token.clone(),
                 Arc::clone(&self.attributes),
             )))
+        }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
         }
     }
 
@@ -623,6 +628,10 @@ mod tests {
             )
             .error("credential unavailable"))
         }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
+        }
     }
 
     struct RecoveringCredential(AtomicUsize);
@@ -640,6 +649,10 @@ mod tests {
                 BearerToken::without_expiry("recovered-token".to_owned()),
                 obj(full_attrs()),
             )))
+        }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
         }
     }
 
@@ -680,6 +693,10 @@ mod tests {
             }
             Ok(snapshot("recovered-token", "https://ep", "mon"))
         }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
+        }
     }
 
     /// Scenario: The provider never completes its first credential lookup.
@@ -719,6 +736,10 @@ mod tests {
                     "moniker_map": { "default": format!("moniker-{sequence}") },
                 })),
             )))
+        }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
         }
     }
 
@@ -761,6 +782,10 @@ mod tests {
             };
             tokio::task::yield_now().await;
             Ok(loaded)
+        }
+
+        fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
+            unreachable!()
         }
     }
 

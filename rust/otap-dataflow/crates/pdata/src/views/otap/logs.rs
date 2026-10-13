@@ -748,12 +748,18 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::opentelemetry::common::v1::{
-        AnyValue, ArrayValue, KeyValue, KeyValueList, any_value,
-    };
+    use crate::otap::{Logs, from_record_messages};
+    use crate::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+    use crate::proto::opentelemetry::common::v1::AnyValue;
+    use crate::proto::opentelemetry::common::v1::ArrayValue;
+    use crate::proto::opentelemetry::common::v1::KeyValue;
+    use crate::proto::opentelemetry::common::v1::KeyValueList;
+    use crate::proto::opentelemetry::common::v1::any_value;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::schema::UTC_TIME_ZONE;
     use crate::schema::consts;
     use crate::testing::round_trip::to_otap_logs;
+    use crate::{Consumer, Producer};
     use arrow::array::{
         ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray, StructArray,
         UInt8Array, UInt16Array,
@@ -761,6 +767,7 @@ mod tests {
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
     use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+    use prost::Message;
     use std::sync::Arc;
 
     /// Helper to create a logs batch with optional ID column
@@ -804,12 +811,12 @@ mod tests {
             scope_field,
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new(
                 "observed_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("severity_number", DataType::Int32, true),
@@ -875,13 +882,15 @@ mod tests {
             Some(1000000000),
             Some(2000000000),
             Some(3000000000),
-        ]);
+        ])
+        .with_timezone(UTC_TIME_ZONE);
 
         let observed_time_array = TimestampNanosecondArray::from(vec![
             Some(1000000100),
             Some(2000000100),
             Some(3000000100),
-        ]);
+        ])
+        .with_timezone(UTC_TIME_ZONE);
 
         let severity_array = Int32Array::from(vec![Some(9), Some(17), Some(13)]); // INFO, ERROR, WARN
         let severity_text_array =
@@ -1185,6 +1194,125 @@ mod tests {
         assert_eq!(checked, 1);
     }
 
+    /// Scenario: Map and array log bodies cross the serialized OTAP wire representation.
+    /// Guarantees: Producer/Consumer Arrow IPC and protobuf round-tripping preserves both bodies
+    /// exactly once for native iteration through OtapLogsView, independent of log-record order.
+    #[test]
+    fn test_composite_bodies_survive_otap_wire_round_trip() {
+        let map_body = AnyValue {
+            value: Some(any_value::Value::KvlistValue(KeyValueList {
+                values: vec![
+                    KeyValue {
+                        key: "EVENT_TIME".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue(
+                                "2026-09-18T20:51:05.892842000".to_string(),
+                            )),
+                        }),
+                    },
+                    KeyValue {
+                        key: "EVENT_ID".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("19".to_string())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "MESSAGE".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("oracle event".to_string())),
+                        }),
+                    },
+                ],
+            })),
+        };
+        let array_body = AnyValue {
+            value: Some(any_value::Value::ArrayValue(ArrayValue {
+                values: vec![
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("a".to_string())),
+                    },
+                    AnyValue {
+                        value: Some(any_value::Value::IntValue(1)),
+                    },
+                    AnyValue {
+                        value: Some(any_value::Value::BoolValue(true)),
+                    },
+                ],
+            })),
+        };
+
+        let mut encoded = to_otap_logs(vec![
+            LogRecord {
+                event_name: "map-body".to_string(),
+                body: Some(map_body),
+                ..Default::default()
+            },
+            LogRecord {
+                event_name: "array-body".to_string(),
+                body: Some(array_body),
+                ..Default::default()
+            },
+        ]);
+
+        let bar = Producer::new()
+            .produce_bar(&mut encoded)
+            .expect("produce BatchArrowRecords");
+        let mut wire_bytes = Vec::new();
+        bar.encode(&mut wire_bytes)
+            .expect("encode BatchArrowRecords protobuf");
+        let mut decoded_bar =
+            BatchArrowRecords::decode(wire_bytes.as_slice()).expect("decode wire payload");
+        let record_messages = Consumer::default()
+            .consume_bar(&mut decoded_bar)
+            .expect("consume Arrow IPC payloads");
+        let decoded = OtapArrowRecords::Logs(
+            from_record_messages::<Logs>(record_messages).expect("rebuild OTAP logs"),
+        );
+
+        let view = OtapLogsView::try_from(&decoded).expect("logs view");
+        let mut map_count = 0;
+        let mut array_count = 0;
+        for resource in view.resources() {
+            for scope in resource.scopes() {
+                for log_record in scope.log_records() {
+                    let body = log_record.body().expect("body");
+                    match log_record.event_name().expect("event name") {
+                        b"map-body" => {
+                            map_count += 1;
+                            assert_eq!(body.value_type(), ValueType::KeyValueList);
+                            let entries: Vec<_> = body.as_kvlist().expect("kvlist").collect();
+                            assert_eq!(entries.len(), 3);
+                            for (key, expected) in [
+                                ("EVENT_TIME", "2026-09-18T20:51:05.892842000"),
+                                ("EVENT_ID", "19"),
+                                ("MESSAGE", "oracle event"),
+                            ] {
+                                let entry = entries
+                                    .iter()
+                                    .find(|entry| entry.key() == key.as_bytes())
+                                    .unwrap_or_else(|| panic!("missing map entry {key}"));
+                                let value = entry.value().expect("map entry value");
+                                assert_eq!(value.as_string(), Some(expected.as_bytes()));
+                            }
+                        }
+                        b"array-body" => {
+                            array_count += 1;
+                            assert_eq!(body.value_type(), ValueType::Array);
+                            let items: Vec<_> = body.as_array().expect("array").collect();
+                            assert_eq!(items.len(), 3);
+                            assert_eq!(items[0].as_string(), Some(b"a".as_slice()));
+                            assert_eq!(items[1].as_int64(), Some(1));
+                            assert_eq!(items[2].as_bool(), Some(true));
+                        }
+                        name => panic!("unexpected log event name: {name:?}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(map_count, 1, "map record must appear exactly once");
+        assert_eq!(array_count, 1, "array record must appear exactly once");
+    }
+
     /// Scenario: The body struct cell is null while its Map type and ser children still hold values.
     /// Guarantees: get_body_from_struct honors the parent validity and returns None, not the child bytes.
     #[test]
@@ -1461,12 +1589,12 @@ mod tests {
             ),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
                 "observed_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1482,8 +1610,10 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
-        let time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
-        let observed_time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let time_array =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
+        let observed_time_array =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let logs_batch = RecordBatch::try_new(
             logs_schema,

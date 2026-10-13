@@ -6,6 +6,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
@@ -19,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use wiremock::matchers::{body_string_contains, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 use super::auth::Auth;
 use super::config::{Config, GrantType, SignatureAlgorithm};
@@ -57,7 +59,7 @@ fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
     OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -104,6 +106,50 @@ pub(super) fn generate_test_rsa_keypair() -> (String, String) {
     (key_pair.serialize_pem(), key_pair.public_key_pem())
 }
 
+struct RingVerifiedJwt {
+    public_key_der: Vec<u8>,
+}
+
+impl RingVerifiedJwt {
+    fn new(public_key_pem: &str) -> Self {
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
+            .expect("public key parses");
+        let jsonwebtoken::DecodingKeyKind::SecretOrDer(public_key_der) = key.kind() else {
+            panic!("test key must contain DER");
+        };
+        Self {
+            public_key_der: public_key_der.clone(),
+        }
+    }
+}
+
+impl Match for RingVerifiedJwt {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(body) = std::str::from_utf8(&request.body) else {
+            return false;
+        };
+        let Some(assertion) = body
+            .split('&')
+            .find_map(|field| field.strip_prefix("assertion="))
+        else {
+            return false;
+        };
+        let Some((signing_input, encoded_signature)) = assertion.rsplit_once('.') else {
+            return false;
+        };
+        let Ok(signature) = BASE64_URL_SAFE_NO_PAD.decode(encoded_signature) else {
+            return false;
+        };
+
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            &self.public_key_der,
+        )
+        .verify(signing_input.as_bytes(), &signature)
+        .is_ok()
+    }
+}
+
 /// Builds a token config from the shared valid base plus `extra` top-level keys.
 fn config_json_with(token_url: &str, extra: serde_json::Value) -> serde_json::Value {
     let mut base = valid_config_json(token_url);
@@ -122,7 +168,7 @@ fn extension_from_config(cfg: &Config) -> OAuth2ClientAuthExtension {
     OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -730,7 +776,7 @@ async fn request_includes_scope_and_endpoint_params() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -769,7 +815,7 @@ async fn oversized_client_secret_file_is_rejected() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -815,7 +861,7 @@ async fn client_secret_file_rotation_takes_effect() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -956,6 +1002,7 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
         .and(path("/token"))
         .and(body_string_contains("grant_type=urn"))
         .and(body_string_contains("assertion="))
+        .and(RingVerifiedJwt::new(&public_key_pem))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "jwt-tok",
             "token_type": "Bearer",
@@ -978,7 +1025,7 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -1055,7 +1102,7 @@ async fn absurd_expires_in_yields_token_without_expiry_jwt_bearer() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
@@ -1095,7 +1142,7 @@ async fn jwt_bearer_reads_signing_key_from_file() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        BackgroundProviderRefreshPolicy::new(
+        BackgroundProviderRefreshPolicy::expiry_driven(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,

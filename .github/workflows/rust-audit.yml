@@ -7,9 +7,11 @@ on:
     branches:
       - main
     paths:
+      - 'rust/otap-dataflow/Cargo.lock'
       - 'rust/otap-dataflow/Cargo.toml'
   schedule:
-    - cron: '0 2 * * 1' # run at 2 AM UTC every Monday
+    - cron: '0 2 * * *'
+  workflow_dispatch:
 
 jobs:
   audit:
@@ -25,8 +27,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: cargo install cargo-audit
+      - name: Install cargo-audit
         run: cargo install cargo-audit
-      - name: cargo audit ${{ matrix.folder }}
-        run: cargo audit
+      - name: Audit ${{ matrix.folder }}
+        run: |
+          set +e
+          cargo audit --json > /tmp/cargo-audit.json
+          status=$?
+          set -e
+
+          {
+            echo "## Rust dependency audit: ${{ matrix.folder }}"
+            echo ""
+            echo "**Vulnerabilities:** $(jq -r '.vulnerabilities.found // 0' /tmp/cargo-audit.json)"
+            echo ""
+            jq -r '
+              .vulnerabilities.list[]? |
+              "- [\(.advisory.id)](\(.advisory.url)): \(.package.name)@\(.package.version) - \(.advisory.title)"
+            ' /tmp/cargo-audit.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
         working-directory: ./rust/${{ matrix.folder }}

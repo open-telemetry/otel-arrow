@@ -203,7 +203,7 @@ header_propagation:
 | --- | --- |
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
-| `named` | Propagate headers named in the `named` list. |
+| `named` | Unqualified entries select captured headers by stored name. Qualified `composite:member` entries select the member's primitive transport header and apply its conditions. |
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
@@ -220,16 +220,77 @@ header_propagation:
         - x-request-id
 ```
 
+#### Conditional Composite Members
+
+A named selector can refer to a transport-header member of a composite context
+entry using `composite:member` syntax:
+
+```yaml
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: [x-workspace]
+          store_as: workspace
+        - match_names: [x-environment]
+          store_as: environment
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: [product_user:workspace_id]
+        name: stored_name
+
+  context:
+    entries:
+      product_user:
+        - type: authorized_identity
+          name: customer_id
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+
+        # Require environment, referring to "x-environment" to be
+        # equal to "production".
+        - type: transport_header_match
+          name: environment
+          value: production
+```
+
+The `transport_header_match` entry type supports exact-value matching
+over transport headers.
+
+Composite entry bindings (e.g., `product_user:workspace`) are valid only
+when all conditional entries match (i.e., when `environment=production`)
+
+Matching has these semantics:
+
+- Stored header names use ASCII case-insensitive comparison.
+- Configured values are compared exactly as UTF-8 bytes.
+- When a condition header has duplicate values, any exact match satisfies that
+  condition.
+- Every condition must be satisfied.
+- A qualified composite selector must not resolve to a primitive source also
+  selected by another qualified or unqualified entry.
+- Repeated unqualified selectors, including ASCII case variants, are accepted
+  as equivalent.
+
+Overrides retain precedence over the default selector. An override that selects
+the primitive `workspace` header can propagate it independently even when
+`product_user` conditions do not match.
+
 ### Name Strategy
 
 | Value | Behavior |
 | --- | --- |
 | `preserve` | Use original wire name (default). |
-| `stored_name` | Use the stored name with its configured spelling. |
+| `stored_name` | Use the stored header name for unqualified selectors or the selected composite member name for qualified selectors. |
 
 For example, if a header was captured from `X-Tenant-Id` and stored
 as `tenant_id`, then `preserve` emits `X-Tenant-Id` on egress while
-`stored_name` emits `tenant_id`.
+`stored_name` emits `tenant_id`. In the conditional composite example above,
+the primitive `workspace` header is emitted as the selected member name
+`workspace_id`; using `preserve` instead would retain its original wire name.
 
 ### Overrides
 

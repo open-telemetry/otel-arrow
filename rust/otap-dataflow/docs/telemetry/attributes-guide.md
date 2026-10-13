@@ -56,15 +56,20 @@ occurrence.
 - Reuse existing OpenTelemetry semantic attributes whenever possible.
 - Do not redefine upstream attributes with different meaning.
 
-### Project-defined namespace
+### Project-defined namespaces
 
 Project-defined entity attributes MUST be namespaced to avoid collisions with
 upstream conventions.
 
 Policy:
 
-- Use `otelcol.*` for project-defined attributes.
-- Do not introduce new un-prefixed top-level namespaces for custom entities.
+- Use the stable entity namespace that owns the attribute, such as `pipeline.*`,
+  `node.*`, or `channel.*`.
+- A universal project prefix is not required.
+- Do not place project-defined attributes in a reserved or established
+  OpenTelemetry namespace with different semantics.
+- Keep related attributes together under one namespace and use dots to express
+  hierarchy.
 
 ### Closed sets (enums)
 
@@ -196,7 +201,8 @@ When introducing a new attribute:
 
 - It is categorized (resource, entity, signal-specific).
 - It reuses upstream semantic attributes when available.
-- If project-defined, it uses the `otelcol.*` namespace.
+- If project-defined, it uses the stable namespace of the entity or signal that
+  owns it.
 - Cardinality is bounded and documented.
 - For enums, the closed set is documented and stable.
 - It follows security and privacy rules (no sensitive data).

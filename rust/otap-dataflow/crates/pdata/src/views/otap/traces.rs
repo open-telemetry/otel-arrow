@@ -1106,6 +1106,7 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::UTC_TIME_ZONE;
     use arrow::array::{
         ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int32Array, StringArray,
         StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array,
@@ -1129,7 +1130,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -1161,7 +1162,8 @@ mod tests {
         )]);
 
         let start_time =
-            TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000, 3_000_000_000]);
+            TimestampNanosecondArray::from(vec![1_000_000_000, 2_000_000_000, 3_000_000_000])
+                .with_timezone(UTC_TIME_ZONE);
         let duration = DurationNanosecondArray::from(vec![100_000, 200_000, 300_000]);
 
         // Create valid trace IDs (16 bytes each)
@@ -1321,7 +1323,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -1346,7 +1348,8 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
         )]);
-        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let start_time =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let status_code = Int32Array::from(vec![2]); // ERROR
         let status_message = StringArray::from(vec!["something went wrong"]);
@@ -1405,7 +1408,7 @@ mod tests {
             ),
             Field::new(
                 "start_time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -1419,7 +1422,8 @@ mod tests {
             Arc::new(Field::new("id", DataType::UInt16, false)),
             Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
         )]);
-        let start_time = TimestampNanosecondArray::from(vec![1_000_000_000]);
+        let start_time =
+            TimestampNanosecondArray::from(vec![1_000_000_000]).with_timezone(UTC_TIME_ZONE);
 
         let batch = RecordBatch::try_new(
             schema,
@@ -1468,7 +1472,7 @@ mod tests {
             Field::new("parent_id", DataType::UInt16, false),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("name", DataType::Utf8, true),
@@ -1478,9 +1482,10 @@ mod tests {
             events_schema,
             vec![
                 Arc::new(UInt16Array::from(vec![0, 0, 1])) as ArrayRef, // 2 events for span 0, 1 for span 1
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    1_100_000, 1_200_000, 2_100_000,
-                ])) as ArrayRef,
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_100_000, 1_200_000, 2_100_000])
+                        .with_timezone(UTC_TIME_ZONE),
+                ) as ArrayRef,
                 Arc::new(StringArray::from(vec!["event-a", "event-b", "event-c"])) as ArrayRef,
             ],
         )
@@ -1524,7 +1529,7 @@ mod tests {
             Field::new("parent_id", DataType::UInt16, false),
             Field::new(
                 "time_unix_nano",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 true,
             ),
             Field::new("name", DataType::Utf8, true),
@@ -1534,7 +1539,9 @@ mod tests {
             events_schema.clone(),
             vec![
                 Arc::new(UInt16Array::from(vec![0])) as ArrayRef,
-                Arc::new(TimestampNanosecondArray::from(vec![1_100_000])) as ArrayRef,
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_100_000]).with_timezone(UTC_TIME_ZONE),
+                ) as ArrayRef,
                 Arc::new(StringArray::from(vec!["integration-event"])) as ArrayRef,
             ],
         )

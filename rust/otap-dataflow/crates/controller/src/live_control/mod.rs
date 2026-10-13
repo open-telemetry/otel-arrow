@@ -45,14 +45,15 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
-    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
-    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
-    is_expired, timestamp_now,
+    PipelineOperationKind, PipelineOperationReservationState, RolloutAction, RolloutCoreProgress,
+    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
+    RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState,
+    ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT,
+    TopicRuntimeProfile, is_expired, timestamp_now,
 };
-pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
+pub(crate) use self::state::{
+    LogicalPipelineDeployment, PanicReport, RuntimeInstanceError, RuntimeInstanceExit,
+};
 
 /// Bounded time for a runtime thread to finish after its graceful drain deadline.
 ///
@@ -112,6 +113,31 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
     state_changed: Condvar,
+}
+
+/// Keeps observability alive until controller-owned telemetry has been handed off.
+///
+/// The existing runtime mutex and condition variable synchronize the controller
+/// with the global shutdown coordinator; dropping the guard also releases error paths.
+pub(super) struct ControllerTelemetryGuard<
+    'a,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug,
+> {
+    runtime: &'a ControllerRuntime<PData>,
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
+    for ControllerTelemetryGuard<'_, PData>
+{
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.controller_telemetry_pending = false;
+        self.runtime.state_changed.notify_all();
+    }
 }
 
 /// Thin adapter that exposes `ControllerRuntime` through the admin trait.
@@ -204,48 +230,41 @@ impl<
                 first_error: None,
                 instance_wait_released: false,
                 global_shutdown_requested: false,
+                global_shutdown_deadline: None,
                 global_shutdown_coordinators: 0,
+                controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
         }
     }
 
     /// Seeds the runtime registry with a pipeline already committed at startup.
-    pub(super) fn register_committed_pipeline(
-        &self,
-        resolved: ResolvedPipelineConfig,
-        placement: PipelinePlacement,
-        generation: u64,
-    ) {
+    pub(super) fn register_committed_pipeline(&self, deployment: &LogicalPipelineDeployment) {
         let pipeline_key = PipelineKey::new(
-            resolved.pipeline_group_id.clone(),
-            resolved.pipeline_id.clone(),
+            deployment.resolved.pipeline_group_id.clone(),
+            deployment.resolved.pipeline_id.clone(),
         );
         self.observed_state_store.set_pipeline_active_cores(
             pipeline_key.clone(),
-            placement.cores.iter().map(|core| core.core_id.id),
+            deployment
+                .placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id),
         );
         self.observed_state_store
-            .set_pipeline_active_generation(pipeline_key.clone(), generation);
+            .set_pipeline_active_generation(pipeline_key.clone(), deployment.baseline_generation);
 
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let context_bindings = Arc::clone(&state.latest_context_bindings);
         _ = state
             .generation_counters
-            .insert(pipeline_key.clone(), generation + 1);
-        _ = state.logical_pipelines.insert(
-            pipeline_key,
-            LogicalPipelineRecord {
-                resolved,
-                context_bindings,
-                active_generation: generation,
-                placement,
-                placement_generation: 0,
-            },
-        );
+            .insert(pipeline_key.clone(), deployment.baseline_generation + 1);
+        _ = state
+            .logical_pipelines
+            .insert(pipeline_key, deployment.clone());
     }
 
     /// Allocates the next controller-local logical thread identifier.
@@ -510,6 +529,15 @@ impl<
         self.runtime.request_shutdown_all(timeout_secs)
     }
 
+    fn has_active_instances(&self) -> bool {
+        let state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.has_pending_lifecycle_work()
+    }
+
     fn shutdown_pipeline(
         &self,
         pipeline_group_id: &str,
@@ -639,3 +667,11 @@ impl<
 #[cfg(test)]
 #[path = "../live_control_tests.rs"]
 mod tests;
+
+/// Constructs the real control plane for OpAMP state-directory invariant tests.
+#[cfg(test)]
+pub(crate) fn state_directory_test_control_plane(
+    config: &OtelDataflowSpec,
+) -> Arc<dyn ControlPlane> {
+    tests::test_runtime(config).control_plane()
+}

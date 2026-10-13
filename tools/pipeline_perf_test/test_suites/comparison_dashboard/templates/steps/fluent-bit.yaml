@@ -119,6 +119,19 @@ steps:
               raise_for_status: false
     action:
       no_op: {}
+  # Fluent Bit has no pipeline drain endpoint, so stop monitoring and destroy it
+  # before the backend goes away. Leaving it running after the backend pipeline
+  # stops floods the logs with connection-retry and metrics-scrape errors.
+  - name: Stop Monitoring Fluent Bit
+    action:
+      component_action:
+        phase: stop_monitoring
+        target: fluent-bit
+  - name: Stop Fluent Bit
+    action:
+      component_action:
+        phase: destroy
+        target: fluent-bit
   - name: Stop Backend
     hooks:
       run:
@@ -139,14 +152,12 @@ steps:
         targets:
           - backend-service
           - load-generator
-          - fluent-bit
   - name: Destroy All
     action:
       multi_component_action:
         phase: destroy
         targets:
           - load-generator
-          - fluent-bit
           - backend-service
   - name: Run Report
     action:

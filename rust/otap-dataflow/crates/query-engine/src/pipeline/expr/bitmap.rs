@@ -7,13 +7,14 @@
 //! `IdMask` result. This is the efficient path for boolean predicates: the result stays
 //! in bitmap space, avoiding unnecessary materialization of intermediate arrays.
 
-use arrow::array::{Array, UInt16Array};
+use arrow::array::{Array, ArrayRef, AsArray, UInt16Array, UInt32Array};
+use arrow::datatypes::{DataType, UInt8Type, UInt16Type, UInt32Type};
 use arrow::util::bit_iterator::BitSliceIterator;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
@@ -24,6 +25,7 @@ use crate::pipeline::id_mask::IdMask;
 use super::eval::{eval_datafusion_expr_value, invert_id_mask, join_and_eval_value};
 use super::{LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy};
 
+#[derive(Debug)]
 pub struct ScopedIdMask {
     pub scope: Option<DataScope>,
     pub mask: IdMask,
@@ -125,8 +127,8 @@ pub fn combine_scope(left: Option<DataScope>, right: Option<DataScope>) -> Optio
     #[cfg(debug_assertions)]
     {
         if let (
-            Some(DataScope::Attribute(l_attr_id, _) | DataScope::AttributesAll(l_attr_id)),
-            Some(DataScope::Attribute(r_attr_id, _) | DataScope::AttributesAll(r_attr_id)),
+            Some(DataScope::Attribute(l_attr_id, _, _) | DataScope::AttributesAll(l_attr_id)),
+            Some(DataScope::Attribute(r_attr_id, _, _) | DataScope::AttributesAll(r_attr_id)),
         ) = (&left, &right)
         {
             debug_assert!(l_attr_id == r_attr_id);
@@ -222,20 +224,12 @@ fn scoped_value_to_id_mask(
                 // For attribute-scoped scalars, "all true" means "all rows that matched
                 // the key filter pass", not ALL rows in the batch. We need to build an
                 // IdMask from the parent_ids of the matching rows.
-                if matches!(sv.scope, DataScope::Attribute(_, _))
+                if matches!(sv.scope, DataScope::Attribute(_, _, _))
                     && let Some(parent_ids) = &sv.parent_ids
                 {
-                    let parent_id_col = parent_ids
-                        .as_any()
-                        .downcast_ref::<UInt16Array>()
-                        .ok_or_else(|| Error::ExecutionError {
-                            cause: format!(
-                                "expected parent_id to be UInt16, found {:?}",
-                                parent_ids.data_type()
-                            ),
-                        })?;
                     let mut bitmap = pool.acquire();
-                    bitmap.populate(parent_id_col.values().iter().map(|pid| *pid as u32));
+                    bitmap.try_populate_from_id_column(parent_ids)?;
+
                     return Ok(IdMask::Some(bitmap));
                 }
                 Ok(IdMask::All)
@@ -328,7 +322,7 @@ fn scoped_value_to_id_mask(
                 message: "conversion of child record scoped expression values to bitmap".into(),
             })
         }
-        DataScope::Attribute(_, _) | DataScope::AttributesAll(_) => {
+        DataScope::Attribute(_, _, _) | DataScope::AttributesAll(_) => {
             // attribute-scoped: use parent_ids to populate an IdBitmap
             let parent_ids = sv
                 .parent_ids
@@ -337,25 +331,13 @@ fn scoped_value_to_id_mask(
                     cause: "attribute-scoped result missing parent_id column for IdMask conversion"
                         .into(),
                 })?;
-            // TODO - eventually we will handle u32 IDs.
-            let parent_id_col = parent_ids
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: format!(
-                        "expected parent_id to be UInt16, found {:?}",
-                        parent_ids.data_type()
-                    ),
-                })?;
 
             let bool_values = boolean_arr.values();
             let mut bitmap = pool.acquire();
             for (start, end) in
                 BitSliceIterator::new(bool_values.inner().as_slice(), 0, boolean_arr.len())
             {
-                for idx in start..end {
-                    bitmap.insert(parent_id_col.value(idx) as u32);
-                }
+                insert_slice_into_id_bitmap(start, end, &mut bitmap, parent_ids)?;
             }
             Ok(IdMask::Some(bitmap))
         }
@@ -367,5 +349,76 @@ fn scoped_value_to_id_mask(
                 Ok(IdMask::None)
             }
         }
+    }
+}
+
+fn insert_slice_into_id_bitmap(
+    start: usize,
+    end: usize,
+    id_bitmap: &mut IdBitmap,
+    parent_id_col: &ArrayRef,
+) -> Result<()> {
+    match parent_id_col.data_type() {
+        DataType::UInt16 => {
+            let prim_arr = parent_id_col.as_primitive::<UInt16Type>();
+            prim_arr
+                .slice(start, end - start)
+                .iter()
+                .flatten()
+                .for_each(|i| id_bitmap.insert(i as u32));
+            Ok(())
+        }
+        DataType::UInt32 => {
+            let prim_arr = parent_id_col.as_primitive::<UInt32Type>();
+            prim_arr
+                .slice(start, end - start)
+                .iter()
+                .flatten()
+                .for_each(|i| id_bitmap.insert(i));
+            Ok(())
+        }
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => {
+                let dict_arr = parent_id_col
+                    .as_dictionary::<UInt8Type>()
+                    .slice(start, end - start);
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: parent_id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                typed_dict
+                    .into_iter()
+                    .flatten()
+                    .for_each(|i| id_bitmap.insert(i));
+                Ok(())
+            }
+            DataType::UInt16 => {
+                let dict_arr = parent_id_col
+                    .as_dictionary::<UInt16Type>()
+                    .slice(start, end - start);
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: parent_id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                typed_dict
+                    .into_iter()
+                    .flatten()
+                    .for_each(|i| id_bitmap.insert(i));
+
+                Ok(())
+            }
+            other => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: other.clone(),
+            }
+            .into()),
+        },
+        other => Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+            data_type: other.clone(),
+        }
+        .into()),
     }
 }

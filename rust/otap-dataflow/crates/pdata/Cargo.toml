@@ -51,6 +51,7 @@ tokio-stream = { workspace = true }
 prost = { workspace = true }
 criterion = { workspace = true }
 otel-arrow-dfe-test-net = { workspace = true }
+dhat = { workspace = true }
 
 [lints]
 workspace = true
@@ -73,3 +74,8 @@ required-features = ["testing"]
 name = "sanitize"
 harness = false
 required-features = ["bench"]
+
+[[bench]]
+name = "schema_unify"
+harness = false
+required-features = ["testing", "bench"]

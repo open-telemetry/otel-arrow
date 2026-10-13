@@ -233,8 +233,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Tom Tan](https://github.com/ThomsonTan), Microsoft
-
 For more information about the triager role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
@@ -243,6 +241,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 - [Alex Boten](https://github.com/codeboten), Approver
 - [Lei Huang](https://github.com/v0y4g3r), Approver
 - [Moh Osman](https://github.com/moh-osman3), Approver
+- [Tom Tan](https://github.com/ThomsonTan), Triager
 
 ### Thanks to all of our contributors
 

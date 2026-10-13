@@ -19,6 +19,10 @@ env:
   FLAKY_ISSUE_LABEL: "flaky-test"
   # How many recent Rust-CI workflow runs to scan.
   LOOKBACK_RUNS: 50
+  # Reject API responses that do not contain runs from this recent window.
+  RUN_LOOKBACK_DAYS: 7
+  # Keep previously observed tests visible for this many calendar days.
+  LAST_SEEN_RETENTION_DAYS: 7
   # The canonical tracking issue to update. Keep a stable default to avoid
   # duplicate issues when GitHub's search/label indexes are stale, but allow
   # overriding it via a repository variable if the canonical issue changes
@@ -57,11 +61,13 @@ jobs:
             --jq '.workflows[] | select(.name == "Rust-CI") | .id')
 
           if [[ -z "$WORKFLOW_ID" ]]; then
-            echo "::warning::Could not find Rust-CI workflow"
-            exit 0
+            echo "::error::Could not find Rust-CI workflow"
+            exit 1
           fi
 
           echo "Rust-CI workflow ID: $WORKFLOW_ID"
+          RUN_CUTOFF=$(date -u -d "$RUN_LOOKBACK_DAYS days ago" \
+            +"%Y-%m-%dT%H:%M:%SZ")
 
           # Recent pull requests, so that runs from draft pull requests can
           # be excluded. Draft pull requests are not ready for review, so
@@ -91,34 +97,66 @@ jobs:
           # request. A label with no known pull request is kept: that is how
           # merge queue runs ("gh-readonly-queue/...") reach the report, and
           # it keeps a failed lookup from dropping every run.
-          RUN_IDS=$(gh api "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs?status=completed&per_page=100" \
-            --jq '[.workflow_runs[] | {id, label: ((.head_repository.owner.login // "") + ":" + (.head_branch // ""))}]' \
-            | jq -r --slurpfile pulls pull-requests.json --argjson limit "$LOOKBACK_RUNS" '
+          RUN_INFO=$(gh api --method GET \
+            "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs" \
+            -f status=completed -f created=">=$RUN_CUTOFF" -F per_page=100 \
+            --jq '[.workflow_runs[] | {
+                id, created_at, conclusion,
+                label: (
+                  (.head_repository.owner.login // "")
+                  + ":" + (.head_branch // "")
+                )
+              }]' \
+            | jq -r --slurpfile pulls pull-requests.json \
+              --argjson limit "$LOOKBACK_RUNS" '
                 (reduce $pulls[0][] as $pr ({};
                   if has($pr.label) then . else .[$pr.label] = $pr.draft end)) as $draft
-                | [.[] | select($draft[.label] != true) | .id][:$limit][]')
+                | [.[] | select(
+                        .conclusion == "success" or .conclusion == "failure"
+                      )
+                    | select($draft[.label] != true)
+                  ][:$limit][]
+                | [.id, .created_at] | @tsv')
 
-          echo "Found $(echo "$RUN_IDS" | wc -w) recent runs"
+          if [[ -z "$RUN_INFO" ]]; then
+            echo "::error::No recent Rust-CI runs found since $RUN_CUTOFF"
+            exit 1
+          fi
+          printf '%s\n' "$RUN_INFO" > selected-runs.tsv
 
-          for RUN_ID in $RUN_IDS; do
+          echo "Found $(wc -l < selected-runs.tsv) recent runs"
+          while IFS=$'\t' read -r RUN_ID CREATED_AT; do
             echo "Checking run $RUN_ID for JUnit artifacts..."
             # List artifacts for this run that match our naming pattern
-            ARTIFACT_INFO=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
-              --jq '.artifacts[] | select(.name | startswith("junit-xml-")) | "\(.id) \(.name)"' || true)
+            ARTIFACT_INFO=$(gh api \
+              "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+              --jq '.artifacts[]
+                | select(.name | startswith("junit-xml-"))
+                | [.id, .name] | @tsv')
 
-            while IFS=' ' read -r ARTIFACT_ID ARTIFACT_NAME; do
+            while IFS=$'\t' read -r ARTIFACT_ID ARTIFACT_NAME; do
               [[ -z "$ARTIFACT_ID" ]] && continue
               echo "  Downloading artifact $ARTIFACT_NAME ($ARTIFACT_ID) from run $RUN_ID"
               DEST_DIR="junit-artifacts/run-$RUN_ID/$ARTIFACT_NAME"
               mkdir -p "$DEST_DIR"
               gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
-                > "$DEST_DIR/artifact.zip" || true
-              (cd "$DEST_DIR" && unzip -o -q "artifact.zip" 2>/dev/null && rm -f "artifact.zip") || true
+                > "$DEST_DIR/artifact.zip"
+              (
+                cd "$DEST_DIR"
+                unzip -o -q "artifact.zip"
+                rm -f "artifact.zip"
+              )
             done <<< "$ARTIFACT_INFO"
-          done
+          done < selected-runs.tsv
 
-          echo "Downloaded artifacts:"
-          find junit-artifacts -name '*.xml' | head -50 || echo "No XML files found"
+          XML_COUNT=$(find junit-artifacts -type f -name '*.xml' | wc -l)
+          if [[ "$XML_COUNT" -eq 0 ]]; then
+            echo "::error::No JUnit XML files were downloaded; refusing to update the report"
+            exit 1
+          fi
+
+          echo "Found $XML_COUNT JUnit XML files"
+          find junit-artifacts -type f -name '*.xml' | sed -n '1,50p'
 
       - name: Parse JUnit XML and detect flaky tests
         id: parse
@@ -126,6 +164,7 @@ jobs:
           GITHUB_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           FLAKY_ISSUE_LABEL: ${{ env.FLAKY_ISSUE_LABEL }}
           FLAKY_ISSUE_NUMBER: ${{ env.FLAKY_ISSUE_NUMBER }}
+          LAST_SEEN_RETENTION_DAYS: ${{ env.LAST_SEEN_RETENTION_DAYS }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/workflows/scripts/parse_flaky.py
 
