@@ -16,7 +16,7 @@ use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind,
 };
 use otel_arrow_dfe_config::error::Error;
-use uuid::Uuid;
+use uuid::{NoContext, Timestamp, Uuid};
 
 use super::{
     ContextDomain, ContextEntryId, ContextEntryLayout, ContextFieldLayout, ContextLayout,
@@ -432,7 +432,11 @@ impl MaterializedContext {
                         MaterializedContextValues::text(value.as_bytes().to_vec())
                     }
                     ContextMemberSource::Randomness(ContextRandomnessKind::Uuid7) => {
-                        MaterializedContextValues::text(Uuid::now_v7().to_string().into_bytes())
+                        MaterializedContextValues::text(
+                            Uuid::new_v7(Timestamp::now(NoContext))
+                                .to_string()
+                                .into_bytes(),
+                        )
                     }
                 };
                 members.push(MaterializedContextMember {
