@@ -14,6 +14,9 @@ groups:
         nodes:
           receiver:
             type: receiver:traffic_generator
+            policies:
+              telemetry:
+                item_counts: true
             config:
               data_source: synthetic
               generation_strategy: fresh

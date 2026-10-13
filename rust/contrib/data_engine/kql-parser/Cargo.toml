@@ -20,5 +20,5 @@ pest = { workspace = true }
 pest_derive = { workspace = true }
 regex = { workspace = true }
 
-otel-arrow-contrib-data-engine-expressions = { path = "../expressions", version = "=0.1.0" }
-otel-arrow-contrib-data-engine-parser-abstractions = { path = "../parser-abstractions", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-expressions = { path = "../expressions", version = "=0.1.1" }
+otel-arrow-contrib-data-engine-parser-abstractions = { path = "../parser-abstractions", version = "=0.1.1" }

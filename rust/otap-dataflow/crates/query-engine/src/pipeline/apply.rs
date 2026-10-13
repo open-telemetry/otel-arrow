@@ -1,0 +1,1864 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! This module contains a [`PipelineStage`] implementation that can apply transformation pipeline
+//! to some nested, repeated field in the OTAP model (e.g. attributes or metric data points).
+//!
+//! This allows us to treat attributes/data points individually as members of a stream, as opposed
+//! to properties on a stream of logs/traces/metrics.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use datafusion::config::ConfigOptions;
+use datafusion::execution::TaskContext;
+use datafusion::prelude::SessionContext;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+use crate::error::{Error, Result};
+use crate::pipeline::expr::{ChildRecordKind, RecordScope};
+use crate::pipeline::planner::AttributesIdentifier;
+use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
+
+/// The source for which to apply the pipeline. Records belonging to this source data will be
+/// treated as the main record by execution of the child pipeline stages.
+#[derive(Debug)]
+pub enum ApplySource {
+    /// Apply the child pipeline to attributes
+    Attributes(AttributesIdentifier),
+
+    /// Apply the child pipeline to metric data points
+    DataPoints,
+}
+
+/// Implementation of [`PipelineStage`] that performs transformations directly on a stream of
+/// attribute record batches. It contains a set of inner pipeline stages that have the capability
+/// to transform attributes record batches directly by calling `execute_on_attributes` method.
+pub struct ApplyPipelineStage {
+    /// Identifier of the source data on which to evaluate the pipeline
+    source: ApplySource,
+
+    /// Pipeline stages that will be applied to each element of the source data
+    pipeline_stages: Vec<Box<dyn PipelineStage>>,
+}
+
+impl ApplyPipelineStage {
+    pub fn new(source: ApplySource, pipeline_stages: Vec<Box<dyn PipelineStage>>) -> Self {
+        Self {
+            source,
+            pipeline_stages,
+        }
+    }
+
+    async fn apply_pipeline_to_attributes(
+        &mut self,
+        attributes_id: AttributesIdentifier,
+        mut otap_batch: OtapArrowRecords,
+        session_context: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        let attrs_payload_type = match attributes_id {
+            AttributesIdentifier::Record(RecordScope::Signal) => {
+                match otap_batch.root_payload_type() {
+                    ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
+                    ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
+                    _ => ArrowPayloadType::MetricAttrs,
+                }
+            }
+            AttributesIdentifier::Record(RecordScope::Child(ChildRecordKind::DataPoint)) => {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "Applying nested pipeline to metric data point attributes not yet supported"
+                            .into(),
+                });
+            }
+            AttributesIdentifier::NonRecord(payload_type) => payload_type,
+        };
+
+        let Some(mut curr_batch) = otap_batch.get(attrs_payload_type).cloned() else {
+            // nothing to do - just return the original batch
+            return Ok(otap_batch);
+        };
+
+        for pipeline_stage in &mut self.pipeline_stages {
+            curr_batch = pipeline_stage
+                .execute_on_attributes(
+                    curr_batch,
+                    session_context,
+                    config_options,
+                    Arc::clone(&task_context),
+                    exec_state,
+                )
+                .await?;
+        }
+
+        // replace record batch with pipeline result
+        if curr_batch.num_rows() > 0 {
+            otap_batch.set(attrs_payload_type, curr_batch)?;
+        } else {
+            _ = otap_batch.remove(attrs_payload_type);
+        }
+
+        Ok(otap_batch)
+    }
+
+    async fn apply_pipeline_to_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_context: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for pipeline_stage in &mut self.pipeline_stages {
+            otap_batch = pipeline_stage
+                .execute_on_metric_data_points(
+                    otap_batch,
+                    session_context,
+                    config_options,
+                    Arc::clone(&task_context),
+                    exec_state,
+                )
+                .await?;
+        }
+
+        Ok(otap_batch)
+    }
+}
+
+#[async_trait(?Send)]
+impl PipelineStage for ApplyPipelineStage {
+    async fn execute(
+        &mut self,
+        otap_batch: OtapArrowRecords,
+        session_context: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        match &self.source {
+            ApplySource::Attributes(attrs_id) => {
+                self.apply_pipeline_to_attributes(
+                    *attrs_id,
+                    otap_batch,
+                    session_context,
+                    config_options,
+                    task_context,
+                    exec_state,
+                )
+                .await
+            }
+            ApplySource::DataPoints => {
+                self.apply_pipeline_to_metric_data_points(
+                    otap_batch,
+                    session_context,
+                    config_options,
+                    task_context,
+                    exec_state,
+                )
+                .await
+            }
+        }
+    }
+
+    // Applying a nested pipeline to scope/resource attributes can rebuild that parent payload.
+    fn parent_behavior(&self) -> ParentBehavior {
+        if matches!(
+            self.source,
+            ApplySource::Attributes(AttributesIdentifier::NonRecord(_))
+        ) {
+            ParentBehavior::RequiresReindex
+        } else {
+            ParentBehavior::Preserves
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use arrow::{array::UInt8Array, datatypes::DataType};
+    use otel_arrow_contrib_data_engine_kql_parser::Parser;
+    use otel_arrow_dfe_pdata::{
+        OtapArrowRecords,
+        otap::Logs,
+        otlp::attributes::AttributeValueType,
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::{
+                arrow::v1::ArrowPayloadType,
+                common::v1::{AnyValue, InstrumentationScope, KeyValue},
+                logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                resource::v1::Resource,
+            },
+        },
+        schema::consts,
+        testing::{
+            equiv::assert_equivalent,
+            round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data},
+        },
+    };
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
+
+    use crate::parser::default_parser_options;
+    use crate::pipeline::{
+        Pipeline,
+        planner::{PipelinePlanner, RecordType, SignalContext, SignalKind},
+        test::exec_logs_pipeline,
+    };
+
+    /// Create a planner for log signal pipelines (used in tests).
+    fn logs_planner() -> PipelinePlanner {
+        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    }
+
+    mod data_point;
+
+    fn gen_logs_records_with_string_attrs() -> Vec<LogRecord> {
+        vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k2", AnyValue::new_string("vb")),
+                    KeyValue::new("k3", AnyValue::new_string("vb")),
+                    KeyValue::new("k4", AnyValue::new_string("vb")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k2", AnyValue::new_string("vb")),
+                    KeyValue::new("k5", AnyValue::new_string("vc")),
+                    KeyValue::new("k6", AnyValue::new_string("vg")),
+                    KeyValue::new("k7", AnyValue::new_string("vg")),
+                ])
+                .finish(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_removing_attributes_filter_on_values() {
+        let logs_data = to_logs_data(gen_logs_records_with_string_attrs());
+        let query = r#"
+            logs | apply attributes {
+                where not(matches(value, ".*b"))
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("va"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k5", AnyValue::new_string("vc")),
+                    KeyValue::new("k6", AnyValue::new_string("vg")),
+                    KeyValue::new("k7", AnyValue::new_string("vg")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_removing_attributes_by_key_using_multiple_filter_stages() {
+        let logs_data = to_logs_data(gen_logs_records_with_string_attrs());
+
+        let query = r#"
+            logs | apply attributes {
+                where key != "k3" |
+                where not(matches(key, ".*2"))
+            }"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k4", AnyValue::new_string("vb")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k5", AnyValue::new_string("vc")),
+                    KeyValue::new("k6", AnyValue::new_string("vg")),
+                    KeyValue::new("k7", AnyValue::new_string("vg")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_filtering_attributes_using_and_in_logical_expr() {
+        let logs_data = to_logs_data(gen_logs_records_with_string_attrs());
+
+        let query = r#"
+            logs | apply attributes {
+                where key == "k1" and value == "va"
+            }"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("va"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("va"))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_filtering_attributes_using_or_in_logical_expr() {
+        let logs_data = to_logs_data(gen_logs_records_with_string_attrs());
+
+        let query = r#"
+            logs | apply attributes {
+                where key == "k1" or key == "k2"
+            }"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k2", AnyValue::new_string("vb")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("va")),
+                    KeyValue::new("k2", AnyValue::new_string("vb")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_removing_resource_attributes() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![
+                    KeyValue::new("ka", AnyValue::new_string("a")),
+                    KeyValue::new("kb", AnyValue::new_string("b")),
+                ])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        let query = r#"
+            logs | apply resource.attributes {
+                where matches(value, ".*a")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new("ka", AnyValue::new_string("a"))])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build().finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[tokio::test]
+    async fn test_removing_scope_attributes() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(vec![
+                        KeyValue::new("ka", AnyValue::new_string("a")),
+                        KeyValue::new("kb", AnyValue::new_string("b")),
+                    ])
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        let query = r#"
+            logs | apply instrumentation_scope.attributes {
+                where matches(value, ".*a")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let expected = LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(vec![KeyValue::new("ka", AnyValue::new_string("a"))])
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        )
+    }
+
+    #[test]
+    fn test_pipeline_stages_that_dont_support_attribute_exec_is_planning_error() {
+        let query = r#"
+            logs | apply attributes {
+                rename attributes "y" as "x"
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let planner = logs_planner();
+
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let result = planner.plan_stages(&pipeline_expr, &session_ctx, &otap_batch);
+
+        match result {
+            Err(err) => {
+                let err_msg = err.to_string();
+
+                assert!(
+                    err_msg.contains("Invalid pipeline"),
+                    "unexpected error: {}",
+                    err_msg
+                );
+            }
+            Ok(_) => {
+                panic!("expected OK")
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_apply_targets_are_planning_errors() {
+        let bad_targets = ["attributes.attrs.attrs", "resource.name", "severity_text"];
+
+        for bad_target in bad_targets {
+            let query = format!(
+                "logs | apply {bad_target} {{
+                    where value == 2
+                }}"
+            );
+            let pipeline_expr = OplParser::parse(&query).unwrap().pipeline;
+            let planner = logs_planner();
+
+            let session_ctx = Pipeline::create_session_context();
+            let otap_batch = OtapArrowRecords::Logs(Logs::default());
+            let result = planner.plan_stages(&pipeline_expr, &session_ctx, &otap_batch);
+
+            match result {
+                Err(err) => {
+                    let err_msg = err.to_string();
+
+                    assert!(
+                        err_msg.contains("Invalid source for apply pipeline"),
+                        "unexpected error: {}",
+                        err_msg
+                    );
+                }
+                Ok(_) => {
+                    panic!("expected OK")
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_works_correctly_on_empty_batch() {
+        let query = r#"
+            logs | apply attributes {
+                where value > 5
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+        let input = OtapArrowRecords::Logs(Logs::default());
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input)
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_works_correctly_on_non_empty_batch_with_no_attributes() {
+        let input = to_logs_data(vec![LogRecord::build().finish()]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let query = r#"
+            logs | apply attributes {
+                where value > 5
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input)
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_removes_attrs_record_batch_when_all_attrs_removed() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("a", AnyValue::new_int(6))])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let query = r#"
+            logs | apply attributes {
+                where value < 5
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_filter_by_bool_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value == true
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_bool(true))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+
+        // assert filter also works when bool literal on the left
+        let query = r#"
+            logs | apply attributes {
+                where true == value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_filter_by_int_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                    KeyValue::new("k2", AnyValue::new_int(14)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value > 10
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_int(14))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+
+        // assert filter also works when literal on the left
+        let query = r#"
+            logs | apply attributes {
+                where 10 < value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_filter_by_float_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value > 10.0
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(14.0))])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+
+        // assert filter also works when literal on the left
+        let query = r#"
+            logs | apply attributes {
+                where 10.0 < value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: a filter predicate where the value column used in the predicate can be statically
+    /// predetermined is an optional column that is missing from the batch.
+    /// Guarantees: no error is produced, and the column is treated as a default value
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_statically_determined_value_column_missing() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(0.0)),
+                    KeyValue::new("k2", AnyValue::new_double(0.0)),
+                ])
+                .finish(),
+        ];
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none());
+
+        let query = r#"logs | apply attributes {
+            where value > 10.0
+        }"#;
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(vec![LogRecord::build().attributes(Vec::new()).finish()]);
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+
+        // again, assert on the default column:
+        let query = r#"logs | apply attributes {
+            where value == 0.0
+        }"#;
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(log_records.clone());
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: evaluate filtering using a predicate where the attribute column containing
+    /// the value cannot be statically determined, so the virtual "value" column will be projected
+    /// Guarantees: the predicate can be evaluated on this virtual "value" column
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_value_type_not_statically_determined() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(7.0)),
+                ])
+                .finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let query = r#"logs | apply attributes {
+            where (value as Integer) > 6
+        }"#;
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(7.0))])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: multiple batches where the position of the column used in the predicate changes
+    /// from one batch to the next due to the alternating presence of some optional columns
+    /// Guarantees: the predicate is evaluated on the displaced column
+    #[tokio::test]
+    async fn test_pipeline_filter_attributes_when_schema_changes() {
+        let query = r#"
+            logs | apply attributes {
+                if (key != "k3") {
+                    where value > 10.0
+                }
+            }
+        "#;
+
+        let mut pipeline = Pipeline::try_new(
+            OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline,
+        )
+        .unwrap();
+
+        let input1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                ])
+                .finish(),
+        ])));
+        let log_attrs = input1.get(ArrowPayloadType::LogAttrs).unwrap();
+        let batch1_pos = log_attrs
+            .schema_ref()
+            .index_of(consts::ATTRIBUTE_DOUBLE)
+            .unwrap();
+
+        let expected1 = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_double(14.0))])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&pipeline.execute(input1).await.unwrap())],
+            &[OtlpProtoMessage::Logs(expected1)],
+        );
+
+        // next batch, the values column changes position,
+        let input2 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                    KeyValue::new("k3", AnyValue::new_int(18)),
+                ])
+                .finish(),
+        ])));
+        let log_attrs = input2.get(ArrowPayloadType::LogAttrs).unwrap();
+        let batch2_pos = log_attrs
+            .schema_ref()
+            .index_of(consts::ATTRIBUTE_DOUBLE)
+            .unwrap();
+
+        assert_ne!(batch1_pos, batch2_pos);
+
+        let expected2 = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                    KeyValue::new("k3", AnyValue::new_int(18)),
+                ])
+                .finish(),
+        ]);
+        assert_equivalent(
+            &[otap_to_otlp(&pipeline.execute(input2).await.unwrap())],
+            &[OtlpProtoMessage::Logs(expected2)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_string_from_static_literal() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k2", AnyValue::new_string("b")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = "a"
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k2", AnyValue::new_string("a")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_int_from_static_literal() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = 3
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(3)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_float_from_static_literal() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(1.0)),
+                    KeyValue::new("k2", AnyValue::new_double(2.0)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = 3.0
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(3.0)),
+                    KeyValue::new("k2", AnyValue::new_double(3.0)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_bool_from_static_literal() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(false)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = false
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(false)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_int_from_arithmetic_with_static() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value + 1
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                    KeyValue::new("k2", AnyValue::new_int(3)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_float_from_arithmetic_with_static() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(1.0)),
+                    KeyValue::new("k2", AnyValue::new_double(2.0)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value + 1.0
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(2.0)),
+                    KeyValue::new("k2", AnyValue::new_double(3.0)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_int_arithmetic_involving_no_statics() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value + value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                    KeyValue::new("k2", AnyValue::new_int(4)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_float_arithmetic_involving_no_statics() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(2.0)),
+                    KeyValue::new("k2", AnyValue::new_double(3.0)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value * value
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(4.0)),
+                    KeyValue::new("k2", AnyValue::new_double(9.0)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_int_from_logical_with_static() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value > 1
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(false)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+    #[tokio::test]
+    async fn test_pipeline_set_int_from_logical_with_func_call() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("foo")),
+                    KeyValue::new("k2", AnyValue::new_string("bar")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = contains(value, "f")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_changes_type() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = "hello"
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("hello")),
+                    KeyValue::new("k2", AnyValue::new_string("hello")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_downcasts_to_dict_if_type_supports_dict() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let query = r#"
+            logs | apply attributes {
+                set value = value + 2
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input).await.unwrap();
+
+        // verify we have the correct type
+        let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        let int_col = logs_attrs.column_by_name(consts::ATTRIBUTE_INT).unwrap();
+        assert_eq!(
+            int_col.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64))
+        );
+
+        // verify the assignment results are also correct
+        let result_as_otlp = otap_to_otlp(&result);
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(4)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_missing_int_column() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(0)),
+                    KeyValue::new("k2", AnyValue::new_int(0)),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_INT).is_none());
+
+        let query = r#"
+            logs | apply attributes {
+                set value = value + 2
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input).await.unwrap();
+
+        let result_as_otlp = otap_to_otlp(&result);
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_missing_float_column() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    // placeholder values, will replace with nulls
+                    KeyValue::new("k1", AnyValue::new_double(0.0)),
+                    KeyValue::new("k2", AnyValue::new_double(0.0)),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none());
+
+        let query = r#"
+            logs | apply attributes {
+                set value = value + 2.0
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input).await.unwrap();
+        let result_as_otlp = otap_to_otlp(&result);
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(2.0)),
+                    KeyValue::new("k2", AnyValue::new_double(2.0)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_missing_bool_column() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(false)),
+                    KeyValue::new("k2", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ]);
+        let mut input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let mut log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+
+        // bool isn't a required column, but the OTAP encoder actually currently always
+        // inserts it, so we need to manually remove it
+        let (id_col_index, _) = log_attrs
+            .schema()
+            .fields()
+            .find(consts::ATTRIBUTE_BOOL)
+            .unwrap();
+        _ = log_attrs.remove_column(id_col_index);
+        input.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+
+        let query = r#"
+            logs | apply attributes {
+                set value = not(value)
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input).await.unwrap();
+
+        let result_as_otlp = otap_to_otlp(&result);
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_missing_str_column() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    // placeholder values, will replace with nulls
+                    KeyValue::new("k1", AnyValue::new_string("")),
+                    KeyValue::new("k2", AnyValue::new_string("")),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        assert!(log_attrs.column_by_name(consts::ATTRIBUTE_STR).is_none());
+
+        let query = r#"
+            logs | apply attributes {
+                set value = concat(value, "hello")
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input).await.unwrap();
+        let result_as_otlp = otap_to_otlp(&result);
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("hello")),
+                    KeyValue::new("k2", AnyValue::new_string("hello")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[result_as_otlp],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_empty_values() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue { value: None }),
+                    KeyValue::new("k2", AnyValue { value: None }),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let log_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+        // check that the type of attribute is indeed empty ...
+        let attrs_type = log_attrs
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        assert_eq!(attrs_type.value(0), AttributeValueType::Empty as u8);
+        assert_eq!(attrs_type.value(1), AttributeValueType::Empty as u8);
+
+        // assert there is only the key, value and type column
+        assert_eq!(log_attrs.num_columns(), 3);
+
+        // kind of a useless update, but just trying to test something that will read from
+        // a empty column and also produce a result of basically the same type, just to make
+        // sure nothing breaks as we try to handle this
+        let query = r#"
+            logs | apply attributes {
+                set value = value
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input).await.unwrap();
+
+        // assert we still have the empty attributes
+        let logs_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        let attrs_type = logs_attrs
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        assert_eq!(attrs_type.value(0), AttributeValueType::Empty as u8);
+        assert_eq!(attrs_type.value(1), AttributeValueType::Empty as u8);
+        assert_eq!(log_attrs.num_columns(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_empty_attrs_batch() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("hello")),
+                    KeyValue::new("k1", AnyValue::new_string("world")),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+
+        // this should filter out all the attributes before calling the set operation
+        let query = r#"
+            logs | apply attributes {
+                where not (key == "k1") | set value = "a"
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        // just make sure we don't panic/return error and that we end up with zero attrs
+        let result = pipeline.execute(input).await.unwrap();
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
+    }
+
+    /// Scenario: filter applied to zero results
+    /// Guarantees: executes without error
+    #[tokio::test]
+    async fn test_pipeline_filter_empty_attrs_batch() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("hello"))])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+
+        // this should filter out all the attributes before calling the next filter operation
+        let query = r#"
+            logs | apply attributes {
+                where not (key == "k1") | where value != "hello"
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        // just make sure we don't panic/return error and that we end up with zero attrs
+        let result = pipeline.execute(input).await.unwrap();
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_with_attrs_input_different_types_and_values_used_in_expr() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k1", AnyValue::new_double(2.0)),
+                ])
+                .finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+
+        let query = r#"
+            logs | apply attributes {
+                set value = value * 2
+            }"#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let err = pipeline.execute(input).await.unwrap_err();
+        assert!(
+            err.to_string().contains("All input rows for attribute assignment must have the same type if value used in expression"),
+            "unexpected error message {}",
+            err
+        )
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_set_with_attrs_input_types_static_expression_source() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k1", AnyValue::new_double(2.0)),
+                ])
+                .finish(),
+        ]);
+
+        let query = r#"
+            logs | apply attributes {
+                set value = 5
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected.clone())],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_conditionally_set_keys() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key == "k1") {
+                    set value = "a"
+                } else if (key == "k2") {
+                    set value = "b"
+                } else {
+                    set value = "c"
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k2", AnyValue::new_string("b")),
+                    KeyValue::new("k3", AnyValue::new_string("c")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_condition_keeps_unmodified_attrs_if_no_else_block() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key == "k1" or key == "k2") {
+                    set value = "a"
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("a")),
+                    KeyValue::new("k2", AnyValue::new_string("a")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_condition_can_concatenate_in_case_schema_changes() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        // attributes that take the first "if" branch will have the optional int column appended,
+        // and those which take the "else if" branch will have the optional double column appended.
+        // this is checking that we can still concat the batches despite the schema mismatch
+        let query = r#"
+            logs | apply attributes {
+                if (key == "k1") {
+                    set value = 5
+                } else if (key == "k2") {
+                    set value = 14.0
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input.clone()).await;
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(5)),
+                    KeyValue::new("k2", AnyValue::new_double(14.0)),
+                    KeyValue::new("k3", AnyValue::new_string("z")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_where_conditional_receives_empty_batch_works_correctly() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(1)),
+                    KeyValue::new("k2", AnyValue::new_int(2)),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                where value == 0 |
+                if (value < 10) {
+                    set value = 2
+                }
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let result = pipeline.execute(input.clone()).await.unwrap();
+
+        // also just assert there are no attrs remaining
+        assert!(result.get(ArrowPayloadType::LogAttrs).is_none())
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_invoke_function_calls() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = encode(sha256(value), "hex")
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "k1",
+                        AnyValue::new_string(
+                            "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                        ),
+                    ),
+                    KeyValue::new(
+                        "k2",
+                        AnyValue::new_string(
+                            "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
+                        ),
+                    ),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_invoke_function_calls_inside_conditional() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("sensitive", AnyValue::new_string("x")),
+                    KeyValue::new("not_sensitive", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key == "sensitive") {
+                    set value = encode(sha256(value), "hex")
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "sensitive",
+                        AnyValue::new_string(
+                            "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                        ),
+                    ),
+                    KeyValue::new("not_sensitive", AnyValue::new_string("y")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    /// Scenario: assign a comparison result when the referenced string value column is omitted.
+    /// Guarantees: omitted default string values compare equal to the empty string.
+    #[tokio::test]
+    async fn test_pipeline_set_attribute_to_result_of_predicate_involving_missing_column() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("")),
+                    KeyValue::new("k2", AnyValue::new_string("")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = value == ""
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_bool(true)),
+                    KeyValue::new("k2", AnyValue::new_bool(true)),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_invoke_substring() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("abc")),
+                    KeyValue::new("k2", AnyValue::new_string("def")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                set value = substring(value, 1, 1)
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("b")),
+                    KeyValue::new("k2", AnyValue::new_string("e")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_can_update_attribute_conditionally_on_case_insensitive_key_match() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("abc")),
+                    KeyValue::new("K1", AnyValue::new_string("abc")),
+                    KeyValue::new("k2", AnyValue::new_string("def")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"
+            logs | apply attributes {
+                if (key =~ "k1") {
+                    set value = "updated"
+                }
+            }"#;
+
+        let result = exec_logs_pipeline::<OplParser>(query, input).await;
+
+        let expected = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("updated")),
+                    KeyValue::new("K1", AnyValue::new_string("updated")),
+                    KeyValue::new("k2", AnyValue::new_string("def")),
+                ])
+                .finish(),
+        ]);
+
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(result)],
+            &[OtlpProtoMessage::Logs(expected)],
+        );
+    }
+}

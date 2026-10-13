@@ -1,0 +1,8 @@
+type: telemetry-macros
+status:
+  class: library
+  codeowners:
+    active:
+      - drewrelmas
+      - cijothomas
+      - lquerel

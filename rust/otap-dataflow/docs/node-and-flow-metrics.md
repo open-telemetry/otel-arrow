@@ -30,7 +30,7 @@ configuration.
 | Which node changed the count of logs, metrics, or traces? | Node item metrics |
 | What is the aggregate compute time for selected processor stages? | Flow metrics |
 | Which decision processor dropped items within a processor range? | Flow metrics |
-| How many items did a receiver admit or exporter emit? | Node item metrics |
+| How many items entered or left a node as PData? | Node item metrics |
 
 ## Node Metrics
 
@@ -57,18 +57,46 @@ message measurements, and **`detailed`** adds every optional measurement. A
 | Logical size | `node.input.size`, `node.output.size` | - | `detailed` | `size: true` |
 | Payload size | - | `receiver.received.payload.size`, `exporter.attempted.payload.size` | `detailed` | `size: true` |
 | Completion duration | `node.completion.duration` | - | `detailed` | `completion_duration: true` |
-| Local duration | - | `receiver.processing.duration`, `processor.compute.duration`, `exporter.attempted.duration` | `detailed` | `duration: true` |
+| Local duration | - | `receiver.processing.duration`, `processor.compute.duration`, `exporter.attempted.duration` | `detailed` | `duration: true`, `duration_distribution: normal` |
 
 The `node.input.*` metrics apply to processors and exporters.
 `node.output.*` metrics apply to receivers and processors. Node-implemented
 metrics require the implementation to use the corresponding shared
 instrumentation.
 
-Message, item, and size counters have bounded `signal` and `outcome` data-point
-attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
-`success`, `failure`, or `refused`, recorded during terminal ACK/NACK
-unwinding. The metric-set entity attributes identify the pipeline and node, so
-group by those attributes when comparing nodes.
+### Interpret Boundary Cardinality
+
+Receiver and exporter boundary counts do not necessarily match PData message
+counts:
+
+```text
+receiver.received = classified external messages
+node.output       = terminal PData lifecycle at the output boundary
+node.input        = terminal PData lifecycle at the input boundary
+exporter.attempted = node-local export attempts
+```
+
+Fan-out, aggregation, batching, and retries can make these counts differ.
+Receivers without classifiable external messages may omit
+`receiver.received`. Use `channel.sender.messages` and
+`channel.receiver.messages` for immediate channel transport counts.
+
+`receiver.received` success means receiver acceptance; `node.output` describes
+the resulting PData lifecycle. For exporters, `node.input` success means the
+node ACKed the PData under its policy; `exporter.attempted` describes external
+attempts. Do not subtract counts unless the node documents a 1:1 mapping.
+
+See
+[`Shared receiver and exporter boundary metrics`](telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for topology and buffering rules.
+
+Engine-managed node message, item, and size counters have bounded `signal` and
+`outcome` data-point attributes. `signal` is one of `logs`, `metrics`, or
+`traces`; `outcome` is `success`, `failure`, or `refused`, recorded during
+terminal ACK/NACK unwinding. Receiver and exporter boundary metrics record
+outcomes at their node-defined boundaries instead. The metric-set entity
+attributes identify the pipeline and node, so group by those attributes when
+comparing nodes.
 
 ### Enable Optional Measurements
 
@@ -102,6 +130,42 @@ nodes:
 This narrower configuration is appropriate when only a small part of a
 pipeline needs payload measurements. `detailed` enables item counts and size
 for every node without node-level settings.
+
+### Select Duration Aggregation
+
+`duration_distribution` selects the aggregation fidelity for supported
+duration instruments:
+
+| Value | OTLP representation | Retained data |
+| --- | --- | --- |
+| `basic` | Bucketless `Histogram` | Count, sum, min, and max |
+| `normal` | `ExponentialHistogram` | Normal-resolution buckets and summary statistics |
+| `detailed` | `ExponentialHistogram` | Higher-resolution buckets and summary statistics |
+
+The setting defaults to `normal`. Use `basic` for lower aggregation cost or
+compatibility with consumers that do not support exponential histograms.
+Basic distributions do not retain buckets, so percentiles cannot be
+reconstructed.
+
+Shared receiver and exporter duration instruments accept
+`duration_distribution` when local duration telemetry is enabled:
+
+```yaml
+nodes:
+  otlp/export:
+    type: exporter:otlp_grpc
+    policies:
+      telemetry:
+        duration: true
+        duration_distribution: basic
+    config:
+      grpc_endpoint: "http://192.0.2.10:4317"
+```
+
+This node-level setting currently applies to shared
+`receiver.processing.duration` and `exporter.attempted.duration`
+instrumentation. Other node-specific duration instruments retain their
+implementation-defined aggregation.
 
 ### Interpret Node Counts
 
@@ -151,27 +215,16 @@ from the start processor and rejects interleaved flow ranges. Omit `metrics` to
 enable every supported flow metric. When present, it must not be empty and must
 not repeat a metric.
 
-`duration_distribution` controls the aggregation used by `compute_duration`:
-
-| Value | OTLP representation | Retained data |
-| --- | --- | --- |
-| `basic` | Bucketless `Histogram` | Count, sum, min, and max |
-| `normal` | `ExponentialHistogram` | Normal-resolution buckets and summary statistics |
-| `detailed` | `ExponentialHistogram` | Higher-resolution buckets and summary statistics |
-
-The setting defaults to `normal`. Use `basic` for lower aggregation cost or
-compatibility with consumers that do not support exponential histograms. Basic
-distributions do not retain buckets, so percentiles cannot be reconstructed.
-The setting is ignored when `compute_duration` is not enabled. Its distribution
-tier is independent of `runtime_metrics`, which controls whether broader metric
-families are enabled.
+`duration_distribution` uses the
+[duration aggregation tiers](#select-duration-aggregation) for
+`compute_duration`. It is ignored when `compute_duration` is not enabled and
+is independent of `runtime_metrics`, which controls broader metric families.
 
 Each flow's attributes are part of its OTLP instrumentation scope, so flows
 using different tiers have distinct metric stream identities. Some backends
 flatten instrumentation scopes and require one data type per metric name. Use
-the same wire type across flows and deployments when exporting to such a
-backend: `basic` produces `Histogram`, while `normal` and `detailed` produce
-`ExponentialHistogram`.
+the same duration tier across flows and deployments when exporting to such a
+backend.
 
 ### Flow Metrics and Attributes
 

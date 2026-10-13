@@ -1,0 +1,22 @@
+[package]
+name = "otel-arrow-dfe-filelog-checkpoint"
+description = "Version-1 wire codec for OTAP filelog checkpoints"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+crc.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

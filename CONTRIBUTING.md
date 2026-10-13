@@ -243,6 +243,18 @@ work on an open issue - is described in
 
 ## Our Development Process
 
+### Code review is shared work
+
+Reviewing is part of contributing, not work reserved for approvers and
+maintainers. Regular contributors should budget time to review peer changes,
+and reviews from non-approvers are encouraged and treated as meaningful
+technical input.
+
+Component ownership metadata identifies contributors who can provide domain
+review for OTAP Dataflow crates and nodes. An approver or maintainer approval
+is still required to merge. See the [code review policy](./CODE_REVIEW.md) for
+review expectations, role boundaries, and ownership maintenance.
+
 ### How to Receive Comments
 
 - If the PR is not ready for review, please put `[WIP]` in the title or mark it
@@ -412,18 +424,17 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
 
-### Emeritus Approvers
-
-- [Alex Boten](https://github.com/codeboten)
-- [Lei Huang](https://github.com/v0y4g3r)
-- [Moh Osman](https://github.com/moh-osman3)
-
 ### Triagers
-
-- [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the triager role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+
+### Emeritus
+
+- [Alex Boten](https://github.com/codeboten), Approver
+- [Lei Huang](https://github.com/v0y4g3r), Approver
+- [Moh Osman](https://github.com/moh-osman3), Approver
+- [Tom Tan](https://github.com/ThomsonTan), Triager
 
 [RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/

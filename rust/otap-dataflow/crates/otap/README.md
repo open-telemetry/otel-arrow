@@ -13,7 +13,7 @@ Core node implementations live in `crates/core-nodes`.
 Development-only test, fault-injection, and benchmark nodes live in
 `crates/dev-nodes`.
 
-Contrib components (for example Geneva and Azure Monitor exporters, and
+Contrib nodes (for example Geneva and Azure Monitor exporters, and
 optional contrib processors) live in `crates/contrib-nodes`.
 
 ## Shared Infrastructure
@@ -24,90 +24,22 @@ optional contrib processors) live in `crates/contrib-nodes`.
 - OTLP HTTP client/server support (`src/otlp_http/`, `src/otlp_http.rs`)
 - Compression configuration (`src/compression.rs`)
 - TLS and crypto helpers (`src/tls_utils.rs`, `src/crypto.rs`)
-- Shared component boundary metrics (`src/metrics.rs`)
+- Shared node boundary metrics (`src/metrics.rs`)
 - Shared OTLP receiver metrics (`src/otlp_metrics.rs`)
 - Test fixtures and mocks (`src/otap_mock.rs`, `src/otlp_mock.rs`, `src/testing/`)
 
-## Shared Component Boundary Metrics
+## Shared Node Boundary Metrics
 
-Universal node metrics describe internal PData delivery, while receivers and
-exporters own the external boundaries:
+This crate provides the shared `ReceiverMetrics` and `ExporterMetrics` helpers
+for external node boundaries. These metrics count external messages and
+node-local export attempts independently from engine-managed PData node
+metrics.
 
-```text
-wire -> receiver.received -> node.output -> ... -> node.input
-node.input -> exporter.attempted -> wire
-```
-
-The shared contracts are:
-
-```text
-receiver.received.{messages,payload.size}{signal,outcome}
-receiver.processing.duration{signal}
-exporter.attempted.messages{signal,outcome}
-exporter.attempted.duration{signal,outcome} (optional)
-exporter.attempted.payload.size{signal,outcome} (optional)
-exporter.attempted.items{signal,outcome} (optional)
-```
-
-### Receiver received
-
-One observation represents one external message after signal classification.
-`success` means receiver-local handoff was accepted and completed. `refused`
-means validation, policy, admission, capacity, or pipeline handoff explicitly
-rejected the message. `failure` means receiver-local processing was attempted
-but did not complete because of an internal error.
-Each receiver defines and documents a stable start and end boundary for
-`receiver.processing.duration`. It measures active receiver-local work and
-excludes batching wait, pipeline handoff wait, downstream processing, and
-Ack/Nack completion. It has no outcome dimension because its processing
-boundary can precede the terminal received outcome. Rejections before signal
-classification remain component-specific diagnostics.
-
-Duration requires data-path clock reads and is disabled by default. Enable it
-for every component with `runtime_metrics: detailed`, or for one component with
-`policies.telemetry.duration: true`. Components must check the corresponding
-duration interest before reading the clock. The same policy controls
-processor-owned compute duration metrics.
-
-Receiver received omits `items` because decoded items are measured by
-`node.output.items`.
-
-### Exporter attempted
-
-One observation represents one component-local attempt to deliver data to an
-external sink. The attempt includes preparation such as encoding and the
-backend or storage submission when reached, so a preparation failure is still
-a failed attempt. Component-internal retries produce additional observations,
-as does redelivery by a retry processor. `success` means the attempt completed,
-`refused` means validation, policy, admission, or capacity explicitly rejected
-it, and `failure` means an encoding, transport, timeout, backend, or other
-processing error prevented completion. Retryability is independent of the
-outcome.
-
-Messages are recorded for every attempt. Duration, payload size, and items use
-separately registered optional metric sets under the same
-`exporter.attempted` namespace. Attempt duration includes backend latency and
-is enabled by the same duration policy as receiver processing duration.
-Components register payload size only when an encoded application payload
-exists and its size is naturally available at the attempt boundary. They
-register items only when cached item counts are enabled. Instrumentation must
-not encode, parse, traverse PData, or read the clock solely to populate a
-disabled optional metric.
-
-The legacy `exporter.exports` set remains during migration but will be
-deprecated. Attempt-level external behavior belongs to `exporter.attempted`,
-while `node.input` owns the logical message's terminal pipeline outcome.
-
-### Payload size and internal size
-
-`payload.size` means encoded application payload bytes visible immediately
-before receiver decoding or produced or submitted by an exporter attempt. It
-excludes protocol headers, framing, TLS overhead, and storage amplification.
-Exporters without an encoded application payload, or whose encoder does not
-expose its size, omit the optional metric set rather than reporting zero.
-
-The internal `size` measurement remains separate: it describes the PData
-representation at `node.output` and `node.input`.
+The complete contract, including 1:1, fan-out, aggregation, many-to-many,
+retry, timing, payload-size, and outcome guidance, is in the
+[Internal Telemetry Metrics Guide](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics).
+See [Node and Flow Metrics](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/node-and-flow-metrics.md)
+for operator interpretation.
 
 ## Node Implementations Using This Crate
 

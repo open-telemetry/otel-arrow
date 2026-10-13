@@ -190,7 +190,7 @@ async fn compute_consumer_lag_none_when_deadline_already_passed() {
 #[tokio::test]
 async fn lag_apply_publishes_and_clears_on_completion() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // A finished worker that measured a mean of 42.0.
@@ -232,7 +232,7 @@ async fn lag_apply_publishes_and_clears_on_completion() {
 #[tokio::test(start_paused = true)]
 async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Seed a known gauge value so we can prove it is retained on timeout.
@@ -294,7 +294,7 @@ async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
 #[tokio::test(start_paused = true)]
 async fn lag_apply_processes_completion_after_deadline() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-    let ctx = make_pipeline_ctx();
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     let deadline = tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
@@ -391,8 +391,7 @@ async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalan
                 "poison record must not be forwarded",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let mut m = FoldedMetrics::new();
             m.fold_all(terminal.metrics());
 
@@ -451,9 +450,7 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
         KafkaTestCluster::builder().topic(INCLUDED).topic(EXCLUDED),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // One record on each topic. Both are well-formed, so any counted
             // error is a filtering decision, not a decode failure.
@@ -471,18 +468,12 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
             // (the include regex matches), so the receiver-side guard is what
             // rejects the excluded topic.
             let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
+                manual_traces_builder(cluster.bootstrap_servers(), group, "^visibility-.*")
                     .with_traces(
                         SignalConfig::new(vec!["^visibility-.*".to_string()])
                             .with_encoding(MessageFormat::OtlpProto)
                             .with_exclude_topics(vec!["^visibility-excluded$".to_string()]),
-                    )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadUncommitted);
+                    );
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
@@ -498,8 +489,7 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
                 "excluded topic record must not be forwarded",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let unknown_topic_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",

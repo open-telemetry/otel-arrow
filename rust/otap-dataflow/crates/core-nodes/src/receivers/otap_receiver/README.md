@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:otap` (`urn:otel:receiver:otap`)
-- Feature gate: Default
+- Feature gate: `otap`
 - Stability: Experimental
 
 ## Overview

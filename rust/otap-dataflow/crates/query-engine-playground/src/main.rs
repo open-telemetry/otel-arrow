@@ -224,7 +224,8 @@ async fn execute_pipeline(req: ExecuteRequest) -> Result<ExecuteResponse, String
     })?;
 
     // 5. Execute the pipeline.
-    let mut pipeline = Pipeline::new(parser_result.pipeline);
+    let mut pipeline = Pipeline::try_new(parser_result.pipeline)
+        .map_err(|e| format!("pipeline creation error: {e}"))?;
     let result = pipeline
         .execute(otap_batch)
         .await

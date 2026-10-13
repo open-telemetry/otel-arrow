@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:retry` (`urn:otel:processor:retry`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

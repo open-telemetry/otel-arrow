@@ -4,9 +4,35 @@
 //! OTAP schema definition types. These can be used to describe the schema of
 //! any otap payload type. See [crate::schema::payloads::get]
 
-use arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
+use arrow::array::{Array, ArrayRef, AsArray, GenericListArray, RecordBatch};
 
 use crate::schema::error::Error;
+
+/// The time zone that OTAP producers MUST attach to every `Timestamp(Nanosecond)`
+/// column. See section 5.5.2 of the OTAP specification.
+pub const UTC_TIME_ZONE: &str = "UTC";
+
+/// The equivalent fixed-offset spelling of [`UTC_TIME_ZONE`]. Producers
+/// emit [`UTC_TIME_ZONE`], but consumers MUST also accept this form.
+pub const UTC_TIME_ZONE_OFFSET: &str = "+00:00";
+
+/// Returns true if `time_zone` is an OTAP-conformant time zone for a
+/// `Timestamp(Nanosecond)` column.
+///
+/// Per section 5.5.2 of the OTAP specification, producers MUST emit
+/// [`UTC_TIME_ZONE`]. Consumers accept `UTC` and `+00:00`, and, as a
+/// transitional allowance, a missing time zone which is interpreted as UTC.
+///
+/// TODO: Remove the `None` allowance once producers have had time to upgrade.
+/// See <https://github.com/open-telemetry/otel-arrow/issues/2369>.
+#[must_use]
+pub fn is_valid_timestamp_time_zone(time_zone: Option<&str>) -> bool {
+    match time_zone {
+        Some(tz) => tz == UTC_TIME_ZONE || tz == UTC_TIME_ZONE_OFFSET,
+        // Transitional: a missing time zone is interpreted as UTC.
+        None => true,
+    }
+}
 
 /// Leaf Arrow data types used in OTAP schemas.
 ///
@@ -47,7 +73,9 @@ impl SimpleType {
             Self::Utf8 => ArrowDT::Utf8,
             Self::Binary => ArrowDT::Binary,
             Self::FixedSizeBinary(n) => ArrowDT::FixedSizeBinary(*n),
-            Self::TimestampNanosecond => ArrowDT::Timestamp(TimeUnit::Nanosecond, None),
+            Self::TimestampNanosecond => {
+                ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
+            }
             Self::DurationNanosecond => ArrowDT::Duration(TimeUnit::Nanosecond),
         }
     }
@@ -56,14 +84,19 @@ impl SimpleType {
     #[must_use]
     fn matches(&self, arrow_dt: &arrow::datatypes::DataType) -> bool {
         use arrow::datatypes::{DataType as ArrowDT, TimeUnit};
+
         match self {
-            // OTAP timestamps are nanoseconds since the Unix epoch (UTC), though
-            // arrow semantically allows us to express nanosecond since UTC in
-            // any timezone. No timezone is ambiguous, but currently we don't
-            // have the behavior in this case defined per the spec and our
-            // encoder seems to omit the timezone. TODO: Follow up on this.
+            // Per OTAP spec section 5.5.2, timestamps are nanoseconds since the
+            // Unix epoch and producers must tag them with the UTC time zone.
+            // Consumers accept "UTC", "+00:00", and -- transitionally -- a
+            // missing time zone.
             Self::TimestampNanosecond => {
-                matches!(arrow_dt, ArrowDT::Timestamp(TimeUnit::Nanosecond, _))
+                let ArrowDT::Timestamp(unit, time_zone) = arrow_dt else {
+                    return false;
+                };
+
+                unit == &TimeUnit::Nanosecond
+                    && is_valid_timestamp_time_zone(time_zone.as_ref().map(|tz| tz.as_ref()))
             }
             _ => self.to_arrow() == *arrow_dt,
         }
@@ -151,13 +184,10 @@ impl DataType {
                 true
             }
             DataType::List(inner_dt) => {
-                let ArrowDT::List(_) = arrow_dt else {
+                let Some(list_array) = array.as_any().downcast_ref::<GenericListArray<i32>>()
+                else {
                     return false;
                 };
-                // safety: We verified this is a list type.
-                // note: i32 is not the type of the list, but the type of
-                // offsets into the list.
-                let list_array = array.as_list::<i32>();
                 inner_dt.matches(list_array.values())
             }
         }
@@ -238,6 +268,14 @@ impl Schema {
     pub fn get(&self, name: &str) -> Option<&'static Field> {
         let i = (self.idx)(name)?;
         Some(&self.fields[i])
+    }
+
+    /// Look up the declaration-order slot of a field by name. Returns `None` if
+    /// the field is not part of this schema. The slot is a stable index into
+    /// [`Schema::fields`].
+    #[must_use]
+    pub fn slot_of(&self, name: &str) -> Option<usize> {
+        (self.idx)(name)
     }
 
     /// Returns the names of all required fields.
@@ -339,7 +377,7 @@ mod tests {
             ),
             (
                 SimpleType::TimestampNanosecond,
-                ArrowDT::Timestamp(TimeUnit::Nanosecond, None),
+                ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             ),
             (
                 SimpleType::DurationNanosecond,
@@ -350,6 +388,81 @@ mod tests {
             assert_eq!(st.to_arrow(), *expected, "SimpleType::{st:?}");
             assert!(st.matches(expected), "SimpleType::{st:?} should match");
         }
+    }
+
+    /// Scenario: A `TimestampNanosecond` column is validated against every time
+    /// zone spelling that the OTAP spec permits a consumer to accept: "UTC",
+    /// "+00:00", and -- transitionally -- a missing time zone.
+    /// Guarantees: All three spellings validate, so a producer that has not yet
+    /// upgraded to emitting "UTC" is still interoperable during the rollout.
+    #[test]
+    fn timestamp_accepts_utc_equivalent_time_zones() {
+        let accepted = [Some(UTC_TIME_ZONE), Some(UTC_TIME_ZONE_OFFSET), None];
+
+        for time_zone in accepted {
+            assert!(
+                is_valid_timestamp_time_zone(time_zone),
+                "time zone {time_zone:?} should be accepted"
+            );
+
+            let dt = ArrowDT::Timestamp(TimeUnit::Nanosecond, time_zone.map(Into::into));
+            assert!(
+                SimpleType::TimestampNanosecond.matches(&dt),
+                "{dt} should match TimestampNanosecond"
+            );
+            assert!(
+                DataType::Simple(SimpleType::TimestampNanosecond).matches(&empty_array(&dt)),
+                "{dt} should match a TimestampNanosecond column"
+            );
+        }
+    }
+
+    /// Scenario: A `TimestampNanosecond` column carries a time zone that is not
+    /// UTC, or carries a non-nanosecond time unit.
+    /// Guarantees: Validation rejects it, so downstream consumers never have to
+    /// reinterpret an instant against a non-UTC zone or a coarser time unit.
+    #[test]
+    fn timestamp_rejects_non_utc_time_zones_and_other_units() {
+        for time_zone in ["America/Denver", "+05:30", "-00:00", "utc", ""] {
+            assert!(
+                !is_valid_timestamp_time_zone(Some(time_zone)),
+                "time zone {time_zone:?} should be rejected"
+            );
+
+            let dt = ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(time_zone.into()));
+            assert!(
+                !SimpleType::TimestampNanosecond.matches(&dt),
+                "{dt} should not match TimestampNanosecond"
+            );
+        }
+
+        for unit in [
+            TimeUnit::Second,
+            TimeUnit::Millisecond,
+            TimeUnit::Microsecond,
+        ] {
+            let dt = ArrowDT::Timestamp(unit, Some(UTC_TIME_ZONE.into()));
+            assert!(
+                !SimpleType::TimestampNanosecond.matches(&dt),
+                "{dt} should not match TimestampNanosecond"
+            );
+        }
+
+        assert!(!SimpleType::TimestampNanosecond.matches(&ArrowDT::Int64));
+    }
+
+    /// Scenario: `SimpleType::TimestampNanosecond::to_arrow` produces the type
+    /// that OTAP producers are required to emit.
+    /// Guarantees: The canonical producer type carries the UTC time zone and is
+    /// itself accepted by the validator, keeping encode and validate in sync.
+    #[test]
+    fn timestamp_to_arrow_emits_utc() {
+        let dt = SimpleType::TimestampNanosecond.to_arrow();
+        assert_eq!(
+            dt,
+            ArrowDT::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
+        );
+        assert!(SimpleType::TimestampNanosecond.matches(&dt));
     }
 
     #[test]

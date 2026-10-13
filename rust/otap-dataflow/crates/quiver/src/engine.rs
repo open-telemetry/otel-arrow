@@ -498,6 +498,13 @@ impl QuiverEngine {
             registry.force_complete_segments(&deleted_during_scan);
         }
 
+        // Progress files may reference segments whose files were already
+        // cleaned up. Allocate above them so that restored acknowledgements
+        // cannot hide new segments that would otherwise reuse those numbers.
+        if let Some(highest) = registry.highest_progress_segment() {
+            next_segment_seq = next_segment_seq.max(highest.raw().saturating_add(1));
+        }
+
         // Start with empty open segment and default cursor
         // WAL replay will populate these through the normal ingest path
         let engine = Arc::new(Self {
@@ -2300,6 +2307,16 @@ mod tests {
     /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
     fn test_budget() -> Arc<DiskBudget> {
         Arc::new(DiskBudget::unlimited())
+    }
+
+    async fn flush_wal_for_replay(engine: &QuiverEngine) {
+        engine
+            .wal_writer
+            .lock()
+            .await
+            .flush()
+            .await
+            .expect("flush WAL");
     }
 
     /// Backdates all `.qseg` files in the given data directory's `segments/`
@@ -5742,6 +5759,137 @@ mod tests {
         }
     }
 
+    /// Scenario: All acknowledged segments are cleaned up before a process restart.
+    /// Guarantees: Surviving acknowledgements never suppress newly written telemetry in either durability mode.
+    #[tokio::test]
+    async fn cleanup_restart_delivers_new_data() {
+        for mode in [DurabilityMode::SegmentOnly, DurabilityMode::Wal] {
+            let dir = tempdir().unwrap();
+            let id = SubscriberId::new("restart").unwrap();
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .durability(mode)
+                .build()
+                .unwrap();
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .unwrap();
+            engine.register_subscriber(id.clone()).unwrap();
+            engine.activate_subscriber(&id).unwrap();
+            engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+            engine.flush().await.unwrap();
+            let old = engine.poll_next_bundle(&id).unwrap().unwrap();
+            let old_seq = old.bundle_ref().segment_seq;
+            old.ack();
+            assert_eq!(engine.flush_progress().await.unwrap(), 1);
+            assert_eq!(engine.cleanup_completed_segments().unwrap(), 1);
+            assert_eq!(engine.segment_store().segment_count(), 0);
+            drop(engine);
+
+            let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+            engine.activate_subscriber(&id).unwrap();
+            engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+            engine.flush().await.unwrap();
+            let new = engine
+                .poll_next_bundle(&id)
+                .unwrap()
+                .expect("new telemetry");
+            assert!(new.bundle_ref().segment_seq > old_seq);
+            assert_eq!(new.item_count(), 3);
+            new.ack();
+            assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+        }
+    }
+
+    /// Scenario: Persisted progress and a segment filename supply different allocation floors.
+    /// Guarantees: Startup uses their maximum, including inactive subscribers.
+    #[tokio::test]
+    async fn startup_combines_progress_and_filename_floors() {
+        for (disk, progress) in [(7, 20), (20, 7)] {
+            let dir = tempdir().unwrap();
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .build()
+                .unwrap();
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .unwrap();
+            engine.next_segment_seq.store(disk, Ordering::Relaxed);
+            engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+            engine.flush().await.unwrap();
+            drop(engine);
+            let id = SubscriberId::new("inactive").unwrap();
+            crate::subscriber::write_progress_file(dir.path(), &id, SegmentSeq::new(progress), &[])
+                .await
+                .unwrap();
+            let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+            assert_eq!(engine.next_segment_seq.load(Ordering::Relaxed), 21);
+            engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+            engine.flush().await.unwrap();
+            assert!(
+                engine
+                    .segment_store()
+                    .segment_sequences()
+                    .contains(&SegmentSeq::new(21))
+            );
+        }
+    }
+
+    /// Scenario: A stale acknowledged checkpoint survives cleanup while new telemetry remains only in the WAL.
+    /// Guarantees: Replay finalization during open allocates above that checkpoint and delivers the WAL tail.
+    #[tokio::test]
+    async fn restart_progress_floor_precedes_wal_replay() {
+        let dir = tempdir().unwrap();
+        let id = SubscriberId::new("wal-tail").unwrap();
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::open(config, test_budget()).await.unwrap();
+        engine.register_subscriber(id.clone()).unwrap();
+        engine.activate_subscriber(&id).unwrap();
+        engine.ingest(&DummyBundle::with_rows(1)).await.unwrap();
+        engine.flush().await.unwrap();
+        let old = engine.poll_next_bundle(&id).unwrap().unwrap();
+        let old_seq = old.bundle_ref().segment_seq;
+        old.ack();
+        assert_eq!(engine.maintain().await.unwrap().deleted, 1);
+        engine.ingest(&DummyBundle::with_rows(3)).await.unwrap();
+        assert_eq!(engine.open_segment.lock().bundle_count(), 1);
+        // Make the WAL tail durable without finalizing it so reopen must replay
+        // the entry and exercise the progress-derived sequence floor.
+        flush_wal_for_replay(&engine).await;
+        drop(engine);
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let engine = QuiverEngine::builder(config)
+            .with_budget(test_budget())
+            .with_wal_item_counter(Arc::new(|bundle| {
+                bundle
+                    .payload(SlotId::new(0))
+                    .map(|payload| payload.batch.num_rows() as u64)
+            }))
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(engine.segment_store().segment_count(), 1);
+        engine.activate_subscriber(&id).unwrap();
+        let handle = engine
+            .poll_next_bundle(&id)
+            .unwrap()
+            .expect("replayed telemetry");
+        assert!(handle.bundle_ref().segment_seq > old_seq);
+        assert_eq!(handle.item_count(), 3);
+        handle.ack();
+        assert!(engine.poll_next_bundle(&id).unwrap().is_none());
+    }
+
     // -----------------------------------------------------------------------------
     // WAL Replay Tests
     // -----------------------------------------------------------------------------
@@ -5794,8 +5942,8 @@ mod tests {
                 bundles_ingested
             );
 
-            // Engine dropped here - simulates crash/shutdown
-            // WAL cursor is NOT advanced (no segments finalized)
+            // Keep the entries WAL-only while making the replay fixture durable.
+            flush_wal_for_replay(&engine).await;
         }
 
         // Verify WAL file exists
@@ -5889,6 +6037,7 @@ mod tests {
                 segments_written,
                 total_bundles
             );
+            flush_wal_for_replay(&engine).await;
         }
 
         // Second run: reopen and verify we only replay the un-finalized bundles
@@ -6023,6 +6172,10 @@ mod tests {
                 bundles_in_open_segment, bundles_to_ingest,
                 "all bundles should be in open segment"
             );
+
+            // Keep the bundles WAL-only, but establish the durability boundary
+            // required for the next engine to replay every ingested bundle.
+            flush_wal_for_replay(&engine).await;
         }
 
         let counter: WalItemCounter = Arc::new(|bundle| {
@@ -6151,6 +6304,9 @@ mod tests {
                 .await
                 .expect("ingest");
             assert_eq!(engine.total_segments_written(), 0);
+            // Preserve the WAL-only restart state while ensuring the entry is
+            // durable before the first engine is dropped.
+            flush_wal_for_replay(&engine).await;
         }
 
         let replay_config = QuiverConfig::builder()
@@ -6231,6 +6387,9 @@ mod tests {
                 .await
                 .expect("ingest");
             assert_eq!(engine.total_segments_written(), 0);
+            // Preserve the WAL-only restart state while ensuring the entry is
+            // durable before the first engine is dropped.
+            flush_wal_for_replay(&engine).await;
         }
 
         let replay_config = QuiverConfig::builder()
@@ -6327,7 +6486,8 @@ mod tests {
                 "no segments should be finalized"
             );
 
-            // Engine dropped here - simulates crash/shutdown
+            // Keep the active WAL tail durable alongside the rotated files.
+            flush_wal_for_replay(&engine).await;
         }
 
         // Verify we have rotated WAL files
@@ -6401,7 +6561,8 @@ mod tests {
                 engine.ingest(&bundle).await.expect("ingest");
             }
 
-            // Engine dropped - WAL has 5 complete entries
+            // Ensure the WAL has 5 complete entries before truncating it.
+            flush_wal_for_replay(&engine).await;
         }
 
         // Truncate the WAL file to simulate crash mid-write
@@ -6458,6 +6619,7 @@ mod tests {
                 let bundle = DummyBundle::with_rows(10);
                 engine.ingest(&bundle).await.expect("ingest");
             }
+            flush_wal_for_replay(&engine).await;
         }
 
         // Corrupt the WAL file by flipping some bytes in the middle
@@ -6516,6 +6678,7 @@ mod tests {
                 let bundle = DummyBundle::with_rows(10);
                 engine.ingest(&bundle).await.expect("ingest");
             }
+            flush_wal_for_replay(&engine).await;
         }
 
         // Write a cursor sidecar with a position way beyond the actual WAL size
@@ -6568,6 +6731,7 @@ mod tests {
                 let bundle = DummyBundle::with_rows(10);
                 engine.ingest(&bundle).await.expect("ingest");
             }
+            flush_wal_for_replay(&engine).await;
         }
 
         // Corrupt the cursor sidecar file
@@ -6618,6 +6782,7 @@ mod tests {
                 let bundle = DummyBundle::with_rows(10);
                 engine.ingest(&bundle).await.expect("ingest");
             }
+            flush_wal_for_replay(&engine).await;
         }
 
         // Delete the cursor sidecar file if it exists
@@ -6688,7 +6853,8 @@ mod tests {
             let total = engine.open_segment.lock().bundle_count();
             assert_eq!(total, old_bundles + fresh_bundles);
 
-            // Drop engine without flushing -- simulates crash
+            // Keep the entries WAL-only while making the replay fixture durable.
+            flush_wal_for_replay(&engine).await;
         }
 
         // Phase 2: Reopen with max_age enabled. WAL replay should skip
@@ -6780,7 +6946,8 @@ mod tests {
             }
 
             assert_eq!(engine.open_segment.lock().bundle_count(), total_bundles);
-            // Drop without flush -- simulates crash
+            // Keep the entries WAL-only while making the replay fixture durable.
+            flush_wal_for_replay(&engine).await;
         }
 
         // Phase 2: Reopen with max_age. All entries should be skipped.
@@ -6945,6 +7112,7 @@ mod tests {
 
             // Intentionally do NOT call shutdown so any un-finalized bundles
             // remain only in the WAL and must be replayed.
+            flush_wal_for_replay(&engine).await;
         }
 
         // Measure what's on disk (segments + WAL).

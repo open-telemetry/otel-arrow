@@ -4,9 +4,9 @@
 //! Reusable startup helpers for binaries that embed the OTAP dataflow engine.
 //!
 //! These functions encapsulate common bootstrapping tasks - CLI override
-//! application, component validation, and system diagnostics - so that custom
-//! distributions can share the same logic without copying code from the
-//! default binary entry point.
+//! application, component validation, system diagnostics, and the final console
+//! shutdown and exit - so that custom distributions can share the same logic
+//! without copying code from the default binary entry point.
 //!
 //! # Example
 //!
@@ -18,6 +18,8 @@
 //! startup::validate_engine_components(&cfg, &MY_PIPELINE_FACTORY)?;
 //! startup::validate_controller_extensions(&cfg, &ControllerRunOptions::default().extensions)?;
 //! println!("{}", startup::system_info(&MY_PIPELINE_FACTORY, "system"));
+//! let result = Controller::new(&MY_PIPELINE_FACTORY).run_forever(cfg);
+//! startup::shutdown_console_and_exit(&result);
 //! ```
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
@@ -27,8 +29,17 @@ use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::PipelineFactory;
-use std::fmt::Debug;
+use otel_arrow_dfe_telemetry::output_service::{
+    OutputService, OutputServiceConfig, ShutdownOutcome,
+};
+use std::fmt::{Debug, Display};
+use std::io::Write as _;
+use std::sync::mpsc;
+use std::time::Duration;
 use sysinfo::System;
+
+/// Upper bound on the final status write, so a stalled stderr reader cannot keep the process alive.
+const EXIT_STATUS_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Resolves `num_cores` / `core_id_range` CLI flags into a single
 /// [`CoreAllocation`] value, if any override was provided.
@@ -377,6 +388,71 @@ Example configuration files can be found in the configs/ directory.{}",
     )
 }
 
+/// Stops the console writers after an engine run, reports its final status, and exits.
+///
+/// Only a process host may call this, because the console streams accept no
+/// frames afterwards. The status is written only once both writers stopped: a
+/// writer that missed its deadline may still hold its stream lock. The write
+/// gives up after a short bound and ignores errors, so a stalled or closed
+/// stderr can neither hang the exit nor turn it into a panic.
+pub fn shutdown_console_and_exit<E: Display>(result: &Result<(), E>) -> ! {
+    let output = OutputService::shutdown(OutputServiceConfig::default().shutdown_drain_deadline);
+    let (exit_code, status) = terminal_status(result, output);
+    exit_with_status(exit_code, status.as_deref())
+}
+
+/// Chooses a process exit code and an optional status that is safe to write.
+fn terminal_status<E: Display>(
+    result: &Result<(), E>,
+    output: ShutdownOutcome,
+) -> (i32, Option<String>) {
+    if output.deadline_expired {
+        // At least one writer may still hold its stream lock.
+        return (1, None);
+    }
+    if !output.drained {
+        let status = match result {
+            Ok(()) => format!(
+                "Console output was incomplete: {} frame(s) were not written",
+                output.frames_pending
+            ),
+            Err(error) => format!("Pipeline failed to run: {error}"),
+        };
+        return (1, Some(status));
+    }
+    match result {
+        Ok(()) => (0, Some("Pipeline ran successfully".to_owned())),
+        Err(error) => (1, Some(format!("Pipeline failed to run: {error}"))),
+    }
+}
+
+/// Writes `status` to stderr within [`EXIT_STATUS_WRITE_TIMEOUT`], then exits with `exit_code`.
+fn exit_with_status(exit_code: i32, status: Option<&str>) -> ! {
+    if let Some(status) = status {
+        write_status_bounded(status, EXIT_STATUS_WRITE_TIMEOUT);
+    }
+    std::process::exit(exit_code)
+}
+
+/// Writes one status line on a helper thread, waiting for it at most `timeout`.
+///
+/// A write blocked on a full pipe then holds only the helper thread, which
+/// process exit ends. The result is ignored, because `eprintln!` would panic
+/// when stderr is closed.
+fn write_status_bounded(status: &str, timeout: Duration) {
+    let line = format!("{status}\n");
+    let (done_tx, done_rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("otap-exit-status".to_owned())
+        .spawn(move || {
+            let _ = std::io::stderr().write_all(line.as_bytes());
+            let _ = done_tx.send(());
+        });
+    if spawned.is_ok() {
+        let _ = done_rx.recv_timeout(timeout);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,7 +465,10 @@ mod tests {
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::wiring_contract::WiringContract;
     use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+    use std::process::{Command, Stdio};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
 
     fn test_receiver_create(
         _pipeline_ctx: PipelineContext,
@@ -876,5 +955,160 @@ groups:
             CoreAllocation::core_count(4),
             "--num-cores 4 must not be shadowed by an implicit group-level resources default"
         );
+    }
+
+    /// Scenario: the process host maps run and writer outcomes to its final status.
+    /// Guarantees: success is reported only after a complete drain, joined failures
+    /// remain visible, and any possibly running writer suppresses direct output.
+    #[test]
+    fn terminal_status_respects_writer_lifetime() {
+        let drained = ShutdownOutcome::default();
+        assert_eq!(
+            terminal_status::<&str>(&Ok(()), drained),
+            (0, Some("Pipeline ran successfully".to_owned()))
+        );
+        assert_eq!(
+            terminal_status(&Err("engine failed"), drained),
+            (1, Some("Pipeline failed to run: engine failed".to_owned()))
+        );
+
+        let writer_failed = ShutdownOutcome {
+            drained: false,
+            writer_failed: true,
+            deadline_expired: false,
+            frames_pending: 3,
+        };
+        assert_eq!(
+            terminal_status::<&str>(&Ok(()), writer_failed),
+            (
+                1,
+                Some("Console output was incomplete: 3 frame(s) were not written".to_owned())
+            )
+        );
+        assert_eq!(
+            terminal_status(&Err("engine failed"), writer_failed),
+            (1, Some("Pipeline failed to run: engine failed".to_owned()))
+        );
+
+        let timed_out = ShutdownOutcome {
+            drained: false,
+            writer_failed: false,
+            deadline_expired: true,
+            frames_pending: 2,
+        };
+        assert_eq!(terminal_status::<&str>(&Ok(()), timed_out), (1, None));
+
+        let mixed = ShutdownOutcome {
+            writer_failed: true,
+            ..timed_out
+        };
+        assert_eq!(terminal_status(&Err("engine failed"), mixed), (1, None));
+    }
+
+    /// Environment variable that turns `exit_status_child_process` into the child under test.
+    const EXIT_STATUS_CHILD_ENV: &str = "OTAP_EXIT_STATUS_CHILD";
+
+    /// Exit code the child reports, distinct from success, panics, and test failures.
+    const CHILD_EXIT_CODE: i32 = 3;
+
+    /// Scenario: runs as the child process that the exit-status tests below spawn.
+    /// Guarantees: when spawned, it reports a status on its inherited stderr and exits
+    /// through the same path as the process host; as an ordinary test it does nothing.
+    #[test]
+    fn exit_status_child_process() {
+        if std::env::var_os(EXIT_STATUS_CHILD_ENV).is_some() {
+            exit_with_status(CHILD_EXIT_CODE, Some("final status that nobody reads"));
+        }
+    }
+
+    /// Runs `exit_status_child_process` in a new process whose stderr is `stderr`.
+    ///
+    /// Returns the child's exit code, and fails if the child does not exit in time.
+    fn run_exit_status_child(stderr: std::io::PipeWriter) -> Option<i32> {
+        let mut child = Command::new(std::env::current_exe().expect("test binary path"))
+            .args([
+                "--exact",
+                "startup::tests::exit_status_child_process",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(EXIT_STATUS_CHILD_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .spawn()
+            .expect("child process starts");
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().expect("child status is readable") {
+                return status.code();
+            }
+            if started.elapsed() > Duration::from_secs(30) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the child never exited, so its final status write is unbounded");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Writes single bytes until the pipe is full, since one byte also fills the last free space.
+    fn fill_pipe(mut writer: std::io::PipeWriter, written: &AtomicU64) {
+        while writer.write_all(b"x").is_ok() {
+            let _ = written.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Waits until the filler has made no progress for a while, which means the pipe is full.
+    fn wait_until_pipe_full(written: &AtomicU64) {
+        let started = Instant::now();
+        let mut last = written.load(Ordering::Relaxed);
+        let mut unchanged_since = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_millis(20));
+            let current = written.load(Ordering::Relaxed);
+            if current != last {
+                last = current;
+                unchanged_since = Instant::now();
+            } else if current > 0 && unchanged_since.elapsed() >= Duration::from_millis(300) {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the pipe never filled up"
+            );
+        }
+    }
+
+    /// Scenario: the process host writes its final status while stderr is a pipe that is
+    /// full and never read.
+    /// Guarantees: the status write gives up after its bound and the process still exits
+    /// with the run's exit code, instead of hanging on stderr forever.
+    #[test]
+    fn exit_status_write_does_not_wait_on_a_full_stderr_pipe() {
+        let (reader, writer) = std::io::pipe().expect("pipe is created");
+        let filler_writer = writer.try_clone().expect("pipe writer is cloned");
+        let written = Arc::new(AtomicU64::new(0));
+        // Detached: its last write stays blocked until the reader below is dropped.
+        let _filler = std::thread::spawn({
+            let written = Arc::clone(&written);
+            move || fill_pipe(filler_writer, &written)
+        });
+        wait_until_pipe_full(&written);
+
+        assert_eq!(run_exit_status_child(writer), Some(CHILD_EXIT_CODE));
+        drop(reader);
+    }
+
+    /// Scenario: the process host writes its final status while stderr is a pipe whose
+    /// reader has already closed.
+    /// Guarantees: the failed write is ignored instead of panicking, so the process still
+    /// exits with the run's exit code.
+    #[test]
+    fn exit_status_write_survives_a_closed_stderr_pipe() {
+        let (reader, writer) = std::io::pipe().expect("pipe is created");
+        drop(reader);
+
+        assert_eq!(run_exit_status_child(writer), Some(CHILD_EXIT_CODE));
     }
 }

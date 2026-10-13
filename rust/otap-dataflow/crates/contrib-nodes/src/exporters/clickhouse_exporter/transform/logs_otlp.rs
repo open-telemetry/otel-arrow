@@ -81,24 +81,24 @@
 //! columns, then sorts them lexically to preserve the generic transformer's stable output order:
 //!
 //! ```text
-//! +--------------------+--------------------------------------+-----------------------+
-//! | Output column      | Raw OTLP source / operation          | Arrow representation  |
-//! +--------------------+--------------------------------------+-----------------------+
-//! | Timestamp          | LogRecord.time_unix_nano             | TimestampNanosecond   |
-//! | ResourceSchemaUrl  | ResourceLogs.schema_url              | Utf8                  |
-//! | ResourceAttributes | Resource.attributes -> string map    | Map(Utf8, Utf8)       |
-//! | ServiceName        | first resource attr `service.name`   | Utf8                  |
-//! | ScopeName          | InstrumentationScope.name            | Utf8                  |
-//! | ScopeVersion       | InstrumentationScope.version         | Utf8                  |
-//! | ScopeAttributes    | InstrumentationScope.attributes      | Map(Utf8, Utf8)       |
-//! | LogAttributes      | LogRecord.attributes                 | Map(Utf8, Utf8)       |
-//! | Body               | LogRecord.body -> string             | Utf8                  |
-//! | EventName          | LogRecord.event_name                 | Utf8                  |
-//! | SeverityNumber     | LogRecord.severity_number -> UInt8   | UInt8                 |
-//! | SeverityText       | LogRecord.severity_text              | Utf8                  |
-//! | TraceId            | LogRecord.trace_id -> lowercase hex  | Utf8                  |
-//! | SpanId             | LogRecord.span_id -> lowercase hex   | Utf8                  |
-//! +--------------------+--------------------------------------+-----------------------+
+//! +--------------------+--------------------------------------+--------------------------+
+//! | Output column      | Raw OTLP source / operation          | Arrow representation     |
+//! +--------------------+--------------------------------------+--------------------------+
+//! | Timestamp          | LogRecord.time_unix_nano             | TimestampNanosecond(UTC) |
+//! | ResourceSchemaUrl  | ResourceLogs.schema_url              | Utf8                     |
+//! | ResourceAttributes | Resource.attributes -> string map    | Map(Utf8, Utf8)          |
+//! | ServiceName        | first resource attr `service.name`   | Utf8                     |
+//! | ScopeName          | InstrumentationScope.name            | Utf8                     |
+//! | ScopeVersion       | InstrumentationScope.version         | Utf8                     |
+//! | ScopeAttributes    | InstrumentationScope.attributes      | Map(Utf8, Utf8)          |
+//! | LogAttributes      | LogRecord.attributes                 | Map(Utf8, Utf8)          |
+//! | Body               | LogRecord.body -> string             | Utf8                     |
+//! | EventName          | LogRecord.event_name                 | Utf8                     |
+//! | SeverityNumber     | LogRecord.severity_number -> UInt8   | UInt8                    |
+//! | SeverityText       | LogRecord.severity_text              | Utf8                     |
+//! | TraceId            | LogRecord.trace_id -> lowercase hex  | Utf8                     |
+//! | SpanId             | LogRecord.span_id -> lowercase hex   | Utf8                     |
+//! +--------------------+--------------------------------------+--------------------------+
 //! ```
 //!
 //! Fields not listed in this table are not emitted by this transformer. In particular, the
@@ -171,6 +171,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use base64::Engine;
+use otel_arrow_dfe_pdata::schema::UTC_TIME_ZONE;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
@@ -815,7 +816,10 @@ impl LogsBuilders {
             severity_number: UInt8Builder::with_capacity(capacities.rows),
             severity_text: string_builder(capacities.rows, capacities.severity_text_bytes),
             span_id: string_builder(capacities.rows, capacities.span_id_bytes),
-            timestamp: TimestampNanosecondBuilder::with_capacity(capacities.rows),
+            // Tag the column UTC so this path matches the OTAP fast path, which
+            // reuses the already-UTC `time_unix_nano` column from the batch.
+            timestamp: TimestampNanosecondBuilder::with_capacity(capacities.rows)
+                .with_timezone(UTC_TIME_ZONE),
             trace_id: string_builder(capacities.rows, capacities.trace_id_bytes),
         }
     }

@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:file` (`urn:otel:exporter:file`)
-- Feature gate: Default
+- Feature gate: `file`
 - Stability: Experimental
 
 ## Overview

@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:user_events` (`urn:otel:receiver:user_events`)
-- Feature gate: `user_events-receiver`; `event_header` decoding requires `user_events-eventheader`
+- Feature gate: `user-events`
 - Stability: Experimental
 
 ## Overview
@@ -222,8 +222,7 @@ Current implementation supports:
 - one or more tracepoint subscriptions per receiver
 - `tracefs`, which decodes standard Linux tracefs fields into typed log
   attributes
-- optional `event_header` decoding when the `user_events-eventheader` feature is
-  enabled
+- `event_header`, which decodes self-describing EventHeader payloads
 
 ## Configuration
 
@@ -323,8 +322,8 @@ Supporting partial startup and later subscription registration is a future
 improvement.
 
 `subscriptions` must contain at least one entry. `tracefs` is the default
-`subscriptions[].format.type`. `event_header` requires the
-`user_events-eventheader` feature.
+`subscriptions[].format.type`. Both `tracefs` and `event_header` are included
+with the `user-events` feature.
 
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
@@ -347,8 +346,7 @@ config:
   subscriptions:
     - tracepoint: "myprovider_L2K1"
       format:
-        # Decode format. "tracefs" is always supported; "event_header" requires
-        # the user_events-eventheader feature.
+        # Decode format. "tracefs" and "event_header" are supported.
         type: tracefs
       limits:
         # Optional per-subscription pending event cap. When "limits" is present,
@@ -447,7 +445,7 @@ EventHeader structs are flattened with dot-separated attribute names. If an
 EventHeader payload cannot be decoded, the raw user payload is preserved in the
 `linux.user_events.payload_base64` attribute.
 
-This decoder is optional and requires the `user_events-eventheader` feature.
+This decoder is included with the `user-events` feature.
 
 Only scalar EventHeader values that map to the receiver's current attribute
 types are surfaced: strings, signed integers, booleans, and floating point
@@ -662,8 +660,7 @@ For reliable testing, prefer:
 
 Recommended test layers:
 
-- unit tests for tracefs structural decoding, plus EventHeader payload handling
-  when `user_events-eventheader` is enabled
+- unit tests for tracefs structural decoding and EventHeader payload handling
 - Linux-only receiver integration tests using a real kernel tracepoint
 - pipeline-level schema mapping tests in the processor that owns that schema
 
@@ -673,9 +670,9 @@ The tracefs debug pipeline exercises a real Linux `user_events` producer, this
 receiver, the debug processor, and the noop exporter:
 
 ```bash
-cargo build --features user_events-receiver
+cargo build --features user-events
 cargo build -p otel-arrow-dfe-contrib-nodes \
-  --features user_events-receiver \
+  --features user-events \
   --example user_events_tracefs_producer
 
 sudo ./target/debug/df_engine \
@@ -695,14 +692,13 @@ Expected debug output includes `EventName: user_events:otel_arrow_dfe_tracefs_de
 
 ### Manual EventHeader E2E
 
-The EventHeader debug pipeline uses the optional `user_events-eventheader`
-feature and validates EventHeader payload decoding through the same receiver
-and debug processor path:
+The EventHeader debug pipeline validates EventHeader payload decoding through
+the same receiver and debug processor path:
 
 ```bash
-cargo build --features user_events-eventheader
+cargo build --features user-events
 cargo build -p otel-arrow-dfe-contrib-nodes \
-  --features user_events-eventheader \
+  --features user-events \
   --example user_events_eventheader_producer
 
 sudo ./target/debug/df_engine \

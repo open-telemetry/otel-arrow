@@ -17,12 +17,14 @@ workspace = true
 
 [dependencies]
 hashbrown = { workspace = true }
+http = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 miette = { workspace = true }
 schemars = { workspace = true }
+smallvec = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }

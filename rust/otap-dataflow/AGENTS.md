@@ -94,10 +94,11 @@ exporter.topic
 exporter.azure_monitor
 ```
 
-Use established component-specific prefixes or suffixes only when they already
-exist for that component family, such as `.pdata` for pdata-specific metrics or
-existing `otap.*` component families. Do not introduce reversed or redundant
-names such as `journald.receiver.metrics`.
+## Metric instrumentation
+
+When adding or changing metrics, follow the
+[system metrics guide](docs/telemetry/metrics-guide.md) and
+[item attributes guide](docs/telemetry/item-attributes.md).
 
 ## After every Rust code change
 
@@ -171,6 +172,23 @@ Skip the entry only when the change is not user-facing. In that case include
 Doc-only PRs are also excluded from the changelog requirement.
 
 See [`.chloggen/README.md`](.chloggen/README.md) for full details.
+
+## Crypto-provider neutrality
+
+Rust dependencies must not select a cryptographic backend through default
+features. TLS and cryptographic dependencies must use provider-neutral features
+where available and defer backend selection to the workspace `crypto-*`
+features.
+
+When adding or updating crypto-related dependencies:
+
+- disable defaults that implicitly enable Ring, AWS-LC, OpenSSL, or SymCrypt
+- preserve support for `crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, and
+  `crypto-symcrypt` where the dependency supports them
+- forward provider features through affected crates and the root package
+- platform-gate provider-specific dependencies when required
+- verify the relevant OpenSSL Linux and SymCrypt Windows feature sets
+- inspect `cargo tree --edges normal` for unintended crypto providers
 
 ## Before finalizing changes
 

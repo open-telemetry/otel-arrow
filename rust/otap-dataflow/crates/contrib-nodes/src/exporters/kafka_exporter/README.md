@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `exporter:kafka` (`urn:otel:exporter:kafka`)
-- Feature gate: `kafka-exporter` (also enabled by `contrib-exporters`)
+- Feature gate: `kafka` (also enabled by `contrib-exporters`)
 - Stability: Experimental (pending performance optimization)
 
 ## Overview

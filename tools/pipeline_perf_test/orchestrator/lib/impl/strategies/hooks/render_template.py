@@ -17,8 +17,9 @@ from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
 from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
-from typing import Any, Dict
+from typing import Any, Dict, List
 from jinja2 import Environment, FileSystemLoader, TemplateError
+from pydantic import Field
 import os
 
 HOOK_NAME = "render_template"
@@ -33,11 +34,15 @@ class RenderTemplateConfig(HookStrategyConfig):
         template_path (str): Path to the Jinja2 template file.
         output_path (str): Path where the rendered file should be written.
         variables (Dict[str, Any]): Key-value pairs to use in rendering the template.
+        search_paths (List[str]): Additional directories used to resolve
+            '{% include %}' / '{% import %}' statements. The template's own
+            directory is always searched first.
     """
 
     template_path: str
     output_path: str
     variables: Dict[str, Any]
+    search_paths: List[str] = Field(default_factory=list)
 
 
 @hook_registry.register_class(HOOK_NAME)
@@ -109,7 +114,9 @@ tests:
         logger.debug(f"Output will be written to: {output_path}")
 
         try:
-            env = Environment(loader=FileSystemLoader(template_dir))
+            env = Environment(
+                loader=FileSystemLoader([template_dir, *self.config.search_paths])
+            )
             template = env.get_template(template_file)
             rendered = template.render(variables)
 

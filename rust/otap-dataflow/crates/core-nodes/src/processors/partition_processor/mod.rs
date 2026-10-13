@@ -19,7 +19,7 @@ use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::{SignalType, context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
@@ -501,6 +501,7 @@ fn partition_value_to_transport_header(
 impl ConfigNodeContextDeclaration for Config {
     fn context_declarations(&self) -> NodeContextDeclarations {
         std::iter::once(ContextDeclaration::Produces {
+            domain: ContextDomain::TransportHeader,
             entry: self.partition_header_name.clone(),
         })
         .collect()
@@ -1118,13 +1119,13 @@ mod test {
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
                     let partition_header = headers.find_by_name(header_name).next().unwrap();
-                    if partition_header.value.bytes.as_ref() == b"0" {
+                    if partition_header.value.bytes == b"0" {
                         assert_eq!(flow_counter, Some(4));
                     }
-                    if partition_header.value.bytes.as_ref() == b"1" {
+                    if partition_header.value.bytes == b"1" {
                         assert_eq!(flow_counter, Some(2));
                     }
-                    if partition_header.value.bytes.as_ref() == b"2" {
+                    if partition_header.value.bytes == b"2" {
                         assert_eq!(flow_counter, Some(2));
                     }
                 }
@@ -1967,7 +1968,7 @@ mod test {
     }
 
     /// Scenario: a partition processor has an output header.
-    /// Guarantees: its factory declares that context entry.
+    /// Guarantees: its factory declares the output name in the transport-header domain.
     #[test]
     fn partition_declaration_names_output() {
         let config = serde_json::json!({
@@ -1980,6 +1981,7 @@ mod test {
         assert_eq!(
             decls.iter().next().expect("one declaration"),
             &ContextDeclaration::Produces {
+                domain: ContextDomain::TransportHeader,
                 entry: context_name("x-partition"),
             }
         );

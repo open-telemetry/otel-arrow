@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:durable_buffer` (`urn:otel:processor:durable_buffer`)
-- Feature gate: Default
+- Feature gate: `durable-buffer`
 - Stability: Experimental
 
 ## Overview

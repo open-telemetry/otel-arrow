@@ -2,7 +2,8 @@
 # Scoped linting (i.e. code formatting) should be done in the respective language-specific workflows.
 name: Repo Lint
 
-permissions: read-all
+permissions:
+  contents: read
 
 on:
   pull_request:
@@ -22,6 +23,8 @@ jobs:
 
     - name: check out code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: run markdownlint
       uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
@@ -40,6 +43,8 @@ jobs:
 
     - name: check out code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: run lychee
       uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
@@ -53,6 +58,8 @@ jobs:
     steps:
     - name: check out code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: run sanitycheck.py
       run: python3 ./tools/sanitycheck.py
@@ -66,6 +73,8 @@ jobs:
     steps:
     - name: check out code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

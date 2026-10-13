@@ -67,6 +67,60 @@ pub fn proto_encode_cbor_bytes(input: &[u8], result_buf: &mut ProtoBuffer) -> Re
     Ok(())
 }
 
+/// Read the scalar value at `path` from serialized CBOR bytes.
+///
+/// Returns `Ok(None)` when the path is missing, crosses an incompatible container, or resolves to
+/// a map, array, or unsupported CBOR value.
+pub fn read_cbor_scalar(
+    input: &[u8],
+    path: &[SerializedValuePathElement],
+) -> Result<Option<SerializedAttributeScalarValue>> {
+    let value = ciborium::from_reader::<ciborium::Value, &[u8]>(input)
+        .map_err(|e| Error::InvalidSerializedAttributeBytes { source: e })?;
+
+    let Some(value) = take_cbor_value(value, path) else {
+        return Ok(None);
+    };
+
+    let value = match value {
+        ciborium::Value::Null => SerializedAttributeScalarValue::Null,
+        ciborium::Value::Bool(value) => SerializedAttributeScalarValue::Bool(value),
+        ciborium::Value::Bytes(value) => SerializedAttributeScalarValue::Bytes(value),
+        ciborium::Value::Float(value) => SerializedAttributeScalarValue::Float(value),
+        ciborium::Value::Text(value) => SerializedAttributeScalarValue::Text(value),
+        ciborium::Value::Integer(value) => SerializedAttributeScalarValue::Integer(
+            value
+                .try_into()
+                .map_err(|e| Error::InvalidSerializedIntAttributeValue { source: e })?,
+        ),
+        _ => return Ok(None),
+    };
+
+    Ok(Some(value))
+}
+
+fn take_cbor_value(
+    mut value: ciborium::Value,
+    path: &[SerializedValuePathElement],
+) -> Option<ciborium::Value> {
+    for path_element in path {
+        value = match (value, path_element) {
+            (ciborium::Value::Map(entries), SerializedValuePathElement::Key(key)) => {
+                entries.into_iter().find_map(|(entry_key, entry_value)| {
+                    matches!(entry_key, ciborium::Value::Text(entry_key) if entry_key == *key)
+                        .then_some(entry_value)
+                })?
+            }
+            (ciborium::Value::Array(values), SerializedValuePathElement::Index(index)) => {
+                values.into_iter().nth(*index)?
+            }
+            _ => return None,
+        };
+    }
+
+    Some(value)
+}
+
 /// Mutate serialized CBOR bytes and return the updated bytes.
 ///
 /// Missing paths and type mismatches are treated as no-ops. For `Set`, missing map keys are
@@ -458,6 +512,119 @@ mod tests {
                 ciborium::Value::Array(vec![ciborium::Value::Integer(2.into())]),
             )])
         );
+    }
+
+    /// Scenario: Read each supported scalar leaf from nested CBOR maps and arrays.
+    /// Guarantees: Scalar leaves preserve their type and value, including explicit null.
+    #[test]
+    fn read_scalar_leaves_from_maps_and_arrays() {
+        let input = encode(&ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("text".into()),
+                ciborium::Value::Text("value".into()),
+            ),
+            (
+                ciborium::Value::Text("items".into()),
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer((-7).into()),
+                    ciborium::Value::Float(1.5),
+                    ciborium::Value::Bool(true),
+                    ciborium::Value::Bytes(vec![1, 2]),
+                    ciborium::Value::Null,
+                ]),
+            ),
+        ]));
+
+        let cases = [
+            (
+                vec![SerializedValuePathElement::Key("text".into())],
+                Some(SerializedAttributeScalarValue::Text("value".into())),
+            ),
+            (
+                vec![
+                    SerializedValuePathElement::Key("items".into()),
+                    SerializedValuePathElement::Index(0),
+                ],
+                Some(SerializedAttributeScalarValue::Integer(-7)),
+            ),
+            (
+                vec![
+                    SerializedValuePathElement::Key("items".into()),
+                    SerializedValuePathElement::Index(1),
+                ],
+                Some(SerializedAttributeScalarValue::Float(1.5)),
+            ),
+            (
+                vec![
+                    SerializedValuePathElement::Key("items".into()),
+                    SerializedValuePathElement::Index(2),
+                ],
+                Some(SerializedAttributeScalarValue::Bool(true)),
+            ),
+            (
+                vec![
+                    SerializedValuePathElement::Key("items".into()),
+                    SerializedValuePathElement::Index(3),
+                ],
+                Some(SerializedAttributeScalarValue::Bytes(vec![1, 2])),
+            ),
+            (
+                vec![
+                    SerializedValuePathElement::Key("items".into()),
+                    SerializedValuePathElement::Index(4),
+                ],
+                Some(SerializedAttributeScalarValue::Null),
+            ),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(
+                read_cbor_scalar(&input, &path).expect("read"),
+                expected,
+                "{path:?}"
+            );
+        }
+    }
+
+    /// Scenario: Read paths that are missing, cross the wrong container, or end at a container.
+    /// Guarantees: Unresolved paths return `None` instead of an error.
+    #[test]
+    fn read_missing_incompatible_and_container_paths_as_none() {
+        let input = encode(&ciborium::Value::Map(vec![(
+            ciborium::Value::Text("child".into()),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("items".into()),
+                ciborium::Value::Array(vec![]),
+            )]),
+        )]));
+
+        let paths = [
+            vec![SerializedValuePathElement::Key("missing".into())],
+            vec![SerializedValuePathElement::Index(0)],
+            vec![SerializedValuePathElement::Key("child".into())],
+            vec![
+                SerializedValuePathElement::Key("child".into()),
+                SerializedValuePathElement::Key("items".into()),
+                SerializedValuePathElement::Index(0),
+            ],
+        ];
+
+        for path in paths {
+            assert_eq!(read_cbor_scalar(&input, &path).expect("read"), None);
+        }
+    }
+
+    /// Scenario: Read a scalar path from bytes that are not valid CBOR.
+    /// Guarantees: Corrupt serialized values return an error rather than a missing value.
+    #[test]
+    fn read_corrupt_cbor_returns_error() {
+        let err = read_cbor_scalar(
+            b"not cbor",
+            &[SerializedValuePathElement::Key("name".into())],
+        )
+        .expect_err("invalid cbor");
+
+        assert!(matches!(err, Error::InvalidSerializedAttributeBytes { .. }));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `receiver:internal_telemetry` (`urn:otel:receiver:internal_telemetry`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview

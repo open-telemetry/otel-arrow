@@ -16,7 +16,16 @@ pub mod payloads;
 #[allow(clippy::module_inception)]
 pub mod schema;
 
-pub use schema::{DictKeySize, SimpleType};
+pub use schema::{
+    DictKeySize, SimpleType, UTC_TIME_ZONE, UTC_TIME_ZONE_OFFSET, is_valid_timestamp_time_zone,
+};
+
+/// The Arrow data type that OTAP producers must use for timestamp columns:
+/// nanoseconds since the Unix epoch, tagged with the UTC time zone.
+#[must_use]
+pub fn timestamp_nanosecond_type() -> DataType {
+    SimpleType::TimestampNanosecond.to_arrow()
+}
 
 /// Trace IDs are 16 binary bytes.
 pub type TraceId = [u8; 16];
