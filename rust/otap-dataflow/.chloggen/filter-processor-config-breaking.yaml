@@ -19,5 +19,5 @@ issues: [4368]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Array and key-value match values were previously accepted but never matched; invalid regexp patterns previously panicked on the first batch.
-  Migration: Remove array and key-value match values and fix invalid regexp patterns in filter processor configs.
+  Array and key-value match values and log_record were previously accepted but ignored; invalid regexp patterns previously panicked on the first batch.
+  Migration: Remove log_record, array, and key-value match values and fix invalid regexp patterns in filter processor configs.
