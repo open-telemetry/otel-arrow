@@ -124,7 +124,7 @@ fn decode_logs_payload_plaintext_sets_body() {
             .expect("decode plaintext");
     let payload: OtapPayload = pdata.take_payload();
     let arrow_records = match payload.into_data() {
-        PayloadData::OtapArrowRecords(records @ OtapArrowRecords::Logs(_)) => records,
+        PayloadData::OtapRecords(records @ OtapArrowRecords::Logs(_)) => records,
         _ => panic!("expected plaintext to produce OtapArrowRecords::Logs"),
     };
     let mut pdata = OtapPdata::new(Default::default(), arrow_records.into());
