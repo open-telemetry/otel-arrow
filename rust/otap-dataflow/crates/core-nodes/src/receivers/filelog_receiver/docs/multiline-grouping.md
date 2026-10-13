@@ -117,4 +117,4 @@ compares throughput with newline framing.
 
 [memory]: ../../../../../../docs/filelog-receiver-phase1-conformance.md#framer-payload
 
-[benchmark]: ../../../../benches/filelog_grouping/README.md
+[benchmark]: ../../../../benches/filelog_grouping/main.rs

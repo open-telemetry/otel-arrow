@@ -2,6 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Compare decoder-plus-newline framing with start/end multiline grouping.
+//!
+//! 2026-10-13, Apple M4 Pro, macOS 26.7.1 arm64, Rust 1.98.1,
+//! regex-automata 0.4.18, revision 7f7429fdf. Source MiB/s:
+//!
+//! | Input | Newline | Start | End |
+//! | --- | ---: | ---: | ---: |
+//! | 128-byte UTF-8, one line/record | 120.91 | 45.36 | 45.62 |
+//! | 128-byte UTF-8, four lines/group | 120.09 | 44.94 | 45.19 |
+//! | 16-KiB UTF-8, four lines/group | 133.31 | 46.96 | 46.96 |
+//! | UTF-16LE, four 128-char lines | 168.42 | 81.71 | 81.96 |
+//!
+//! Median of three run medians; seven samples, eight scans/sample, warm cache,
+//! 128-KiB chunks, preserve_raw, one unpinned thread. Maximum run-median spread:
+//! 1.83%. Workspace bench profile: opt-level 3, fat LTO, one codegen unit.
+//! Excludes source I/O, overflow/recovery, and receiver integration; not Linux
+//! qualification. Four-line grouping emits fewer records than newline framing.
+//!
+//! Run: `cargo bench --locked -p otel-arrow-dfe-core-nodes --bench filelog_grouping`
+//! CSV output; FILELOG_GROUPING_SAMPLES=7 and FILELOG_GROUPING_REPEATS=8 by default.
+
 #![allow(missing_docs)]
 
 use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::{
