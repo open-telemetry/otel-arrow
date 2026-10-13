@@ -1214,7 +1214,9 @@ enum ValueFilterOutcome {
 /// Evaluate a [`ValueMatcher`] against an attribute record batch, returning the
 /// per-row value selection (or [`ValueFilterOutcome::ColumnAbsent`] when the
 /// required typed column is missing). String matching goes through
-/// [`Pattern::matches`], so the returned array is null-free.
+/// [`Pattern::matches`], which preserves input nulls, so the returned array may
+/// contain nulls; the caller is responsible for resolving them (typically by
+/// treating null as a non-match).
 fn value_matcher_filter(attrs: &RecordBatch, value: &ValueMatcher) -> Result<ValueFilterOutcome> {
     let filter = match value {
         ValueMatcher::String(pattern) => {
