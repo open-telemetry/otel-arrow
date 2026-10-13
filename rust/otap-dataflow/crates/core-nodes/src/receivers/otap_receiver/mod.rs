@@ -71,8 +71,8 @@ use tonic_middleware::MiddlewareLayer;
 const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 
 /// Minimum number of streams per connection. Users should configure at least
-/// this many to be compatible with the OTAP exporter, less than this might
-/// stall as the client keep at least one stream open per signal.
+/// this many to be compatible with the OTAP exporter; fewer streams might stall
+/// because the client keeps at least one stream open per signal.
 const MIN_CONCURRENT_STREAMS: u32 = 3;
 
 /// Configuration for the OTAP Receiver
