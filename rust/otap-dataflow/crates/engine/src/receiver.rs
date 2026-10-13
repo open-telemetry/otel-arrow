@@ -699,73 +699,24 @@ impl<PData> ReceiverWrapper<PData> {
 
     /// Returns the wrapper with the pipeline's context materialization plan.
     pub(crate) fn with_context_materialization(
-        self,
+        mut self,
         plan: Option<ContextMaterializationPlan>,
         materialize: Option<fn(&mut PData, &ContextMaterializationPlan)>,
     ) -> Self {
-        let context_materialization_plan = plan
+        let new_context_materialization_plan = plan
             .zip(materialize)
             .map(|(plan, materialize)| ReceiverContextMaterialization::new(plan, materialize));
-        match self {
+        match &mut self {
             ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy,
-                ..
-            } => ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
-            },
-            ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 ..
-            } => ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy,
+            }
+            | ReceiverWrapper::Shared {
                 context_materialization_plan,
-            },
+                ..
+            } => *context_materialization_plan = new_context_materialization_plan,
         }
+        self
     }
 }
 
