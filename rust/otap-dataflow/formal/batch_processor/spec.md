@@ -185,10 +185,27 @@ triggered the flush (the last buffered input).
 
 - Code: `debug_assert!` at 1623, which justifies attributing the residual to
   `last_input.inkey` (1627).
-- Why it should hold: the flush is triggered by the input that arrives last.
-  Everything buffered before it totals less than the lower limit, which is at
-  most `max_size`, so it all fits in the first batch. With more than one batch,
-  the last batch can only hold data from the last input.
+- Why it holds in general (for any number of requests and any sizes; TLC
+  checks it within the bounds as a cross-check). Let L be the input that
+  triggers the size flush.
+  1. Everything buffered before L totals less than the lower limit: a buffer
+     that reaches it is flushed on the input that reaches it (1041-1058), and
+     a retained residual is below it by construction (1217).
+  2. The lower limit is at most `max_size` (config validation, 480-490).
+  3. So no input buffered before L is cut, and all of them fit in the first
+     batch, because each batcher keeps input order and fills greedily:
+     - Logs and traces: each input's first piece fills the rest of the
+       current batch (`plan_split`), and the earlier inputs fit there.
+     - Metrics: `plan_metrics_split` cuts only when the running count would
+       exceed `max_size`, which inputs this small never reach.
+     - Bytes: every earlier entry fits in the current batch, so none starts
+       a new batch or is split.
+  4. Every later batch therefore holds only data from L. A residual is kept
+     only when there is more than one batch (1177), so it comes from L.
+
+  This depends only on how the inputs before L are cut. The metrics bug in
+  "Findings" depends on how L itself is cut, which is why P5 still holds for
+  metrics.
 
 ### P6. Drained means empty
 
