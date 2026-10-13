@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791927805828,
+  "lastUpdate": 1791933794661,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -61336,6 +61336,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 120.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "3cd5343140d09c001d2c3d549728bf710c4eed1f",
+          "message": "refactor(metrics): Migrate parquet_exporter telemetry to enum attributes (#3880)\n\n**Change summary**\n\nThis PR continues the telemetry migration effort by updating the\n`parquet_exporter` component to use the new `MeasurementMetricSet` and\nenum-based attributes, and aligns the exporter metrics with shared\n`exporter.attempted.*` metrics from #3822.\n\nSpecific Changes:\n*   `parquet_exporter`: \n* Grouped flat file lifecycle counters (`Created`, `Closed`,\n`FlushAttempts`, `FlushSuccesses`, `FlushFailures`, etc.) into a unified\n`files` measurement metric set keyed by a `FileOperation` enum\nattribute.\n    *   Grouped row metrics into a standard `rows` metric set.\n    *   Integrated the shared `ExporterMetrics` boundary pattern.\n\n*(Note: `traffic_generator` metrics migration was split into a separate\nPR as requested)*\n\n**Related issue**\n\nPart of the enum-attribute instrumentation migration tracked in #3530\nAligns with shared metric sets tracked in #3822\n\n**Validation**\n\n* Compiled successfully without errors or warnings (`cargo check`,\n`cargo fmt`).\n*   Metric structures accurately reflect the new attribute schemas.\n*   Updated and verified unit tests.",
+          "timestamp": "2026-10-13T22:25:58Z",
+          "tree_id": "b6a791de55dda6d34e65294dfaf245c83bcec5fd",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3cd5343140d09c001d2c3d549728bf710c4eed1f"
+        },
+        "date": 1791933776511,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.65,
             "unit": "MB"
           },
           {
