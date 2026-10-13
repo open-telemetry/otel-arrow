@@ -502,20 +502,241 @@ fn recoverable_caller_errors() {
     assert_eq!(bytes(&out[0]), b"a");
 }
 
-/// Scenario: A matching start line would overflow the currently buffered record.
-/// Guarantees: The byte-bound rule includes the trigger line and suppresses its pattern boundary.
+// Exercise both fresh-input partitioning and reconstruction from every output
+// boundary. Known-end recovery intentionally cannot reproduce completion reasons.
+fn assert_partitions_and_restarts(c: MultilineConfig, source: &[u8], expected: &[RecordFrame]) {
+    for cut in 0..=source.len() {
+        let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+        let mut out = vec![];
+        feed(&mut f, &mut m, &source[..cut], &mut out).unwrap();
+        feed(&mut f, &mut m, &source[cut..], &mut out).unwrap();
+        complete(&mut f, &mut m, PartialCompletion::Idle, &mut out).unwrap();
+        assert_eq!(out, expected, "partition {cut}, {c:?}");
+    }
+    for (index, frame) in expected.iter().enumerate() {
+        let offset = frame.frame_range.end;
+        let start = match frame.continuation {
+            Some(continuation) => RecordStart::Continuation {
+                offset,
+                continuation,
+            },
+            None => RecordStart::ResumeAt(offset),
+        };
+        let (mut f, mut m) = make(c, "^S", start);
+        let mut out = vec![];
+        feed(&mut f, &mut m, &source[offset as usize..], &mut out).unwrap();
+        complete(&mut f, &mut m, PartialCompletion::Idle, &mut out).unwrap();
+        assert_eq!(out.len(), expected.len() - index - 1);
+        for (actual, wanted) in out.iter_mut().zip(&expected[index + 1..]) {
+            if actual.ending == RecordEnding::Continuation {
+                assert_eq!(wanted.ending, RecordEnding::ByteLimit);
+                actual.ending = wanted.ending;
+            }
+            assert_eq!(actual, wanted, "restart at {offset}, {c:?}");
+        }
+    }
+}
+
+/// Scenario: A bounded start line fits a new record but would overflow the previous one.
+/// Guarantees: Split/truncate preserve the new header and its continuation; chunking and clean restart agree.
 #[test]
-fn byte_bound_precedes_start_match() {
-    let mut c = config(GroupingMode::Start);
-    c.line.max_record_bytes = 5;
-    let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
-    let mut out = vec![];
-    feed(&mut f, &mut m, b"Sabc\nSdef\n", &mut out).unwrap();
-    assert_eq!(out.len(), 2);
-    assert_eq!(bytes(&out[0]), b"Sabc\n");
-    assert_eq!(bytes(&out[1]), b"Sdef");
-    assert_eq!(out[0].continuation.unwrap().record_end_offset, 10);
-    assert_eq!(out[1].ending, RecordEnding::ByteLimit);
+fn start_match_precedes_record_overflow() {
+    for encoding in [
+        Encoding::Raw,
+        Encoding::Ascii,
+        Encoding::Utf8,
+        Encoding::Utf16Le,
+        Encoding::Utf16Be,
+    ] {
+        for policy in [
+            OnDecodeError::PreserveRaw,
+            OnDecodeError::Replace,
+            OnDecodeError::Fail,
+        ] {
+            for oversize in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+                let mut c = config(GroupingMode::Start);
+                c.line.encoding = encoding;
+                c.line.on_decode_error = policy;
+                c.line.oversize = oversize;
+                c.line.max_record_bytes = if policy == OnDecodeError::PreserveRaw
+                    && matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be)
+                {
+                    9
+                } else {
+                    5
+                };
+                let source = encoded("Sabc\nS\nx\n", encoding);
+                let boundary = encoded("Sabc\n", encoding).len() as u64;
+                let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+                let mut out = vec![];
+                feed(&mut f, &mut m, &source, &mut out).unwrap();
+                complete(&mut f, &mut m, PartialCompletion::Idle, &mut out).unwrap();
+                assert_eq!(out.len(), 2);
+                assert_eq!(bytes(&out[0]), b"Sabc");
+                assert_eq!(out[0].ending, RecordEnding::StartPattern);
+                assert_eq!(
+                    out[0].frame_range,
+                    SourceRange {
+                        start: 0,
+                        end: boundary
+                    }
+                );
+                assert_eq!(bytes(&out[1]), b"S\nx");
+                assert_eq!(
+                    out[1].frame_range,
+                    SourceRange {
+                        start: boundary,
+                        end: source.len() as u64
+                    }
+                );
+                assert!(out.iter().all(|frame| !frame.truncated
+                    && frame.fragment.is_none()
+                    && frame.continuation.is_none()));
+                assert_partitions_and_restarts(c, &source, &out);
+            }
+        }
+    }
+}
+
+/// Scenario: A matching physical line fits the line limit but exceeds the record limit on its own.
+/// Guarantees: The old record ends cleanly; the new header owns its split/truncate range and restarts reproduce the suffix.
+#[test]
+fn oversized_start_record_has_its_own_boundary() {
+    for encoding in [
+        Encoding::Raw,
+        Encoding::Utf8,
+        Encoding::Utf16Le,
+        Encoding::Utf16Be,
+    ] {
+        for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
+            for oversize in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+                let mut c = config(GroupingMode::Start);
+                c.line.encoding = encoding;
+                c.line.on_decode_error = policy;
+                c.line.oversize = oversize;
+                c.line.max_record_bytes = if policy == OnDecodeError::PreserveRaw
+                    && matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be)
+                {
+                    9
+                } else {
+                    5
+                };
+                let source = encoded("Sabc\nS123456789\nS\nx\n", encoding);
+                let start = encoded("Sabc\n", encoding).len() as u64;
+                let end = encoded("Sabc\nS123456789\n", encoding).len() as u64;
+                let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+                let mut out = vec![];
+                feed(&mut f, &mut m, &source, &mut out).unwrap();
+                complete(&mut f, &mut m, PartialCompletion::Idle, &mut out).unwrap();
+                assert_eq!(bytes(&out[0]), b"Sabc");
+                assert_eq!(out[0].ending, RecordEnding::StartPattern);
+                assert_eq!(out[0].frame_range.end, start);
+                assert!(out[0].fragment.is_none());
+                let sequence = &out[1..out.len() - 1];
+                assert_eq!(sequence[0].frame_range.start, start);
+                assert_eq!(sequence.last().unwrap().frame_range.end, end);
+                if oversize == OversizeBehavior::Split {
+                    let mut body = vec![];
+                    for (index, frame) in sequence.iter().enumerate() {
+                        body.extend_from_slice(bytes(frame));
+                        assert_eq!(
+                            frame.fragment,
+                            Some(RecordFragment {
+                                record_start_offset: start,
+                                index: index as u32,
+                                is_last: index + 1 == sequence.len(),
+                            })
+                        );
+                        if let Some(continuation) = frame.continuation {
+                            assert_eq!(continuation.record_start_offset, start);
+                            assert_eq!(continuation.record_end_offset, end);
+                            assert_eq!(continuation.next_fragment_index, index as u32 + 1);
+                        }
+                    }
+                    let wanted = if policy == OnDecodeError::PreserveRaw {
+                        encoded("S123456789", encoding)
+                    } else {
+                        b"S123456789".to_vec()
+                    };
+                    assert_eq!(body, wanted);
+                } else {
+                    assert_eq!(sequence.len(), 1);
+                    assert!(sequence[0].truncated);
+                    assert_eq!(
+                        bytes(&sequence[0]),
+                        if c.line.max_record_bytes == 9 {
+                            &b"S123"[..]
+                        } else {
+                            &b"S1234"[..]
+                        }
+                    );
+                }
+                let last = out.last().unwrap();
+                assert_eq!(bytes(last), b"S\nx");
+                assert_eq!(last.frame_range.start, end);
+                assert!(last.fragment.is_none() && !last.truncated);
+                assert_partitions_and_restarts(c, &source, &out);
+            }
+        }
+    }
+}
+
+/// Scenario: Idle or permanent EOF authorizes a matching partial start line that would overflow the old group.
+/// Guarantees: The old record keeps StartPattern while the new partial record keeps its completion authority.
+#[test]
+fn partial_start_preserves_completion_authority() {
+    for oversize in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+        for reason in [PartialCompletion::Idle, PartialCompletion::PermanentEof] {
+            let mut c = config(GroupingMode::Start);
+            c.line.max_record_bytes = 5;
+            c.line.oversize = oversize;
+            let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+            let mut out = vec![];
+            feed(&mut f, &mut m, b"Sabc\nS", &mut out).unwrap();
+            assert!(out.is_empty());
+            complete(&mut f, &mut m, reason, &mut out).unwrap();
+            assert_eq!(out.len(), 2);
+            assert_eq!(bytes(&out[0]), b"Sabc");
+            assert_eq!(out[0].ending, RecordEnding::StartPattern);
+            assert_eq!(out[0].frame_range, SourceRange { start: 0, end: 5 });
+            assert_eq!(bytes(&out[1]), b"S");
+            assert_eq!(out[1].frame_range, SourceRange { start: 5, end: 6 });
+            assert_eq!(
+                out[1].ending,
+                if reason == PartialCompletion::Idle {
+                    RecordEnding::Idle
+                } else {
+                    RecordEnding::PermanentEof
+                }
+            );
+            assert!(
+                out.iter()
+                    .all(|frame| !frame.truncated && frame.fragment.is_none())
+            );
+        }
+    }
+}
+
+/// Scenario: A line begins like a start header but exceeds the physical-line bound.
+/// Guarantees: Physical-line isolation still wins over start matching and the previous record is preserved.
+#[test]
+fn oversized_physical_start_is_not_matched() {
+    for oversize in [OversizeBehavior::Split, OversizeBehavior::Truncate] {
+        let mut c = config(GroupingMode::Start);
+        c.line.max_line_bytes = 4;
+        c.line.oversize = oversize;
+        let (mut f, mut m) = make(c, "^S", RecordStart::NewStream);
+        let mut out = vec![];
+        feed(&mut f, &mut m, b"Sabc\nS123456\nnoise\n", &mut out).unwrap();
+        assert_eq!(bytes(&out[0]), b"Sabc");
+        assert_eq!(out[0].ending, RecordEnding::OversizeLineBoundary);
+        assert_eq!(out[0].frame_range, SourceRange { start: 0, end: 5 });
+        assert_eq!(out[1].frame_range.start, 5);
+        assert!(
+            out.iter()
+                .all(|frame| frame.ending != RecordEnding::StartPattern)
+        );
+    }
 }
 
 /// Scenario: Permanent EOF makes a grouped incomplete UTF-8 unit eligible under each decode policy.

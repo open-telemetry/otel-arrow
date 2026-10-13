@@ -565,6 +565,15 @@ impl MultilineFramer {
             return Ok(None);
         }
         let end = self.ready.expect("ready line");
+        // A bounded start line belongs to the next record, so close the old
+        // record before considering their combined size. Keep the match cached
+        // while the caller handles that output; no source bytes are replayed.
+        if self.config.mode == GroupingMode::Start
+            && self.body.has_progress()
+            && self.match_line(end, matcher)?
+        {
+            return self.emit(RecordEnding::StartPattern, true).map(Some);
+        }
         let separator = self.separator.map_or(0, |e| {
             if self.config.line.encoding == Encoding::Raw {
                 e.source().as_slice().len()
@@ -581,29 +590,7 @@ impl MultilineFramer {
             self.start_sequence(self.line.end);
             Some(end.reason().unwrap_or(RecordEnding::ByteLimit))
         } else {
-            let input = if self.config.line.encoding == Encoding::Raw {
-                PatternInput::Raw(&self.line.source)
-            } else {
-                PatternInput::Text(&self.line.text)
-            };
-            // Raw matching excludes the terminal LF, like decoded text matching.
-            let input = if self.config.line.encoding == Encoding::Raw && matches!(end, LineEnd::Lf)
-            {
-                PatternInput::Raw(&self.line.source[..self.line.source.len() - 1])
-            } else {
-                input
-            };
-            let matched = match self.line_match {
-                Some(matched) => matched,
-                None => {
-                    let matched = matcher.is_match(input)?;
-                    self.line_match = Some(matched);
-                    matched
-                }
-            };
-            if self.config.mode == GroupingMode::Start && matched && self.body.has_progress() {
-                return self.emit(RecordEnding::StartPattern, true).map(Some);
-            }
+            let matched = self.match_line(end, matcher)?;
             let finish = match (self.config.mode, matched, self.body.has_progress()) {
                 (GroupingMode::Start, false, false) => Some(RecordEnding::PatternNotMatched),
                 (GroupingMode::End, true, _) => Some(RecordEnding::EndPattern),
@@ -623,6 +610,30 @@ impl MultilineFramer {
         self.ready = None;
         self.line_match = None;
         self.finish_collected_line(finish)
+    }
+
+    fn match_line(
+        &mut self,
+        end: LineEnd,
+        matcher: &mut BoundaryMatcher,
+    ) -> Result<bool, MultilineError> {
+        if let Some(matched) = self.line_match {
+            return Ok(matched);
+        }
+        let input = if self.config.line.encoding == Encoding::Raw {
+            // Like decoded text, raw matching excludes the terminal LF.
+            let source = if matches!(end, LineEnd::Lf) {
+                &self.line.source[..self.line.source.len() - 1]
+            } else {
+                &self.line.source
+            };
+            PatternInput::Raw(source)
+        } else {
+            PatternInput::Text(&self.line.text)
+        };
+        let matched = matcher.is_match(input)?;
+        self.line_match = Some(matched);
+        Ok(matched)
     }
 
     fn start_sequence(&mut self, end: u64) {

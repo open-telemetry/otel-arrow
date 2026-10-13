@@ -2028,10 +2028,20 @@ When a physical line crosses `max_line_bytes`:
 
 No unbounded physical-line buffer is created.
 
-When adding a complete physical line would make a multiline body exceed
-`max_record_bytes`, the deterministic logical boundary is the LF of that first
-overflow-triggering line. Regex and line-count decisions are suppressed until that
-line ends. The framer then resets multiline state.
+In start-pattern mode, match a physical line within `max_line_bytes` before
+checking whether appending it would exceed the buffered record's byte limit.
+A matching line first completes the previous record immediately before that line,
+then begins a new record. The previous record ends cleanly at its own LF and
+requires no continuation state. A matching line that exceeds `max_record_bytes`
+on its own is split or truncated as its own record, with its own start and end.
+Oversized physical lines remain isolated and are never matched.
+
+For a line that belongs to the current record (including a new record's first
+line), if adding it would exceed `max_record_bytes`, the deterministic logical
+boundary is the LF of that overflow-triggering line. End-pattern and line-count
+decisions are suppressed for that line, and no further pattern decisions occur
+during its split/truncate replay. The framer then resets multiline state.
+An authorized partial-line completion uses its source end in place of the LF.
 
 For a body exactly equal to `max_record_bytes`, retaining another internal separator
 would overflow. The current body is emitted as a clean forced boundary before any later

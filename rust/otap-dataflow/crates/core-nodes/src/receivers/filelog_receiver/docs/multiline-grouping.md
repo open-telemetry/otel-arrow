@@ -31,11 +31,16 @@ record. A later start completes the previous record. End mode includes the
 matching line in the completed record. Internal LFs remain in the body; only
 the final LF is omitted. CR and NUL remain ordinary content.
 
-Physical-line and record limits are independent. A completed line that would
-overflow the record establishes its deterministic end. Its pattern and
-line-count decisions are suppressed. An exactly full body completes cleanly
-before another line is read. Line-count, byte-bound, and idle completion reset
-start mode to seeking.
+Physical-line and record limits are independent. In start mode, a matching
+bounded line completes the previous record before record-overflow checks, so
+split/truncate never absorbs a new header into that previous record. If the
+header alone exceeds the record limit, it starts its own split/truncate sequence.
+
+A line that belongs to the current record and would overflow it establishes its
+deterministic end. End-pattern and line-count decisions are suppressed for that
+line; split/truncate replay does not repeat pattern decisions. An exactly full
+body completes cleanly before another line is read. Line-count, byte-bound, and
+idle completion reset start mode to seeking.
 
 An oversized physical line first completes any earlier grouped content, then
 runs independently through LF or authorized completion. It is not matched.
@@ -45,7 +50,11 @@ fragments use the smaller of the line and record bounds.
 
 `RecordEnding` supplies completion evidence, including unmatched fallback,
 oversized-line isolation, and terminal-unterminated EOF. The receiver owns
-telemetry and policy actions for those reasons.
+telemetry and policy actions for those reasons. For a partial physical line,
+`Idle` or `PermanentEof` takes precedence over its match/nonmatch result: that
+authority made the line eligible. Earlier complete records keep their own
+completion reasons, including `StartPattern` when the partial line begins a new
+record. `PatternNotMatched` denotes fallback for a complete unmatched line.
 
 ## Decoding and failures
 

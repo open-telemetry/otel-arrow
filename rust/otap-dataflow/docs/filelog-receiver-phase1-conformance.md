@@ -727,10 +727,11 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Multiline | Internal LFs retained |
 | Framing | Start-pattern fallback | Newline record and bounded counter |
 | Framing | Next start match | Previous record emits; match starts next |
+| Framing | Bounded start match would overflow buffered record | Previous record emits `StartPattern` at its own LF; matching line starts a new record and splits/truncates independently if it alone exceeds the record limit |
 | Framing | End match | Matching line included |
 | Framing | Body exactly at line/record bound | Fits |
 | Framing | Oversize physical line after multiline buffer | Earlier buffer emits first |
-| Framing | Multiline overflow trigger | Deterministic boundary at trigger-line LF |
+| Framing | Appending a line belonging to the current record exceeds its bound | Deterministic boundary at trigger-line LF, or at the source end for authorized partial-line completion |
 | Framing | Split crosses Ack boundary | Durable continuation reproduces next fragment |
 | Framing | Restart mid-split oversize physical line with `record_end_offset == 0` | Seek committed offset; suppress fresh framing; bounded-scan and fragment through next decoded/raw LF |
 | Framing | Scan-to-LF continuation reaches temporary EOF | Remains pending; no fabricated final fragment |
