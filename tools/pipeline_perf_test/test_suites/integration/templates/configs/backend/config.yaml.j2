@@ -19,8 +19,7 @@ engine: {}
   {% set compression = compression_method | default("zstd") %}
   {% set extra_config = {
     "response_stream_channel_size": 100,
-    "request_compression": compression,
-    "response_compression": compression
+    "compression_method": compression
   } %}
 {%- elif receiver_type == "otlp" -%}
   {% set type_urn = "urn:otel:receiver:otlp" %}
