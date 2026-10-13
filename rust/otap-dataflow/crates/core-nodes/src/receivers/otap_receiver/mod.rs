@@ -14,18 +14,16 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.otap",
 );
 
-use otel_arrow_dfe_config::tls::TlsServerConfig;
-use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
-use otel_arrow_dfe_otap::compression::CompressionMethod;
 use otel_arrow_dfe_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
 use otel_arrow_dfe_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otel_arrow_dfe_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otel_arrow_dfe_otap::otap_grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, GrpcServerSettings,
-    OtapReceiverTelemetry, OtapStreamTaskManager, Settings, common,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
+    OtapStreamTaskManager, Settings, common,
 };
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, otap_grpc};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -60,7 +58,6 @@ use parking_lot::Mutex;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
@@ -76,65 +73,20 @@ const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    listening_addr: SocketAddr,
-
-    compression_method: Option<CompressionMethod>,
-
-    /// Size of the channel used to buffer outgoing responses to the client.
-    response_stream_channel_size: usize,
-
-    /// Maximum number of concurrent (in-flight) requests (default: 1000)
-    #[serde(default = "default_max_concurrent_requests")]
-    max_concurrent_requests: usize,
+    #[serde(flatten)]
+    grpc: otap_grpc::GrpcServerSettings,
 
     /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream. Clamped to `max_concurrent_requests` at runtime.
+    /// TODO(jakedern): Figure out if this can be replaced with max_concurrent_requests
     #[serde(
         default = "default_max_concurrent_requests_per_stream",
         deserialize_with = "deserialize_positive_max_concurrent_requests_per_stream"
     )]
     max_concurrent_requests_per_stream: NonZeroUsize,
 
-    /// Whether to wait for the result (default: true)
-    ///
-    /// When enabled, the receiver will not send a response until the
-    /// immediate downstream component has acknowledged receipt of the
-    /// data.  This does not guarantee that data has been fully
-    /// processed or successfully exported to the final destination,
-    /// since components are able acknowledge early.
-    ///
-    /// Note when wait_for_result=false, it is impossible to
-    /// see a failure, errors are effectively suppressed.
-    #[serde(default = "default_wait_for_result")]
-    wait_for_result: bool,
-
-    /// Timeout for RPC requests. If not specified, no timeout is applied.
-    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
-    #[serde(default, with = "humantime_serde")]
-    pub timeout: Option<Duration>,
-
-    /// TLS configuration
-    pub tls: Option<TlsServerConfig>,
-}
-
-impl Config {
-    /// Transport-level gRPC server settings for this receiver.
-    ///
-    /// The OTAP config does not expose the shared gRPC tuning options, so everything other than
-    /// the fields mapped here (TCP_NODELAY, keepalives, HTTP/2 windows, frame size, etc.) uses the
-    /// shared [`GrpcServerSettings`] defaults. Without these, tonic falls back to Nagle-enabled
-    /// sockets and hyper's 1MiB HTTP/2 windows, which can stall large OTAP batches.
-    fn grpc_server_settings(&self) -> GrpcServerSettings {
-        GrpcServerSettings {
-            listening_addr: self.listening_addr,
-            max_concurrent_requests: self.max_concurrent_requests,
-            timeout: self.timeout,
-            ..Default::default()
-        }
-    }
-}
-
-const fn default_max_concurrent_requests() -> usize {
-    1000
+    /// Size of the channel used to buffer outgoing responses to the client.
+    /// TODO(jakedern): Figure out what this actually sets
+    response_stream_channel_size: usize,
 }
 
 fn default_max_concurrent_requests_per_stream() -> NonZeroUsize {
@@ -160,12 +112,6 @@ where
     D: Deserializer<'de>,
 {
     deserialize_positive_usize(deserializer, "max_concurrent_requests_per_stream")
-}
-
-const fn default_wait_for_result() -> bool {
-    // See https://github.com/open-telemetry/otel-arrow/issues/1311
-    // This matches the OTel Collector default for wait_for_result, presently.
-    false
 }
 
 /// A Receiver that listens for OTAP messages
@@ -520,23 +466,22 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "otap_receiver.start",
-            listening_addr = %self.config.listening_addr
+            listening_addr = %self.config.grpc.listening_addr
         );
 
         // create listener on addr provided from config
-        let grpc_settings = self.config.grpc_server_settings();
-        let listener = effect_handler.tcp_listener(grpc_settings.listening_addr)?;
-        let incoming = grpc_settings.build_tcp_incoming(listener);
+        let listener = effect_handler.tcp_listener(self.config.grpc.listening_addr)?;
+        let incoming = self.config.grpc.build_tcp_incoming(listener);
 
         let stream_tasks = OtapStreamTaskManager::new();
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
-            max_concurrent_requests: self.config.max_concurrent_requests,
+            max_concurrent_requests: self.config.grpc.max_concurrent_requests,
             max_concurrent_requests_per_stream: self
                 .config
                 .max_concurrent_requests_per_stream
                 .get(),
-            wait_for_result: self.config.wait_for_result,
+            wait_for_result: self.config.grpc.wait_for_result,
             admission_state: self.admission_state.clone(),
             receiver_metrics: Some(self.metrics.clone()),
             stream_tasks: stream_tasks.clone(),
@@ -557,35 +502,44 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let mut metrics_server = ArrowMetricsServiceServer::new(metrics_service);
         let mut traces_server = ArrowTracesServiceServer::new(traces_service);
 
-        // apply the tonic compression if it is set
-        if let Some(ref compression) = self.config.compression_method {
-            let encoding = compression.map_to_compression_encoding();
+        // Apply request compression
+        if let Some(ref compression) = self.config.grpc.request_compression {
+            for codec in compression {
+                let encoding = codec.map_to_compression_encoding();
+                logs_server = logs_server.accept_compressed(encoding);
+                metrics_server = metrics_server.accept_compressed(encoding);
+                traces_server = traces_server.accept_compressed(encoding);
+            }
+        }
 
-            logs_server = logs_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            metrics_server = metrics_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            traces_server = traces_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
+        // Apply response compression
+        if let Some(ref compression) = self.config.grpc.response_compression {
+            for codec in compression {
+                let encoding = codec.map_to_compression_encoding();
+                logs_server = logs_server.send_compressed(encoding);
+                metrics_server = metrics_server.send_compressed(encoding);
+                traces_server = traces_server.send_compressed(encoding);
+            }
         }
 
         // Also applies the request timeout, if configured.
-        let server_builder = common::apply_server_tuning(Server::builder(), &grpc_settings);
+        let server_builder = common::apply_server_tuning(Server::builder(), &self.config.grpc);
 
-        let maybe_tls_acceptor =
-            build_tls_acceptor(self.config.tls.as_ref())
-                .await
-                .map_err(|e| Error::ReceiverError {
-                    receiver: effect_handler.receiver_id(),
-                    kind: ReceiverErrorKind::Configuration,
-                    error: format!("Failed to configure TLS: {}", e),
-                    source_detail: format_error_sources(&e),
-                })?;
+        let maybe_tls_acceptor = build_tls_acceptor(self.config.grpc.tls.as_ref())
+            .await
+            .map_err(|e| Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
+                error: format!("Failed to configure TLS: {}", e),
+                source_detail: format_error_sources(&e),
+            })?;
 
-        let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+        let handshake_timeout = self
+            .config
+            .grpc
+            .tls
+            .as_ref()
+            .and_then(|t| t.handshake_timeout);
 
         let server = server_builder
             .layer(MemoryPressureLayer::with_metrics(
@@ -1915,81 +1869,6 @@ mod tests {
         };
         assert!(
             format!("{err}").contains("max_concurrent_requests_per_stream must be greater than 0")
-        );
-    }
-
-    /// Scenario: an OTAP receiver configured without any gRPC tuning options.
-    /// Guarantees: the server transport uses the shared `GrpcServerSettings`
-    /// defaults (TCP_NODELAY, HTTP/2 windows, etc.) rather than tonic/hyper's
-    /// defaults, while carrying over the OTAP-specific fields it does expose.
-    #[test]
-    fn test_grpc_server_settings_use_shared_defaults() {
-        use otel_arrow_dfe_otap::otap_grpc::GrpcServerSettings;
-        use serde_json::json;
-
-        let telemetry_registry_handle =
-            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
-        let controller_ctx =
-            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-
-        let config = json!({
-            "listening_addr": "127.0.0.1:4318",
-            "response_stream_channel_size": 100,
-            "max_concurrent_requests": 2500,
-            "timeout": "30s"
-        });
-        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
-        let settings = receiver.config.grpc_server_settings();
-        let defaults = GrpcServerSettings::default();
-
-        // OTAP-specific fields are carried over.
-        assert_eq!(settings.listening_addr.to_string(), "127.0.0.1:4318");
-        assert_eq!(settings.max_concurrent_requests, 2500);
-        assert_eq!(settings.timeout, Some(Duration::from_secs(30)));
-
-        // Transport tuning falls back to the shared defaults.
-        assert!(settings.tcp_nodelay);
-        assert_eq!(settings.tcp_nodelay, defaults.tcp_nodelay);
-        assert_eq!(settings.tcp_keepalive, defaults.tcp_keepalive);
-        assert_eq!(
-            settings.tcp_keepalive_interval,
-            defaults.tcp_keepalive_interval
-        );
-        assert_eq!(
-            settings.tcp_keepalive_retries,
-            defaults.tcp_keepalive_retries
-        );
-        assert_eq!(
-            settings.transport_concurrency_limit,
-            defaults.transport_concurrency_limit
-        );
-        assert_eq!(settings.load_shed, defaults.load_shed);
-        assert_eq!(
-            settings.initial_stream_window_size,
-            defaults.initial_stream_window_size
-        );
-        assert_eq!(
-            settings.initial_connection_window_size,
-            defaults.initial_connection_window_size
-        );
-        assert_eq!(
-            settings.http2_adaptive_window,
-            defaults.http2_adaptive_window
-        );
-        assert_eq!(settings.max_frame_size, defaults.max_frame_size);
-        assert_eq!(
-            settings.http2_keepalive_interval,
-            defaults.http2_keepalive_interval
-        );
-        assert_eq!(
-            settings.http2_keepalive_timeout,
-            defaults.http2_keepalive_timeout
-        );
-        assert_eq!(
-            settings.max_concurrent_streams,
-            defaults.max_concurrent_streams
         );
     }
 
