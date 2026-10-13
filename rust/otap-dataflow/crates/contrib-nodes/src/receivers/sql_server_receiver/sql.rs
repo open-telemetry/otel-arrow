@@ -8,8 +8,9 @@ use otel_arrow_dfe_scraper::database::{MAX_QUERY_BYTES, ScalarValue, WatermarkCo
 use sqlparser::{
     ast::{
         BinaryOperator, CastKind, DataType, ExactNumberInfo, Expr, Function, FunctionArg,
-        FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, ObjectName, OrderByKind, Query,
-        Select, SelectFlavor, SelectItem, SetExpr, Statement, TableFactor, UnaryOperator, Value,
+        FunctionArgExpr, FunctionArgumentList, FunctionArguments, GroupByExpr, Ident, ObjectName,
+        OrderBy, OrderByExpr, OrderByKind, OrderByOptions, Query, Select, SelectFlavor, SelectItem,
+        SetExpr, Statement, TableFactor, UnaryOperator, Value,
     },
     dialect::MsSqlDialect,
     parser::Parser,
@@ -376,17 +377,22 @@ fn validate_keyset(
             return Err(error("cursor columns must be selected directly, without aliases, using their configured spelling"));
         }
     }
-    let order = query.order_by.as_ref().ok_or_else(keyset_error)?;
-    let OrderByKind::Expressions(expressions) = &order.kind else {
+    let OrderBy { kind, interpolate } = query.order_by.as_ref().ok_or_else(keyset_error)?;
+    let OrderByKind::Expressions(expressions) = kind else {
         return Err(keyset_error());
     };
-    if order.interpolate.is_some()
+    if interpolate.is_some()
         || expressions.len() != columns.len()
-        || expressions.iter().zip(columns).any(|(expr, column)| {
-            !matches!(&expr.expr, Expr::Identifier(id) if id.value == **column && validate_ident(id).is_ok())
-                || expr.options.asc == Some(false)
-                || expr.options.nulls_first.is_some()
-                || expr.with_fill.is_some()
+        || expressions.iter().zip(columns).any(|(order, column)| {
+            let OrderByExpr {
+                expr,
+                options: OrderByOptions { asc, nulls_first },
+                with_fill,
+            } = order;
+            !matches!(expr, Expr::Identifier(id) if id.value == **column && validate_ident(id).is_ok())
+                || *asc == Some(false)
+                || nulls_first.is_some()
+                || with_fill.is_some()
         })
     {
         return Err(keyset_error());
@@ -469,18 +475,27 @@ fn validate_snapshot(select: &Select, query: &Query) -> Result<(), SqlServerConf
         }
         _ => return Err(unsupported()),
     }
-    if let Some(order) = &query.order_by {
-        let OrderByKind::Expressions(expressions) = &order.kind else {
+    if let Some(OrderBy { kind, interpolate }) = &query.order_by {
+        let OrderByKind::Expressions(expressions) = kind else {
             return Err(unsupported());
         };
-        if order.interpolate.is_some() {
+        if interpolate.is_some() {
             return Err(unsupported());
         }
-        for expr in expressions {
-            if expr.options.nulls_first.is_some() || expr.with_fill.is_some() {
+        for OrderByExpr {
+            expr,
+            options:
+                OrderByOptions {
+                    asc: _,
+                    nulls_first,
+                },
+            with_fill,
+        } in expressions
+        {
+            if nulls_first.is_some() || with_fill.is_some() {
                 return Err(unsupported());
             }
-            validate_expr(&expr.expr, true, 0)?;
+            validate_expr(expr, true, 0)?;
         }
     }
     Ok(())
@@ -551,17 +566,27 @@ fn validate_function(
     aggregates: bool,
     depth: usize,
 ) -> Result<(), SqlServerConfigError> {
-    if function.name.0.len() != 1
-        || function.uses_odbc_syntax
-        || !matches!(function.parameters, FunctionArguments::None)
-        || function.filter.is_some()
-        || function.null_treatment.is_some()
-        || function.over.is_some()
-        || !function.within_group.is_empty()
+    let Function {
+        name,
+        uses_odbc_syntax,
+        parameters,
+        args,
+        filter,
+        null_treatment,
+        over,
+        within_group,
+    } = function;
+    if name.0.len() != 1
+        || *uses_odbc_syntax
+        || !matches!(parameters, FunctionArguments::None)
+        || filter.is_some()
+        || null_treatment.is_some()
+        || over.is_some()
+        || !within_group.is_empty()
     {
         return Err(unsupported());
     }
-    let Some(name) = function.name.0[0].as_ident() else {
+    let Some(name) = name.0[0].as_ident() else {
         return Err(unsupported());
     };
     if name.quote_style.is_some() {
@@ -581,23 +606,28 @@ fn validate_function(
     {
         return Err(unsupported());
     }
-    let FunctionArguments::List(arguments) = &function.args else {
+    let FunctionArguments::List(FunctionArgumentList {
+        duplicate_treatment,
+        args,
+        clauses,
+    }) = args
+    else {
         return Err(unsupported());
     };
-    if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
+    if duplicate_treatment.is_some() || !clauses.is_empty() {
         return Err(unsupported());
     }
     let valid_arity = match name.as_str() {
-        "COALESCE" => arguments.args.len() >= 2,
-        "ISNULL" => arguments.args.len() == 2,
-        _ => arguments.args.len() == 1,
+        "COALESCE" => args.len() >= 2,
+        "ISNULL" => args.len() == 2,
+        _ => args.len() == 1,
     };
     if !valid_arity {
         return Err(error(
             "query.statement uses an unsupported function argument count",
         ));
     }
-    for arg in &arguments.args {
+    for arg in args {
         match arg {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
                 validate_expr(expr, aggregates && !aggregate, depth)?;
