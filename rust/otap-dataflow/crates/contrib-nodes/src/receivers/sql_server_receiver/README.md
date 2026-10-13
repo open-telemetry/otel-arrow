@@ -160,6 +160,28 @@ extra row to detect overflow. Token-aware rendering preserves quoted literals,
 national strings, escaped bracket identifiers, and bind-like text inside them.
 The future adapter must supply every value through typed parameter binding.
 
+### Validation Boundary
+
+Preparation enforces the receiver's structural rules: one restricted read-only
+query, direct cursor projections, strict keyset predicates and ordering,
+declared parameter bindings, and bounded paging. Passing these checks is **not
+proof of general SQL validity**. For example, snapshot expressions such as
+`WHERE COUNT(*) > 0` or `WHERE EVENT_ID` can pass preparation but SQL Server
+will reject them.
+
+The adapter in [Part 2][part-2] must validate the prepared SQL and live metadata
+through `DriverAdapter::validate_query` before polling and again after reconnect.
+SQL Server checks general expression validity, column types, object existence,
+and permissions; the adapter must also verify the receiver's live cursor and
+metadata requirements. Invalid SQL, incompatible metadata, and authorization
+failures must be reported as permanent, non-retryable errors rather than
+entering a reconnect loop. This database-side validation is not implemented
+in Part 1.
+
+Database acceptance does not replace preparation's polling and checkpoint
+rules, or prove the source ordering, uniqueness, and immutability requirements
+described above.
+
 ## Compatibility Fingerprint
 
 The versioned BLAKE3 fingerprint includes database system, source ID, endpoint,
