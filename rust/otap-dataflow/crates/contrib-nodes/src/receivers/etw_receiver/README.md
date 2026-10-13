@@ -78,6 +78,7 @@ receiver.etw.events.received
 ```
 
 Important operational notes:
+
 - **Ingress Denominator**: `receiver.etw.events.received` counts all events produced by the ETW session callback before channel enqueue.
 - **Decode Quality**: `receiver.etw.decode.errors` tracks events where TDH decode failed. Note that decode failures are still forwarded downstream with empty decoded fields, so they are counted in both `receiver.etw.events.received` and `receiver.etw.events.forwarded`.
 - **Kernel Loss**: `receiver.etw.kernel.events_lost` counts events lost inside Windows kernel buffers before the receiver ever saw them (kernel buffer overrun). These are independent from receiver-level drops and are not included in `receiver.etw.events.received`.
