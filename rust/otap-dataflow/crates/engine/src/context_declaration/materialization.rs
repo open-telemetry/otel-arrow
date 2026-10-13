@@ -7,7 +7,6 @@
 //! intentionally does not provide general consumer bindings, indexed lookups,
 //! projector transforms, or outbound propagation.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -64,8 +63,7 @@ impl ContextMaterializationPlan {
                     ContextDomain::AuthorizedIdentity => name.clone(),
                 },
                 domain,
-            })
-            .collect::<BTreeSet<_>>();
+            });
         let layout = ContextLayout::compile(fields, &declarations)?;
         let declarations = declarations
             .into_iter()
