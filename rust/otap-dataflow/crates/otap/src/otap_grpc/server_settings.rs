@@ -29,9 +29,7 @@ pub struct GrpcServerSettings {
     )]
     pub request_compression: Option<Vec<CompressionMethod>>,
 
-    /// Compression methods used for responses. An omitted field sends uncompressed responses.
-    /// When several methods are configured, tonic selects one per request based on the client's
-    /// `grpc-accept-encoding` header.
+    /// Compression methods used for responses. Defaults to no compression.
     #[serde(
         default,
         deserialize_with = "compression::deserialize_compression_methods"
