@@ -1,0 +1,7 @@
+change_type: new_component
+component: pipeline
+note: "Add an opt-in, development-only PostgreSQL receiver with automatic result metadata, configurable page budgets, shared credentials, and acknowledged composite polling."
+issues: [4166, 3918]
+subtext: |
+  Enable postgresql and bind basic_auth_provider. Set query.max_rows_per_poll and query.max_batch_bytes. Unencrypted TCP: trusted development only.
+  The composite watermark sets log event time automatically. Schema must remain stable across restarts.

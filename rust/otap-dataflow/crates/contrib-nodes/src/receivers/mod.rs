@@ -13,6 +13,10 @@ pub mod kafka_receiver;
 #[cfg(feature = "oracle")]
 pub mod oracle_receiver;
 
+/// Development-only PostgreSQL database receiver.
+#[cfg(feature = "postgresql")]
+pub mod postgresql_receiver;
+
 /// Linux user_events receiver.
 #[cfg(all(feature = "user-events", target_os = "linux"))]
 pub mod user_events_receiver;
