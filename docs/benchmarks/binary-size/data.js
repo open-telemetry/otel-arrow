@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791851368706,
+  "lastUpdate": 1791859105288,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -60576,6 +60576,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5b969ff430460ef97d323415a9751bda1503297",
+          "message": "chore: Add ITS logs sampling interface (#4279)\n\n# Change summary\n\nEnable a caller-owned log sampler interface using the `logger:` prefix\nargument, with `should_sample` and `emit` methods per OpenTelemetry\nspecs. This will enable a \"plain log event\" implementation of the\n`diagnostics` package as seen in #4253. This is a small separate PR to\nintroduce the macros needed.\n\nThis enables rewriting the new diagnostics calls from #4151 in a more\nnatural way (while also optimizing).\n\nBefore:\n\n```rust\n                                emit_preparation(\n                                    self.metrics.preparation.signal(signal_type).failure(\n                                        Instant::now(),\n                                        error_type,\n                                        || &error,\n                                    ),\n                                    signal_type,\n                                );\n```\n\nAfter:\n\n```rust\n                                otel_warn!(\n                                    logger: self.metrics.preparation.logger(signal_type, error_type),\n                                    \"otlp.exporter.http.preparation_error\",\n                                    error = %error\n                                );\n```\n\nSee\nhttps://github.com/jmacd/otel-arrow/pull/9/changes#diff-00531733ff5085a3161af7e6abe99224fb311c5dd00b23f39f2439a833bb7549\nfor example implementation.\n\nFor the episode suppression logic (for delivery errors), the call looks\nlike:\n\n```rust\n    if tracing::Level::WARN <= tracing::level_filters::STATIC_MAX_LEVEL {\n        let mut diagnostic = metrics.delivery.observe(\n            signal_type,\n            result\n                .as_ref()\n                .map(|_| ())\n                .map_err(|error| error.error_type()),\n            diagnostic_started_at,\n        );\n        if diagnostic.is_recovery() {\n            otel_info!(\n                logger: diagnostic,\n                \"otlp.exporter.http.export_recovered\",\n                message = \"OTLP HTTP export recovered\"\n            );\n        } else if diagnostic.report().is_some() {\n            otel_warn!(\n                logger: diagnostic,\n                \"otlp.exporter.http.export_error\",\n                retryable = retryable,\n                message = result.as_ref().err().map(tracing::field::display)\n            );\n        }\n    }\n```\n\nNote that the optimization comes from `message =\nresult.as_ref().err().map(tracing::field::display)`, where we are\nstructurally-encoding the saved event instead of escaping it as a\nformatted string.\n\nThe episode-start event looks like:\n\n```json\n{\n  \"event_name\": \"otlp.exporter.http.export_error\",\n  \"severity_number\": 13,\n  \"body\": \"An error occurred sending HTTP request: error sending request for url (http://127.0.0.1:14998/v1/logs): client error (Connect): tcp connect error\",\n  \"attributes\": {\n    \"signal\": \"logs\",\n    \"retryable\": true,\n    \"diagnostic_kind\": \"first_failure\",\n    \"total_failed_attempts\": 1\n  }\n}\n```\n\nThe episode-end event looks like:\n\n```json\n{\n  \"event_name\": \"otlp.exporter.http.export_recovered\",\n  \"severity_number\": 9,\n  \"body\": \"OTLP HTTP export recovered\",\n  \"attributes\": {\n    \"signal\": \"logs\",\n    \"diagnostic_kind\": \"recovery\",\n    \"episode_seconds\": 32.400934874,\n    \"total_successful_attempts\": 150,\n    \"total_failed_attempts\": 13,\n    \"total_suppressed_diagnostics\": 12,\n    \"episode.start_event\": {\n      \"event_name\": \"otlp.exporter.http.export_error\",\n      \"severity_number\": 13,\n      \"scope\": \"otel.exporter.otlp_http\",\n      \"body\": \"An error occurred sending HTTP request: error sending request for url (http://127.0.0.1:14998/v1/logs): client error (Connect): tcp connect error\",\n      \"attributes\": {\n        \"signal\": \"logs\",\n        \"retryable\": true\n      },\n      \"dropped_attributes_count\": 0\n    }\n  },\n  \"dropped_attributes_count\": 0\n}\n```\n\n## Related issue\n\nPart of #4151.\nPart of #1746.\nPart of #4236.\nRefactored from #4253 \n\n## Validation\n\n✅ \n\n## User-facing changes\n\nn/a\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: e02fdeb2-0673-436b-8257-8f1fc7ef884d\nCopilot-Session: 0669c7ae-9c9a-402e-94b5-ba65491ca7f4",
+          "timestamp": "2026-10-13T01:45:43Z",
+          "tree_id": "e3ed087849d9f5f001c8b25dc24fb002ecb45e24",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f5b969ff430460ef97d323415a9751bda1503297"
+        },
+        "date": 1791859086282,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.57,
             "unit": "MB"
           },
           {
