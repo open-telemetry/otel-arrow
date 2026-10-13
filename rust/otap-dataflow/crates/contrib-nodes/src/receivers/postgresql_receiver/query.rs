@@ -4,7 +4,9 @@
 //! Bounded parameter compilation, AST allowlist, and fixed catalog queries.
 
 use super::adapter::{Error, Result, database};
-use otel_arrow_dfe_scraper::database::{CompiledQuery, CompiledWatermark, ScalarValue};
+use otel_arrow_dfe_scraper::database::{
+    CompiledQuery, CompiledWatermark, MAX_QUERY_BYTES, ScalarValue,
+};
 use sqlparser::{
     ast::{
         BinaryOperator as Op, Expr, Ident, JoinConstraint, JoinOperator, SelectItem, SetExpr,
@@ -315,7 +317,7 @@ pub(crate) fn compile_parameters(sql: &str, roles: &[&str]) -> Result<String> {
                 .all(|(i, b)| b == b'_' || b.is_ascii_lowercase() || (i > 0 && b.is_ascii_digit()))
     }
     if sql.is_empty()
-        || sql.len() > 16384
+        || sql.len() > MAX_QUERY_BYTES
         || roles.len() > 2
         || roles.iter().any(|name| !valid(name))
         || roles.iter().collect::<BTreeSet<_>>().len() != roles.len()
@@ -412,7 +414,7 @@ pub(crate) fn compile_parameters(sql: &str, roles: &[&str]) -> Result<String> {
         previous = end;
     }
     result.push_str(&sql[previous..]);
-    if result.len() > 16384 {
+    if result.len() > MAX_QUERY_BYTES {
         return Err(Error::Sql);
     }
     Ok(result)
