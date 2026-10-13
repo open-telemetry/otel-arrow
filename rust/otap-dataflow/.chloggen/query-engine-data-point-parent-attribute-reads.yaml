@@ -1,5 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: Read resource and scope attributes in expressions applied to metric data points, so data point attributes can be set or filtered from them.
-issues: [3722]
-subtext: Resource and scope struct fields, and mutation of resource and scope attributes, remain unsupported for data points.

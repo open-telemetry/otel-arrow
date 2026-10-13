@@ -239,6 +239,13 @@ impl OtlpPageEncoder {
         let mut records_wire_bytes = 0_usize;
         let mut event_time_fallbacks = 0_usize;
         let total_rows = rows.len();
+        let snapshot = matches!(rows[0].cursor, Cursor::Snapshot);
+        if rows
+            .iter()
+            .any(|row| matches!(row.cursor, Cursor::Snapshot) != snapshot)
+        {
+            return Err(OtlpMappingError::MixedSnapshotCursors);
+        }
 
         for cursor_row in rows {
             let (record, used_event_time_fallback) = row_to_record(
@@ -264,6 +271,11 @@ impl OtlpPageEncoder {
                 .saturating_add(prost::encoding::encoded_len_varint(resource_bytes as u64))
                 .saturating_add(resource_bytes);
             if u64::try_from(candidate_size).unwrap_or(u64::MAX) > max_batch_bytes {
+                if snapshot {
+                    return Err(OtlpMappingError::SnapshotByteLimit {
+                        limit: max_batch_bytes,
+                    });
+                }
                 if records.is_empty() {
                     return Err(OtlpMappingError::OversizedFirstRow {
                         encoded_bytes: candidate_size,
@@ -333,9 +345,10 @@ impl fmt::Debug for EncodedPage {
     }
 }
 
-/// Encodes the largest non-empty row prefix that fits `max_batch_bytes`.
+/// Encodes a complete snapshot or the largest fitting non-empty keyset prefix.
 ///
-/// Rows beyond the ceiling are deferred to the next poll rather than dropped,
+/// Snapshots must fit in full; an oversized snapshot returns an error with no
+/// partial payload. For keysets, rows beyond the ceiling are deferred rather than dropped,
 /// and the returned candidate always comes from the last row actually encoded.
 /// An empty page returns `None`; a first row that alone exceeds the ceiling is
 /// an explicit error so no row is silently skipped.
@@ -504,6 +517,15 @@ fn int_value(value: i64) -> AnyValue {
 /// Database-row to OTLP conversion failure.
 #[derive(Debug, thiserror::Error)]
 pub enum OtlpMappingError {
+    /// A snapshot cannot defer a row prefix without a resumable position.
+    #[error("complete snapshot exceeds the {limit}-byte query.max_batch_bytes limit")]
+    SnapshotByteLimit {
+        /// Configured serialized-byte ceiling.
+        limit: u64,
+    },
+    /// A page mixed no-position markers with ordered source positions.
+    #[error("snapshot and keyset cursors cannot be mixed in one page")]
+    MixedSnapshotCursors,
     /// Live metadata contains duplicate normalized names.
     #[error("result metadata contains duplicate column '{name}'")]
     DuplicateColumn {

@@ -13,36 +13,29 @@ use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use std::future::Future;
 
-/// Run `run` on `pdata` converted to OTAP records, preserving the pdata context.
-///
-/// - Returns `Ok(Some(pdata))` with the reconstructed message when the guest
-///   returns records.
-/// - Returns `Ok(None)` when the guest drops the pdata (`process` returned `none`).
-///
-/// The closure receives and returns full `OtapArrowRecords`. The host kernel
-/// implementations (`filter_by_attribute_eq`, etc.) are trusted to produce
-/// structurally valid OTAP output -- no additional schema re-validation is
-/// performed on the returned records before forwarding downstream.
+/// Run `run` asynchronously on `pdata` converted to OTAP records, preserving
+/// the pdata context.
 ///
 /// TODO: `OtlpBytes` payloads still flow through default conversion to
 /// OTAP records; add native OTLP handling and explicit per-`ArrowPayloadType`
 /// processing paths.
-pub(crate) fn run_on_otap_records<F>(
+pub(crate) async fn run_on_otap_records_async<F, Fut>(
     pdata: OtapPdata,
     run: F,
 ) -> Result<Option<OtapPdata>, EngineError>
 where
-    F: FnOnce(OtapArrowRecords) -> Result<Option<OtapArrowRecords>, EngineError>,
+    F: FnOnce(OtapArrowRecords) -> Fut,
+    Fut: Future<Output = Result<Option<OtapArrowRecords>, EngineError>>,
 {
     let (context, payload) = pdata.into_parts();
     let records: OtapArrowRecords = payload.try_into_with_default()?;
     if records.root_record_batch().is_none() {
-        // Nothing to process; forward unchanged (context preserved).
         return Ok(Some(OtapPdata::new(context, records.into())));
     }
 
-    match run(records)? {
+    match run(records).await? {
         Some(updated_records) => Ok(Some(OtapPdata::new(context, updated_records.into()))),
         None => Ok(None),
     }
@@ -110,11 +103,12 @@ mod tests {
             Context::default(),
             OtapArrowRecords::Logs(Logs::default()).into(),
         );
-        let output = run_on_otap_records(input, |_records| {
-            panic!("closure should not be called for empty/rootless payload")
-        })
-        .expect("run_on_otap_records should pass through empty payloads")
-        .expect("empty payload should be forwarded, not dropped");
+        let output =
+            futures::executor::block_on(run_on_otap_records_async(input, |_records| async {
+                panic!("closure should not be called for empty/rootless payload")
+            }))
+            .expect("run_on_otap_records_async should pass through empty payloads")
+            .expect("empty payload should be forwarded, not dropped");
 
         let (_ctx, payload) = output.into_parts();
         let records: OtapArrowRecords = payload
@@ -131,7 +125,10 @@ mod tests {
     #[test]
     fn returns_none_when_guest_drops_the_batch() {
         let input = logs_pdata_with_severities(&["ERROR", "INFO"]);
-        let output = run_on_otap_records(input, |_records| Ok(None))
+        let output =
+            futures::executor::block_on(run_on_otap_records_async(input, |_records| async {
+                Ok(None)
+            }))
             .expect("guest-returned None is not an error");
         assert!(output.is_none(), "guest None must drop the input batch");
     }
@@ -142,18 +139,21 @@ mod tests {
     fn replaces_root_batch_with_guest_output() {
         let input = logs_pdata_with_severities(&["ERROR", "INFO", "ERROR"]);
 
-        let output = run_on_otap_records(input, |mut records| {
-            let root_type = records.root_payload_type();
-            let batch = records
-                .get(root_type)
-                .expect("root batch present in logs payload");
-            let keep = arrow::array::BooleanArray::from(vec![true, false, true]);
-            let filtered = filter_record_batch(batch, &keep).expect("filter root logs batch");
-            records
-                .set(root_type, filtered)
-                .expect("set filtered root batch");
-            Ok(Some(records))
-        })
+        let output = futures::executor::block_on(run_on_otap_records_async(
+            input,
+            |mut records| async move {
+                let root_type = records.root_payload_type();
+                let batch = records
+                    .get(root_type)
+                    .expect("root batch present in logs payload");
+                let keep = arrow::array::BooleanArray::from(vec![true, false, true]);
+                let filtered = filter_record_batch(batch, &keep).expect("filter root logs batch");
+                records
+                    .set(root_type, filtered)
+                    .expect("set filtered root batch");
+                Ok(Some(records))
+            },
+        ))
         .expect("guest success should map to Ok")
         .expect("guest returned a replacement payload");
 
@@ -165,11 +165,12 @@ mod tests {
     #[test]
     fn propagates_guest_errors() {
         let input = logs_pdata_with_severities(&["ERROR", "INFO"]);
-        let result = run_on_otap_records(input, |_records| {
-            Err(EngineError::RuntimeMsgError {
-                error: "guest failed".to_string(),
-            })
-        });
+        let result =
+            futures::executor::block_on(run_on_otap_records_async(input, |_records| async {
+                Err(EngineError::RuntimeMsgError {
+                    error: "guest failed".to_string(),
+                })
+            }));
 
         assert!(
             matches!(result, Err(EngineError::RuntimeMsgError { .. })),
@@ -182,7 +183,10 @@ mod tests {
     #[test]
     fn preserves_record_attributes_across_round_trip() {
         let input = logs_pdata_with_severities(&["ERROR", "INFO", "ERROR"]);
-        let output = run_on_otap_records(input, |records| Ok(Some(records)))
+        let output =
+            futures::executor::block_on(run_on_otap_records_async(input, |records| async {
+                Ok(Some(records))
+            }))
             .expect("bridge run succeeds")
             .expect("payload is not dropped");
 

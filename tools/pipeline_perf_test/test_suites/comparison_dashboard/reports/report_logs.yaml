@@ -330,11 +330,16 @@ queries:
 
           UNION ALL
 
-          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+          -- If we run into a scenario where 0 signals make it to the backend
+          -- because the SUT is misbehaving, then it's possible for the engine
+          -- to omit certain metrics that never had a value. In that case
+          -- we still want to record a 0 for this metric instead of a null or
+          -- the report breaks.
+          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit,
+                COALESCE(ltr.logs_per_second, 0) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
-          FROM log_throughput_rates
-          CROSS JOIN metadata_row
-          WHERE metric_name = 'logs'
+          FROM metadata_row
+          LEFT JOIN log_throughput_rates ltr ON ltr.metric_name = 'logs'
 
           UNION ALL
 
@@ -362,18 +367,22 @@ queries:
 
           UNION ALL
 
+          -- If we run into a scenario where 0 signals make it to the backend
+          -- because the SUT is misbehaving, then it's possible for the engine
+          -- to omit certain metrics that never had a value. In that case
+          -- we still want to record a 0 for this metric instead of a null or
+          -- the report breaks.
           SELECT 'egress_bytes_per_log' AS name, 'bytes/log' AS unit,
-                CASE WHEN ltr.logs_per_second > 0
+                CASE WHEN COALESCE(ltr.logs_per_second, 0) > 0
                   THEN cnr.average_rate / ltr.logs_per_second
-                  ELSE NULL
+                  ELSE 0
                 END AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Egress Bytes Per Log' AS extra
-          FROM container_network_rates cnr
-          CROSS JOIN log_throughput_rates ltr
-          CROSS JOIN metadata_row
-          WHERE cnr.metric_name = 'container.network.tx'
+          FROM metadata_row
+          LEFT JOIN container_network_rates cnr
+            ON cnr.metric_name = 'container.network.tx'
             AND cnr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel', 'kafka-producer', 'kafka-consumer')
-            AND ltr.metric_name = 'logs'
+          LEFT JOIN log_throughput_rates ltr ON ltr.metric_name = 'logs'
 
           UNION ALL
 

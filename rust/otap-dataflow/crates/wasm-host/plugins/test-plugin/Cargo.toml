@@ -1,0 +1,18 @@
+[package]
+name = "wasm-host-test-guest"
+description = "Test-only WASM guest fixture for wasm-host failure and resource-limit coverage"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.62", features = ["async", "macros", "realloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

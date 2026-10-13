@@ -71,6 +71,7 @@ enum ScalarKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CursorColumns {
+    Snapshot,
     Composite {
         timestamp: usize,
         tie_breaker: usize,
@@ -380,6 +381,14 @@ impl DriverAdapter for OracleAdapter {
         }
     }
 
+    fn should_pause_source(error: &Self::Error) -> bool {
+        matches!(
+            error,
+            OracleAdapterError::SnapshotRowLimit { .. }
+                | OracleAdapterError::SnapshotNormalizedByteLimit { .. }
+        )
+    }
+
     async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
         let initial = query.watermark().initial();
         self.run_blocking(query, &initial, reconnect_blocking).await
@@ -452,6 +461,8 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::UnsupportedCursorTieBreaker
             | OracleAdapterError::InvalidCursorTimestamp
             | OracleAdapterError::CursorTimestampPrecisionLoss { .. }
+            | OracleAdapterError::SnapshotRowLimit { .. }
+            | OracleAdapterError::SnapshotNormalizedByteLimit { .. }
             | OracleAdapterError::NormalizedByteLimit { .. }
             | OracleAdapterError::ResultMetadataChanged
             | OracleAdapterError::UnsupportedType
@@ -569,6 +580,7 @@ fn execute_blocking(
 
     let mut rows = Vec::new();
     let mut payload_bytes = 0;
+    let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
     for _ in 0..query.max_rows() {
         cancellation.ensure_not_requested()?;
         let Some(row) = result_set.next() else { break };
@@ -577,7 +589,7 @@ fn execute_blocking(
         let normalized = normalize_row(&row, &prepared.types, cancellation)?;
         cancellation.ensure_not_requested()?;
         let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
-        if !push_bounded_row(
+        let pushed = match push_bounded_row(
             &mut rows,
             &mut payload_bytes,
             CursorRow {
@@ -586,8 +598,39 @@ fn execute_blocking(
             },
             query.max_rows(),
             query.max_normalized_bytes(),
-        )? {
+        ) {
+            Ok(pushed) => pushed,
+            Err(OracleAdapterError::NormalizedByteLimit { limit, .. }) if snapshot => {
+                return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
+                    rows: rows.len(),
+                    limit,
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if !pushed {
+            if snapshot {
+                return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
+                    rows: rows.len(),
+                    limit: query.max_normalized_bytes(),
+                });
+            }
             break;
+        }
+    }
+    // Probe one extra row, without normalizing it, to distinguish an exact-fit
+    // snapshot from a truncated result. Never acknowledge a partial snapshot.
+    if snapshot && rows.len() == query.max_rows() {
+        cancellation.ensure_not_requested()?;
+        let extra = result_set
+            .next()
+            .transpose()
+            .map_err(|error| OracleAdapterError::Fetch(error.into()))?;
+        cancellation.ensure_not_requested()?;
+        if extra.is_some() {
+            return Err(OracleAdapterError::SnapshotRowLimit {
+                limit: query.max_rows(),
+            });
         }
     }
     drop(result_set);
@@ -669,6 +712,7 @@ fn bind_cursor<'a>(
         .validate_cursor(cursor)
         .map_err(|_| OracleAdapterError::InvalidScalarCursor)?;
     let result = match (query.watermark(), cursor) {
+        (CompiledWatermark::Snapshot, Cursor::Snapshot) => statement.query_named(&[]),
         (CompiledWatermark::Composite(watermark), Cursor::Composite(cursor)) => {
             let timestamp_type =
                 timestamp_type.ok_or(OracleAdapterError::UnsupportedCursorTimestamp)?;
@@ -921,6 +965,7 @@ fn validate_cursor_columns(
         .collect::<Vec<_>>();
     let plan = validate_described_watermark(&described, query.watermark())?;
     let (first, second) = match plan {
+        CursorColumns::Snapshot => return Ok(plan),
         CursorColumns::Composite {
             timestamp,
             tie_breaker,
@@ -938,6 +983,7 @@ fn validate_described_watermark(
     watermark: &CompiledWatermark,
 ) -> Result<CursorColumns, OracleAdapterError> {
     match watermark {
+        CompiledWatermark::Snapshot => Ok(CursorColumns::Snapshot),
         CompiledWatermark::Composite(spec) => {
             let (timestamp, tie_breaker) = validate_described_cursor_columns(columns, spec)?;
             Ok(CursorColumns::Composite {
@@ -985,6 +1031,7 @@ pub(super) fn validate_scalar_value(value: &ScalarValue) -> Result<(), OracleAda
 
 fn cursor_heap_bytes(cursor: &Cursor) -> u64 {
     match cursor {
+        Cursor::Snapshot => 0,
         Cursor::Composite(value) => value.timestamp.capacity() as u64,
         Cursor::Scalar(ScalarValue::String(value) | ScalarValue::Timestamp(value)) => {
             value.capacity() as u64
@@ -999,6 +1046,7 @@ fn extract_normalized_watermark(
     columns: CursorColumns,
 ) -> Result<Cursor, OracleAdapterError> {
     let (index, kind) = match columns {
+        CursorColumns::Snapshot => return Ok(Cursor::Snapshot),
         CursorColumns::Composite {
             timestamp,
             tie_breaker,
@@ -1043,7 +1091,7 @@ fn timestamp_type_for_cursor(
             index,
             kind: ScalarKind::Timestamp,
         } => index,
-        CursorColumns::Scalar { .. } => return Ok(None),
+        CursorColumns::Scalar { .. } | CursorColumns::Snapshot => return Ok(None),
     };
     let source_type = types
         .get(index)
@@ -1513,6 +1561,22 @@ pub enum OracleAdapterError {
     /// Credential acquisition exceeded the configured query timeout.
     #[error("Oracle authentication provider acquisition timed out")]
     CredentialTimeout,
+    /// A complete snapshot has more rows than the configured row bound.
+    #[error("complete snapshot exceeds query.max_rows_per_poll ({limit} rows)")]
+    SnapshotRowLimit {
+        /// Configured maximum number of rows in one complete snapshot.
+        limit: usize,
+    },
+    /// A complete snapshot exceeds the normalized-memory bound after a safe prefix.
+    #[error(
+        "complete snapshot exceeds normalized query.max_batch_bytes ({limit} bytes) after {rows} complete rows"
+    )]
+    SnapshotNormalizedByteLimit {
+        /// Number of complete rows that fit before the rejected row.
+        rows: usize,
+        /// Configured normalized-memory limit.
+        limit: u64,
+    },
     /// Declared scalar type cannot be fetched without coercion from the result column.
     #[error("Oracle scalar watermark column has an incompatible type")]
     UnsupportedScalarType,
@@ -1648,3 +1712,7 @@ oracle_module_tests!(adapter);
 #[cfg(test)]
 #[path = "scalar_adapter_tests.rs"]
 mod scalar_tests;
+
+#[cfg(test)]
+#[path = "snapshot_adapter_tests.rs"]
+mod snapshot_tests;
