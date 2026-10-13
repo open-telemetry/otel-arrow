@@ -184,9 +184,9 @@ impl SqlServerReceiverConfig {
     }
 }
 
-/// SQL Server endpoint and mandatory-verification TLS settings.
+/// SQL Server endpoint and secure-by-default, SQL Server-specific TLS settings.
 ///
-/// No credential, connection-string, insecure-TLS, or retry override is accepted.
+/// No credential, connection-string, or retry override is accepted.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqlServerConnectionConfig {
@@ -207,7 +207,7 @@ impl fmt::Debug for SqlServerConnectionConfig {
 }
 
 impl SqlServerConnectionConfig {
-    /// Returns the DNS name or IP address used for both connection and certificate identity.
+    /// Returns the connection address and default TLS identity when no override is configured.
     #[must_use]
     pub fn host(&self) -> &str {
         &self.host
@@ -231,6 +231,30 @@ impl SqlServerConnectionConfig {
         self.connect_timeout
     }
 
+    /// Returns whether TLS is required, with no fallback to a non-TLS connection.
+    ///
+    /// False requests a non-TLS connection, which SQL Server policy may refuse.
+    #[must_use]
+    pub const fn tls_enabled(&self) -> bool {
+        self.tls.enabled
+    }
+
+    /// Returns whether both certificate-chain and hostname validation are bypassed.
+    ///
+    /// This explicit opt-in is intended only for controlled testing.
+    #[must_use]
+    pub const fn trust_server_certificate(&self) -> bool {
+        self.tls.trust_server_certificate
+    }
+
+    /// Returns an optional TLS identity/SNI override, not a new connection address.
+    ///
+    /// When certificate trust is bypassed, this can still set SNI but is not verified.
+    #[must_use]
+    pub fn server_name_override(&self) -> Option<&str> {
+        self.tls.server_name_override.as_deref()
+    }
+
     /// Returns an optional CA file that augments verified platform trust.
     #[must_use]
     pub fn ca_file(&self) -> Option<&Path> {
@@ -238,23 +262,7 @@ impl SqlServerConnectionConfig {
     }
 
     fn validate(&mut self) -> Result<(), SqlServerConfigError> {
-        if self.host.parse::<IpAddr>().is_err() {
-            if self.host.len() > 253
-                || self.host.is_empty()
-                || self.host.split('.').any(|label| {
-                    label.is_empty()
-                        || label.len() > 63
-                        || !label.as_bytes()[0].is_ascii_alphanumeric()
-                        || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
-                        || !label
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                })
-            {
-                return Err(error("connection.host must be a DNS name or IP address"));
-            }
-            self.host.make_ascii_lowercase();
-        }
+        validate_host(&mut self.host, "connection.host")?;
         if self.port == 0 {
             return Err(error("connection.port must be between 1 and 65535"));
         }
@@ -275,15 +283,72 @@ impl SqlServerConnectionConfig {
         {
             return Err(error("connection.tls.ca_file must be a nonempty path"));
         }
+        if let Some(name) = &mut self.tls.server_name_override {
+            validate_host(name, "connection.tls.server_name_override")?;
+        }
+        if !self.tls.enabled
+            && (self.tls.ca_file.is_some()
+                || self.tls.server_name_override.is_some()
+                || self.tls.trust_server_certificate)
+        {
+            return Err(error(
+                "connection.tls.enabled=false cannot be combined with ca_file, server_name_override, or trust_server_certificate=true",
+            ));
+        }
+        if self.tls.trust_server_certificate && self.tls.ca_file.is_some() {
+            return Err(error(
+                "connection.tls.ca_file cannot be combined with trust_server_certificate=true",
+            ));
+        }
         Ok(())
     }
 }
 
-#[derive(Default, Deserialize)]
+fn validate_host(value: &mut str, field: &'static str) -> Result<(), SqlServerConfigError> {
+    if value.parse::<IpAddr>().is_err() {
+        if value.len() > 253
+            || value.is_empty()
+            || value.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || !label.as_bytes()[0].is_ascii_alphanumeric()
+                    || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                    || !label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+        {
+            return Err(SqlServerConfigError(format!(
+                "{field} must be a DNS name or IP address"
+            )));
+        }
+        value.make_ascii_lowercase();
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TlsConfig {
-    #[serde(default, deserialize_with = "deserialize_ca_file")]
+    #[serde(default = "default_tls_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    trust_server_certificate: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     ca_file: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    server_name_override: Option<String>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_tls_enabled(),
+            trust_server_certificate: false,
+            ca_file: None,
+            server_name_override: None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -418,6 +483,9 @@ pub(super) fn normalize_timestamp(value: &str) -> Result<String, SqlServerConfig
 const fn default_port() -> u16 {
     1433
 }
+const fn default_tls_enabled() -> bool {
+    true
+}
 const fn default_connect_timeout() -> Duration {
     Duration::from_secs(10)
 }
@@ -436,7 +504,7 @@ fn deserialize_bytes<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, 
         .ok_or_else(|| D::Error::custom("query.max_batch_bytes must not be null"))
 }
 
-fn deserialize_ca_file<'de, D: Deserializer<'de>>(
+fn deserialize_optional_string<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)

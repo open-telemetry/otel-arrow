@@ -80,6 +80,9 @@ fn composite_defaults_and_native_binding_plan() {
         Duration::from_secs(10)
     );
     assert!(config.connection().ca_file().is_none());
+    assert!(config.connection().tls_enabled());
+    assert!(!config.connection().trust_server_certificate());
+    assert!(config.connection().server_name_override().is_none());
     assert_eq!(config.query().interval(), Duration::from_secs(60));
     assert_eq!(config.query().timeout(), Duration::from_secs(30));
     assert_eq!(config.query().fetch_size_rows(), 300);
@@ -740,10 +743,10 @@ fn fingerprint_tracks_source_semantics() {
     assert_eq!(parse(raw).config_fingerprint(), expected);
 }
 
-/// Scenario: Unknown fields attempt to supply credentials, weaken TLS, or change the outer schema.
-/// Guarantees: Receiver-local secrets, insecure overrides, and null optional settings fail closed.
+/// Scenario: Unknown fields attempt to supply credentials or unsupported connection/TLS settings.
+/// Guarantees: Secrets, misplaced TLS options, unsupported aliases, and null CA settings fail closed.
 #[test]
-fn rejects_credentials_insecure_options_and_unknown_fields() {
+fn rejects_credentials_and_unknown_fields() {
     for (object, field, value) in [
         ("connection", "password", json!("secret")),
         ("connection", "username", json!("reader")),
@@ -766,6 +769,198 @@ fn rejects_credentials_insecure_options_and_unknown_fields() {
     let mut raw = composite();
     raw["authentication"] = json!({"password_file":"secret"});
     rejects(raw);
+}
+
+/// Scenario: TLS is omitted, empty, or explicitly configured with secure defaults.
+/// Guarantees: Every form requires TLS and verification, with no implicit identity override.
+#[test]
+fn tls_defaults_require_encryption_and_verification() {
+    for tls in [
+        None,
+        Some(json!({})),
+        Some(json!({"enabled":true, "trust_server_certificate":false})),
+    ] {
+        let mut raw = composite();
+        if let Some(tls) = tls {
+            raw["connection"]["tls"] = tls;
+        }
+        let config = parse(raw);
+        assert!(config.connection().tls_enabled());
+        assert!(!config.connection().trust_server_certificate());
+        assert!(config.connection().ca_file().is_none());
+        assert!(config.connection().server_name_override().is_none());
+        assert_eq!(config.connection().host(), "sql.example.test");
+    }
+}
+
+/// Scenario: All combinations of TLS, trust bypass, CA path, and identity override are prepared.
+/// Guarantees: Conflicting/inapplicable options fail; an enabled trust bypass may still request SNI.
+#[test]
+fn validates_tls_option_combinations() {
+    for enabled in [false, true] {
+        for trust in [false, true] {
+            for ca in [false, true] {
+                for override_name in [false, true] {
+                    let mut tls = json!({
+                        "enabled":enabled, "trust_server_certificate":trust
+                    });
+                    if ca {
+                        tls["ca_file"] = json!("not-loaded.pem");
+                    }
+                    if override_name {
+                        tls["server_name_override"] = json!("TLS.EXAMPLE.TEST");
+                    }
+                    let mut raw = composite();
+                    raw["connection"]["tls"] = tls;
+                    let result = serde_json::from_value::<SqlServerReceiverConfig>(raw);
+                    let valid = if enabled {
+                        !(trust && ca)
+                    } else {
+                        !trust && !ca && !override_name
+                    };
+                    assert_eq!(
+                        result.is_ok(),
+                        valid,
+                        "enabled={enabled}, trust={trust}, ca={ca}, override={override_name}"
+                    );
+                    if valid {
+                        let config = result.unwrap();
+                        assert_eq!(config.connection().tls_enabled(), enabled);
+                        assert_eq!(config.connection().trust_server_certificate(), trust);
+                        assert_eq!(
+                            config.connection().server_name_override(),
+                            override_name.then_some("tls.example.test")
+                        );
+                        assert_eq!(config.connection().ca_file().is_some(), ca);
+                        assert_eq!(config.connection().host(), "sql.example.test");
+                    }
+                }
+            }
+        }
+    }
+    let mut raw = composite();
+    raw["connection"]["tls"] = json!({"enabled":false});
+    let config = parse(raw);
+    assert!(!config.connection().tls_enabled());
+    assert!(!config.connection().trust_server_certificate());
+}
+
+/// Scenario: Explicit TLS fields contain null, nonboolean flags, or invalid optional string values.
+/// Guarantees: Invalid fields never silently become secure defaults or omitted transport options.
+#[test]
+fn rejects_invalid_tls_field_types_and_ca_paths() {
+    for field in ["enabled", "trust_server_certificate"] {
+        for value in [
+            Value::Null,
+            json!("true"),
+            json!("false"),
+            json!(0),
+            json!(1),
+            json!([]),
+            json!({}),
+        ] {
+            let mut raw = composite();
+            raw["connection"]["tls"] = json!({field:value});
+            rejects(raw);
+        }
+    }
+    for field in ["ca_file", "server_name_override"] {
+        for value in [Value::Null, json!(true), json!(1), json!([]), json!({})] {
+            let mut raw = composite();
+            raw["connection"]["tls"] = json!({field:value});
+            rejects(raw);
+        }
+    }
+    for path in ["", " \t ", "invalid\0path"] {
+        let mut raw = composite();
+        raw["connection"]["tls"] = json!({"ca_file":path});
+        rejects(raw);
+    }
+    let mut raw = composite();
+    raw["connection"]["tls"] = Value::Null;
+    rejects(raw);
+}
+
+/// Scenario: A TLS identity is a DNS name or unbracketed IP, including exact DNS length boundaries.
+/// Guarantees: Identity and host use identical syntax/normalization rules without changing the endpoint.
+#[test]
+fn validates_tls_server_name_with_host_rules() {
+    let max_dns = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    for name in [
+        "TLS.EXAMPLE.TEST",
+        "localhost",
+        "127.0.0.1",
+        "2001:db8::1",
+        &max_dns,
+    ] {
+        let mut raw = composite();
+        raw["connection"]["tls"] = json!({"server_name_override":name});
+        let config = parse(raw);
+        assert_eq!(
+            config.connection().server_name_override(),
+            Some(name.to_ascii_lowercase().as_str())
+        );
+        assert_eq!(config.connection().host(), "sql.example.test");
+    }
+    for name in [
+        "",
+        " ",
+        "*.example.test",
+        "https://sql.example.test",
+        "sql.example.test:1433",
+        "user@sql.example.test",
+        "[::1]",
+        "sql\\instance",
+        "bad_name",
+        "-bad.test",
+        "bad-.test",
+        "bad..test",
+        ".bad",
+        "bad.",
+        "bad\nname",
+        "bad\0name",
+        "non-ascii-\u{00e9}.test",
+        &"a".repeat(64),
+        &format!("{max_dns}d"),
+    ] {
+        for trust in [false, true] {
+            let mut raw = composite();
+            raw["connection"]["tls"] = json!({
+                "server_name_override":name, "trust_server_certificate":trust
+            });
+            rejects(raw);
+        }
+        let mut raw = composite();
+        raw["connection"]["host"] = json!(name);
+        rejects(raw);
+    }
+}
+
+/// Scenario: Only TLS transport options change for the same logical source and query.
+/// Guarantees: Encryption mode, trust policy, CA path, and TLS identity never change cursor compatibility.
+#[test]
+fn fingerprint_excludes_tls_transport_settings() {
+    let expected = parse(composite()).config_fingerprint().to_owned();
+    for tls in [
+        json!({}),
+        json!({"enabled":true, "trust_server_certificate":false}),
+        json!({"enabled":false}),
+        json!({"trust_server_certificate":true}),
+        json!({"ca_file":"not-loaded.pem"}),
+        json!({"server_name_override":"different.example.test"}),
+        json!({"trust_server_certificate":true, "server_name_override":"different.example.test"}),
+        json!({"ca_file":"not-loaded.pem", "server_name_override":"127.0.0.1"}),
+    ] {
+        let mut raw = composite();
+        raw["connection"]["tls"] = tls;
+        assert_eq!(parse(raw).config_fingerprint(), expected);
+    }
 }
 
 /// Scenario: Required sections are missing or nested policy objects contain unknown fields.
@@ -915,6 +1110,10 @@ fn all_preparation_diagnostics_are_redacted() {
     let mut raw = composite();
     raw["connection"]["host"] = json!("sensitive-host.example");
     raw["connection"]["database"] = json!("sensitive-database");
+    raw["connection"]["tls"] = json!({
+        "server_name_override":"sensitive-tls.example",
+        "ca_file":"sensitive-ca.pem"
+    });
     raw["query"]["statement"] = json!(
         raw["query"]["statement"]
             .as_str()
@@ -931,6 +1130,8 @@ fn all_preparation_diagnostics_are_redacted() {
     for sentinel in [
         "sensitive-host",
         "sensitive-database",
+        "sensitive-tls",
+        "sensitive-ca",
         "sensitive-row",
         "2026-01-01",
     ] {
@@ -947,6 +1148,17 @@ fn all_preparation_diagnostics_are_redacted() {
         let err = serde_json::from_value::<SqlServerReceiverConfig>(invalid).unwrap_err();
         assert!(!format!("{err} {err:?}").contains("SENSITIVE"));
     }
+    for tls in [
+        json!({"server_name_override":"SENSITIVE;invalid"}),
+        json!({"enabled":false, "server_name_override":"SENSITIVE.example"}),
+        json!({"trust_server_certificate":true, "ca_file":"SENSITIVE.pem"}),
+        json!({"server_name_override":null, "ca_file":"SENSITIVE.pem"}),
+    ] {
+        let mut invalid = raw.clone();
+        invalid["connection"]["tls"] = tls;
+        let err = serde_json::from_value::<SqlServerReceiverConfig>(invalid).unwrap_err();
+        assert!(!format!("{err} {err:?}").contains("SENSITIVE"));
+    }
 }
 
 /// Scenario: Preparation uses a nonexistent CA file and checkpoint directory.
@@ -958,7 +1170,9 @@ fn preparation_has_no_filesystem_side_effects() {
     let ca = dir.path().join("not-loaded.pem");
     let mut raw = composite();
     raw["checkpoint"]["directory"] = json!(state);
-    raw["connection"]["tls"] = json!({"ca_file":ca});
+    raw["connection"]["tls"] = json!({
+        "ca_file":ca, "server_name_override":"not-resolved.example"
+    });
     let config = parse(raw);
     assert_eq!(config.connection().ca_file(), Some(ca.as_path()));
     assert!(!state.exists());

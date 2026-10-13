@@ -35,9 +35,9 @@ than replaced with defaults. The required top-level objects are `connection`,
 
 - `source_id`: 1..256 ASCII letters, digits, underscores, hyphens, or dots.
 - `connection`: explicit `host` (DNS name or IP) and `database`; optional `port`
-  (default 1433), `connect_timeout` (default 10s), and `tls.ca_file`. The CA path
-  is validated syntactically, not opened. Credentials, connection strings,
-  instance discovery, and insecure TLS overrides are rejected.
+  (default 1433), `connect_timeout` (default 10s), and the SQL Server-only `tls`
+  settings below. Credentials, connection strings, and instance discovery are
+  rejected.
 - `query`: `statement`, `max_rows_per_poll`, and `max_batch_bytes` are required.
   `interval` defaults to 60s, `timeout` to 30s, and `fetch_size_rows` to 300.
   Shared `catch_up` defaults are 32 pages and 10s.
@@ -51,6 +51,40 @@ per poll, a nonzero fetch size no larger than the row limit, and batch capacity
 from one byte through 256 MiB. Catch-up permits 1..1024 pages and a duration
 from 1ms through 5 minutes. Existing shared scraper and Oracle
 configuration and checkpoint representations are unchanged.
+
+### SQL Server TLS Settings
+
+These `connection.tls` settings prepare a transport contract for the future
+adapter. **Part 1 does not implement TLS connections or any runtime mode.**
+They are SQL Server-specific; shared database/TLS configuration is unchanged.
+
+| Field | Default | Prepared meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Require TLS with no silent non-TLS fallback. |
+| `trust_server_certificate` | `false` | When true, bypass both certificate-chain and hostname validation; controlled testing only. |
+| `ca_file` | Omitted | Optional PEM CA path; validated syntactically, never opened during preparation. |
+| `server_name_override` | Omitted | Optional DNS name or unbracketed IP for TLS identity/SNI, instead of `connection.host`; not a new connection address. |
+
+Omitting `tls` or supplying an empty object preserves TLS and certificate/name
+verification. Explicit null or nonboolean flags are rejected. Optional strings
+must not be null; CA paths must be nonempty, and identity overrides follow the
+same DNS/IP rules as `host`, rejecting whitespace, wildcards, URLs, ports,
+userinfo, bracketed IPs, and control characters. DNS names normalize to lowercase.
+
+`enabled: false` requests a non-TLS connection; SQL Server policy may refuse it
+or require encryption. The future Tiberius mapping is `NotSupported`, not `Off`
+(which uses login-only TLS). A disabled TLS contract rejects `ca_file`,
+`server_name_override`, and `trust_server_certificate: true` as inapplicable;
+an omitted or explicit false trust flag is allowed.
+
+With TLS enabled, `ca_file` conflicts with `trust_server_certificate: true`;
+preparation rejects the combination instead of silently ignoring CA trust.
+An identity override may coexist with the trust bypass to set SNI, but **neither
+the certificate chain nor its name is validated** in that testing mode.
+
+Connection accessors `tls_enabled()`, `trust_server_certificate()`, and
+`server_name_override()` expose this contract. The override getter returns
+`None` when omitted, meaning use `host()` for TLS identity.
 
 ### Cursor Modes
 
@@ -132,9 +166,10 @@ database, canonical SQL, and normalized cursor configuration. SQL whitespace and
 DNS-name case are normalized. Changing source/query/cursor semantics changes
 the fingerprint.
 
-Polling budgets, timeouts, CA paths, checkpoint location, and retry tuning are
-excluded. Credentials are not accepted by this configuration and cannot enter
-the fingerprint. No shared checkpoint format is changed.
+Polling budgets, timeouts, all TLS transport settings (including encryption,
+trust bypass, CA paths, and identity override), checkpoint location, and retry
+tuning are excluded. Credentials are not accepted by this configuration and
+cannot enter the fingerprint. No shared checkpoint format is changed.
 
 ## Focused Development Checks
 
