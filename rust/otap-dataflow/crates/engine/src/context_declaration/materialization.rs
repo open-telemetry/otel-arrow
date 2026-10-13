@@ -305,8 +305,9 @@ impl MaterializedContextEntry {
             .map(|index| &self.members[index])
     }
 
-    fn matches_declaration(&self, declaration: &ContextEntryDeclaration) -> bool {
-        self.provenance.as_ref() == declaration
+    fn matches_declaration(&self, declaration: &Arc<ContextEntryDeclaration>) -> bool {
+        Arc::ptr_eq(&self.provenance, declaration)
+            || self.provenance.as_ref() == declaration.as_ref()
     }
 }
 
@@ -359,7 +360,7 @@ impl MaterializedContext {
     fn is_materialized(
         &self,
         entry: &ContextEntryLayout,
-        declaration: &ContextEntryDeclaration,
+        declaration: &Arc<ContextEntryDeclaration>,
     ) -> bool {
         self.entry(&entry.name)
             .is_some_and(|materialized| materialized.matches_declaration(declaration))
@@ -400,7 +401,7 @@ impl MaterializedContext {
                 .iter()
                 .position(|materialized| materialized.name == entry.name)
             {
-                if entries[index].matches_declaration(declaration.as_ref()) {
+                if entries[index].matches_declaration(declaration) {
                     continue;
                 }
                 _ = entries.remove(index);
@@ -481,7 +482,7 @@ impl MaterializedContext {
         let layout = plan.layout.projected_entry(layout, *entry, members)?;
         let declaration = plan.declaration(*entry)?;
         let materialized = self.entry(&layout.name)?;
-        if !materialized.matches_declaration(declaration.as_ref()) {
+        if !materialized.matches_declaration(declaration) {
             return None;
         }
         members
