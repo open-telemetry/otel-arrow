@@ -432,6 +432,41 @@ fn rejects_unsupported_statement_shapes() {
     }
 }
 
+/// Scenario: The parser accepts a non-T-SQL equality spelling in filters and cursor predicates.
+/// Guarantees: Double-equals operators never reach native SQL, and rejection redacts query content.
+#[test]
+fn rejects_double_equals_operators() {
+    for mut raw in [
+        snapshot("SELECT EVENT_ID FROM dbo.EVENTS WHERE PAYLOAD = 'SENSITIVE'"),
+        composite(),
+    ] {
+        let statement = raw["query"]["statement"]
+            .as_str()
+            .unwrap()
+            .replace(" = ", " == ");
+        raw["query"]["statement"] = json!(statement);
+        let error = serde_json::from_value::<SqlServerReceiverConfig>(raw).unwrap_err();
+        assert!(!format!("{error} {error:?}").contains("SENSITIVE"));
+    }
+}
+
+/// Scenario: Supported comparisons and quoted double-equals text appear in snapshot queries.
+/// Guarantees: Token validation preserves T-SQL comparisons, literal contents, and bracketed names.
+#[test]
+fn accepts_supported_operators_and_quoted_double_equals() {
+    for operator in ["=", "!=", "<>", ">", ">=", "<", "<="] {
+        let config = parse(snapshot(&format!(
+            "SELECT [==], 'a==b' AS TEXT, N'==' AS NTEXT FROM dbo.EVENTS WHERE EVENT_ID {operator} 1"
+        )));
+        let sql = config.statement().driver_sql();
+        assert!(sql.contains("[==]"));
+        assert!(sql.contains("'a==b'"));
+        assert!(sql.contains("N'=='"));
+        let rendered = if operator == "!=" { "<>" } else { operator };
+        assert!(sql.contains(&format!("EVENT_ID {rendered} 1")));
+    }
+}
+
 /// Scenario: END stops statement parsing before the end of a snapshot, scalar, or composite query.
 /// Guarantees: Unconsumed tokens never reach a prepared plan, and rejection does not expose them.
 #[test]

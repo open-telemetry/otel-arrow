@@ -192,6 +192,10 @@ fn parse(sql: &str) -> Result<(Box<Query>, Vec<Token>), SqlServerConfigError> {
     if matches!(tokens.last(), Some(Token::SemiColon)) {
         _ = tokens.pop();
     }
+    // The parser normalizes == to equality, but token rendering preserves its invalid spelling.
+    if tokens.iter().any(|token| matches!(token, Token::DoubleEq)) {
+        return Err(unsupported());
+    }
     if tokens.iter().any(|token| matches!(token, Token::SemiColon))
         || !matches!(tokens.first(), Some(Token::Word(word)) if word.quote_style.is_none() && word.value.eq_ignore_ascii_case("SELECT"))
     {
