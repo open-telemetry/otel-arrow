@@ -3643,6 +3643,7 @@ groups: {}
             writer_failed: true,
             deadline_expired: false,
             frames_pending: 7,
+            frames_refused: 0,
         };
         let writer_only = Controller::<()>::fold_console_output_result(Ok(()), writer_failed)
             .expect_err("writer failure must fail the run");
@@ -3669,6 +3670,7 @@ groups: {}
             writer_failed: false,
             deadline_expired: true,
             frames_pending: 2,
+            frames_refused: 0,
         };
         assert!(Controller::<()>::fold_console_output_result(Ok(()), timed_out).is_ok());
         let timed_out_engine =

@@ -390,8 +390,8 @@ Example configuration files can be found in the configs/ directory.{}",
 
 /// Stops the console writers after an engine run, reports its final status, and exits.
 ///
-/// Only a process host may call this, because the console streams accept no
-/// frames afterwards. The status is written only once both writers stopped: a
+/// Only a process host may call this, because the console writers never restart
+/// afterwards. The status is written only once both writers stopped: a
 /// writer that missed its deadline may still hold its stream lock. The write
 /// gives up after a short bound and ignores errors, so a stalled or closed
 /// stderr can neither hang the exit nor turn it into a panic.
@@ -410,11 +410,11 @@ fn terminal_status<E: Display>(
         // At least one writer may still hold its stream lock.
         return (1, None);
     }
-    if !output.drained {
+    if !output.drained || output.frames_refused > 0 {
         let status = match result {
             Ok(()) => format!(
                 "Console output was incomplete: {} frame(s) were not written",
-                output.frames_pending
+                output.frames_pending.saturating_add(output.frames_refused)
             ),
             Err(error) => format!("Pipeline failed to run: {error}"),
         };
@@ -958,8 +958,9 @@ groups:
     }
 
     /// Scenario: the process host maps run and writer outcomes to its final status.
-    /// Guarantees: success is reported only after a complete drain, joined failures
-    /// remain visible, and any possibly running writer suppresses direct output.
+    /// Guarantees: success is reported only after a complete drain that refused nothing,
+    /// joined failures remain visible, and any possibly running writer suppresses direct
+    /// output.
     #[test]
     fn terminal_status_respects_writer_lifetime() {
         let drained = ShutdownOutcome::default();
@@ -977,6 +978,7 @@ groups:
             writer_failed: true,
             deadline_expired: false,
             frames_pending: 3,
+            frames_refused: 0,
         };
         assert_eq!(
             terminal_status::<&str>(&Ok(()), writer_failed),
@@ -990,11 +992,24 @@ groups:
             (1, Some("Pipeline failed to run: engine failed".to_owned()))
         );
 
+        let refused = ShutdownOutcome {
+            frames_refused: 2,
+            ..ShutdownOutcome::default()
+        };
+        assert_eq!(
+            terminal_status::<&str>(&Ok(()), refused),
+            (
+                1,
+                Some("Console output was incomplete: 2 frame(s) were not written".to_owned())
+            )
+        );
+
         let timed_out = ShutdownOutcome {
             drained: false,
             writer_failed: false,
             deadline_expired: true,
             frames_pending: 2,
+            frames_refused: 0,
         };
         assert_eq!(terminal_status::<&str>(&Ok(()), timed_out), (1, None));
 

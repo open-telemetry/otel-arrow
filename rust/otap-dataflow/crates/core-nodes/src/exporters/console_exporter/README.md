@@ -71,7 +71,9 @@ At the end of an engine run, the controller waits up to five seconds for
 accepted frames to be written and flushed. The process-wide writer threads
 remain available for later runs in the same process. On final process shutdown,
 the engine attempts to drain and join them. Writer failures and incomplete
-drains are reported with the number of frames still pending.
+drains are reported with the number of frames still pending, as are frames
+refused while the writers were stopping. Output submitted after the writers
+have stopped is written directly to the standard stream.
 
 Only output submitted through this service receives the frame-integrity
 guarantee. Direct file-descriptor writes, child-process output, standalone
