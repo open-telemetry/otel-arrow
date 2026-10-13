@@ -425,7 +425,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     return res;
                 }
 
-                let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
                     Ok(arrow_pdata) => arrow_pdata,
                     Err(error) => {
                         let (error, pdata) = error.into_parts();
@@ -2263,7 +2263,7 @@ mod tests {
                 let first = out.into_iter().next().expect("one output").payload();
 
                 let otap_batch = match first.into_data() {
-                    PayloadData::OtapArrowRecords(otap_batch) => otap_batch,
+                    PayloadData::OtapRecords(otap_batch) => otap_batch,
                     _ => panic!("unexpected output payload type"),
                 };
 

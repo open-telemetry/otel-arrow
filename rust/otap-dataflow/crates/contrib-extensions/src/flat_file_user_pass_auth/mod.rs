@@ -90,7 +90,8 @@ fn create(
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
-    let refresh_policy = if config.password_secret_file.is_some() {
+    let refresh_policy = if config.username_file.is_some() || config.password_secret_file.is_some()
+    {
         BackgroundProviderRefreshPolicy::periodic(config.password_secret_file_refresh).map_err(
             |e| ConfigError::InvalidUserConfig {
                 error: format!("failed to initialize flat file user pass extension: {e}"),

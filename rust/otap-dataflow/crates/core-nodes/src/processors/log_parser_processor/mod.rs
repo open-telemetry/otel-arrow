@@ -181,7 +181,7 @@ impl Processor<OtapPdata> for LogParserProcessor {
                     effect_handler.send_message_with_source_node(pdata).await?;
                     return Ok(());
                 }
-                let pdata = match effect_handler.try_into_otap(pdata).await {
+                let pdata = match effect_handler.materialize_otap(pdata).await {
                     Ok(pdata) => pdata,
                     Err(error) => {
                         self.metrics

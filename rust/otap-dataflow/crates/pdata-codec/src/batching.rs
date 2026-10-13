@@ -17,7 +17,19 @@ use crate::{
     PdataEncoding, PdataFormat,
 };
 
-/// Reusable native batching implementation owned by one pipeline runtime.
+/// Reusable encoded batching implementation owned by one pipeline runtime.
+///
+/// Inputs are complete, independently decodable batches with the same encoding
+/// and signal. Each output must also decode independently: concatenating framed
+/// batches is valid only when the encoding defines that operation. Preserve item
+/// order within a call; the processor's in-range passthrough can overtake buffered
+/// inputs, so this is not a pipeline-wide ordering guarantee.
+///
+/// Honor the sizing and split-amplification budgets in [`BatchProfile`]. Sizes
+/// are measured before transport compression. Indivisible entries and exhausted
+/// budgets may produce outputs above the best-effort maximum. Return their count
+/// in [`CodecBatches::budget_fallbacks`]. A failure must leave the batcher usable
+/// for the next call. Delivery contexts and Ack/Nack routing remain in the node.
 pub trait PdataBatcher: Send {
     /// Re-batches complete encoded inputs in order.
     fn batch(
@@ -36,7 +48,8 @@ pub enum BatchSizer {
     Requests,
     /// Log records, spans, or metric data points.
     Items,
-    /// Encoded bytes, including format wrappers.
+    /// Complete encoded request bytes, including format wrappers and intrinsic
+    /// compression, but excluding HTTP/gRPC transport compression and framing.
     Bytes,
 }
 
@@ -129,6 +142,10 @@ impl BatchProfile {
     }
 
     /// The first size threshold reached by pending inputs.
+    ///
+    /// # Panics
+    /// Panics if neither size bound is set. Call [`Self::validate`] first;
+    /// [`BatchPlan::new`] validates before exposing a profile to a processor.
     #[must_use]
     pub fn lower_limit(&self) -> usize {
         self.min_size
@@ -168,7 +185,6 @@ pub struct CodecBatches {
 }
 
 impl PdataFormat {
-    /// Independently encoded OTLP protobuf bytes.
     /// Resolves a canonical format name or the legacy OTLP alias.
     pub fn resolve(registry: &CodecRegistry, name: &str) -> Result<Self, CodecError> {
         match name {
@@ -249,9 +265,16 @@ impl PdataFormat {
                         codec.encoding()
                     ))
                 })?;
+                if plan.codec() != codec {
+                    return Err(format_error(
+                        "output encoding plan does not match requested format",
+                    ));
+                }
                 let signal = payload.signal_type();
                 let bytes = payload.encode_bytes(service, plan)?;
-                let encoded = codec.admit(signal, bytes)?;
+                // The encoding plan validates the output capability and signal;
+                // output-only codecs need not support receiver admission.
+                let encoded = EncodedPdata::from_resolved(codec, signal, bytes);
                 *payload = OtapPayload::from_encoded(encoded);
                 Ok(())
             }
@@ -279,14 +302,9 @@ impl BatchPlan {
         profile.validate()?;
         let native = match format.codec() {
             None => profile.sizer == BatchSizer::Items,
-            Some(codec) => {
-                for signal in format.signals() {
-                    codec.require_decoder(*signal)?;
-                }
-                codec
-                    .batching_support()
-                    .is_some_and(|support| support.sizers.contains(&profile.sizer))
-            }
+            Some(codec) => codec
+                .batching_support()
+                .is_some_and(|support| support.sizers.contains(&profile.sizer)),
         };
         if !native && profile.sizer != BatchSizer::Items {
             return Err(format_error(format!(
@@ -294,6 +312,16 @@ impl BatchPlan {
                 format.name(),
                 profile.sizer
             )));
+        }
+        // Only fallback from an encoded input requires its decoder. Explicit
+        // output selection may target an encode-only codec through native OTAP.
+        if preserve
+            && !native
+            && let Some(codec) = format.codec()
+        {
+            for signal in format.signals() {
+                codec.require_decoder(*signal)?;
+            }
         }
         if !preserve && let Some(codec) = format.codec() {
             for signal in format.signals() {
@@ -346,12 +374,15 @@ impl BatchPlan {
         self.working
             .materialize(payload, service, self.encoding.as_ref())?;
         if self.profile.sizer == BatchSizer::Items && payload.known_item_count().is_none() {
-            let codec = self.working.codec().expect("native OTAP has item counts");
+            let view = payload
+                .encoded_view()
+                .ok_or_else(|| format_error("item count is unavailable for native batching"))?;
+            let codec = self
+                .working
+                .codec()
+                .ok_or_else(|| format_error("item count is unavailable for native batching"))?;
             let count = codec
-                .count_items(
-                    payload.signal_type(),
-                    payload.encoded_bytes().expect("encoded working format"),
-                )
+                .count_items(view.signal_type(), view.bytes())
                 .ok_or_else(|| format_error("item count is unavailable for encoded batching"))?;
             let replacement = payload.take_payload().with_item_count(count);
             *payload = replacement;
@@ -392,13 +423,14 @@ impl BatchPlan {
                     .map(|input| {
                         input
                             .try_into_otap(service)
-                            .expect("checked native OTAP working format")
+                            .map_err(|error| error.into_parts().0)
                     })
-                    .collect();
-                let limit = self
-                    .profile
-                    .max_size
-                    .map(|size| NonZeroU64::new(size.get() as u64).expect("nonzero"));
+                    .collect::<Result<Vec<_>, _>>()?;
+                let limit = self.profile.max_size.map(|size| {
+                    // SAFETY: supported targets have at most 64-bit usize,
+                    // so widening preserves a nonzero value.
+                    NonZeroU64::new(size.get() as u64).expect("nonzero size")
+                });
                 let batches =
                     otel_arrow_dfe_pdata::otap::batching::make_item_batches(signal, limit, records)
                         .map_err(|error| format_error(error.to_string()))?;
@@ -416,8 +448,12 @@ impl BatchPlan {
             Some(codec) => {
                 let inputs = inputs
                     .into_iter()
-                    .map(|input| input.into_encoded_bytes().expect("checked working format"))
-                    .collect();
+                    .map(|input| {
+                        input
+                            .into_encoded_bytes()
+                            .ok_or_else(|| format_error("batch input is not encoded"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let result = service.batch(codec, signal, &self.profile, inputs)?;
                 BatchingOutput {
                     batches: result
@@ -461,4 +497,182 @@ pub struct BatchingOutput {
 
 fn format_error(error: impl Into<String>) -> CodecError {
     CodecError::invalid_batch(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{DECODE_ONLY_ENCODING, ENCODE_ONLY_ENCODING};
+    use crate::{CodecServiceBuilder, DecodePolicy, DecodeValidation};
+    use otel_arrow_dfe_pdata::OtapPayloadHelpers;
+    use otel_arrow_dfe_pdata::testing::fixtures::{
+        logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
+        traces_with_full_resource_and_scope,
+    };
+    use prost::Message;
+
+    fn strict_service() -> CodecService {
+        CodecServiceBuilder::from_global_registry()
+            .unwrap()
+            .with_decode_policy(DecodePolicy::new(DecodeValidation::Strict))
+            .build()
+    }
+
+    /// Scenario: Repeated OTLP byte batching processes multiple logs, metrics, and traces requests.
+    /// Guarantees: Each output independently decodes, counts and ownership are conserved,
+    /// and native batching reuses one batcher without instantiating a decoder.
+    #[test]
+    fn native_batches_decode_independently_and_reuse_state() {
+        let service = strict_service();
+        let decoder = strict_service();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let cases = [
+            (
+                SignalType::Logs,
+                logs_with_full_resource_and_scope().encode_to_vec(),
+                4,
+            ),
+            (
+                SignalType::Metrics,
+                metrics_sum_with_full_resource_and_scope().encode_to_vec(),
+                2,
+            ),
+            (
+                SignalType::Traces,
+                traces_with_full_resource_and_scope().encode_to_vec(),
+                2,
+            ),
+        ];
+        for (signal, bytes, items) in cases {
+            let bytes = Bytes::from(bytes);
+            let plan = BatchPlan::new(
+                PdataFormat::encoded(codec),
+                BatchProfile {
+                    min_size: Some(0),
+                    max_size: NonZeroUsize::new(bytes.len() / 2),
+                    ..BatchProfile::otlp()
+                },
+                true,
+            )
+            .unwrap();
+            for _ in 0..2 {
+                let mut input =
+                    OtapPayload::from_encoded(codec.admit(signal, bytes.clone()).unwrap());
+                plan.prepare(&mut input, &service).unwrap();
+                assert_eq!(input.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                let result = plan
+                    .batch(signal, vec![input.clone(), input], &service)
+                    .unwrap();
+                assert!(result.batches.len() > 1);
+                assert_eq!(
+                    result
+                        .batches
+                        .iter()
+                        .map(|(_, weight)| *weight)
+                        .sum::<usize>(),
+                    2 * bytes.len()
+                );
+                let mut decoded_items = 0;
+                for (output, _) in result.batches {
+                    assert_eq!(output.format(), PdataFormat::encoded(codec));
+                    let records = output.try_into_otap(&decoder).unwrap();
+                    assert_eq!(records.signal_type(), signal);
+                    decoded_items += records.num_items();
+                }
+                assert_eq!(decoded_items, 2 * items);
+                assert_eq!(service.test_instance_count().unwrap(), 1);
+            }
+        }
+    }
+
+    /// Scenario: A decode-only input needs OTAP fallback, or native records target an encode-only codec.
+    /// Guarantees: Plans require only the capabilities used and reject incompatible output plans.
+    #[test]
+    fn fallback_and_output_only_plans_use_directional_capabilities() {
+        let service = strict_service();
+        let input_codec = service.registry().resolve(&DECODE_ONLY_ENCODING).unwrap();
+        let output_codec = service.registry().resolve(&ENCODE_ONLY_ENCODING).unwrap();
+        let fallback = BatchPlan::new(
+            PdataFormat::encoded(input_codec),
+            BatchProfile::otap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(fallback.output_format(), PdataFormat::OTAP);
+        assert!(
+            BatchPlan::new(
+                PdataFormat::encoded(input_codec),
+                BatchProfile::otap(),
+                false
+            )
+            .is_err()
+        );
+        let mut input = OtapPayload::from_encoded(
+            input_codec
+                .admit(
+                    SignalType::Logs,
+                    logs_with_full_resource_and_scope().encode_to_vec().into(),
+                )
+                .unwrap(),
+        );
+        fallback.prepare(&mut input, &service).unwrap();
+        assert!(input.otap_ref().is_some());
+        let output = PdataFormat::encoded(output_codec);
+        let wrong = EncodingPlan::resolve(
+            service.registry(),
+            &PdataEncoding::OTLP,
+            EncodePolicy::default(),
+        )
+        .unwrap();
+        assert!(
+            output
+                .materialize(&mut input, &service, Some(&wrong))
+                .is_err()
+        );
+        assert!(input.otap_ref().is_some());
+        let plan = BatchPlan::new(output, BatchProfile::otap(), false).unwrap();
+        plan.prepare(&mut input, &service).unwrap();
+        plan.finish(&mut input, &service).unwrap();
+        assert_eq!(input.format(), output);
+        assert_eq!(
+            otel_arrow_dfe_pdata::count_otlp_items(
+                SignalType::Logs,
+                input.encoded_bytes().unwrap()
+            ),
+            4
+        );
+    }
+
+    /// Scenario: Strict fallback encounters malformed encoded input, then a valid batch.
+    /// Guarantees: Failure preserves the exact bytes, identity, signal and cached count;
+    /// the same decoder remains usable for subsequent input.
+    #[test]
+    fn fallback_failure_preserves_payload_and_recovers() {
+        let service = strict_service();
+        let codec = service.registry().resolve(&DECODE_ONLY_ENCODING).unwrap();
+        let plan = BatchPlan::new(PdataFormat::encoded(codec), BatchProfile::otap(), true).unwrap();
+        let bytes = Bytes::from_static(&[0x0a, 0x01, 0xff]);
+        let mut input =
+            OtapPayload::from_encoded(codec.admit(SignalType::Logs, bytes.clone()).unwrap())
+                .with_item_count(7);
+        for _ in 0..2 {
+            assert!(plan.prepare(&mut input, &service).is_err());
+            assert_eq!(input.format(), PdataFormat::encoded(codec));
+            assert_eq!(input.signal_type(), SignalType::Logs);
+            assert_eq!(input.known_item_count(), Some(7));
+            assert_eq!(input.encoded_bytes().unwrap(), &bytes);
+            assert_eq!(input.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+        }
+        let mut valid = OtapPayload::from_encoded(
+            codec
+                .admit(
+                    SignalType::Logs,
+                    logs_with_full_resource_and_scope().encode_to_vec().into(),
+                )
+                .unwrap(),
+        );
+        plan.prepare(&mut valid, &service).unwrap();
+        assert_eq!(valid.known_item_count(), Some(4));
+        assert_eq!(service.test_instance_count().unwrap(), 1);
+    }
 }

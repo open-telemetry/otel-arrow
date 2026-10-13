@@ -135,8 +135,8 @@ pub struct FormatConfig {
 
     /// Optionally limit batch sizes to an upper bound. Measured in
     /// the quantity indicated by `sizer`, as described for min_size.
-    /// This limit is passed to the lower-level batching logic as a
-    /// not-to-exceed maximum.
+    /// This is a best-effort split target. Indivisible entries or exhausted
+    /// split budgets may require an encoded output larger than this value.
     pub max_size: Option<NonZeroUsize>,
 
     /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
@@ -832,6 +832,8 @@ impl BatchProcessor {
                 .await?;
             return Ok(());
         };
+        // SAFETY: routes only reference initialized format states created in
+        // from_config, and neither collection is modified after construction.
         let mut format = self.format(index).expect("configured route");
         if let Err(error) = effect.prepare_batch(format.plan, &mut payload).await {
             format.metrics.dropped_conversion.inc();
@@ -1813,7 +1815,8 @@ mod tests {
     /// Guarantees: Default codec profiles and duration limits are accepted.
     #[test]
     fn test_default_config_ok() {
-        let _cfg: Config = serde_json::from_value(json!({})).unwrap_or_default();
+        let cfg: Config = serde_json::from_value(json!({})).unwrap();
+        cfg.validate().unwrap();
     }
 
     /// Scenario: users configure built-in profiles through legacy aliases or
@@ -1927,16 +1930,20 @@ mod tests {
                     // Both replies use a representation different from the emitted one.
                     let returned = if index == 0 {
                         let service = CodecService::new().unwrap();
-                        output.try_into_otap(&service).unwrap().into_pdata()
-                    } else {
                         let (context, payload) = output.into_parts();
-                        OtapPdata::new(
-                            context,
-                            payload
-                                .into_encoded_for_test(PdataEncoding::OTLP, Default::default())
-                                .unwrap()
-                                .into(),
+                        OtapPdata::new(context, payload.try_into_otap(&service).unwrap().into())
+                    } else {
+                        let service = CodecService::new().unwrap();
+                        let plan = otel_arrow_dfe_pdata_codec::EncodingPlan::resolve(
+                            service.registry(),
+                            &PdataEncoding::OTLP,
+                            Default::default(),
                         )
+                        .unwrap();
+                        let (context, mut payload) = output.into_parts();
+                        let signal = payload.signal_type();
+                        let bytes = payload.encode_bytes(&service, &plan).unwrap();
+                        OtapPdata::new(context, plan.codec().admit(signal, bytes).unwrap().into())
                     };
                     if index == 0 {
                         let (_, ack) = next_ack(AckMsg::new(returned)).unwrap();
@@ -2180,8 +2187,8 @@ mod tests {
 
     fn otap_pdata_to_message(data: &OtapPdata) -> OtlpProtoMessage {
         let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
-        let rec = data.clone().try_into_otap(&service).unwrap();
-        otap_to_otlp(rec.records())
+        let rec = data.payload_ref().clone().try_into_otap(&service).unwrap();
+        otap_to_otlp(&rec)
     }
 
     const fn all_wakeup_slots() -> [WakeupSlot; 6] {

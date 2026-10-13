@@ -53,8 +53,10 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
 #[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
+#[cfg(test)]
 use otel_arrow_dfe_pdata_codec::PayloadData;
-use otel_arrow_dfe_pdata_codec::{EncodePolicy, OtapPayload, PdataEncoding};
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, PdataEncoding};
 use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
 use prost::Message as _;
 use reqwest::{Client, Response};
@@ -70,7 +72,7 @@ use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClien
 use otel_arrow_dfe_otap::otlp_http::{
     LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
 };
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 
 mod config;
 mod diagnostics;
@@ -251,8 +253,7 @@ impl OtlpHttpExporter {
 struct CompletedExport {
     diagnostic_started_at: Instant,
     attempt: CompletedExporterAttempt<(), ServiceRequestError>,
-    context: Context,
-    saved_payload: OtapPayload,
+    delivery: PdataDelivery,
     signal_type: SignalType,
     /// Generation of the auth stamped on this request (`None` when no
     /// provider is bound). Echoed back so a 401 invalidates exactly the auth
@@ -628,12 +629,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             }
                         }
                     };
-                    let saved_payload = if context.may_return_payload() {
-                        payload
-                    } else {
-                        drop(payload);
-                        OtapPayload::empty(signal_type)
-                    };
+                    let delivery = OtapPdata::new(context, payload).into_delivery();
 
                     let endpoint: Rc<String> = Rc::clone(match signal_type {
                         SignalType::Logs => &logs_endpoint,
@@ -723,8 +719,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         CompletedExport {
                             diagnostic_started_at,
                             attempt,
-                            context,
-                            saved_payload,
+                            delivery,
                             signal_type,
                             auth_generation,
                         }
@@ -1051,13 +1046,12 @@ async fn finalize_completed_export(
     let CompletedExport {
         diagnostic_started_at,
         attempt,
-        context,
-        saved_payload,
+        delivery,
         signal_type,
         auth_generation,
     } = completed;
     let result = metrics.boundary.record(attempt);
-    let pdata = OtapPdata::new(context, saved_payload);
+    let pdata = delivery.into_pdata();
 
     // A delivery episode is scoped to backend completion, not the later Ack/Nack.
     // Keep both attempt start and completion times so an older in-flight success
@@ -1723,8 +1717,10 @@ mod test {
         let completed = CompletedExport {
             diagnostic_started_at: Instant::now(),
             attempt,
-            context: Context::default(),
-            saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            delivery: OtapPdata::new_default(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            )
+            .into_delivery(),
             signal_type: SignalType::Logs,
             auth_generation: Some(auth_generation),
         };
@@ -3030,8 +3026,10 @@ mod test {
         let completed = CompletedExport {
             diagnostic_started_at: Instant::now(),
             attempt,
-            context: Context::default(),
-            saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            delivery: OtapPdata::new_default(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            )
+            .into_delivery(),
             signal_type: SignalType::Logs,
             auth_generation: None,
         };
@@ -3089,7 +3087,7 @@ mod test {
                 TestCallData::default().into(),
                 123,
             );
-        let (context, saved_payload) = pdata.into_parts();
+        let delivery = pdata.into_delivery();
         let runtime = Runtime::new().unwrap();
         let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
             async |attempt| {
@@ -3102,8 +3100,7 @@ mod test {
         let completed = CompletedExport {
             diagnostic_started_at: Instant::now(),
             attempt,
-            context,
-            saved_payload,
+            delivery,
             signal_type: SignalType::Logs,
             auth_generation: None,
         };
@@ -3175,7 +3172,7 @@ mod test {
                         TestCallData::default().into(),
                         123,
                     );
-                    let (context, saved_payload) = pdata.into_parts();
+                    let delivery = pdata.into_delivery();
                     let diagnostic_started_at = Instant::now();
                     let attempt = metrics
                         .boundary
@@ -3190,8 +3187,7 @@ mod test {
                     let completed = CompletedExport {
                         diagnostic_started_at,
                         attempt,
-                        context,
-                        saved_payload,
+                        delivery,
                         signal_type: SignalType::Logs,
                         auth_generation: None,
                     };
@@ -3253,7 +3249,7 @@ mod test {
         effect_handler.set_pipeline_completion_msg_sender(completion_tx);
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
             .test_subscribe_to(Interests::ACKS, TestCallData::default().into(), 123);
-        let (context, saved_payload) = pdata.into_parts();
+        let delivery = pdata.into_delivery();
         let runtime = Runtime::new().unwrap();
         let attempt = runtime.block_on(
             metrics
@@ -3264,8 +3260,7 @@ mod test {
         let completed = CompletedExport {
             diagnostic_started_at: Instant::now(),
             attempt,
-            context,
-            saved_payload,
+            delivery,
             signal_type: SignalType::Logs,
             auth_generation: None,
         };
@@ -3659,7 +3654,7 @@ mod test {
                                 ack_count += 1;
 
                                 match nack.refused.payload().into_data() {
-                                    PayloadData::OtapArrowRecords(otap_batch) => {
+                                    PayloadData::OtapRecords(otap_batch) => {
                                         let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
                                         assert!(
                                             logs_batch.num_rows() > 0,

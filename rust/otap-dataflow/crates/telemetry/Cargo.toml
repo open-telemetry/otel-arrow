@@ -28,6 +28,7 @@ otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-expohisto = { workspace = true }
 
+async-channel = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 flume = { workspace = true }

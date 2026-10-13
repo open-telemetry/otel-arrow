@@ -7,7 +7,8 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::{
-    CodecError, CodecMetadata, CodecRegistration, CodecRegistry, PdataDecoder, PdataEncoding,
+    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
+    CodecMetadata, CodecRegistration, CodecRegistry, PdataBatcher, PdataDecoder, PdataEncoding,
     register_pdata_codec,
 };
 
@@ -30,14 +31,33 @@ impl PdataDecoder for ExternalDecoder {
     }
 }
 
+impl PdataBatcher for ExternalDecoder {
+    fn batch(
+        &mut self,
+        _signal: SignalType,
+        _profile: &BatchProfile,
+        _inputs: Vec<Bytes>,
+    ) -> Result<CodecBatches, CodecError> {
+        panic!("the registration hygiene test does not batch payloads")
+    }
+}
+
+static EXTERNAL_BATCHING: BatchingSupport = BatchingSupport {
+    sizers: &[BatchSizer::Bytes],
+    default_profile: BatchProfile::otlp(),
+};
+
 register_pdata_codec!(
     EXTERNAL_CODEC,
     CodecRegistration::new(&EXTERNAL_METADATA)
         .with_decoder(|_| Box::new(ExternalDecoder))
-        .with_item_counter(|_, _| Some(0)),
+        .with_item_counter(|_, _| Some(0))
+        .with_batcher(CodecBatcherRegistration::new(&EXTERNAL_BATCHING, || {
+            Box::new(ExternalDecoder)
+        })),
 );
 
-/// Scenario: A downstream crate registers a decode-only codec without importing linkme.
+/// Scenario: A downstream crate registers a counted decoder and native batcher without importing linkme.
 /// Guarantees: The public macro is hygienic and the metadata builders preserve all declarations.
 #[test]
 fn downstream_registration_needs_no_linkme_import() {
@@ -48,6 +68,11 @@ fn downstream_registration_needs_no_linkme_import() {
 
     assert!(codec.can_decode());
     assert!(!codec.can_encode());
+    assert!(codec.can_batch());
+    assert_eq!(
+        codec.batching_support().unwrap().sizers,
+        &[BatchSizer::Bytes]
+    );
     assert_eq!(codec.count_items(SignalType::Logs, &[]), Some(0));
     assert_eq!(codec.metadata().encoding(), &EXTERNAL_ENCODING);
     assert_eq!(codec.metadata().signals(), &[SignalType::Logs]);

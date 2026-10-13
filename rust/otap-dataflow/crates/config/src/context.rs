@@ -86,10 +86,10 @@ impl From<ContextEntryName> for String {
 
 /// The name of a context entry, one of two forms:
 ///
-///  1. Single unqualified name like `X-Tenant-Id` which must resolve
-///     to a regular non-composite context entry.
-///  2. Qualified pair of names like `Customer:Workspace` which must
-///     resolve to a composite entry named field.
+/// 1. Primitive names resolve within a domain inferred from its
+///    containing policy or explicitly configured.
+/// 2. Qualified names resolve to a composite entry named field, which
+///    defines the domain.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]

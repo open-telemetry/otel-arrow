@@ -33,24 +33,144 @@ use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr};
 use crate::pipeline::filter::FilterPipelineStage;
 use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::scale_metric::ScaleMetricPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+
+/// Which signal types may flow through the current pipeline context.
+#[derive(Clone, Debug)]
+pub enum SignalContext {
+    /// All three signal types
+    All,
+
+    /// Exactly one signal type
+    Single(SignalKind),
+}
+
+impl SignalContext {
+    /// Infer the signal context from a [`PipelineExpression`] by inspecting its
+    /// query source keyword.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query does not start with a recognized source keyword.
+    ///
+    /// TODO: this needs to be reworked because it doesn't handle if the program is
+    /// non-OPL/KQL or starts with a comment / whitespace. Eventually we should add
+    /// the source into the AST.
+    pub fn try_infer(pipeline_def: &PipelineExpression) -> Result<Self> {
+        let query = pipeline_def.get_query();
+        let trimmed = query.trim_start();
+        let source = trimmed
+            .split(|c: char| c.is_ascii_whitespace() || c == '|')
+            .next()
+            .unwrap_or("");
+        match source {
+            "logs" => Ok(Self::Single(SignalKind::Logs)),
+            "traces" => Ok(Self::Single(SignalKind::Traces)),
+            "metrics" => Ok(Self::Single(SignalKind::Metrics(MetricTypeContext::All))),
+            "signals" => Ok(Self::All),
+            "gauges" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Gauge),
+            ))),
+            "sums" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Sum),
+            ))),
+            "histograms" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Histogram),
+            ))),
+            "exponential_histograms" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::ExponentialHistogram),
+            ))),
+            "summaries" => Ok(Self::Single(SignalKind::Metrics(
+                MetricTypeContext::Single(MetricType::Summary),
+            ))),
+            _ => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "could not determine signal type from query source '{source}'; \
+                     expected one of: logs, metrics, traces, signals, gauges, \
+                     sums, histograms, exponential_histograms, summaries"
+                ),
+                query_location: None,
+            }),
+        }
+    }
+}
+
+/// Identifies which signal type a pipeline is scoped to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalKind {
+    /// Log records
+    Logs,
+    /// Metric records, optionally narrowed to a specific metric type
+    Metrics(MetricTypeContext),
+    /// Trace span records
+    Traces,
+}
+
+/// Which concrete metric types may flow through a metrics pipeline.
+///
+/// This context is also used to derive `DataPointContext` when entering a nested
+/// `apply data_points { ... }` pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricTypeContext {
+    /// All metric types (gauges, sums, histograms, exponential histograms, summaries)
+    All,
+    /// A single concrete metric type
+    Single(MetricType),
+}
+
+/// Which metric data point types may flow through a data_points pipeline.
+#[derive(Clone, Debug)]
+pub enum DataPointContext {
+    /// All four data point types.
+    All,
+
+    /// A single data point type (narrowed by metric type source or smart cast).
+    Single(MetricDataPointType),
+}
+
+impl From<&MetricTypeContext> for DataPointContext {
+    fn from(ctx: &MetricTypeContext) -> Self {
+        match ctx {
+            MetricTypeContext::All => Self::All,
+            MetricTypeContext::Single(mt) => Self::Single(match mt {
+                MetricType::Gauge | MetricType::Sum => MetricDataPointType::NumberDataPoint,
+                MetricType::Histogram => MetricDataPointType::HistogramDataPoint,
+                MetricType::ExponentialHistogram => {
+                    MetricDataPointType::ExponentialHistogramDataPoint
+                }
+                MetricType::Summary => MetricDataPointType::SummaryDataPoint,
+                // Empty is not a concrete type -- treat as all
+                MetricType::Empty => return Self::All,
+            }),
+        }
+    }
+}
 
 /// Identifier for what will be treated as a record in the pipeline that is being planned.
 ///
 /// Typically this is used in cases where we plan a nested pipeline on some child element
 /// via an expression like `apply attributes { ... }` or `apply data_points { ... }`
+///
+/// Carries context about which signal types or data point types are valid, enabling
+/// field validation during planning.
+///
+/// Note: this is distinct from `RecordScope` which is a runtime concept that identify which
+/// batch an expression is evaluated against. `RecordType` is a planning concept that carries
+/// validation context.
 #[derive(Clone, Debug)]
 pub enum RecordType {
-    /// Logs, Metrics, Traces
-    Signal,
+    /// Logs, Metrics, Traces -- with context about which signal types are valid
+    Signal(SignalContext),
 
-    /// A repeated, child field such as metric data points
-    Child(ChildRecordKind),
+    /// Metric data points, with context about which data point types are valid
+    DataPoint(DataPointContext),
 
     /// Attributes treated as elements of the stream
     Attributes,
@@ -62,7 +182,15 @@ impl RecordType {
     }
 
     pub fn is_data_point(&self) -> bool {
-        matches!(self, Self::Child(ChildRecordKind::DataPoint))
+        matches!(self, Self::DataPoint(_))
+    }
+
+    /// Returns a reference to the signal context, if this is a Signal record type.
+    pub fn signal_context(&self) -> Option<&SignalContext> {
+        match self {
+            Self::Signal(ctx) => Some(ctx),
+            _ => None,
+        }
     }
 }
 
@@ -82,12 +210,7 @@ pub struct PipelinePlanner {
 }
 
 impl PipelinePlanner {
-    /// creates a new instance of `PipelinePlanner`
-    pub const fn new() -> Self {
-        Self::new_with_record_type(RecordType::Signal)
-    }
-
-    pub const fn new_with_record_type(record_type: RecordType) -> Self {
+    pub const fn new(record_type: RecordType) -> Self {
         Self {
             filter_attribute_keys_case_sensitive: true,
             record_type,
@@ -501,8 +624,8 @@ impl PipelinePlanner {
 
         let record_scope =
             match self.record_type {
-                RecordType::Signal => RecordScope::Signal,
-                RecordType::Child(child) => RecordScope::Child(child),
+                RecordType::Signal(_) => RecordScope::Signal,
+                RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                 RecordType::Attributes => return Err(Error::InvalidPipelineError {
                     cause:
                         "rename operation not supported on nested pipeline applied to attributes"
@@ -616,8 +739,8 @@ impl PipelinePlanner {
         let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
 
         let record_scope = match self.record_type {
-            RecordType::Signal => RecordScope::Signal,
-            RecordType::Child(child) => RecordScope::Child(child),
+            RecordType::Signal(_) => RecordScope::Signal,
+            RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
             RecordType::Attributes => return Err(Error::InvalidPipelineError {
                 cause:
                     "remove attributes operation not supported on nested pipeline applied to attributes"
@@ -923,8 +1046,8 @@ impl PipelinePlanner {
                     }
 
                     let record_scope = match &self.record_type {
-                        RecordType::Child(child) => RecordScope::Child(*child),
-                        RecordType::Signal => RecordScope::Signal,
+                        RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
+                        RecordType::Signal(_) => RecordScope::Signal,
                         RecordType::Attributes => {
                             return Err(Error::InvalidPipelineError {
                                 cause: "Cannot apply nested pipelines to field of attributes"
@@ -944,10 +1067,18 @@ impl PipelinePlanner {
 
                     let nested_pipeline_record_type = match apply_source {
                         ApplySource::Attributes(_) => RecordType::Attributes,
-                        ApplySource::DataPoints => RecordType::Child(ChildRecordKind::DataPoint),
+                        ApplySource::DataPoints => {
+                            let dp_ctx = match &self.record_type {
+                                RecordType::Signal(SignalContext::Single(SignalKind::Metrics(
+                                    mt_ctx,
+                                ))) => mt_ctx.into(),
+                                _ => DataPointContext::All,
+                            };
+                            RecordType::DataPoint(dp_ctx)
+                        }
                     };
 
-                    let planner = Self::new_with_record_type(nested_pipeline_record_type);
+                    let planner = Self::new(nested_pipeline_record_type);
 
                     let child_pipeline = planner.plan_data_exprs(
                         &inner_pipeline_data_exprs,
@@ -1150,22 +1281,27 @@ impl ColumnAccessor {
             });
         };
 
-        if let RecordType::Child(child_kind) = record_type {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "parent struct {struct_column_name} access not yet supported for {child_kind:?}"
-                ),
-            });
-        }
-
         match struct_selector {
             ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
                 match struct_field.get_value() {
-                    ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
-                        AttributesIdentifier::NonRecord(attrs_payload_type),
-                        &selectors[2..],
-                    ),
+                    ATTRIBUTES_FIELD_NAME => {
+                        // Data point expressions can read parent (resource/scope) attributes;
+                        // the join module handles the two-hop alignment lazily.
+                        Self::try_from_attrs_key(
+                            AttributesIdentifier::NonRecord(attrs_payload_type),
+                            &selectors[2..],
+                        )
+                    }
                     struct_field => {
+                        // Struct fields like resource.name or scope.version live on the root
+                        // record batch and are not yet supported for data point expressions.
+                        if let RecordType::DataPoint(_) = record_type {
+                            return Err(Error::NotYetSupportedError {
+                                message: format!(
+                                    "parent struct field {struct_column_name}.{struct_field} access not yet supported for data points"
+                                ),
+                            });
+                        }
                         if let Some(extra_selector) = selectors.get(2) {
                             return Err(Error::InvalidPipelineError {
                                 cause: format!(
@@ -1204,8 +1340,10 @@ impl ColumnAccessor {
                 match column_name {
                     ATTRIBUTES_FIELD_NAME => {
                         let record_scope = match record_type {
-                            RecordType::Signal => RecordScope::Signal,
-                            RecordType::Child(child) => RecordScope::Child(*child),
+                            RecordType::Signal(_) => RecordScope::Signal,
+                            RecordType::DataPoint(_) => {
+                                RecordScope::Child(ChildRecordKind::DataPoint)
+                            }
                             RecordType::Attributes => {
                                 return Err(Error::InvalidPipelineError {
                                     cause: format!("{column_name} is not a field on attributes"),
@@ -1274,13 +1412,20 @@ mod test {
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner};
 
+    use super::{RecordType, SignalContext, SignalKind};
+
+    /// Create a planner for log signal pipelines (used in tests).
+    fn logs_planner() -> PipelinePlanner {
+        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    }
+
     #[test]
     fn test_combines_set_expressions_for_root() {
         let pipeline_expr =
             OplParser::parse("logs | set severity_number = 5 | set severity_text = \"INFO\"")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1297,7 +1442,7 @@ mod test {
             OplParser::parse("logs | set attributes[\"x\"] = 5 | set attributes[\"y\"] = 6")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1314,7 +1459,7 @@ mod test {
             OplParser::parse("logs | set attributes[\"x\"] = 5 | set attributes[\"x\"] = 6")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1331,7 +1476,7 @@ mod test {
             OplParser::parse("logs | set severity_text=\"INFO\" | set severity_text=\"ERROR\"")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1348,7 +1493,7 @@ mod test {
             OplParser::parse("logs | set severity_text=\"INFO\" | set event_name=severity_text")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1365,7 +1510,7 @@ mod test {
             OplParser::parse("logs | set severity_text=\"INFO\" | set event_name=event_name")
                 .unwrap()
                 .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1383,7 +1528,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1402,7 +1547,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1420,7 +1565,7 @@ mod test {
         )
         .unwrap()
         .pipeline;
-        let planner = PipelinePlanner::new();
+        let planner = logs_planner();
         let stages = planner
             .plan_stages(
                 &pipeline_expr,

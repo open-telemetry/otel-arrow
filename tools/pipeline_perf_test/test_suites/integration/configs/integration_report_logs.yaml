@@ -92,7 +92,9 @@ queries:
             SELECT
               * REPLACE (
               CASE
-                WHEN metric_name = 'items' THEN 'logs'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.input' THEN 'logs'
+                WHEN metric_name = 'items' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'logs_produced'
+                WHEN metric_name = 'size' AND "metric_attributes.otel_scope_name" = 'node.output' THEN 'logs_bytes_produced'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -100,19 +102,25 @@ queries:
             COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
-              'logs_produced',
               'logs_bytes_produced',
               'failed',
               'bytes_sent',
               'sent',
               'late_batches',
-              'items'
+              'items',
+              'size'
             ) AND (
-              metric_name <> 'items'
+              metric_name NOT IN ('items', 'size')
               OR (
                 "metric_attributes.otel_scope_name" = 'node.input'
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'logs'
+                AND "metric_attributes.outcome" = 'success'
+              )
+              OR (
+                "metric_attributes.otel_scope_name" = 'node.output'
+                AND "metric_attributes.signal" = 'logs'
+                AND "metric_attributes.component_name" = 'load-generator'
                 AND "metric_attributes.outcome" = 'success'
               )
             ) AND timestamp > (

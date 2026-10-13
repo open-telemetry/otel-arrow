@@ -8,3 +8,9 @@ from .run_command import RunCommandConfig, RunCommandHook
 from .send_http_request import SendHttpRequestConfig, SendHttpRequestHook
 from .ready_check_http import ReadyCheckHttpConfig, ReadyCheckHttpHook
 from .render_template import RenderTemplateConfig, RenderTemplateHook
+from .otlp_metrics_sink import (
+    StartOtlpMetricsSinkConfig,
+    StartOtlpMetricsSinkHook,
+    StopOtlpMetricsSinkConfig,
+    StopOtlpMetricsSinkHook,
+)

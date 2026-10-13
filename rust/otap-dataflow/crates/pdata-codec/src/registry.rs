@@ -468,10 +468,19 @@ fn validate_registration(registration: &CodecRegistration) -> Result<(), Registr
                 encoding: encoding.clone(),
                 reason: error.to_string(),
             })?;
-        if batcher.support.sizers.is_empty() {
+        if batcher.support.sizers.is_empty()
+            || batcher
+                .support
+                .sizers
+                .contains(&crate::BatchSizer::Requests)
+            || !batcher
+                .support
+                .sizers
+                .contains(&batcher.support.default_profile.sizer)
+        {
             return Err(RegistryError::InvalidBatching {
                 encoding: encoding.clone(),
-                reason: "native batcher must declare at least one sizing unit".to_owned(),
+                reason: "native batcher must support its default sizing unit and cannot declare request sizing".to_owned(),
             });
         }
     }
@@ -520,5 +529,36 @@ mod tests {
             CodecRegistry::validate(&DECODER_WITHOUT_COUNTER_REGISTRATIONS),
             Err(RegistryError::MissingItemCounter { .. })
         ));
+    }
+    /// Scenario: A native batcher declares empty, unsupported, or inconsistent sizing units.
+    /// Guarantees: Registry construction rejects the declaration before any pipeline starts.
+    #[test]
+    fn rejects_inconsistent_batching_units() {
+        use crate::{BatchProfile, BatchSizer};
+        static SUPPORT: [BatchingSupport; 3] = [
+            BatchingSupport {
+                sizers: &[],
+                default_profile: BatchProfile::otlp(),
+            },
+            BatchingSupport {
+                sizers: &[BatchSizer::Items],
+                default_profile: BatchProfile::otlp(),
+            },
+            BatchingSupport {
+                sizers: &[BatchSizer::Bytes, BatchSizer::Requests],
+                default_profile: BatchProfile::otlp(),
+            },
+        ];
+        for support in &SUPPORT {
+            let registration = CodecRegistration::new(&EMPTY_METADATA).with_batcher(
+                CodecBatcherRegistration::new(support, || {
+                    Box::new(crate::codecs::otlp::OtlpBatcher)
+                }),
+            );
+            assert!(matches!(
+                validate_registration(&registration),
+                Err(RegistryError::InvalidBatching { .. })
+            ));
+        }
     }
 }

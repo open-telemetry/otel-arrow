@@ -11,6 +11,31 @@ time, and keep mutable decoder, encoder, or batcher state inside one pipeline
 runtime. A payload carries only its encoding identity, signal, bytes, and cached
 metadata; it never owns a codec instance.
 
+## Architecture overview
+
+![PData passthrough, read-only views, and on-demand conversion][codec-diagram]
+
+[codec-diagram]: assets/pdata-codec-framework.png
+
+The three paths are alternatives selected by the consumer, not sequential
+pipeline stages:
+
+- **Passthrough (blue):** a matching output encoding forwards the shared bytes
+  without decoding, re-encoding, or creating a codec instance.
+- **Read-only view (teal):** `AcceptedEncodings` selects direct byte borrowing.
+  Existing OTAP records are borrowed; other encodings decode to temporary OTAP
+  records without changing the original payload.
+- **On-demand conversion (orange):** decode to native OTAP when processing
+  requires records, then encode if the output requires an encoded format.
+  Already-native input skips decoding.
+
+The lower band shows codec registrations, registry validation, and the pipeline
+service that lazily creates and reuses decoder and encoder instances. Nodes
+access that service through effect handlers.
+
+The syslog encoding shown belongs to the follow-up syslog codec integration.
+Native OTAP is the common processing representation, not a registered byte codec.
+
 ## Design model
 
 - `PdataEncoding` is the stable identity used by configuration and diagnostics.
@@ -26,9 +51,9 @@ metadata; it never owns a codec instance.
 - `CodecService` creates mutable implementations lazily and reuses them within
   one pipeline runtime. Payload admission and matching-format forwarding do not
   instantiate a codec.
-- `InspectionPlan` resolves the encoded representations a read-only node can
-  inspect directly. Applying it returns a `PdataView`; other representations
-  are decoded to native OTAP.
+- `AcceptedEncodings` identifies the resolved encodings a read-only node can
+  inspect directly. Obtaining a `PdataView` borrows these bytes or existing
+  native records; other encodings are decoded to native OTAP.
 - Native OTAP remains the mutable processing representation and the fallback
   intermediate for conversion between different encodings.
 
@@ -59,6 +84,65 @@ flowchart LR
 Receivers, processors, and exporters in one pipeline receive clones of the same
 runtime-services handle. The registry is immutable after validation, while the
 service creates only the mutable codec state that the pipeline actually uses.
+
+### Direct borrowing and accepted encodings
+
+`PdataPayload::encoded_view()` borrows the existing encoding identity, signal,
+and bytes together, or returns `None` for native OTAP. It performs no registry
+lookup, codec creation, validation, decoding, buffer cloning, or allocation.
+The consumer must check the encoding and signal before interpreting the bytes.
+An `EncodedView` guarantees that bytes are available, not that their content is
+valid or that the consumer accepts them.
+
+Use `AcceptedEncodings` when a consumer supports selected encodings directly
+but also needs native fallback. It selects encodings for direct access, not an
+input whitelist: encodings absent from the set are decoded to owned native OTAP,
+rather than rejected. Already-native records are always borrowed. An empty set
+requires native OTAP access for every input. Borrowed encoded views do not
+validate their content.
+
+Resolve and reuse the set through the effect handler:
+
+```rust,ignore
+let accepted_encodings =
+    effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
+let view = effect_handler.view(payload, &accepted_encodings).await?;
+```
+
+### Owned native access and delivery ownership
+
+Nodes use `PdataEffectHandlerExtension` from the OTAP crate to obtain owned
+native records through pipeline-managed codecs. Choose the operation according
+to who owns delivery context and whether processing needs original-input recovery:
+
+| Operation | Use when | Successful result |
+| --- | --- | --- |
+| `materialize_otap(pdata)` | Context and records should remain together | `OtapArrowPdata` |
+| `materialize_otap_payload(payload)` | The caller already manages context separately | `OtapArrowRecords` |
+| `prepare_otap_work(pdata)` | Working records and delivery ownership must be independent | `(PdataDelivery, OtapArrowRecords)` |
+| `update_otap(pdata, update)` | A synchronous, fallible update needs recovery bookkeeping | `(OtapArrowPdata, R)` |
+
+Materialization consumes its input and decodes only when necessary. Already-native
+records move directly without creating a codec. Decode failures return the exact
+original input for the caller to Nack or retry. Successful ordinary
+materialization retains no original snapshot for subsequent processing failures.
+
+`prepare_otap_work` retains a shallow snapshot before conversion only when
+`RETURN_DATA` requires recovery after processing. `update_otap` uses that same
+retention policy around its synchronous callback. Async algorithms instead keep
+the delivery owner from `prepare_otap_work` across their awaits; no codec borrow
+survives into the algorithm.
+
+`PdataDelivery` is an inline, non-`Clone`, `#[must_use]` owner of delivery context
+and conditionally retained input. `with_payload` attaches an output to the
+context; `into_pdata` constructs a message for Ack/Nack with retained input, or
+an empty payload of the original signal when none was retained. Neither method
+sends anything, and dropping the owner does not acknowledge automatically.
+
+`OtapPdata::into_work()` separates delivery ownership from a working payload
+without materializing it. `OtapPdata::into_delivery()` transfers an already-used
+input into delivery ownership without cloning, retaining or discarding its
+payload according to `RETURN_DATA`.
 
 ## Implement a codec
 
@@ -173,9 +257,8 @@ rejects duplicate identities independently of link order.
 
 An item counter is required for every decoder registration and must be
 stateless. Return `None` when malformed bytes cannot be counted; zero means the
-payload was inspected and contains no primary-signal items. The payload
-integration introduced in the next series step caches successful counts,
-keeping an unavailable count distinct from zero.
+payload was inspected and contains no primary-signal items. Payloads cache
+successful counts, keeping an unavailable count distinct from zero.
 
 ## Add native batching
 
@@ -185,11 +268,24 @@ without first materializing OTAP records. Register it with
 `BatchingSupport` declares the supported sizing units and default bounded
 profile.
 
-A native batcher must preserve input order and produce independently decodable
-outputs. Output ownership weights must sum to the measured input total even
-when splitting duplicates representation wrappers. Codecs without native
-batching use the engine's OTAP fallback when the requested sizing policy permits
-it.
+A native batcher must preserve item order within a call and produce independently
+decodable outputs. This does not promise global processor ordering: an in-range
+input can bypass previously buffered input. A batcher must understand its format's
+boundaries; arbitrary byte concatenation or splitting is not generally valid.
+
+Output ownership weights must partition the measured input total even when
+splitting duplicates representation wrappers. These weights route completion to
+input owners; they are not necessarily the output's encoded size. Byte sizing
+includes encoding wrappers and intrinsic compression but excludes transport
+framing and compression. Split targets are best effort for indivisible entries
+or exhausted amplification budgets.
+
+`BatchPlan` selects a working representation and an output representation before
+buffering starts. In preserve mode, codecs without matching native batching use
+OTAP fallback with item sizing and emit OTAP. An explicit output codec instead
+requires an encoder; an encode-only codec can therefore be an output target.
+This is local capability validation, not graph-wide representation negotiation
+or a node-signature system.
 
 ## Test a codec
 

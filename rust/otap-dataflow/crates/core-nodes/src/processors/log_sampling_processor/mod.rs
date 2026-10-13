@@ -112,7 +112,7 @@ impl LogSamplingProcessor {
         pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+        let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
             Ok(arrow_pdata) => arrow_pdata,
             Err(error) => {
                 let (error, pdata) = error.into_parts();
@@ -331,7 +331,7 @@ mod tests {
                 let output_payload = msgs[0].clone().into_parts().1.take_payload();
                 let output_otap = match output_payload.into_data() {
                     PayloadData::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
-                    PayloadData::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
+                    PayloadData::OtapRecords(otap_arrow_records) => otap_arrow_records,
                     PayloadData::Encoded(_) => panic!("Unexpected encoded bytes"),
                 };
 
