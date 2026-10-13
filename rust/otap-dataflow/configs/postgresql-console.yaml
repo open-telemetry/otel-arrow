@@ -45,8 +45,7 @@ groups:
                 # Required per-page limits, not whole catch-up-cycle limits.
                 max_rows_per_poll: 10000
                 max_batch_bytes: 10 MiB
-                # Defaults: timeout 30s, fetch size 300, interval 1m.
-                timeout: 30s
+                # Fixed operation timeout: 30s. Defaults: fetch size 300, interval 1m.
                 fetch_size_rows: 300
                 catch_up:
                   max_pages: 32

@@ -33,12 +33,13 @@ One receiver owns one query/collecting connection and requires a one-core pipeli
 | `query.interval` | Default `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
 | `query.max_rows_per_poll` | Required page ceiling, `1`-`10000`; no default or whole-cycle row cap. |
 | `query.max_batch_bytes` | Required separate normalized-page and encoded-OTLP ceilings, `1` byte-`256 MiB`; integer bytes or strings such as `10 MiB`. |
-| `query.timeout` | Default `30s`; `1s`-`5m` in whole seconds. Bounds credential/worker operations and native statement/idle-transaction timeouts. |
 | `query.fetch_size_rows` | Default `300`; `1`-`10000`, no greater than the page ceiling. Byte estimates may reduce a fetch. |
 | `query.catch_up.max_pages` | Default `32`; `1`-`1024`, including empty probes. |
 | `query.catch_up.max_duration` | Default `10s`; `1ms`-`5min`. Gates the next page, not an active page. |
 | `watermark` | Required composite timestamp plus signed-integer tie-breaker; see the example. |
 | `checkpoint.directory` | Required persistent storage directory. |
+
+Database, credential, and native statement operations use a fixed 30-second timeout. Connection attempts use a separate 10-second cap.
 
 Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`.
 

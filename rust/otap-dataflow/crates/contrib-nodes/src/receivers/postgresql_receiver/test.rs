@@ -557,10 +557,10 @@ fn parser_budgets() {
     }
 }
 
-/// Scenario: Required budgets are omitted or malformed, outside shared bounds, or inconsistent with fetch size.
-/// Guarantees: No implicit row/byte defaults, clamping, fractional timeout, or disabled limits are accepted.
+/// Scenario: Required budgets are omitted, malformed, outside bounds, or inconsistent with fetch size.
+/// Guarantees: No implicit row/byte defaults, clamping, or disabled limits are accepted.
 #[test]
-fn invalid_page_budgets_and_timeouts_are_rejected() {
+fn invalid_page_budgets_are_rejected() {
     let base = config(&sql(KEY));
     for field in ["max_rows_per_poll", "max_batch_bytes"] {
         let mut value = base.clone();
@@ -591,18 +591,6 @@ fn invalid_page_budgets_and_timeouts_are_rejected() {
                 Value::Null,
             ],
         ),
-        (
-            "timeout",
-            vec![
-                json!("0s"),
-                json!("-1s"),
-                json!("500ms"),
-                json!("1.5s"),
-                json!("301s"),
-                json!(30),
-                Value::Null,
-            ],
-        ),
     ] {
         for invalid in invalid {
             let mut value = base.clone();
@@ -616,6 +604,13 @@ fn invalid_page_budgets_and_timeouts_are_rejected() {
     value["query"]["max_rows_per_poll"] = json!(10_000);
     value["query"]["fetch_size_rows"] = json!(10_001);
     assert!(validate(&value).is_err(), "shared fetch ceiling");
+    assert_eq!(
+        validate(&config(&sql(KEY)))
+            .expect("fixed timeout")
+            .common
+            .timeout(),
+        std::time::Duration::from_secs(30)
+    );
 }
 
 /// Scenario: Operators add unsupported fields or omit required lower-bound information.
@@ -633,6 +628,7 @@ fn strict_configuration() {
         "/connection/tls",
         "/query/output",
         "/query/queries",
+        "/query/timeout",
         "/checkpoint/unknown",
         "/unknown",
     ] {

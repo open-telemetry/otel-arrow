@@ -44,8 +44,6 @@ pub(crate) struct Query {
     pub max_rows_per_poll: usize,
     #[serde(deserialize_with = "deserialize_byte_size")]
     pub max_batch_bytes: u64,
-    #[serde(default = "default_timeout", with = "humantime_serde")]
-    pub timeout: Duration,
     #[serde(default)]
     pub catch_up: CatchUpConfig,
 }
@@ -98,9 +96,7 @@ const fn default_interval() -> Duration {
 const fn default_fetch_size_rows() -> usize {
     300
 }
-const fn default_timeout() -> Duration {
-    Duration::from_secs(30)
-}
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn deserialize_byte_size<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
 where
@@ -186,9 +182,6 @@ impl PostgreSqlReceiverConfig {
         if !(60..=86400).contains(&query.interval.as_secs()) || query.interval.subsec_nanos() != 0 {
             return Err(Error::Config);
         }
-        if !(1..=300).contains(&query.timeout.as_secs()) || query.timeout.subsec_nanos() != 0 {
-            return Err(Error::Config);
-        }
         let Watermark::Composite {
             timestamp,
             tie_breaker,
@@ -227,7 +220,7 @@ impl PostgreSqlReceiverConfig {
             query.statement.clone(),
             PollingConfig {
                 interval: query.interval,
-                timeout: query.timeout,
+                timeout: OPERATION_TIMEOUT,
                 max_rows_per_poll: query.max_rows_per_poll,
                 fetch_size_rows: query.fetch_size_rows,
                 max_batch_bytes: query.max_batch_bytes,
