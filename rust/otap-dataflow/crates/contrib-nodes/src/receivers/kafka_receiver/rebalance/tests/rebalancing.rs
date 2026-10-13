@@ -1058,7 +1058,7 @@ async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue
 /// commit-before-revoke yields at-least-once (the new owner re-reads) rather
 /// than advancing committed state past un-persisted data; and
 /// `rebalance_commit_enqueue_errors` stays zero because the enqueue itself
-/// succeeded (only the broker rejected). 
+/// succeeded (only the broker rejected).
 #[tokio::test]
 async fn broker_rejects_commit_before_revoke_offset_does_not_persist() {
     const TOPIC: &str = "rebalance-revoke-reject-e2e-traces";
