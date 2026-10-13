@@ -107,7 +107,7 @@ pub(super) enum CounterKind {
      supported types are direct raw counts, rates, deltas, queue lengths, \
      single-counter timers, fractions, and averages"
 )]
-pub(super) struct UnsupportedNativeType {
+pub(in super::super) struct UnsupportedNativeType {
     /// Counter path to identify the unsupported observation source.
     pub(super) path: String,
     /// Full native type, retained for diagnostics rather than masked to a family.
