@@ -7556,6 +7556,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smallvec",
+ "sqlparser",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
