@@ -55,12 +55,12 @@ pub(super) fn into_otap(
         let SampleValue::Value(value) = point.value else {
             continue;
         };
-        if counter.kind == MetricKind::UpDownCounter
+        if counter.kind == MetricKind::Sum
             && (sample.start_time_unix_nano <= 0
                 || sample.start_time_unix_nano > sample.timestamp_unix_nano)
         {
             return Err(ArrowError::InvalidArgumentError(format!(
-                "UpDownCounter {} ({}) has invalid start time {} for timestamp {}",
+                "Sum {} ({}) has invalid start time {} for timestamp {}",
                 counter.name, counter.path, sample.start_time_unix_nano, sample.timestamp_unix_nano
             )));
         }
@@ -77,7 +77,7 @@ pub(super) fn into_otap(
                     metrics.append_aggregation_temporality(None);
                     metrics.append_is_monotonic(None);
                 }
-                MetricKind::UpDownCounter => {
+                MetricKind::Sum => {
                     metrics.append_metric_type(MetricType::Sum as u8);
                     metrics
                         .append_aggregation_temporality(Some(AGGREGATION_TEMPORALITY_CUMULATIVE));
@@ -95,7 +95,7 @@ pub(super) fn into_otap(
         points.append_parent_id(metric_id);
         points.append_start_time_unix_nano(match counter.kind {
             MetricKind::Gauge => None,
-            MetricKind::UpDownCounter => Some(sample.start_time_unix_nano),
+            MetricKind::Sum => Some(sample.start_time_unix_nano),
         });
         points.append_time_unix_nano(sample.timestamp_unix_nano);
         match value {
@@ -235,7 +235,7 @@ mod tests {
             .collect()
     }
 
-    /// Scenario: A collection contains integer and double Gauges and UpDownCounters.
+    /// Scenario: A collection contains integer and double Gauges and cumulative non-monotonic Sums.
     /// Guarantees: Decoded output retains metadata, exact values, timestamps and cumulative non-monotonic Sum shape.
     #[test]
     fn projects_metric_kinds_and_numeric_types() {
@@ -244,8 +244,8 @@ mod tests {
         let counters = [
             counter("integer_gauge", MetricKind::Gauge),
             counter("double_gauge", MetricKind::Gauge),
-            counter("integer_sum", MetricKind::UpDownCounter),
-            counter("double_sum", MetricKind::UpDownCounter),
+            counter("integer_sum", MetricKind::Sum),
+            counter("double_sum", MetricKind::Sum),
         ];
         let values = [
             Number::Integer(9_007_199_254_740_993),
@@ -302,7 +302,7 @@ mod tests {
             assert_eq!(metric.unit, counter.unit);
             let points = match (counter.kind, metric.data.as_ref().unwrap()) {
                 (MetricKind::Gauge, metric::Data::Gauge(gauge)) => &gauge.data_points,
-                (MetricKind::UpDownCounter, metric::Data::Sum(sum)) => {
+                (MetricKind::Sum, metric::Data::Sum(sum)) => {
                     assert_eq!(
                         sum.aggregation_temporality,
                         AggregationTemporality::Cumulative as i32
@@ -348,7 +348,8 @@ mod tests {
                     "description": "Processor time", "unit": "%", "gauge": {}
                 },
                 "windows.process.private": {
-                    "description": "Private bytes", "unit": "By", "up_down_counter": {}
+                    "description": "Private bytes", "unit": "By",
+                    "sum": {"aggregation": "cumulative", "monotonic": false}
                 }
             },
             "perfcounters": [
@@ -425,6 +426,79 @@ mod tests {
         }
     }
 
+    /// Scenario: A cumulative non-monotonic Sum has integer and scaled-double points from two instances.
+    /// Guarantees: Decoded output preserves Sum semantics, metadata, values, attributes and timestamps.
+    #[test]
+    fn sum_configuration_preserves_decoded_output() {
+        let config = RuntimeConfig::from_json(&serde_json::json!({
+            "metrics": {"windows.process.private": {
+                "description": "Private bytes", "unit": "By",
+                "sum": {"aggregation": "cumulative", "monotonic": false}
+            }},
+            "perfcounters": [{
+                "object": "Process", "instances": ["app", "worker#01"],
+                "counters": [{
+                    "name": "Private Bytes", "metric": "windows.process.private",
+                    "attributes": {"state": "used"}
+                }]
+            }]
+        }))
+        .unwrap();
+        let start = 1_788_400_000_000_000_000;
+        let timestamp = start + 123_456_789;
+        let decoded = decode(
+            into_otap(
+                &config.counters,
+                sample(
+                    start,
+                    timestamp,
+                    vec![
+                        point(0, SampleValue::Value(Number::Integer(-42))),
+                        point(1, SampleValue::Value(scale_integer(42, 3).unwrap())),
+                    ],
+                ),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 1);
+        let metric = &metrics[0];
+        assert_eq!(metric.name, "windows.process.private");
+        assert_eq!(metric.description, "Private bytes");
+        assert_eq!(metric.unit, "By");
+        let Some(metric::Data::Sum(sum)) = &metric.data else {
+            panic!("expected a Sum");
+        };
+        assert_eq!(
+            sum.aggregation_temporality,
+            AggregationTemporality::Cumulative as i32
+        );
+        assert!(!sum.is_monotonic);
+        assert_eq!(sum.data_points.len(), 2);
+        for (point, path, value) in [
+            (
+                &sum.data_points[0],
+                r"\Process(app)\Private Bytes",
+                number_data_point::Value::AsInt(-42),
+            ),
+            (
+                &sum.data_points[1],
+                r"\Process(worker#1)\Private Bytes",
+                number_data_point::Value::AsDouble(42_000.0),
+            ),
+        ] {
+            assert_eq!(point.value, Some(value));
+            assert_eq!(point.start_time_unix_nano, start as u64);
+            assert_eq!(point.time_unix_nano, timestamp as u64);
+            assert_eq!(point.flags, 0);
+            assert_eq!(
+                attributes(&point.attributes),
+                BTreeMap::from([("state", "used"), ("windows.perf_counter.path", path),])
+            );
+        }
+    }
+
     /// Scenario: A Gauge carries zero, negative or future cumulative start-time state.
     /// Guarantees: Projection ignores that state and never emits a Gauge start time.
     #[test]
@@ -455,7 +529,7 @@ mod tests {
     /// Guarantees: Only 0 < start <= observation time is accepted; errors identify the counter and both times.
     #[test]
     fn validates_emitted_sum_start_time() {
-        let counters = [counter("sum", MetricKind::UpDownCounter)];
+        let counters = [counter("sum", MetricKind::Sum)];
         for start in [i64::MIN, -1, 0, 11, i64::MAX] {
             assert!(matches!(
                 into_otap(
@@ -468,7 +542,7 @@ mod tests {
                 ),
                 Err(ArrowError::InvalidArgumentError(message))
                     if message == format!(
-                        "UpDownCounter sum (\\Object\\sum) has invalid start time {start} for timestamp 10"
+                        "Sum sum (\\Object\\sum) has invalid start time {start} for timestamp 10"
                     )
             ));
         }
@@ -518,7 +592,7 @@ mod tests {
     /// Guarantees: No batch is emitted and unused cumulative start time is not validated.
     #[test]
     fn omits_empty_and_unobserved_samples() {
-        let counters = [counter("sum", MetricKind::UpDownCounter)];
+        let counters = [counter("sum", MetricKind::Sum)];
         for start in [-1, 0, 11] {
             for points in [vec![], vec![point(0, SampleValue::NoObservation)]] {
                 assert!(
