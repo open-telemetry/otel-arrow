@@ -23,11 +23,13 @@ type: receiver:otap
 config:
   listening_addr: "127.0.0.1:4317"
   response_stream_channel_size: 128
-  max_concurrent_requests: 1000
-  wait_for_result: true
 ```
 
 ## Configuration
+
+The OTAP receiver shares the common gRPC server settings
+(`GrpcServerSettings`) with the OTLP receiver. Those fields are configured
+inline alongside the OTAP-specific fields below.
 
 ```yaml
 type: receiver:otap
@@ -35,20 +37,27 @@ config:
   # Address for the OTAP gRPC server (required).
   listening_addr: "127.0.0.1:4317"
 
-  # Accepted or preferred OTAP compression setting (optional).
-  compression_method: zstd
+  # Compression methods accepted for requests (optional). A single value, a
+  # list, or "none". When omitted, zstd, gzip, and deflate are all accepted.
+  request_compression: zstd
 
-  # Response stream channel capacity (required).
+  # Compression methods offered for responses (optional). A single value, a
+  # list, or "none". When omitted, responses are sent uncompressed.
+  response_compression: zstd
+
+  # Response stream channel capacity (required). Bounds the per-stream buffer of
+  # outgoing batch-status responses; a slow client applies backpressure here.
   response_stream_channel_size: 128
 
-  # Global in-flight request limit (default: 1000).
-  max_concurrent_requests: 1000
+  # Global in-flight request limit (optional). Defaults to 0, which adopts the
+  # downstream pdata channel capacity; larger values are clamped to it.
+  max_concurrent_requests: 0
 
   # Per-stream in-flight request limit (default: 16).
   max_concurrent_requests_per_stream: 16
 
-  # Wait for immediate downstream outcome (default: true).
-  wait_for_result: true
+  # Wait for immediate downstream outcome (default: false).
+  wait_for_result: false
 
   # Optional RPC timeout.
   timeout: 30s
@@ -58,6 +67,17 @@ config:
   #   cert_file: /path/to/server.crt
   #   key_file: /path/to/server.key
 ```
+
+Other shared gRPC server fields (for example `max_concurrent_streams`,
+`max_decoding_message_size`, and the TCP/HTTP2 tuning fields) are also accepted;
+see the [OTLP receiver](../otlp_receiver/README.md) for the full list.
+
+### Deprecated fields
+
+- `compression_method`: deprecated alias that applies a single method (or
+  `"none"`) to both `request_compression` and `response_compression`. It cannot
+  be combined with either new field. Prefer `request_compression` and
+  `response_compression`.
 
 ## Telemetry
 
@@ -109,8 +129,10 @@ not a terminal-only metric that cannot be handed off on an error return.
 
 - `max_concurrent_requests_per_stream` must be greater than zero and is clamped
   to `max_concurrent_requests` at runtime.
-- `wait_for_result: false` suppresses downstream failures from client
-  responses.
+- `max_concurrent_requests` defaults to the downstream pdata channel capacity
+  (configured value `0`); any larger configured value is clamped to it.
+- `wait_for_result` defaults to `false`; `wait_for_result: false` suppresses
+  downstream failures from client responses.
 - The server accepts OTAP Arrow stream clients, not standard OTLP clients.
 
 ## Related Docs
