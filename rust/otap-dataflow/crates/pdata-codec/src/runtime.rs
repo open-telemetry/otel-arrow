@@ -29,8 +29,8 @@ use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    CodecError, CodecOperation, CodecRegistry, DecodePolicy, EncodeOutput, EncodedPdata,
-    EncodingPlan, InspectionPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError,
+    AcceptedEncodings, CodecError, CodecOperation, CodecRegistry, DecodePolicy, EncodeOutput,
+    EncodedPdata, EncodingPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError,
     ResolvedCodec,
 };
 
@@ -132,17 +132,28 @@ impl CodecService {
 
     /// Decodes admitted bytes through a lazily reused decoder instance.
     pub fn decode(&self, encoded: &EncodedPdata) -> Result<OtapArrowRecords, CodecError> {
+        self.decode_parts(encoded.codec(), encoded.signal_type(), encoded.bytes())
+    }
+
+    /// Decodes encoded parts without constructing an envelope.
+    pub fn decode_parts(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &Bytes,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        codec.require_decoder(signal)?;
         let mut runtime = self.lock()?;
         let records = runtime
-            .decoder(encoded.codec(), self.decode_policy)?
-            .decode(encoded.signal_type(), encoded.bytes())
+            .decoder(codec, self.decode_policy)?
+            .decode(signal, bytes)
             .map_err(|error| {
-                error.with_operation_context(encoded.encoding(), CodecOperation::Decode)
+                error.with_operation_context(codec.encoding(), CodecOperation::Decode)
             })?;
-        if records.signal_type() != encoded.signal_type() {
+        if records.signal_type() != signal {
             return Err(CodecError::SignalChanged {
-                encoding: encoded.encoding().clone(),
-                expected: encoded.signal_type(),
+                encoding: codec.encoding().clone(),
+                expected: signal,
                 actual: records.signal_type(),
             });
         }
@@ -153,16 +164,33 @@ impl CodecService {
     pub fn view<'a>(
         &self,
         encoded: &'a EncodedPdata,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
-        if plan.accepts(encoded.codec()) {
+        self.view_parts(
+            encoded.codec(),
+            encoded.signal_type(),
+            encoded.bytes(),
+            accepted_encodings,
+        )
+    }
+
+    /// Views encoded parts without constructing an envelope.
+    pub fn view_parts<'a>(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &'a Bytes,
+        accepted_encodings: &AcceptedEncodings,
+    ) -> Result<PdataView<'a>, CodecError> {
+        codec.require_decoder(signal)?;
+        if accepted_encodings.accepts(codec) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
-                encoded.encoding(),
-                encoded.signal_type(),
-                encoded.bytes(),
+                codec.encoding(),
+                signal,
+                bytes,
             )));
         }
-        self.decode(encoded)
+        self.decode_parts(codec, signal, bytes)
             .map(|records| PdataView::Native(std::borrow::Cow::Owned(records)))
     }
 

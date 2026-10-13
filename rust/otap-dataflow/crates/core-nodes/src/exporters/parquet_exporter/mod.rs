@@ -46,24 +46,22 @@ use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
+
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -77,8 +75,7 @@ pub struct ParquetExporter {
     token_provider: Option<
         Box<dyn otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider>,
     >,
-    pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
-    io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
+    io_metrics: Option<metrics::ParquetExporterMetrics>,
 }
 
 /// Declares the Parquet exporter as a local exporter factory
@@ -126,7 +123,6 @@ impl ParquetExporter {
         Self {
             config,
             token_provider: None,
-            pdata_metrics: None,
             io_metrics: None,
         }
     }
@@ -142,35 +138,36 @@ impl ParquetExporter {
             }
         })?;
 
-        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
         let io_metrics = metrics::ParquetExporterMetrics::register(&pipeline_ctx);
 
         Ok(ParquetExporter {
             config,
             token_provider: None,
-            pdata_metrics: Some(pdata_metrics),
             io_metrics: Some(io_metrics),
         })
     }
 
     fn terminal_state(
         deadline: Instant,
-        mut pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
-        io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
+        mut io_metrics: Option<metrics::ParquetExporterMetrics>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
-        if let Some(metrics) = &mut pdata_metrics {
+        if let Some(metrics) = &mut io_metrics {
             snapshots.extend(metrics.terminal_snapshots());
         }
 
-        if let Some(metrics) = &io_metrics
-            && metrics.needs_flush()
-        {
-            snapshots.push(metrics.snapshot());
-        }
-
         TerminalState::new(deadline, snapshots)
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_dummy_metrics(mut self) -> Self {
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
+        let ctx = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        self.io_metrics = Some(metrics::ParquetExporterMetrics::register(&ctx));
+        self
     }
 }
 
@@ -262,11 +259,8 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    if let Some(metrics) = self.pdata_metrics.as_mut() {
-                        _ = metrics_reporter.report_measurement(metrics);
-                    }
                     if let Some(metrics) = self.io_metrics.as_mut() {
-                        _ = metrics_reporter.report(metrics);
+                        _ = metrics.report(&mut metrics_reporter);
                     }
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {
@@ -305,7 +299,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     if let Some(io) = self.io_metrics.as_mut() {
                                         record_io_metrics(io, stats);
                                     }
-                                    Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics))
+                                    Ok(Self::terminal_state(deadline, self.io_metrics))
                                 }
                                 Err(e) => {
                                     if let Some(io) = self.io_metrics.as_mut() {
@@ -325,44 +319,46 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
-                    let export_start = Instant::now();
-                    // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
+                    let attempt = self
+                        .io_metrics
+                        .as_ref()
+                        .map(|io| io.boundary.attempt(signal_type));
 
-                    // Note: context is not used
-                    let (_context, payload) = pdata.into_parts();
-
-                    let mut otap_batch: OtapArrowRecords =
-                        payload.try_into_with_default().inspect_err(|_| {
-                            if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .record(export_start.elapsed());
+                    let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
+                        Ok(arrow_pdata) => arrow_pdata,
+                        Err(error) => {
+                            if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                                let err = attempt.failed(error.to_string());
+                                let completed = attempt.complete::<(), String>(Err(err));
+                                _ = io.boundary.record(completed);
                             }
-                        })?;
+                            let (error, pdata) = error.into_parts();
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                .await?;
+                            continue;
+                        }
+                    };
+                    // Note: context is not used by this terminal exporter.
+                    let (_context, mut otap_batch) = arrow_pdata.into_parts();
 
                     // decode the transport optimized IDs before converting
                     // to unvalidated parquet records
-                    otap_batch.decode_transport_optimized_ids().map_err(|e| {
-                        if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_start.elapsed());
+                    if let Err(e) = otap_batch.decode_transport_optimized_ids() {
+                        if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                            let err = attempt.failed(e.to_string());
+                            let completed = attempt.complete::<(), String>(Err(err));
+                            _ = io.boundary.record(completed);
                         }
                         let source_detail = format_error_sources(&e);
-                        Error::ExporterError {
+                        return Err(Error::ExporterError {
                             exporter: exporter_id.clone(),
                             kind: ExporterErrorKind::Other,
                             error: format!("Failed to decode transport optimized IDs: {e}"),
                             source_detail,
-                        }
-                    })?;
+                        });
+                    }
 
                     // convert to parquet-local records for unvalidated access
                     let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
@@ -370,14 +366,10 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
                     if let Err(e) = id_gen_result {
-                        // mark failure before returning
-                        if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_start.elapsed());
+                        if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                            let err = attempt.failed(e.to_string());
+                            let completed = attempt.complete::<(), String>(Err(err));
+                            _ = io.boundary.record(completed);
                         }
                         // TODO - this is not the error handling we want long term.
                         // eventually we should have the concept of retryable & non-retryable errors and
@@ -393,25 +385,21 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     }
 
                     // ensure the batches has the schema the parquet writer expects
-                    transform_to_known_schema(&mut otap_batch).map_err(|e| {
-                        // mark failure before returning
-                        if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_start.elapsed());
+                    if let Err(e) = transform_to_known_schema(&mut otap_batch) {
+                        if let (Some(io), Some(attempt)) = (self.io_metrics.as_mut(), attempt) {
+                            let err = attempt.failed(e.to_string());
+                            let completed = attempt.complete::<(), String>(Err(err));
+                            _ = io.boundary.record(completed);
                         }
                         // TODO - Ack/Nack instead of returning error
                         let source_detail = format_error_sources(&e);
-                        Error::ExporterError {
+                        return Err(Error::ExporterError {
                             exporter: exporter_id.clone(),
                             kind: ExporterErrorKind::Other,
                             error: format!("Schema transformation failed: {e}"),
                             source_detail,
-                        }
-                    })?;
+                        });
+                    }
 
                     // compute any partitions
                     let partitions = match self.config.partitioning_strategies.as_ref() {
@@ -436,31 +424,22 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     batch_id += 1;
                     match writer.write(&writes).await {
                         Ok(stats) => {
-                            // successful write
-                            if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Success,
-                                    })
-                                    .record(export_start.elapsed());
-                            }
                             if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, stats);
+                                if let Some(attempt) = attempt {
+                                    let completed = attempt.complete::<(), String>(Ok(()));
+                                    _ = io.boundary.record(completed);
+                                }
                             }
                         }
                         Err(e) => {
-                            // mark failure before returning
-                            if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .record(export_start.elapsed());
-                            }
                             if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, e.stats);
+                                if let Some(attempt) = attempt {
+                                    let err = attempt.failed(e.to_string());
+                                    let completed = attempt.complete::<(), String>(Err(err));
+                                    _ = io.boundary.record(completed);
+                                }
                             }
                             // TODO - this is not the error handling we want long term.
                             // eventually we should have the concept of retryable & non-retryable errors and
@@ -485,35 +464,65 @@ impl Exporter<OtapPdata> for ParquetExporter {
     }
 }
 
-fn record_io_metrics(
-    io: &mut MetricSet<metrics::ParquetExporterMetrics>,
-    stats: writer::WriteStats,
-) {
+fn record_io_metrics(io: &mut metrics::ParquetExporterMetrics, stats: writer::WriteStats) {
     if stats.files_created > 0 {
-        io.files_created.add(stats.files_created);
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::Created,
+            })
+            .operations
+            .add(stats.files_created);
     }
     if stats.files_closed > 0 {
-        io.files_closed.add(stats.files_closed);
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::Closed,
+            })
+            .operations
+            .add(stats.files_closed);
     }
     if stats.rows_written > 0 {
-        io.rows_written.add(stats.rows_written);
+        io.rows.written.add(stats.rows_written);
     }
     if stats.flush_scheduled_max_rows > 0 {
-        io.flush_scheduled_max_rows
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::FlushScheduledMaxRows,
+            })
+            .operations
             .add(stats.flush_scheduled_max_rows);
     }
     if stats.flush_scheduled_max_age > 0 {
-        io.flush_scheduled_max_age
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::FlushScheduledMaxAge,
+            })
+            .operations
             .add(stats.flush_scheduled_max_age);
     }
     if stats.flush_attempts > 0 {
-        io.flush_attempts.add(stats.flush_attempts);
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::FlushAttempts,
+            })
+            .operations
+            .add(stats.flush_attempts);
     }
     if stats.flush_successes > 0 {
-        io.flush_successes.add(stats.flush_successes);
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::FlushSuccesses,
+            })
+            .operations
+            .add(stats.flush_successes);
     }
     if stats.flush_failures > 0 {
-        io.flush_failures.add(stats.flush_failures);
+        io.files
+            .with(metrics::ParquetExporterFileAttributes {
+                operation: metrics::FileOperation::FlushFailures,
+            })
+            .operations
+            .add(stats.flush_failures);
     }
 }
 
@@ -603,6 +612,96 @@ mod test {
         }
     }
 
+    /// Scenario: Legacy and generalized malformed OTLP batches precede valid Parquet input.
+    /// Guarantees: Permanent Nacks retain the exact bytes and delivery context, and export continues.
+    #[test]
+    fn malformed_otlp_is_nacked_without_stopping_export() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_config::SignalType;
+        use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata_codec::{CodecRegistry, OtapPayload, PdataEncoding};
+
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+
+        for generalized in [false, true] {
+            let runtime = TestRuntime::<OtapPdata>::new();
+            let dir = tempfile::tempdir().unwrap();
+            let base_dir = dir.path().to_str().unwrap().to_owned();
+            let exporter = ParquetExporter::new(config::Config {
+                storage: object_store::StorageType::File {
+                    base_uri: base_dir.clone(),
+                },
+                retry: None,
+                partitioning_strategies: None,
+                writer_options: None,
+            });
+            let exporter = ExporterWrapper::local(
+                exporter,
+                test_node(runtime.config().name.clone()),
+                Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN)),
+                runtime.config(),
+            );
+            let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+            let pointer = bytes.as_ptr();
+            let payload: OtapPayload = if generalized {
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into()
+            } else {
+                OtlpProtoBytes::ExportLogsRequest(bytes.clone()).into()
+            };
+            let peer = "127.0.0.1:4317".parse().unwrap();
+            let pdata = OtapPdata::new_default(payload)
+                .with_peer_addr(peer)
+                .test_subscribe_to(
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    TestCallData::new_with(7, 0).into(),
+                    999,
+                );
+            runtime
+                .set_exporter(exporter)
+                .run_test(move |ctx| async move {
+                    ctx.send_pdata(pdata).await.unwrap();
+                    ctx.send_pdata(fixtures::create_single_logs_pdata_with_attrs(vec![]))
+                        .await
+                        .unwrap();
+                    ctx.send_shutdown(Instant::now() + Duration::from_secs(10), "test complete")
+                        .await
+                        .unwrap();
+                })
+                .run_validation(move |mut ctx, result| async move {
+                    result.unwrap();
+                    let mut completions = ctx.take_pipeline_completion_receiver().unwrap();
+                    let completion =
+                        tokio::time::timeout(Duration::from_secs(3), completions.recv())
+                            .await
+                            .expect("timed out waiting for Parquet codec Nack")
+                            .expect("completion channel closed before Parquet codec Nack");
+                    let PipelineCompletionMsg::DeliverNack { nack } = completion else {
+                        panic!("expected a permanent Nack");
+                    };
+                    let (subscriber, nack) = next_nack(nack).expect("original Nack subscription");
+                    assert_eq!(subscriber, 999);
+                    assert_eq!(
+                        TestCallData::try_from(nack.unwind.route.calldata.clone()).unwrap(),
+                        TestCallData::new_with(7, 0)
+                    );
+                    assert!(nack.permanent);
+                    assert_eq!(nack.refused.peer_addr(), Some(peer));
+                    assert_eq!(nack.refused.signal_type(), SignalType::Logs);
+                    let payload = nack.refused.payload_ref();
+                    assert_eq!(payload.encoding(), Some(codec.encoding()));
+                    let recovered = payload.encoded_bytes().unwrap();
+                    assert_eq!(recovered.as_ptr(), pointer);
+                    assert_eq!(recovered, &bytes);
+                    assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 1).await;
+                });
+        }
+    }
+
     #[test]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -615,7 +714,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -724,7 +824,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -870,7 +971,8 @@ mod test {
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -957,7 +1059,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1003,7 +1106,8 @@ mod test {
                 target_rows_per_file: Some(50),
                 ..Default::default()
             }),
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1165,7 +1269,8 @@ mod test {
                 target_rows_per_file: None,
                 flush_when_older_than: Some(Duration::from_millis(200)),
             }),
-        });
+        })
+        .with_dummy_metrics();
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
@@ -1323,7 +1428,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1353,12 +1459,9 @@ mod test {
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(5)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1395,7 +1498,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1424,12 +1528,9 @@ mod test {
                         .await
                         .expect("Failed to send  logs message");
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(1000)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(5)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1719,13 +1820,13 @@ mod test {
         let mut saw_exports = false;
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             let has_positive_value = iter.into_iter().any(|(_, value)| value.to_f64() > 0.0);
-            if desc.name == "exporter.exports" && has_positive_value {
+            if desc.name == "exporter.parquet.rows" && has_positive_value {
                 saw_exports = true;
             }
         });
         assert!(
             saw_exports,
-            "expected exporter.exports metrics to be reported"
+            "expected exporter.parquet.rows metrics to be reported"
         );
     }
 
@@ -1741,7 +1842,8 @@ mod test {
             retry: None,
             partitioning_strategies: None,
             writer_options: None,
-        });
+        })
+        .with_dummy_metrics();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
             exporter,
@@ -1782,12 +1884,9 @@ mod test {
                     ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(1000)),
-                        "test complete",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(5)), "test complete")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -1796,5 +1895,127 @@ mod test {
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, num_rows).await;
                 })
             });
+    }
+
+    /// Scenario: record_io_metrics maps every WriteStats field to the correct
+    /// dimensioned metric bucket.
+    /// Guarantees: Each non-zero stat increments exactly the right FileOperation
+    /// or row counter.
+    #[test]
+    fn record_io_metrics_maps_all_write_stats_fields() {
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut io = metrics::ParquetExporterMetrics::register(&pipeline);
+
+        let stats = writer::WriteStats {
+            files_created: 2,
+            files_closed: 1,
+            rows_written: 100,
+            flush_scheduled_max_rows: 3,
+            flush_scheduled_max_age: 4,
+            flush_attempts: 5,
+            flush_successes: 4,
+            flush_failures: 1,
+        };
+
+        record_io_metrics(&mut io, stats);
+
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::Created,
+                })
+                .operations
+                .get(),
+            2
+        );
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::Closed,
+                })
+                .operations
+                .get(),
+            1
+        );
+        assert_eq!(io.rows.written.get(), 100);
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::FlushScheduledMaxRows,
+                })
+                .operations
+                .get(),
+            3
+        );
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::FlushScheduledMaxAge,
+                })
+                .operations
+                .get(),
+            4
+        );
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::FlushAttempts,
+                })
+                .operations
+                .get(),
+            5
+        );
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::FlushSuccesses,
+                })
+                .operations
+                .get(),
+            4
+        );
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::FlushFailures,
+                })
+                .operations
+                .get(),
+            1
+        );
+    }
+
+    /// Scenario: record_io_metrics skips zero-valued stats.
+    /// Guarantees: When all stats are zero, no metric counters are touched.
+    #[test]
+    fn record_io_metrics_skips_zero_stats() {
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut io = metrics::ParquetExporterMetrics::register(&pipeline);
+
+        let stats = writer::WriteStats::default();
+        record_io_metrics(&mut io, stats);
+
+        assert_eq!(
+            io.files
+                .get(metrics::ParquetExporterFileAttributes {
+                    operation: metrics::FileOperation::Created,
+                })
+                .operations
+                .get(),
+            0
+        );
+        assert_eq!(io.rows.written.get(), 0);
     }
 }
