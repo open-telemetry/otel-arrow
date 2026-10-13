@@ -1840,9 +1840,9 @@ mod tests {
         Pattern::Regex(Regex::new(p).unwrap())
     }
 
-    // Scenario: a regex Pattern matched against a Utf8 array containing a null.
-    // Guarantees: non-null values report their match result and null inputs stay
-    // null (the caller is responsible for resolving nulls).
+    /// Scenario: a regex Pattern matched against a Utf8 array containing a null.
+    /// Guarantees: non-null values report their match result and null inputs stay
+    /// null (the caller is responsible for resolving nulls).
     #[test]
     fn test_pattern_matches_utf8_with_nulls() {
         let arr: ArrayRef = Arc::new(StringArray::from(vec![
@@ -1854,8 +1854,8 @@ mod tests {
         assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
     }
 
-    // Scenario: a regex Pattern matched against a Utf8View array.
-    // Guarantees: Utf8View haystacks are supported and produce per-element results.
+    /// Scenario: a regex Pattern matched against a Utf8View array.
+    /// Guarantees: Utf8View haystacks are supported and produce per-element results.
     #[test]
     fn test_pattern_matches_utf8_view() {
         let arr: ArrayRef = Arc::new(StringViewArray::from(vec!["a@b.c", "nope"]));
@@ -1863,8 +1863,8 @@ mod tests {
         assert_eq!(out, BooleanArray::from(vec![true, false]));
     }
 
-    // Scenario: an exact Pattern matched against a Utf8View array.
-    // Guarantees: exact matching supports Utf8View haystacks.
+    /// Scenario: an exact Pattern matched against a Utf8View array.
+    /// Guarantees: exact matching supports Utf8View haystacks.
     #[test]
     fn test_pattern_matches_exact_utf8_view() {
         let arr: ArrayRef = Arc::new(StringViewArray::from(vec!["keep", "drop"]));
@@ -1872,10 +1872,10 @@ mod tests {
         assert_eq!(out, BooleanArray::from(vec![true, false]));
     }
 
-    // Scenario: a regex Pattern matched against a dictionary array with a null and
-    // a repeated key.
-    // Guarantees: the pattern is evaluated per distinct value and expanded through
-    // the keys, with nulls preserved.
+    /// Scenario: a regex Pattern matched against a dictionary array with a null and
+    /// a repeated key.
+    /// Guarantees: the pattern is evaluated per distinct value and expanded through
+    /// the keys, with nulls preserved.
     #[test]
     fn test_pattern_matches_dictionary() {
         let arr: ArrayRef = Arc::new(
@@ -1890,9 +1890,9 @@ mod tests {
         );
     }
 
-    // Scenario: a regex Pattern matched against a sliced Utf8 array with nulls.
-    // Guarantees: the null buffer is read relative to the slice offset, so the
-    // result aligns with the sliced values.
+    /// Scenario: a regex Pattern matched against a sliced Utf8 array with nulls.
+    /// Guarantees: the null buffer is read relative to the slice offset, so the
+    /// result aligns with the sliced values.
     #[test]
     fn test_pattern_matches_sliced() {
         let full: ArrayRef = Arc::new(StringArray::from(vec![
@@ -1906,8 +1906,8 @@ mod tests {
         assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
     }
 
-    // Scenario: a Pattern matched against a non-string column.
-    // Guarantees: unsupported haystack types are rejected rather than panicking.
+    /// Scenario: a Pattern matched against a non-string column.
+    /// Guarantees: unsupported haystack types are rejected rather than panicking.
     #[test]
     fn test_pattern_matches_unsupported_type() {
         let arr: ArrayRef = Arc::new(UInt16Array::from(vec![1, 2, 3]));
@@ -1915,10 +1915,10 @@ mod tests {
         assert!(matches!(err, Error::UnsupportedStringColumnType { .. }));
     }
 
-    // Scenario: an Exact pattern and a Regex pattern matched against a Utf8 column
-    // with a null row.
-    // Guarantees: both exact and regex matching preserve the input null buffer,
-    // leaving null rows null for the caller to resolve.
+    /// Scenario: an Exact pattern and a Regex pattern matched against a Utf8 column
+    /// with a null row.
+    /// Guarantees: both exact and regex matching preserve the input null buffer,
+    /// leaving null rows null for the caller to resolve.
     #[test]
     fn test_pattern_matches_preserves_nulls() {
         let arr: ArrayRef = Arc::new(StringArray::from(vec![Some("error"), None, Some("warn")]));

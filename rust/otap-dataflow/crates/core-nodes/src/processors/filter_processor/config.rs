@@ -389,9 +389,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // Scenario: a config with a syntactically invalid regex pattern is compiled.
-    // Guarantees: compilation fails with InvalidUserConfig rather than deferring
-    // the error to the first batch (where it would previously panic).
+    /// Scenario: a config with a syntactically invalid regex pattern is compiled.
+    /// Guarantees: compilation fails with InvalidUserConfig rather than deferring
+    /// the error to the first batch (where it would previously panic).
     #[test]
     fn test_compile_rejects_invalid_regex() {
         let config = Config {
@@ -410,10 +410,10 @@ mod tests {
         assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
     }
 
-    // Scenario: a strict (non-regex) pattern that is not valid regex syntax is
-    // compiled.
-    // Guarantees: strict patterns are treated as literals and never fail to
-    // compile, even when they contain regex metacharacters.
+    /// Scenario: a strict (non-regex) pattern that is not valid regex syntax is
+    /// compiled.
+    /// Guarantees: strict patterns are treated as literals and never fail to
+    /// compile, even when they contain regex metacharacters.
     #[test]
     fn test_compile_strict_pattern_is_literal() {
         let config = Config {
@@ -429,10 +429,10 @@ mod tests {
         let _ = config.compile().expect("strict patterns always compile");
     }
 
-    // Scenario: the documented filter-processor config shape is deserialized and
-    // compiled.
-    // Guarantees: a realistic regexp config round-trips from JSON through compile
-    // without error.
+    /// Scenario: the documented filter-processor config shape is deserialized and
+    /// compiled.
+    /// Guarantees: a realistic regexp config round-trips from JSON through compile
+    /// without error.
     #[test]
     fn test_deserialize_and_compile_roundtrip() {
         let value = json!({
