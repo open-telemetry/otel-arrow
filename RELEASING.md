@@ -72,8 +72,8 @@ Prepare Release exits without opening a pull request.
 
 ## Scheduled releases
 
-Prepare Release runs for both components every Monday at 15:00 UTC. Go and Rust
-are calculated independently, and the scheduled run is not a dry run:
+Prepare Release runs for both components early Monday. Go and Rust are
+calculated independently, and the scheduled run is not a dry run:
 
 1. Generate pending dependency-bot changelog entries for each component.
 2. Calculate the next Go and Rust versions independently.

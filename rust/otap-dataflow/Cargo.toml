@@ -5,9 +5,10 @@ members = [
     "xtask"
 ]
 exclude = [
-    # Reference WASM guest plugin, built on demand for the wasm-host
-    # integration test and compiled for the wasm32-wasip2 target only.
+    # Standalone WASM guest plugins, built on demand for wasm-host tests and
+    # compiled for the nightly wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
+    "crates/wasm-host/plugins/test-plugin",
 ]
 resolver = "2"
 
@@ -96,7 +97,8 @@ arrow-schema = { version = "58.3" }
 arrow-array = { version = "58.3" }
 arrow-cast = { version = "58.3" }
 arrow-select = { version = "58.3" }
-wasmtime = { version = "48.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
+wasmtime = { version = "49.0.2", default-features = false, features = ["runtime", "component-model", "component-model-async", "cranelift", "std"] }
+wasmtime-wasi = { version = "49.0.2", default-features = false, features = ["p3"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
@@ -118,6 +120,7 @@ csv-core = "0.1.13"
 data-encoding = "2.9.0"
 datafusion = { version = "54.0.0", default-features = false }
 dhat = "0.3.3"
+libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 fs2 = "0.4.3"
@@ -190,7 +193,8 @@ rand = "0.10.1"
 rcgen = "0.14"
 rdkafka = { version = "=0.39.0", features = ["tokio", "tracing"] }
 regex = "1.12"
-regex-automata = "0.4.14"
+regex-automata = "0.4.18"
+regex-syntax = "0.8.11"
 ring = "0.17"
 roaring = "0.11.2"
 ryu = "1"
@@ -277,6 +281,7 @@ flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
 time = ">=0.3.47, <0.3.56"
+windows-sys = "0.61.2"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -362,6 +367,10 @@ recordset-kql = ["otel-arrow-dfe-contrib-nodes/recordset-kql"]
 resource-validator = ["otel-arrow-dfe-contrib-nodes/resource-validator"]
 
 # Contrib exporters.
+azure-data-explorer = [
+    "otel-arrow-dfe-contrib-nodes/azure-data-explorer",
+    "azure-identity-auth",
+]
 # The Azure Monitor exporter requires the Azure Identity auth extension to
 # authenticate outbound requests, so enabling it pulls in that extension.
 azure-monitor = [
@@ -491,14 +500,28 @@ missing_crate_level_docs = "deny"
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
 
-[profile.profiling]
+# Opt in to whole-program optimization without changing the default release build.
+[profile.release-perf]
 inherits = "release"
-debug = 2
+opt-level = 3
+debug = 0
+strip = "debuginfo"
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+incremental = false
 
-# A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
-#[profile.release]
-#lto = "thin"
-#strip = true
+# Favor the smallest binary, accepting potential processing throughput loss.
+[profile.release-size]
+inherits = "release-perf"
+opt-level = "z"
+debug = 0
+strip = "debuginfo"
+
+[profile.profiling]
+inherits = "release-perf"
+debug = 2
+strip = "none"
 
 [profile.bench]
 inherits = "release"

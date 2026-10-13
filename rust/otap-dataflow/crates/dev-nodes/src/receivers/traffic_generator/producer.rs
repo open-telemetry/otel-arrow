@@ -4,10 +4,10 @@
 use std::collections::HashMap;
 
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata::OtapPayload;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::EncodeError;
 use weaver_forge::registry::ResolvedRegistry;
 
