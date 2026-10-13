@@ -1,8 +1,18 @@
 # PostgreSQL Receiver
 
+This receiver is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 <!-- markdownlint-disable MD013 -->
 
-PostgreSQL receiver: `urn:otel:receiver:postgresql`. The opt-in `postgresql` feature is excluded from `contrib-receivers`.
+## Metadata
+
+- Type: `urn:otel:receiver:postgresql`
+- Crate: `otel-arrow-dfe-contrib-nodes`
+- Feature gate: `postgresql` (opt-in; not enabled by `contrib-receivers`)
+- Stability: Experimental
+- Output: OTLP logs, one log record per selected database row
+- Execution: One query per receiver, in a single-core pipeline
 
 **Database transport is unencrypted TCP without server-identity verification. Use only isolated, trusted development environments and disposable credentials.**
 

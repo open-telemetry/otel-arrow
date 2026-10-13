@@ -277,7 +277,7 @@ macro_rules! postgresql_module_tests {
             #[test]
             fn sqlstate_retry_policy() {
                 for code in [
-                    "53300", "08006", "57P01", "57P02", "57P03", "40001", "40P01",
+                    "53300", "08006", "55P03", "57P01", "57P02", "57P03", "57P05", "40001", "40P01",
                 ] {
                     let error = sqlstate(code);
                     assert_eq!(error, Error::Unavailable);

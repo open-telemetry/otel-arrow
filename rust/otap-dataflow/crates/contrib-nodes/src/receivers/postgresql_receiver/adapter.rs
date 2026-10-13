@@ -319,7 +319,7 @@ fn sqlstate(code: &str) -> Error {
     } else if code.starts_with("08")
         || matches!(
             code,
-            "53300" | "57P01" | "57P02" | "57P03" | "40001" | "40P01"
+            "53300" | "55P03" | "57P01" | "57P02" | "57P03" | "57P05" | "40001" | "40P01"
         )
     {
         Error::Unavailable
