@@ -416,18 +416,19 @@ impl MaterializedContext {
             }) {
                 continue;
             }
+            if !entry.members.iter().all(|member| match member.source {
+                ContextMemberSource::Field(field) => fields[field.index()].is_some(),
+                ContextMemberSource::Constant(_) | ContextMemberSource::Randomness(_) => true,
+            }) {
+                continue;
+            }
 
             let mut members = Vec::with_capacity(entry.members.len());
-            let mut present = true;
             for member in &entry.members {
                 let values = match &member.source {
-                    ContextMemberSource::Field(field) => {
-                        let Some(values) = fields[field.index()].clone() else {
-                            present = false;
-                            break;
-                        };
-                        values
-                    }
+                    ContextMemberSource::Field(field) => fields[field.index()]
+                        .clone()
+                        .expect("required field presence was checked"),
                     ContextMemberSource::Constant(value) => {
                         MaterializedContextValues::text(value.as_bytes().to_vec())
                     }
@@ -444,13 +445,11 @@ impl MaterializedContext {
                     values,
                 });
             }
-            if present {
-                entries.push(MaterializedContextEntry {
-                    name: entry.name.clone(),
-                    members: members.into_boxed_slice(),
-                    provenance: Arc::clone(declaration),
-                });
-            }
+            entries.push(MaterializedContextEntry {
+                name: entry.name.clone(),
+                members: members.into_boxed_slice(),
+                provenance: Arc::clone(declaration),
+            });
         }
         entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         self.storage = (!entries.is_empty()).then(|| {
