@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{SqlServerConnectionConfig, SqlServerParameter as Parameter, SqlServerReceiverConfig};
-use otel_arrow_dfe_scraper::database::{CompiledWatermark, ScalarValue};
+use otel_arrow_dfe_scraper::database::{CompiledWatermark, MAX_QUERY_BYTES, ScalarValue};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -662,7 +662,7 @@ fn bounds_and_redacts_parser_failures() {
     for statement in [
         format!(
             "SELECT '{}' AS PAYLOAD FROM dbo.EVENTS",
-            "x".repeat(16 * 1024)
+            "x".repeat(MAX_QUERY_BYTES)
         ),
         format!(
             "SELECT {}1{} AS N FROM dbo.EVENTS",
@@ -683,6 +683,38 @@ fn bounds_and_redacts_parser_failures() {
         assert!(!error.contains("sensitive"));
         assert!(!error.contains(&statement));
     }
+}
+
+/// Scenario: Input and canonical SQL reach or exceed the shared byte limit independently.
+/// Guarantees: The exact limit passes; oversized input and canonical expansion both fail locally.
+#[test]
+fn enforces_shared_query_byte_limit() {
+    let overhead = "SELECT '' AS PAYLOAD FROM dbo . EVENTS".len();
+    let statement = format!(
+        "SELECT '{}' AS PAYLOAD FROM dbo . EVENTS",
+        "x".repeat(MAX_QUERY_BYTES - overhead)
+    );
+    assert_eq!(statement.len(), MAX_QUERY_BYTES);
+    let config = parse(snapshot(&statement));
+    assert_eq!(config.statement().canonical_sql().len(), MAX_QUERY_BYTES);
+
+    let error =
+        serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&format!(" {statement}")))
+            .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("query.statement must not exceed {MAX_QUERY_BYTES} bytes")
+    );
+
+    let compact = statement
+        .replace("dbo . EVENTS", "dbo.EVENTS")
+        .replacen("'x", "'xx", 1);
+    assert!(compact.len() < MAX_QUERY_BYTES);
+    let error = serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&compact)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("canonical query.statement must not exceed {MAX_QUERY_BYTES} bytes")
+    );
 }
 
 /// Scenario: Equivalent UTC instants arrive with offsets or timezone-less UTC spelling.

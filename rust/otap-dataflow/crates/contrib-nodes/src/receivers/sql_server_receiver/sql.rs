@@ -4,7 +4,7 @@
 //! Fail-closed T-SQL subset and parameterized server-side paging.
 
 use super::config::{SqlServerConfigError, error};
-use otel_arrow_dfe_scraper::database::{ScalarValue, WatermarkConfig};
+use otel_arrow_dfe_scraper::database::{MAX_QUERY_BYTES, ScalarValue, WatermarkConfig};
 use sqlparser::{
     ast::{
         BinaryOperator, CastKind, DataType, ExactNumberInfo, Expr, Function, FunctionArg,
@@ -17,7 +17,6 @@ use sqlparser::{
 };
 use std::{collections::HashSet, fmt};
 
-const MAX_SQL_BYTES: usize = 16 * 1024;
 const MAX_TOKENS: usize = 2048;
 const MAX_DEPTH: usize = 32;
 const MAX_COLUMNS: usize = 256;
@@ -151,8 +150,10 @@ impl SqlServerStatement {
             }
         }
         let canonical_sql = render(&tokens, None)?;
-        if canonical_sql.len() > MAX_SQL_BYTES {
-            return Err(error("canonical query.statement must not exceed 16 KiB"));
+        if canonical_sql.len() > MAX_QUERY_BYTES {
+            return Err(error(format!(
+                "canonical query.statement must not exceed {MAX_QUERY_BYTES} bytes"
+            )));
         }
         parameters.push(SqlServerParameter::PageLimit);
         Ok(Self {
@@ -164,8 +165,10 @@ impl SqlServerStatement {
 }
 
 fn parse(sql: &str) -> Result<(Box<Query>, Vec<Token>), SqlServerConfigError> {
-    if sql.len() > MAX_SQL_BYTES {
-        return Err(error("query.statement must not exceed 16 KiB"));
+    if sql.len() > MAX_QUERY_BYTES {
+        return Err(error(format!(
+            "query.statement must not exceed {MAX_QUERY_BYTES} bytes"
+        )));
     }
     let dialect = MsSqlDialect {};
     let tokens = Tokenizer::new(&dialect, sql)

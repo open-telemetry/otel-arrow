@@ -572,6 +572,6 @@ fn whole_seconds(
 #[error("{0}")]
 pub struct SqlServerConfigError(String);
 
-pub(super) fn error(message: &'static str) -> SqlServerConfigError {
-    SqlServerConfigError(message.to_owned())
+pub(super) fn error(message: impl Into<String>) -> SqlServerConfigError {
+    SqlServerConfigError(message.into())
 }
