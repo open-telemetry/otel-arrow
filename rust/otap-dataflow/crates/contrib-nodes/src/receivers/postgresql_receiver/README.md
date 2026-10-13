@@ -50,7 +50,9 @@ Files refresh at `password_secret_file_refresh`; a reconnect before refresh may 
 
 ### SQL and cursor contract
 
-Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections.Cursor columns must be direct, non-null columns of the driving table; their pair must uniquely identify each result position.
+Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections. Cursor columns must be direct, non-null columns of the driving table, and their pair must uniquely identify each result position.
+
+The at-least-once guarantee also requires cursor-ordered commit visibility: no row may become visible later at or before a committed cursor. Keep cursor and selected values stable, and retain rows unchanged throughout the maximum outage, downstream retry, and checkpoint-recovery window. Backdated inserts, late commits, updates, or early deletion can otherwise be skipped or make a NACK replay differ from the original page.
 
 Use either keyset below, optionally ANDed with supported static comparisons, and order by timestamp then tie-breaker ascending:
 
