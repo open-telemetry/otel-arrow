@@ -11,7 +11,7 @@ component: pipeline
 note: "OTAP receiver now accepts the shared gRPC server settings: request/response compression, concurrency limits, message size, HTTP/2 stream limit, and TCP/HTTP2 tuning."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: []
+issues: [4379]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
