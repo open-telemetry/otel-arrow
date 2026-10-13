@@ -157,7 +157,7 @@ async fn test_kafka_receiver_traces_otap() {
                 assert!(
                     matches!(
                         payload.into_data(),
-                        PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                        PayloadData::OtapRecords(OtapArrowRecords::Traces(_))
                     ),
                     "Expected OtapArrowRecords::Traces for message {i}"
                 );
@@ -198,7 +198,7 @@ async fn test_kafka_receiver_metrics_otap() {
             for i in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
                 let payload: OtapPayload = pdata.take_payload();
-                if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
+                if let PayloadData::OtapRecords(arrow_records) = payload.into_data() {
                     let expected = OtapArrowRecords::Metrics(Metrics::default());
                     assert_eq!(expected, arrow_records);
                 } else {
@@ -241,7 +241,7 @@ async fn test_kafka_receiver_logs_otap() {
             for i in 0..3 {
                 let mut pdata = receiver.recv_pdata().await;
                 let payload: OtapPayload = pdata.take_payload();
-                if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
+                if let PayloadData::OtapRecords(arrow_records) = payload.into_data() {
                     let expected = OtapArrowRecords::Logs(Logs::default());
                     assert_eq!(expected, arrow_records);
                 } else {
@@ -308,7 +308,7 @@ async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
                 assert!(
                     matches!(
                         payload.into_data(),
-                        PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                        PayloadData::OtapRecords(OtapArrowRecords::Traces(_))
                     ),
                     "message {i}: MessageFormat=otap header must override the \
                          OtlpProto per-signal default and decode via the OTAP path",

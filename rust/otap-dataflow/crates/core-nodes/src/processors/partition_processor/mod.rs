@@ -15,8 +15,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+#[cfg(test)]
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
-use otel_arrow_dfe_config::{SignalType, context::ContextEntryName, node::NodeUserConfig};
+use otel_arrow_dfe_config::{context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context_declaration::{
     ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
@@ -37,8 +39,10 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
 use otel_arrow_dfe_otap::accessory::slots::Key;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
@@ -159,15 +163,13 @@ impl PartitionProcessor {
     async fn handle_ack_nack(
         &mut self,
         outbound_key: Key,
-        signal_type: SignalType,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         // clear the outbound context
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let payload = inbound.payload.unwrap_or(OtapPayload::empty(signal_type));
-            let pdata = OtapPdata::new(inbound.context, payload);
+            let pdata = inbound.delivery.into_pdata();
             if let Some(error) = inbound.error {
                 let nack_msg = if inbound.outbound_all_transient_errors {
                     NackMsg::new_with_cause(error.reason, pdata, error.cause)
@@ -207,12 +209,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     let outbound_key: Key = ack_msg.unwind.route.calldata.try_into()?;
                     self.contexts
                         .set_outbound_all_transient_errors(outbound_key, false);
-                    self.handle_ack_nack(
-                        outbound_key,
-                        ack_msg.accepted.signal_type(),
-                        effect_handler,
-                    )
-                    .await?
+                    self.handle_ack_nack(outbound_key, effect_handler).await?
                 }
 
                 NodeControlMsg::Nack(nack_msg) => {
@@ -228,12 +225,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         self.contexts
                             .set_outbound_all_transient_errors(outbound_key, false);
                     }
-                    self.handle_ack_nack(
-                        outbound_key,
-                        nack_msg.refused.signal_type(),
-                        effect_handler,
-                    )
-                    .await?;
+                    self.handle_ack_nack(outbound_key, effect_handler).await?;
                 }
 
                 NodeControlMsg::Config { .. }
@@ -254,12 +246,18 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (mut inbound_context, payload) = pdata.into_parts();
-                let inbound_payload = inbound_context
-                    .may_return_payload()
-                    .then_some(payload.clone());
-                let signal_type = payload.signal_type();
-                let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
+                let (mut delivery, mut otap_batch) =
+                    match effect_handler.prepare_otap_work(pdata).await {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            let (error, pdata) = error.into_parts();
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                .await?;
+                            return Ok(());
+                        }
+                    };
+                let signal_type = delivery.signal_type();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
 
@@ -292,8 +290,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 match partitions.len() {
                     0 => {
                         // no partitions, just Ack the inbound
-                        let mut pdata =
-                            OtapPdata::new(inbound_context, OtapPayload::empty(signal_type));
+                        let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
 
                         pdata.complete_processor_without_output(effect_handler);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -307,26 +304,28 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let partition = partitions.next().expect("at least one partition");
 
                         // update the header values
-                        let mut headers =
-                            inbound_context.take_transport_headers().unwrap_or_default();
+                        let mut headers = delivery
+                            .context_mut()
+                            .take_transport_headers()
+                            .unwrap_or_default();
                         headers.push(partition_value_to_transport_header(
                             &self.header_name,
                             &self.serialization_strategy,
                             partition.value,
                         ));
-                        inbound_context.set_transport_headers(headers);
+                        delivery.context_mut().set_transport_headers(headers);
 
-                        let pdata =
-                            OtapPdata::new(inbound_context, OtapPayload::from(partition.batch));
+                        let pdata = delivery.with_payload(partition.batch.into());
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
+                        let outbound_context = delivery.context().clone_detached();
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(inbound_context.clone(), inbound_payload, None)
+                            .insert_inbound(delivery, None)
                             .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
@@ -371,7 +370,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })?;
 
                             // set the transport header
-                            let mut pdata_context = inbound_context.clone_detached();
+                            let mut pdata_context = outbound_context.clone_detached();
                             let mut headers =
                                 pdata_context.take_transport_headers().unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
