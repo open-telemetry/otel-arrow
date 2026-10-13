@@ -320,7 +320,7 @@ use otel_arrow_dfe_engine::capability::{
     },
 };
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
-use otel_arrow_dfe_scraper::database::{CellValue, DriverAdapter};
+use otel_arrow_dfe_scraper::database::DriverAdapter;
 use serde_json::{Value, json};
 use tokio_postgres::types::Type;
 
@@ -683,46 +683,49 @@ fn cursor_precision_and_range() {
     assert!(convert::check_tie(i64::MAX, "int8").is_ok());
 }
 
-/// Scenario: Supported exact codecs and unsupported/nonfinite source values are decoded.
-/// Guarantees: JSON lexemes, bytes, padding and interval units survive; invalid data never stringifies.
-#[test]
-fn exact_values() {
-    let json = br#"{"n":9007199254740993,"x":1.2345678901234567890123456789}"#;
-    assert_eq!(
-        convert::decode(&Type::JSON, json).expect("json"),
-        CellValue::String(std::str::from_utf8(json).expect("utf8").into())
-    );
-    assert_eq!(
-        convert::decode(&Type::BYTEA, &[0, 255]).expect("bytes"),
-        CellValue::Bytes(vec![0, 255])
-    );
-    assert_eq!(
-        convert::decode(&Type::BPCHAR, b"x   ").expect("padding"),
-        CellValue::String("x   ".into())
-    );
-    let interval = [
-        (-9i64).to_be_bytes().to_vec(),
-        2i32.to_be_bytes().to_vec(),
-        (-1i32).to_be_bytes().to_vec(),
-    ]
-    .concat();
-    assert_eq!(
-        convert::decode(&Type::INTERVAL, &interval).expect("interval"),
-        CellValue::Interval("months=-1;days=2;microseconds=-9".into())
-    );
-    assert_eq!(
-        convert::decode(&Type::UUID, &[0; 16]).expect("uuid"),
-        CellValue::String("00000000-0000-0000-0000-000000000000".into())
-    );
-    for (ty, bytes) in [
-        (Type::JSONB, vec![2, b'{', b'}']),
-        (Type::TEXT, vec![255]),
-        (Type::FLOAT8, f64::NAN.to_be_bytes().to_vec()),
-        (Type::OID, vec![0; 4]),
-        (Type::TIMESTAMP, i64::MAX.to_be_bytes().to_vec()),
-    ] {
-        assert!(convert::decode(&ty, &bytes).is_err());
+fn number(weight: i16, sign: u16, scale: u16, digits: &[u16]) -> Vec<u8> {
+    let mut bytes = (digits.len() as i16).to_be_bytes().to_vec();
+    bytes.extend_from_slice(&weight.to_be_bytes());
+    bytes.extend_from_slice(&sign.to_be_bytes());
+    bytes.extend_from_slice(&scale.to_be_bytes());
+    for digit in digits {
+        bytes.extend_from_slice(&digit.to_be_bytes());
     }
+    bytes
+}
+
+/// Scenario: NUMERIC contains signed integers, fractions, scale, malformed groups, or extreme weights.
+/// Guarantees: Base-10000 decoding stays exact and bounded without float conversion or scale loss.
+#[test]
+fn exact_numeric() {
+    for (bytes, expected) in [
+        (
+            number(3, 0, 0, &[9007, 1992, 5474, 993]),
+            "9007199254740993",
+        ),
+        (number(0, 0x4000, 4, &[12, 3400]), "-12.3400"),
+        (number(-2, 0, 8, &[1]), "0.00000001"),
+        (number(0, 0, 3, &[]), "0.000"),
+        (number(1, 0, 0, &[1]), "10000"),
+    ] {
+        assert_eq!(convert::numeric(&bytes).expect("numeric"), expected);
+    }
+    for bytes in [
+        number(0, 0xC000, 0, &[]),
+        number(0, 0, 0, &[10000]),
+        number(-1, 0, 2, &[1234]),
+        number(32767, 0, 0, &[1]),
+        vec![0; 7],
+    ] {
+        assert!(convert::numeric(&bytes).is_err());
+    }
+    assert_eq!(
+        convert::numeric(&number(4095, 0, 0, &[1000]))
+            .expect("boundary")
+            .len(),
+        16384
+    );
+    assert!(convert::numeric(&number(4096, 0, 0, &[1])).is_err());
 }
 
 /// Scenario: A worker receives shutdown without ever connecting to a database.

@@ -2,9 +2,9 @@
 
 <!-- markdownlint-disable MD013 -->
 
-Experimental PostgreSQL 15 receiver: `urn:otel:receiver:postgresql`. The opt-in `postgresql` feature is excluded from `contrib-receivers`. Each selected row becomes one OTLP log with column values in its structured body, not a Log Analytics custom-table mapping.
+PostgreSQL receiver: `urn:otel:receiver:postgresql`. The opt-in `postgresql` feature is excluded from `contrib-receivers`.
 
-**Database transport is unencrypted TCP without server-identity verification. Use only isolated, trusted development environments and disposable credentials.** TLS settings are rejected; `crypto-ring` can secure exporters but does not encrypt this database connection. Local database qualification used PostgreSQL 15.19, not every PostgreSQL version.
+**Database transport is unencrypted TCP without server-identity verification. Use only isolated, trusted development environments and disposable credentials.**
 
 ## Getting started
 
@@ -21,7 +21,7 @@ No OTLP endpoint is needed for the example. Console output is not durable downst
 
 ## Configuration
 
-One receiver owns one query/collecting connection and requires a one-core pipeline. Unknown fields and null configuration values are rejected. Result metadata is discovered automatically; customer-authored result schemas are not supported.
+One receiver owns one query/collecting connection and requires a one-core pipeline. Unknown fields and null configuration values are rejected.
 
 | Field | Contract |
 | --- | --- |
@@ -40,9 +40,7 @@ One receiver owns one query/collecting connection and requires a one-core pipeli
 | `watermark` | Required composite timestamp plus signed-integer tie-breaker; see the example. |
 | `checkpoint.directory` | Required persistent storage directory. |
 
-Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`. The last counts checkpoint-write failures, not connection retries. Interval, timeout, page/fetch budgets, and catch-up changes preserve checkpoint compatibility; connection, authored SQL, and watermark changes invalidate it. Incompatible checkpoints fail, never silently reset.
-
-The composite watermark's timestamp column automatically sets the log event time, as in Oracle; there is no separate `query.output` setting. Checkpoints from earlier configurable-output builds are incompatible: use a new checkpoint directory and an explicitly reviewed initial cursor.
+Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`. 
 
 ### Authentication and source identity
 
@@ -52,7 +50,7 @@ Files refresh at `password_secret_file_refresh`; a reconnect before refresh may 
 
 ### SQL and cursor contract
 
-Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections. Up to three inner joins are allowed when equality predicates cover a proven unique key on each joined side. Cursor columns must be direct, non-null columns of the driving table; their pair must uniquely identify each result position.
+Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections.Cursor columns must be direct, non-null columns of the driving table; their pair must uniquely identify each result position.
 
 Use either keyset below, optionally ANDed with supported static comparisons, and order by timestamp then tie-breaker ascending:
 
@@ -63,19 +61,9 @@ Use either keyset below, optionally ANDed with supported static comparisons, and
 (e.ts, e.id) > (:last_timestamp, :last_tie_breaker)
 ```
 
-Native `$1`/`$2` binds are also accepted; do not mix styles. Execution rewrites the validated keyset to equivalent tuple comparison and adds the configured page `LIMIT`; cursor values stay bound. Ask the database owner for an index beginning with timestamp and tie-breaker. No write privileges are needed.
+Native `$1`/`$2` binds are also accepted; do not mix styles.
 
 Timestamp cursors require `timestamp`/`timestamptz`, `timezone: UTC`, and an ISO 8601 initial value with `T`/`Z`, at most six fractional digits, exactly representable at native precision. Numeric offsets, spaces, and precision loss are rejected. Tie-breakers use range-checked `int2`, `int4`, or `int8`.
-
-Views, RLS, partitioned/foreign/temporary tables, system schemas, functions, computed projections/casts, stars, outer joins, subqueries, grouping, unrestricted OR, user LIMIT/OFFSET/FETCH, and multiple statements are unsupported. All referenced columns, including filter/join columns, are validated.
-
-### Metadata discovery
-
-Local validation derives output names and cursor positions without contacting PostgreSQL. Bounded catalog queries discover native types, modifiers, and nullability before preparing the user query; unsupported types, invalid cursor/event-time columns, and unrepresentable initial values fail closed. Prepared output names, native types/modifiers, and table/column origins must match.
-
-Catalog reads share the operation timeout and receive limits: at most two relation matches, requested attributes plus one, and 129 index descriptions (more than 128 indexes fails). No source-data scan is needed. Every page/reconnect compares fresh metadata with cached signatures; drift fails closed during the receiver's lifetime.
-
-The schema baseline is **not persisted across process restarts**. Keep schema, grants, column semantics, and unique cursor ordering stable across restarts. Checkpoint identity hashes the authored connection/query/watermark and timestamp-mapping contract, not discovered types.
 
 ## Value mapping
 
@@ -90,17 +78,7 @@ The schema baseline is **not persisted across process restarts**. Keep schema, g
 | `json`, `jsonb` | Validated JSON text preserving numeric precision, not expanded OTLP fields. |
 | `interval`; nullable `NULL` | `months=N;days=N;microseconds=N`; empty OTLP value retaining the column name. |
 
-Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records fail explicitly without skipping, truncation, or automatic type-to-string fallback. Timestamps outside the OTLP time range use observation time while retaining the original body value; watermark timestamps remain strict and non-null.
-
-## Resource and delivery boundaries
-
-The example chooses `10000` rows/`10 MiB`; neither is a default. Other bounds: 10-second connect budget (also limited by operation timeout), 128 output columns, and 16,384 numeric-output characters. Fetching probes one row then adapts to the largest observed row; abrupt size increases may cause re-reading part of a fetch. Geometric page allocation charges metadata, cursors, and spare capacity; hard budgets do not depend on the estimate.
-
-DataRow frames are checked before driver body allocation against `max_batch_bytes + 519` wire-overhead bytes. Only non-DataRow messages get a 64 KiB minimum allowance; catalog DataRows do not. Frames are forwarded individually with fixed 8 KiB read-ahead. Normalized allocations and encoded OTLP are checked separately against the configured byte budget; wire admission does not authorize expansion. There is no independent one-MiB text/bytea cap or total-process RSS guarantee.
-
-The [shared scraper](../../../../scraper/README.md#polling-and-delivery-semantics) owns scheduling, admission, encoding, ACKs, checkpointing, and shutdown. Default catch-up stops after 32 page fetches or ten seconds, then waits the interval; byte budgets/backpressure can reduce progress. Each page waits for ACK and durable checkpointing. Confirmed timeouts/transient failures use shared capped backoff; authentication, permissions, invalid data, and unconfirmed cleanup remain terminal.
-
-Driver work stays on one dedicated thread behind a capacity-one channel. Transactions end before waiting for ACK. Unconfirmed cleanup retains source ownership until process exit. At-least-once delivery requires stable unique positions, commit-visible ordering, retained immutable rows, and meaningful downstream ACKs. Late-visible rows behind the cursor, scalar/snapshot modes, automatic tail discovery, TLS, and full production qualification remain unsupported.
+Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records fail explicitly without skipping, truncation, or automatic type-to-string fallback. 
 
 ## Development
 
