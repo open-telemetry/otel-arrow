@@ -8,6 +8,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
+use bytes::Bytes;
+use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
@@ -15,9 +17,11 @@ use object_store::buffered::BufWriter;
 use otel_arrow_dfe_pdata::otap::child_payload_types;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
+use parquet::arrow::async_writer::AsyncFileWriter;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 
 use super::config::WriterOptions;
 use super::partition::PartitionAttribute;
@@ -443,13 +447,36 @@ fn compute_partition_path_prefix(partition_attributes: Option<&[PartitionAttribu
     }
 }
 
+/// Preserves ownership of encoded bytes; Parquet's blanket AsyncWrite adapter copies them.
+struct ParquetObjectWriter(BufWriter);
+
+impl AsyncFileWriter for ParquetObjectWriter {
+    fn write(&mut self, bytes: Bytes) -> BoxFuture<'_, Result<(), ParquetError>> {
+        Box::pin(async move {
+            self.0
+                .put(bytes)
+                .await
+                .map_err(|error| ParquetError::External(Box::new(error)))
+        })
+    }
+
+    fn complete(&mut self) -> BoxFuture<'_, Result<(), ParquetError>> {
+        Box::pin(async move {
+            self.0
+                .shutdown()
+                .await
+                .map_err(|error| ParquetError::External(Box::new(error)))
+        })
+    }
+}
+
 /// Creates a new Parquet Arrow writer for the given record batch's schema and full path.
 fn new_parquet_arrow_writer(
     object_store: Arc<dyn ObjectStore>,
     schema: SchemaRef,
     full_path: String,
-) -> AsyncArrowWriter<BufWriter> {
-    let object_writer = BufWriter::new(object_store, full_path.into());
+) -> AsyncArrowWriter<ParquetObjectWriter> {
+    let object_writer = ParquetObjectWriter(BufWriter::new(object_store, full_path.into()));
     AsyncArrowWriter::try_new(object_writer, schema, Some(WriterProperties::default()))
         .expect("Failed to create AsyncArrowWriter")
 }
@@ -458,13 +485,13 @@ struct FileWriter {
     created_at: Instant,
     batch_ids: BTreeSet<i64>,
     payload_type: ArrowPayloadType,
-    writer: AsyncArrowWriter<BufWriter>,
+    writer: AsyncArrowWriter<ParquetObjectWriter>,
     rows_written: usize,
     scheduled_batches: Vec<RecordBatch>,
 }
 
 impl FileWriter {
-    fn new(payload_type: ArrowPayloadType, writer: AsyncArrowWriter<BufWriter>) -> Self {
+    fn new(payload_type: ArrowPayloadType, writer: AsyncArrowWriter<ParquetObjectWriter>) -> Self {
         Self {
             created_at: Instant::now(),
             batch_ids: BTreeSet::new(),
