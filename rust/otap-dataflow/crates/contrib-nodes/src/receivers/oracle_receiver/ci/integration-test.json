@@ -1,0 +1,20 @@
+{
+  "id": "oracle-receiver",
+  "name": "Oracle receiver smoke",
+  "runner": "ubuntu-24.04",
+  "platform": "Linux",
+  "timeout_minutes": 45,
+  "required": false,
+  "paths": [
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/oracle_receiver/**"
+  ],
+  "command": [
+    "bash",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/oracle_receiver/ci/run.sh"
+  ],
+  "cleanup": [
+    "bash",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/oracle_receiver/ci/cleanup.sh"
+  ]
+}
+

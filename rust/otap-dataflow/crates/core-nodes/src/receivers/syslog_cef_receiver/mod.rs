@@ -1580,7 +1580,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata_codec::PayloadData;
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {
@@ -1811,8 +1811,7 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
-                else {
+                let PayloadData::OtapRecords(arrow_records) = message1_received.into_data() else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1882,8 +1881,7 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
-                else {
+                let PayloadData::OtapRecords(arrow_records) = message1_received.into_data() else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1953,7 +1951,7 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let PayloadData::OtapArrowRecords(arrow_records) =
+                            let PayloadData::OtapRecords(arrow_records) =
                                 message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant")
@@ -2155,8 +2153,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for octet-counted message")
                     .expect("No octet-counted message received");
-                let PayloadData::OtapArrowRecords(arrow_records) = message.payload().into_data()
-                else {
+                let PayloadData::OtapRecords(arrow_records) = message.payload().into_data() else {
                     panic!("Expected OtapArrowRecords variant");
                 };
                 let logs_batch = arrow_records
@@ -2254,8 +2251,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for truncated message")
                         .expect("No truncated message received");
-                    let PayloadData::OtapArrowRecords(arrow_records) =
-                        message.payload().into_data()
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
                     else {
                         panic!("Expected OtapArrowRecords variant");
                     };
@@ -2344,7 +2340,7 @@ mod tests {
                 loop {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let PayloadData::OtapArrowRecords(arrow_records) =
+                            let PayloadData::OtapRecords(arrow_records) =
                                 message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant");
