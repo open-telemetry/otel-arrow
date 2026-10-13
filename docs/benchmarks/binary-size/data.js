@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791859105288,
+  "lastUpdate": 1791915240201,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -60765,6 +60765,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 107.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ab132c98647a5c0305287db8fdf9f50a4c32bb1",
+          "message": "chore(pdata): migrate pipeline nodes to codec capabilities (#4042)\n\n# Change summary\n\nThis is **PR 2 of the five-PR pluggable PData codec series**, building\non the foundation merged in #3942.\n\nIt connects existing core, contrib, and WASM nodes to a common PData\nAPI, so supporting another encoding does not require adding\nformat-specific branches throughout the pipeline.\n\n## Overall model\n\n**PData combines delivery context with a payload.** The payload contains\neither encoded bytes or native OTAP records. An **encoding** identifies\nthe byte format; its **codec** supplies decoding and/or encoding\noperations. Native OTAP remains the common processing representation.\n\n![Pluggable PData codecs: passthrough, views, and conversion on\ndemand](https://raw.githubusercontent.com/lquerel/otel-arrow/5665b397c91c8bb49c3f43dea8cf932c579e8dc2/rust/otap-dataflow/crates/pdata-codec/assets/pdata-codec-framework.png)\n\n*The diagram illustrates the overall framework. Syslog activation\nbelongs to PR 5.*\n\n## What changes for nodes\n\nNodes request the access they need instead of matching payload storage\nvariants:\n\n- **Forward:** transparent nodes preserve the original representation.\nMatching output encodings reuse shared bytes without decoding,\nre-encoding, or creating a codec instance.\n- **Inspect:** `view` borrows encoded bytes accepted by the consumer, or\nexisting native records. Otherwise, it decodes to temporary OTAP without\nreplacing the original payload. `AcceptedEncodings` selects direct\naccess; it is not an input allowlist.\n- **Process:** `materialize_otap` provides owned native records, moving\nalready-native input directly. Decode failures return the original\nmessage and delivery context for Nack or retry.\n\nNodes access lazily created, reusable codecs through effect handlers.\nExporters resolve their output encoding through `EncodingPlan`,\ndetaching owned bytes before asynchronous sends.\n\n`PdataDelivery` centralizes delivery ownership across processing,\nfan-out, and export. Recovery after processing retains the original\ninput only when requested, avoiding unconditional payload snapshots. The\nnative-processor adapter centralizes materialization and permanent Nack\nhandling for decode failures.\n\n## Scope and transition\n\nThis PR introduces generalized encoded storage alongside legacy OTLP and\nnative OTAP storage. **Existing receivers keep their current output\nrepresentation** until batching and receiver activation are integrated.\n\nSome processors still resolve and cache plans on first use because their\nlifecycle lacks a suitable initialization hook. Resolving and injecting\nthose plans during construction remains a follow-up.\n\n## Remaining PRs\n\n| PR | Value |\n|---|---|\n| **3 — Codec-aware batching** | Merge and split encoded batches through\ncodec operations, with OTAP fallback when needed. |\n| **4 — OTLP activation** | Switch OTLP receivers to encoded PData,\nremove transitional OTLP storage, and expose pipeline decode-policy\nconfiguration. |\n| **5 — Syslog activation** | Introduce framed syslog codec batches,\nallowing batching before parsing and deferring Arrow construction until\nnative access is required. |\n\n## Related issue\n\n- Advances #3452.\n- Builds on #3942.\n\n## Validation\n\n`cargo xtask check`\n\n## User-facing changes\n\nNone. Existing configuration and wire protocols remain unchanged.",
+          "timestamp": "2026-10-13T17:00:16Z",
+          "tree_id": "a3de998276a0f1a6651e62297949cc2487138999",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5ab132c98647a5c0305287db8fdf9f50a4c32bb1"
+        },
+        "date": 1791915220437,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.79,
             "unit": "MB"
           }
         ]
