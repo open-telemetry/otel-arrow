@@ -242,9 +242,30 @@ impl receiver::Receiver<()> for StartupFailingReceiver {
     }
 }
 
+struct ReadyThenFailingReceiver;
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for ReadyThenFailingReceiver {
+    async fn start(
+        self: Box<Self>,
+        _ctrl_chan: receiver::ControlChannel<()>,
+        effect_handler: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        effect_handler.signal_ready();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err(EngineError::ReceiverError {
+            receiver: effect_handler.receiver_id(),
+            kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Other,
+            error: "simulated failure after readiness".to_owned(),
+            source_detail: String::new(),
+        })
+    }
+}
+
 static DELAYED_READY_RECEIVER_STARTED: AtomicBool = AtomicBool::new(false);
 static DELAYED_READY_RECEIVER_RELEASED: AtomicBool = AtomicBool::new(false);
 static DELAYED_READY_RECEIVER_SIGNALLED: AtomicBool = AtomicBool::new(false);
+static DELAYED_READY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct DelayedReadyReceiver;
 
@@ -320,6 +341,19 @@ fn startup_failing_receiver_create(
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(
         ReceiverWrapper::local(StartupFailingReceiver, node, node_config, receiver_config)
+            .with_startup_readiness(),
+    )
+}
+
+fn ready_then_failing_receiver_create(
+    _pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    Ok(
+        ReceiverWrapper::local(ReadyThenFailingReceiver, node, node_config, receiver_config)
             .with_startup_readiness(),
     )
 }
@@ -548,6 +582,30 @@ static STARTUP_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 
 static STARTUP_FAILING_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     STARTUP_FAILING_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+static READY_THEN_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: "urn:test:receiver:example",
+        create: ready_then_failing_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: recovery_test_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static READY_THEN_FAILING_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    READY_THEN_FAILING_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
     RECOVERY_TEST_EXPORTER_FACTORIES,
     &[],
@@ -868,6 +926,18 @@ fn empty_engine_config() -> OtelDataflowSpec {
         .expect("empty engine config should parse")
 }
 
+fn empty_pipeline_group_config() -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines: {}
+"#,
+    )
+    .expect("empty pipeline group config should parse")
+}
+
 fn reconcile_request(
     config: OtelDataflowSpec,
     delete_missing: bool,
@@ -894,6 +964,65 @@ fn simple_pipeline_yaml() -> &'static str {
           - from: receiver
             to: exporter
 "#
+}
+
+fn rollback_test_pipeline_yaml(core_count: usize, replacement_shape: bool) -> String {
+    let (receiver, exporter) = if replacement_shape {
+        ("input", "output")
+    } else {
+        ("receiver", "exporter")
+    };
+    format!(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: {core_count}
+        nodes:
+          {receiver}:
+            type: "urn:test:receiver:example"
+            config: null
+          {exporter}:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: {receiver}
+            to: {exporter}
+"#
+    )
+}
+
+fn rollback_test_pipeline_config(core_count: usize, replacement_shape: bool) -> PipelineConfig {
+    engine_config_with_pipeline(&rollback_test_pipeline_yaml(core_count, replacement_shape))
+        .groups
+        .get(&PipelineGroupId::from("g1"))
+        .and_then(|group| group.pipelines.get(&PipelineId::from("p1")))
+        .cloned()
+        .expect("rollback test pipeline should exist")
+}
+
+fn prepare_rollback_test_plan(
+    runtime: &Arc<ControllerRuntime<()>>,
+    pipeline: PipelineConfig,
+    step_timeout_secs: u64,
+    drain_timeout_secs: u64,
+) -> CandidateRolloutPlan {
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline,
+                step_timeout_secs,
+                drain_timeout_secs,
+            },
+        )
+        .expect("rollback test rollout should be accepted");
+    runtime
+        .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
+        .expect("rollback test rollout should register");
+    plan
 }
 
 fn register_existing_pipeline(runtime: &ControllerRuntime<()>, config: &OtelDataflowSpec) {
@@ -1206,6 +1335,93 @@ fn complete_instance_exit_on_shutdown(
         ));
         runtime.note_instance_exit(deployed_key, RuntimeInstanceExit::Success);
     })
+}
+
+fn complete_instance_error_on_shutdown(
+    runtime: Arc<ControllerRuntime<()>>,
+    mut receiver: RuntimeCtrlMsgReceiver<()>,
+    deployed_key: DeployedPipelineKey,
+    expected_reason: &'static str,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        assert!(matches!(
+            wait_for_shutdown_message(&mut receiver),
+            RuntimeControlMsg::Shutdown { reason, .. } if reason == expected_reason
+        ));
+        runtime.note_instance_exit(
+            deployed_key,
+            RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+                "simulated shutdown error".to_owned(),
+            )),
+        );
+    })
+}
+
+#[derive(Clone, Copy)]
+enum UndesiredInstanceScenario {
+    AlreadyExitedWithError,
+    ExitsWithErrorAfterShutdown,
+    RemainsActive,
+}
+
+struct UndesiredInstanceHarness {
+    _receiver: Option<RuntimeCtrlMsgReceiver<()>>,
+    exit_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl UndesiredInstanceHarness {
+    fn join(self) {
+        if let Some(exit_thread) = self.exit_thread {
+            exit_thread
+                .join()
+                .expect("undesired instance exit helper should not panic");
+        }
+    }
+}
+
+fn install_undesired_instance(
+    runtime: &Arc<ControllerRuntime<()>>,
+    key: &DeployedPipelineKey,
+    scenario: UndesiredInstanceScenario,
+    shutdown_reason: &'static str,
+) -> UndesiredInstanceHarness {
+    let lifecycle = match scenario {
+        UndesiredInstanceScenario::AlreadyExitedWithError => {
+            RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+                RuntimeInstanceError::runtime("simulated preexisting error exit".to_owned()),
+            ))
+        }
+        UndesiredInstanceScenario::ExitsWithErrorAfterShutdown
+        | UndesiredInstanceScenario::RemainsActive => RuntimeInstanceLifecycle::Active,
+    };
+    let receiver = register_runtime_instance(
+        runtime,
+        key.pipeline_group_id.as_ref(),
+        key.pipeline_id.as_ref(),
+        key.core_id,
+        key.deployment_generation,
+        lifecycle,
+    );
+
+    match scenario {
+        UndesiredInstanceScenario::AlreadyExitedWithError => UndesiredInstanceHarness {
+            _receiver: None,
+            exit_thread: None,
+        },
+        UndesiredInstanceScenario::ExitsWithErrorAfterShutdown => UndesiredInstanceHarness {
+            _receiver: None,
+            exit_thread: Some(complete_instance_error_on_shutdown(
+                Arc::clone(runtime),
+                receiver,
+                key.clone(),
+                shutdown_reason,
+            )),
+        },
+        UndesiredInstanceScenario::RemainsActive => UndesiredInstanceHarness {
+            _receiver: Some(receiver),
+            exit_thread: None,
+        },
+    }
 }
 
 fn terminal_rollout_record(
@@ -3717,9 +3933,10 @@ fn receiver_failure_before_readiness_preserves_error() {
 /// startup-readiness boundary.
 #[test]
 fn reconciliation_waits_for_receiver_readiness_signal() {
-    DELAYED_READY_RECEIVER_STARTED.store(false, Ordering::SeqCst);
-    DELAYED_READY_RECEIVER_RELEASED.store(false, Ordering::SeqCst);
-    DELAYED_READY_RECEIVER_SIGNALLED.store(false, Ordering::SeqCst);
+    let _delayed_lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_delayed_ready_receiver();
 
     let desired = engine_config_with_pipeline(simple_pipeline_yaml());
     let runtime =
@@ -3809,55 +4026,590 @@ fn startup_readiness_marker_wins_over_later_runtime_exit() {
         .expect("readiness marker should win over a later runtime exit");
 }
 
-/// Scenario: candidate startup fails and cleanup reports failures for multiple runtime instances.
-/// Guarantees: cleanup attempts every candidate and classifies the rollout as rollback-failed
-/// while retaining both the startup and cleanup diagnostics.
+fn run_create_undesired_instance_scenario(
+    scenario: UndesiredInstanceScenario,
+) -> Result<(), RolloutExecutionError> {
+    let runtime = test_runtime(&empty_pipeline_group_config());
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(1, false), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Create);
+    let key = deployed_key(
+        "g1",
+        "p1",
+        plan.target_assigned_cores[0],
+        plan.target_deployment.baseline_generation,
+    );
+    let harness = install_undesired_instance(&runtime, &key, scenario, "candidate cleanup");
+    let result = runtime.rollback_create_rollout(&plan, &[key], "original failure".to_owned());
+    harness.join();
+    result
+}
+
+fn run_resize_undesired_instance_scenario(
+    scenario: UndesiredInstanceScenario,
+) -> Result<(), RolloutExecutionError> {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, false), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Resize);
+    let core_id = plan.resize_start_cores[0];
+    let key = deployed_key(
+        "g1",
+        "p1",
+        core_id,
+        plan.target_deployment.baseline_generation,
+    );
+    let harness = install_undesired_instance(&runtime, &key, scenario, "rollback cleanup");
+    let result =
+        runtime.rollback_resize_rollout(&plan, &[core_id], &[], "original failure".to_owned());
+    harness.join();
+    result
+}
+
+fn run_replace_undesired_instance_scenario(
+    scenario: UndesiredInstanceScenario,
+) -> Result<(), RolloutExecutionError> {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, true), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let core_id = plan.added_assigned_cores[0];
+    let key = deployed_key(
+        "g1",
+        "p1",
+        core_id,
+        plan.target_deployment.baseline_generation,
+    );
+    let harness = install_undesired_instance(&runtime, &key, scenario, "rollback cleanup");
+    let result = runtime.rollback_replace_rollout(
+        &plan,
+        &[],
+        &[core_id],
+        &[],
+        "original failure".to_owned(),
+    );
+    harness.join();
+    result
+}
+
+/// Scenario: create rollback finds an undesired instance already terminated with an error.
+/// Guarantees: confirmed termination satisfies cleanup and preserves the original rollout failure.
 #[test]
-fn candidate_cleanup_failures_are_aggregated_as_rollback_failure() {
-    let runtime = test_runtime(&empty_engine_config());
-    let first_key = deployed_key("g1", "p1", 0, 1);
-    let second_key = deployed_key("g1", "p1", 1, 1);
-    let _first = register_runtime_instance(
+fn create_rollback_accepts_already_terminal_undesired_instance() {
+    assert!(matches!(
+        run_create_undesired_instance_scenario(
+            UndesiredInstanceScenario::AlreadyExitedWithError
+        ),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: an undesired create candidate exits with an error after rollback requests shutdown.
+/// Guarantees: the confirmed terminal state satisfies cleanup despite the exit error.
+#[test]
+fn create_rollback_accepts_undesired_instance_error_exit_after_shutdown() {
+    assert!(matches!(
+        run_create_undesired_instance_scenario(
+            UndesiredInstanceScenario::ExitsWithErrorAfterShutdown
+        ),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: an undesired create candidate remains active through its shutdown completion window.
+/// Guarantees: create rollback reports rollback failure because termination was not confirmed.
+#[test]
+fn create_rollback_fails_when_undesired_instance_remains_active() {
+    assert!(matches!(
+        run_create_undesired_instance_scenario(UndesiredInstanceScenario::RemainsActive),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+/// Scenario: create rollback cannot confirm the first candidate has stopped while a later
+/// candidate is already terminal.
+/// Guarantees: rollback stops at the failed cleanup, leaves that core at `rollback_starting`, and
+/// does not publish rollback progress for a candidate it did not process.
+#[test]
+fn create_rollback_stops_status_updates_after_cleanup_failure() {
+    let runtime = test_runtime(&empty_pipeline_group_config());
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, false), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Create);
+    let first_key = deployed_key(
+        "g1",
+        "p1",
+        plan.target_assigned_cores[0],
+        plan.target_deployment.baseline_generation,
+    );
+    let second_key = deployed_key(
+        "g1",
+        "p1",
+        plan.target_assigned_cores[1],
+        plan.target_deployment.baseline_generation,
+    );
+    let first_harness = install_undesired_instance(
+        &runtime,
+        &first_key,
+        UndesiredInstanceScenario::RemainsActive,
+        "candidate cleanup",
+    );
+    let second_harness = install_undesired_instance(
+        &runtime,
+        &second_key,
+        UndesiredInstanceScenario::AlreadyExitedWithError,
+        "candidate cleanup",
+    );
+
+    assert!(matches!(
+        runtime.rollback_create_rollout(
+            &plan,
+            &[first_key.clone(), second_key.clone()],
+            "original failure".to_owned(),
+        ),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+
+    let status = runtime
+        .rollout_status_snapshot(&plan.rollout.rollout_id)
+        .expect("rollback status should remain queryable");
+    let first_core = status
+        .cores
+        .iter()
+        .find(|core| core.core_id == first_key.core_id)
+        .expect("first core status should exist");
+    let second_core = status
+        .cores
+        .iter()
+        .find(|core| core.core_id == second_key.core_id)
+        .expect("second core status should exist");
+    assert_eq!(first_core.state, "rollback_starting");
+    assert_eq!(second_core.state, "pending");
+
+    first_harness.join();
+    second_harness.join();
+}
+
+/// Scenario: resize rollback finds an undesired instance already terminated with an error.
+/// Guarantees: confirmed termination satisfies cleanup and preserves the original rollout failure.
+#[test]
+fn resize_rollback_accepts_already_terminal_undesired_instance() {
+    assert!(matches!(
+        run_resize_undesired_instance_scenario(
+            UndesiredInstanceScenario::AlreadyExitedWithError
+        ),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: an undesired resize candidate exits with an error after rollback requests shutdown.
+/// Guarantees: the confirmed terminal state satisfies cleanup despite the exit error.
+#[test]
+fn resize_rollback_accepts_undesired_instance_error_exit_after_shutdown() {
+    assert!(matches!(
+        run_resize_undesired_instance_scenario(
+            UndesiredInstanceScenario::ExitsWithErrorAfterShutdown
+        ),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: an undesired resize candidate remains active through its shutdown completion window.
+/// Guarantees: resize rollback reports rollback failure because termination was not confirmed.
+#[test]
+fn resize_rollback_fails_when_undesired_instance_remains_active() {
+    assert!(matches!(
+        run_resize_undesired_instance_scenario(UndesiredInstanceScenario::RemainsActive),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+/// Scenario: replace rollback finds an undesired instance already terminated with an error.
+/// Guarantees: confirmed termination satisfies cleanup and preserves the original rollout failure.
+#[test]
+fn replace_rollback_accepts_already_terminal_undesired_instance() {
+    assert!(matches!(
+        run_replace_undesired_instance_scenario(
+            UndesiredInstanceScenario::AlreadyExitedWithError
+        ),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: an undesired replace candidate exits with an error after rollback requests shutdown.
+/// Guarantees: the confirmed terminal state satisfies cleanup despite the exit error.
+#[test]
+fn replace_rollback_accepts_undesired_instance_error_exit_after_shutdown() {
+    assert!(matches!(
+        run_replace_undesired_instance_scenario(
+            UndesiredInstanceScenario::ExitsWithErrorAfterShutdown
+        ),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: an undesired replace candidate remains active through its shutdown completion window.
+/// Guarantees: replace rollback reports rollback failure because termination was not confirmed.
+#[test]
+fn replace_rollback_fails_when_undesired_instance_remains_active() {
+    assert!(matches!(
+        run_replace_undesired_instance_scenario(UndesiredInstanceScenario::RemainsActive),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+#[derive(Clone, Copy)]
+enum DesiredInstanceScenario {
+    FailsAfterReadiness,
+    ExitsBeforeReadiness,
+    MissesReadinessDeadline,
+}
+
+fn desired_instance_factory(scenario: DesiredInstanceScenario) -> &'static PipelineFactory<()> {
+    match scenario {
+        DesiredInstanceScenario::FailsAfterReadiness => &READY_THEN_FAILING_PIPELINE_FACTORY,
+        DesiredInstanceScenario::ExitsBeforeReadiness => &STARTUP_FAILING_PIPELINE_FACTORY,
+        DesiredInstanceScenario::MissesReadinessDeadline => &DELAYED_READY_PIPELINE_FACTORY,
+    }
+}
+
+fn reset_delayed_ready_receiver() {
+    DELAYED_READY_RECEIVER_STARTED.store(false, Ordering::SeqCst);
+    DELAYED_READY_RECEIVER_RELEASED.store(false, Ordering::SeqCst);
+    DELAYED_READY_RECEIVER_SIGNALLED.store(false, Ordering::SeqCst);
+}
+
+fn release_delayed_ready_receiver(runtime: &Arc<ControllerRuntime<()>>, key: &DeployedPipelineKey) {
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !DELAYED_READY_RECEIVER_SIGNALLED.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "delayed rollback receiver did not signal readiness"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    runtime
+        .shutdown_instance(key, 1, "delayed readiness test cleanup")
+        .expect("delayed rollback receiver should shut down during test cleanup");
+}
+
+fn run_resize_desired_instance_scenario(
+    scenario: DesiredInstanceScenario,
+) -> Result<(), RolloutExecutionError> {
+    let _delayed_lock =
+        matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline).then(|| {
+            DELAYED_READY_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+    if matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline) {
+        reset_delayed_ready_receiver();
+    }
+
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(2, false));
+    let runtime = test_runtime_with_factory(&config, desired_instance_factory(scenario));
+    register_existing_pipeline(&runtime, &config);
+    let _core0 =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _core1 =
+        register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(1, false), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Resize);
+    let core_id = plan.resize_stop_cores[0];
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = state
+            .runtime_instances
+            .remove(&deployed_key("g1", "p1", core_id, 0));
+        assert!(removed.is_some(), "retired resize instance should exist");
+        state.active_instances -= 1;
+    }
+
+    let result =
+        runtime.rollback_resize_rollout(&plan, &[], &[core_id], "original failure".to_owned());
+    if matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline) {
+        release_delayed_ready_receiver(&runtime, &deployed_key("g1", "p1", core_id, 0));
+    }
+    result
+}
+
+fn run_replace_desired_instance_scenario(
+    scenario: DesiredInstanceScenario,
+) -> Result<(), RolloutExecutionError> {
+    let _delayed_lock =
+        matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline).then(|| {
+            DELAYED_READY_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+    if matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline) {
+        reset_delayed_ready_receiver();
+    }
+
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime_with_factory(&config, desired_instance_factory(scenario));
+    register_existing_pipeline(&runtime, &config);
+    let _old =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(1, true), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Replace);
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = state
+            .runtime_instances
+            .remove(&deployed_key("g1", "p1", 0, 0));
+        assert!(removed.is_some(), "replaced instance should exist");
+        state.active_instances -= 1;
+    }
+
+    let target_key = deployed_key("g1", "p1", 0, plan.target_deployment.baseline_generation);
+    let target_rx = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
         0,
-        1,
-        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
-            RuntimeInstanceError::runtime("first cleanup failure".to_owned()),
-        )),
+        plan.target_deployment.baseline_generation,
+        RuntimeInstanceLifecycle::Active,
     );
-    let _second = register_runtime_instance(
+    let target_exit = matches!(scenario, DesiredInstanceScenario::FailsAfterReadiness).then(|| {
+        complete_instance_exit_on_shutdown(
+            Arc::clone(&runtime),
+            target_rx,
+            target_key,
+            "rollback drain",
+        )
+    });
+
+    let result =
+        runtime.rollback_replace_rollout(&plan, &[0], &[], &[], "original failure".to_owned());
+    if let Some(target_exit) = target_exit {
+        target_exit
+            .join()
+            .expect("replacement target exit helper should not panic");
+    }
+    if matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline) {
+        release_delayed_ready_receiver(&runtime, &deployed_key("g1", "p1", 0, 0));
+    }
+    result
+}
+
+/// Scenario: resize rollback restores a desired instance that fails after signaling readiness.
+/// Guarantees: readiness satisfies restoration and the original rollout failure is preserved.
+#[test]
+fn resize_rollback_accepts_desired_instance_failure_after_readiness() {
+    assert!(matches!(
+        run_resize_desired_instance_scenario(DesiredInstanceScenario::FailsAfterReadiness),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: a desired resize rollback instance exits before signaling readiness.
+/// Guarantees: rollback reports rollback failure because restoration never reached readiness.
+#[test]
+fn resize_rollback_fails_when_desired_instance_exits_before_readiness() {
+    assert!(matches!(
+        run_resize_desired_instance_scenario(DesiredInstanceScenario::ExitsBeforeReadiness),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+/// Scenario: a desired resize rollback instance remains active without signaling readiness.
+/// Guarantees: missing the startup deadline produces rollback failure.
+#[test]
+fn resize_rollback_fails_when_desired_instance_misses_readiness_deadline() {
+    assert!(matches!(
+        run_resize_desired_instance_scenario(DesiredInstanceScenario::MissesReadinessDeadline),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+/// Scenario: replace rollback restores a desired instance that fails after signaling readiness.
+/// Guarantees: readiness satisfies restoration and the original rollout failure is preserved.
+#[test]
+fn replace_rollback_accepts_desired_instance_failure_after_readiness() {
+    assert!(matches!(
+        run_replace_desired_instance_scenario(DesiredInstanceScenario::FailsAfterReadiness),
+        Err(RolloutExecutionError::Failed(reason)) if reason == "original failure"
+    ));
+}
+
+/// Scenario: a desired replace rollback instance exits before signaling readiness.
+/// Guarantees: rollback reports rollback failure because restoration never reached readiness.
+#[test]
+fn replace_rollback_fails_when_desired_instance_exits_before_readiness() {
+    assert!(matches!(
+        run_replace_desired_instance_scenario(DesiredInstanceScenario::ExitsBeforeReadiness),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+/// Scenario: a desired replace rollback instance remains active without signaling readiness.
+/// Guarantees: missing the startup deadline produces rollback failure.
+#[test]
+fn replace_rollback_fails_when_desired_instance_misses_readiness_deadline() {
+    assert!(matches!(
+        run_replace_desired_instance_scenario(DesiredInstanceScenario::MissesReadinessDeadline),
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+}
+
+/// Scenario: a create candidate exits before readiness during normal rollout execution.
+/// Guarantees: create enters rollback, confirms candidate termination, and preserves the startup
+/// failure as the rollout result.
+#[test]
+fn create_rollout_cleans_undesired_instances_after_candidate_readiness_failure() {
+    let runtime = test_runtime_with_factory(
+        &empty_pipeline_group_config(),
+        &STARTUP_FAILING_PIPELINE_FACTORY,
+    );
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, false), 1, 1);
+
+    assert!(matches!(
+        runtime.run_create_rollout(&plan),
+        Err(RolloutExecutionError::Failed(reason))
+            if reason.contains("simulated receiver bind failure")
+    ));
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances,
+        0
+    );
+}
+
+/// Scenario: a resize candidate exits before readiness during normal rollout execution.
+/// Guarantees: resize enters rollback, confirms candidate termination, and preserves the startup
+/// failure as the rollout result.
+#[test]
+fn resize_rollout_cleans_undesired_instances_after_candidate_readiness_failure() {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime_with_factory(&config, &STARTUP_FAILING_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, false), 1, 1);
+
+    assert!(matches!(
+        runtime.run_resize_rollout(&plan),
+        Err(RolloutExecutionError::Failed(reason))
+            if reason.contains("simulated receiver bind failure")
+    ));
+}
+
+/// Scenario: a replace candidate exits before readiness during normal rollout execution.
+/// Guarantees: replace enters rollback, confirms candidate termination, and preserves the startup
+/// failure as the rollout result.
+#[test]
+fn replace_rollout_cleans_undesired_instances_after_candidate_readiness_failure() {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime_with_factory(&config, &STARTUP_FAILING_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(1, true), 1, 1);
+
+    assert!(matches!(
+        runtime.run_replace_rollout(&plan),
+        Err(RolloutExecutionError::Failed(reason))
+            if reason.contains("simulated receiver bind failure")
+    ));
+}
+
+/// Scenario: create rollback encounters an already-terminal candidate before another candidate
+/// that is still running.
+/// Guarantees: rollback accepts the terminal error, shuts down the active candidate, marks both
+/// cores rolled back, and preserves the original rollout failure.
+#[test]
+fn create_rollback_cleans_active_candidate_after_already_terminal_candidate() {
+    let runtime = test_runtime(&empty_pipeline_group_config());
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, false), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Create);
+    let terminal_key = deployed_key(
+        "g1",
+        "p1",
+        plan.target_assigned_cores[0],
+        plan.target_deployment.baseline_generation,
+    );
+    let active_key = deployed_key(
+        "g1",
+        "p1",
+        plan.target_assigned_cores[1],
+        plan.target_deployment.baseline_generation,
+    );
+    let _terminal = register_runtime_instance(
         &runtime,
         "g1",
         "p1",
-        1,
-        1,
+        terminal_key.core_id,
+        terminal_key.deployment_generation,
         RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
-            RuntimeInstanceError::runtime("second cleanup failure".to_owned()),
+            RuntimeInstanceError::runtime("receiver bind failure".to_owned()),
         )),
     );
-
-    let result = runtime.cleanup_candidates_after_failure(
-        &[first_key, second_key],
-        1,
-        "receiver startup failed".to_owned(),
+    let active_rx = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        active_key.core_id,
+        active_key.deployment_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let exit_thread = complete_instance_exit_on_shutdown(
+        Arc::clone(&runtime),
+        active_rx,
+        active_key.clone(),
+        "candidate cleanup",
     );
 
-    let RolloutExecutionError::RollbackFailed(reason) = result else {
-        panic!("candidate cleanup failure must be reported as rollback failure");
-    };
-    assert!(reason.contains("receiver startup failed"));
-    assert!(reason.contains("first cleanup failure"));
-    assert!(reason.contains("second cleanup failure"));
+    let result = runtime.rollback_create_rollout(
+        &plan,
+        &[terminal_key.clone(), active_key.clone()],
+        "receiver bind failure".to_owned(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::Failed(reason)) if reason == "receiver bind failure"
+    ));
+    exit_thread
+        .join()
+        .expect("create rollback shutdown helper should join cleanly");
+    assert!(matches!(
+        runtime.instance_exit(&terminal_key),
+        Some(RuntimeInstanceExit::Error(error)) if error.message == "receiver bind failure"
+    ));
+    assert!(matches!(
+        runtime.instance_exit(&active_key),
+        Some(RuntimeInstanceExit::Success)
+    ));
+    let status = runtime
+        .rollout_status_snapshot(&plan.rollout.rollout_id)
+        .expect("rollback status should remain queryable");
+    assert!(
+        status.cores.iter().all(|core| core.state == "rolled_back"),
+        "both processed candidates should be reported as rolled back"
+    );
 }
 
-/// Scenario: a resize rollback must clean up cores that were already started
-/// before a later step fails.
-/// Guarantees: rollback sends shutdown to those started cores instead of
-/// leaving them running after the rollout fails.
+/// Scenario: resize rollback encounters an already-exited candidate before another candidate that
+/// is still running.
+/// Guarantees: rollback continues cleanup, leaves no candidate running, preserves the previous
+/// deployment, and reports the original startup error.
 #[test]
-fn rollback_resize_rollout_cleans_up_started_cores() {
+fn resize_rollback_cleans_active_candidate_after_already_terminal_candidate() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -3890,7 +4642,7 @@ policies:
   resources:
     core_allocation:
       type: core_count
-      count: 2
+      count: 3
 nodes:
   receiver:
     type: "urn:test:receiver:example"
@@ -3919,6 +4671,7 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
+    let previous_key = deployed_key("g1", "p1", 0, 0);
     let started_key = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
     let started_rx = register_runtime_instance(
         &runtime,
@@ -3934,12 +4687,24 @@ connections:
         started_key.clone(),
         "rollback cleanup",
     );
+    let failed_key = deployed_key("g1", "p1", 2, plan.target_deployment.baseline_generation);
+    let _failed = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        2,
+        plan.target_deployment.baseline_generation,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("receiver bind failure".to_owned()),
+        )),
+    );
 
-    let result = runtime.rollback_resize_rollout(&plan, &[1], &[], "boom".to_owned());
+    let result =
+        runtime.rollback_resize_rollout(&plan, &[1, 2], &[], "receiver bind failure".to_owned());
 
     assert!(matches!(
         result,
-        Err(RolloutExecutionError::Failed(reason)) if reason == "boom"
+        Err(RolloutExecutionError::Failed(reason)) if reason == "receiver bind failure"
     ));
     exit_thread
         .join()
@@ -3948,14 +4713,27 @@ connections:
         runtime.instance_exit(&started_key),
         Some(RuntimeInstanceExit::Success)
     ));
+    assert!(matches!(
+        runtime.instance_exit(&failed_key),
+        Some(RuntimeInstanceExit::Error(error)) if error.message == "receiver bind failure"
+    ));
+    assert!(runtime.instance_exit(&previous_key).is_none());
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.logical_pipelines[&plan.pipeline_key].baseline_generation,
+        0
+    );
 }
 
-/// Scenario: a replace rollback must clean up added candidate cores that were
-/// already serving the target generation before a later step fails.
-/// Guarantees: rollback sends shutdown to those activated added cores instead
-/// of leaving the candidate generation running.
+/// Scenario: replace rollback encounters an already-exited candidate before another candidate that
+/// is still running.
+/// Guarantees: rollback continues cleanup, leaves no candidate running, restores the previous
+/// deployment, and reports the original startup error.
 #[test]
-fn rollback_replace_rollout_cleans_up_activated_added_cores() {
+fn replace_rollback_cleans_active_candidate_after_already_terminal_candidate() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -3988,7 +4766,7 @@ policies:
   resources:
     core_allocation:
       type: core_count
-      count: 2
+      count: 3
 nodes:
   input:
     type: "urn:test:receiver:example"
@@ -4017,6 +4795,7 @@ connections:
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
 
+    let previous_key = deployed_key("g1", "p1", 0, 0);
     let added_key = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
     let added_rx = register_runtime_instance(
         &runtime,
@@ -4032,12 +4811,29 @@ connections:
         added_key.clone(),
         "rollback cleanup",
     );
+    let failed_key = deployed_key("g1", "p1", 2, plan.target_deployment.baseline_generation);
+    let _failed = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        2,
+        plan.target_deployment.baseline_generation,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("receiver bind failure".to_owned()),
+        )),
+    );
 
-    let result = runtime.rollback_replace_rollout(&plan, &[], &[1], &[], "boom".to_owned());
+    let result = runtime.rollback_replace_rollout(
+        &plan,
+        &[],
+        &[1, 2],
+        &[],
+        "receiver bind failure".to_owned(),
+    );
 
     assert!(matches!(
         result,
-        Err(RolloutExecutionError::Failed(reason)) if reason == "boom"
+        Err(RolloutExecutionError::Failed(reason)) if reason == "receiver bind failure"
     ));
     exit_thread
         .join()
@@ -4046,6 +4842,19 @@ connections:
         runtime.instance_exit(&added_key),
         Some(RuntimeInstanceExit::Success)
     ));
+    assert!(matches!(
+        runtime.instance_exit(&failed_key),
+        Some(RuntimeInstanceExit::Error(error)) if error.message == "receiver bind failure"
+    ));
+    assert!(runtime.instance_exit(&previous_key).is_none());
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.logical_pipelines[&plan.pipeline_key].baseline_generation,
+        0
+    );
 }
 
 /// Scenario: a replace rollout starts with one recovered core on generation 1

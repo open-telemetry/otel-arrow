@@ -282,6 +282,8 @@ pub struct RuntimePipeline<PData: Debug> {
     telemetry_policy: TelemetryPolicy,
     /// Optional one-shot notification fired at the runtime-ready boundary.
     startup_callback: Option<Box<dyn FnOnce()>>,
+    #[cfg(test)]
+    readiness_drop_callback: Option<Box<dyn FnMut()>>,
 }
 
 async fn flush_metrics_reporter(
@@ -425,6 +427,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             admission_metrics: Default::default(),
             telemetry_policy,
             startup_callback: None,
+            #[cfg(test)]
+            readiness_drop_callback: None,
         }
     }
 
@@ -432,6 +436,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     #[must_use]
     pub fn with_startup_callback(mut self, callback: impl FnOnce() + 'static) -> Self {
         self.startup_callback = Some(Box::new(callback));
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn with_readiness_drop_callback(mut self, callback: impl FnMut() + 'static) -> Self {
+        self.readiness_drop_callback = Some(Box::new(callback));
         self
     }
 
@@ -490,6 +501,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             admission_metrics,
             telemetry_policy,
             mut startup_callback,
+            #[cfg(test)]
+            mut readiness_drop_callback,
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
@@ -1065,6 +1078,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                     if !receiver_readiness.is_empty() =>
                                 {
                                     if let Err(ReadinessProbeError::SignallerDropped) = result {
+                                        #[cfg(test)]
+                                        if let Some(callback) = readiness_drop_callback.as_mut() {
+                                            callback();
+                                        }
                                         if let Some(error) = startup_error_slot.borrow_mut().take() {
                                             return Err(error);
                                         }
@@ -1258,20 +1275,115 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+
     use super::*;
     use crate::attributes::{
         ChannelImplementation, ChannelKind, ChannelMode, ChannelType, EngineEntityAttributeSet,
     };
     use crate::channel_metrics::ChannelSenderMetrics;
+    use crate::config::{ExporterConfig, ReceiverConfig};
+    use crate::context::ControllerContext;
+    use crate::control::{pipeline_completion_msg_channel, runtime_ctrl_msg_channel};
     use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
-    use otel_arrow_dfe_config::SignalType;
-    use otel_arrow_dfe_config::observed_state::SendPolicy;
+    use crate::exporter::ExporterWrapper;
+    use crate::local::{exporter as local_exporter, receiver as local_receiver};
+    use crate::message::ExporterInbox;
+    use crate::receiver::ReceiverWrapper;
+    use crate::terminal_state::TerminalState;
+    use crate::wiring_contract::WiringContract;
+    use crate::{ExporterFactory, PipelineFactory, ReceiverFactory};
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+    use otel_arrow_dfe_config::pipeline::PipelineConfig;
     use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
+    use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
+    use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId, SignalType};
+    use otel_arrow_dfe_state::store::ObservedStateStore;
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
-    use tokio::sync::oneshot;
     use tokio::time::{Duration, timeout};
+    use tokio_util::sync::CancellationToken;
+
+    const STARTUP_FAILURE_MESSAGE: &str = "distinctive receiver startup failure";
+
+    struct StartupFailingReceiver;
+
+    #[async_trait::async_trait(?Send)]
+    impl local_receiver::Receiver<()> for StartupFailingReceiver {
+        async fn start(
+            self: Box<Self>,
+            _ctrl: local_receiver::ControlChannel<()>,
+            effect_handler: local_receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, Error> {
+            let receiver = effect_handler.receiver_id();
+            Err(Error::ReceiverError {
+                receiver,
+                kind: crate::error::ReceiverErrorKind::Connect,
+                error: STARTUP_FAILURE_MESSAGE.to_owned(),
+                source_detail: "test receiver failed before signaling readiness".to_owned(),
+            })
+        }
+    }
+
+    struct PendingExporter;
+
+    #[async_trait::async_trait(?Send)]
+    impl local_exporter::Exporter<()> for PendingExporter {
+        async fn start(
+            self: Box<Self>,
+            _inbox: ExporterInbox<()>,
+            _effect_handler: local_exporter::EffectHandler<()>,
+        ) -> Result<TerminalState, Error> {
+            std::future::pending().await
+        }
+    }
+
+    fn create_startup_failing_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &crate::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(
+            ReceiverWrapper::local(StartupFailingReceiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
+    }
+
+    fn create_pending_exporter(
+        _pipeline_ctx: PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        exporter_config: &ExporterConfig,
+        _capabilities: &crate::capability::registry::Capabilities,
+    ) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(ExporterWrapper::local(
+            PendingExporter,
+            node,
+            node_config,
+            exporter_config,
+        ))
+    }
+
+    static STARTUP_FAILURE_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[ReceiverFactory {
+        name: "urn:test:receiver:startup-failure",
+        create: create_startup_failing_receiver,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::no_config,
+    }];
+
+    static PENDING_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[ExporterFactory {
+        name: "urn:test:exporter:pending",
+        create: create_pending_exporter,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::no_config,
+    }];
 
     /// Scenario: completion duration, item counts, and size are enabled without message interests.
     /// Guarantees: optional node measurements register independently without input/output message sets.
@@ -1402,64 +1514,175 @@ mod tests {
         );
     }
 
-    /// Scenario: receiver binding fails while terminal metrics flushing waits for collector
-    /// acknowledgement.
-    /// Guarantees: the original bind error remains observable and readiness does not report
-    /// SignallerDropped before the receiver task publishes that error.
-    #[tokio::test(flavor = "current_thread")]
-    async fn receiver_bind_error_wins_over_signaller_drop_during_metrics_flush() {
-        let (signaller, probe) = crate::readiness::ReadinessSignaller::pair(Duration::from_secs(1));
-        let startup_error_slot = Rc::new(RefCell::new(None));
-        let task_error_slot = Rc::clone(&startup_error_slot);
-        let (flush_ack_tx, flush_ack_rx) = oneshot::channel();
-        let bind_error = Error::IoError {
-            node: crate::testing::test_node("receiver"),
-            error: std::io::Error::new(std::io::ErrorKind::AddrInUse, "address in use"),
-        };
-
-        let receiver_task = async move {
-            drop(signaller);
-            *task_error_slot.borrow_mut() = Some(bind_error);
-            flush_ack_rx
-                .await
-                .expect("test collector should acknowledge terminal metrics");
-            match task_error_slot.borrow_mut().take() {
-                Some(error) => Err::<(), Error>(error),
-                None => Ok(()),
-            }
-        };
-        tokio::pin!(receiver_task);
-        let readiness = probe.wait_ready();
-        tokio::pin!(readiness);
-
-        let selected_error = tokio::select! {
-            biased;
-            result = &mut receiver_task => {
-                result.expect_err("receiver task should preserve its bind error")
-            }
-            result = &mut readiness => {
-                assert_eq!(
-                    result,
-                    Err(ReadinessProbeError::SignallerDropped)
-                );
-                startup_error_slot
-                    .borrow_mut()
-                    .take()
-                    .expect("startup error must be captured before metrics flushing")
-            }
-        };
-        let Error::IoError { error, .. } = selected_error else {
-            panic!("receiver startup returned the wrong error");
-        };
-        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
-
-        flush_ack_tx
-            .send(())
-            .expect("receiver task should still await collector acknowledgement");
-        assert!(
-            receiver_task.await.is_ok(),
-            "runtime already consumed the captured startup error"
+    /// Scenario: a runtime receiver fails before readiness while its terminal metrics flush waits
+    /// for collector acknowledgement.
+    /// Guarantees: the runtime consumes the dropped-signaller result before collector release,
+    /// never invokes its startup callback, and returns the original receiver error and diagnostic.
+    #[test]
+    fn receiver_bind_error_wins_over_signaller_drop_during_metrics_flush() {
+        let pipeline_group_id = PipelineGroupId::from("test-group");
+        let pipeline_id = PipelineId::from("test-pipeline");
+        let pipeline_config = PipelineConfig::from_yaml(
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            "
+nodes:
+  receiver:
+    type: urn:test:receiver:startup-failure
+  exporter:
+    type: urn:test:exporter:pending
+connections:
+  - from: receiver
+    to: exporter
+",
+        )
+        .expect("startup failure test pipeline config should parse");
+        let telemetry = InternalTelemetrySystem::default();
+        let registry = telemetry.registry();
+        let metrics_reporter = telemetry.reporter();
+        let collector = telemetry.collector();
+        let (collector_running_tx, collector_running_rx) = mpsc::channel();
+        let (release_collector_tx, release_collector_rx) = mpsc::channel();
+        let collector_cancel = CancellationToken::new();
+        let collector_cancel_for_thread = collector_cancel.clone();
+        let collector_thread = thread::spawn(move || {
+            let collection_loop = collector.run(collector_cancel_for_thread);
+            collector_running_tx
+                .send(())
+                .expect("collector running notification should be observed");
+            release_collector_rx
+                .recv()
+                .expect("collector release signal should be sent");
+            Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("collector test runtime should build")
+                .block_on(collection_loop)
+        });
+        collector_running_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("collector should enter the running state");
+        let pipeline_ctx = ControllerContext::new(registry.clone()).pipeline_context_with(
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            0,
+            1,
+            0,
         );
+        let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+        let observed_state_store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), registry);
+        let event_reporter = observed_state_store.reporter(SendPolicy::default());
+        let (readiness_drop_tx, readiness_drop_rx) = mpsc::channel();
+        let (startup_callback_tx, startup_callback_rx) = mpsc::channel();
+        let (pipeline_result_tx, pipeline_result_rx) = mpsc::channel();
+
+        let pipeline_thread = thread::spawn(move || {
+            let channel_capacity_policy = ChannelCapacityPolicy::default();
+            let (runtime_ctrl_tx, runtime_ctrl_rx) =
+                runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+            let (pipeline_completion_tx, _pipeline_completion_rx) =
+                pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+            let pipeline_factory = PipelineFactory::new(
+                STARTUP_FAILURE_RECEIVER_FACTORIES,
+                &[],
+                PENDING_EXPORTER_FACTORIES,
+                &[],
+            );
+            let pipeline = pipeline_factory
+                .build(
+                    pipeline_ctx.clone(),
+                    pipeline_config,
+                    channel_capacity_policy,
+                    TelemetryPolicy::default(),
+                    std::collections::BTreeMap::new(),
+                    None,
+                    None,
+                )
+                .expect("startup failure test pipeline should build")
+                .with_startup_callback(move || {
+                    startup_callback_tx
+                        .send(())
+                        .expect("startup callback receiver should remain available");
+                })
+                .with_readiness_drop_callback(move || {
+                    readiness_drop_tx
+                        .send(())
+                        .expect("readiness drop notification should be observed");
+                });
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id,
+                pipeline_id,
+                core_id: 0,
+                deployment_generation: 0,
+            };
+            let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+                pipeline_ctx.metrics_registry(),
+                pipeline_entity_key,
+            );
+            let (_memory_pressure_tx, memory_pressure_rx) =
+                watch::channel(MemoryPressureChanged::initial());
+
+            pipeline_result_tx
+                .send(pipeline.run_forever(
+                    pipeline_key,
+                    pipeline_ctx,
+                    event_reporter,
+                    metrics_reporter,
+                    Duration::from_secs(1),
+                    memory_pressure_rx,
+                    runtime_ctrl_tx,
+                    runtime_ctrl_rx,
+                    pipeline_completion_tx,
+                    _pipeline_completion_rx,
+                ))
+                .expect("pipeline result receiver should remain available");
+        });
+
+        readiness_drop_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("runtime should observe the dropped readiness signaller");
+        assert!(
+            !matches!(startup_callback_rx.try_recv(), Ok(())),
+            "startup callback must not run before the receiver reports readiness"
+        );
+        assert!(
+            matches!(
+                pipeline_result_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ),
+            "the collector must hold the receiver's terminal metrics flush acknowledgment"
+        );
+
+        release_collector_tx
+            .send(())
+            .expect("collector should remain gated until terminal flush is observed");
+        let result = pipeline_result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("startup failure pipeline should terminate within the timeout");
+
+        pipeline_thread
+            .join()
+            .expect("startup failure pipeline thread should not panic");
+        assert!(
+            startup_callback_rx.try_recv().is_err(),
+            "startup callback must never run after a receiver startup failure"
+        );
+        assert!(matches!(
+            result,
+            Err(Error::ReceiverError {
+                kind: crate::error::ReceiverErrorKind::Connect,
+                ref error,
+                ref source_detail,
+                ..
+            }) if error == STARTUP_FAILURE_MESSAGE
+                && source_detail == "test receiver failed before signaling readiness"
+        ));
+        collector_cancel.cancel();
+        collector_thread
+            .join()
+            .expect("collector thread should not panic")
+            .expect("collector loop should stop after cancellation");
     }
 
     /// Scenario: a receiver drops its readiness signaller but remains running without producing a

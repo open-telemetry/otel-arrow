@@ -341,11 +341,7 @@ impl<
                     );
                     // Create rollouts have no previous generation to restore, so a launch
                     // failure must tear down any candidate instances that were already started.
-                    return Err(self.cleanup_candidates_after_failure(
-                        &launched,
-                        plan.drain_timeout_secs,
-                        reason,
-                    ));
+                    return self.rollback_create_rollout(plan, &launched, reason);
                 }
             };
             launched.push(deployed_key);
@@ -353,11 +349,7 @@ impl<
 
         for deployed_key in &launched {
             if let Err(reason) = self.wait_for_pipeline_ready(deployed_key, deadline) {
-                return Err(self.cleanup_candidates_after_failure(
-                    &launched,
-                    plan.drain_timeout_secs,
-                    reason,
-                ));
+                return self.rollback_create_rollout(plan, &launched, reason);
             }
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -370,6 +362,48 @@ impl<
 
         self.commit_pipeline_deployment(plan);
         Ok(())
+    }
+
+    /// Removes every launched candidate after a create rollout fails.
+    pub(super) fn rollback_create_rollout(
+        self: &Arc<Self>,
+        plan: &CandidateRolloutPlan,
+        launched: &[DeployedPipelineKey],
+        failure_reason: String,
+    ) -> Result<(), RolloutExecutionError> {
+        self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
+            rollout.state = RolloutLifecycleState::RollingBack;
+            rollout.failure_reason = Some(failure_reason.clone());
+        });
+        for key in launched {
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                key.core_id,
+                "rollback_starting",
+                None,
+            );
+            if let Err(cleanup_error) =
+                self.cleanup_instance(key, plan.drain_timeout_secs, "candidate cleanup")
+            {
+                return Err(RolloutExecutionError::RollbackFailed(format!(
+                    "{failure_reason}; candidate cleanup failed for {}:{} core={} generation={}: \
+                     {cleanup_error}",
+                    key.pipeline_group_id.as_ref(),
+                    key.pipeline_id.as_ref(),
+                    key.core_id,
+                    key.deployment_generation,
+                )));
+            }
+            self.update_rollout_core_state(
+                &plan.pipeline_key,
+                &plan.rollout.rollout_id,
+                key.core_id,
+                "rolled_back",
+                None,
+            );
+        }
+        Err(RolloutExecutionError::Failed(failure_reason))
     }
 
     /// Resizes a listener-free pipeline when only core allocation changed and common cores stay
@@ -784,7 +818,7 @@ impl<
                 core_id: *core_id,
                 deployment_generation: previous_generation,
             };
-            self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
+            self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -930,7 +964,7 @@ impl<
                 core_id: *core_id,
                 deployment_generation: plan.target_deployment.baseline_generation,
             };
-            self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
+            self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
@@ -963,7 +997,7 @@ impl<
                 core_id: *core_id,
                 deployment_generation: plan.target_deployment.baseline_generation,
             };
-            self.shutdown_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
+            self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
                 .map_err(RolloutExecutionError::RollbackFailed)?;
             self.observed_state_store
                 .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
@@ -979,43 +1013,21 @@ impl<
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
-    /// Best-effort cleanup helper for batches of launched candidate instances.
-    pub(super) fn shutdown_instances(
-        self: &Arc<Self>,
-        keys: &[DeployedPipelineKey],
+    /// Stops one undesired instance and succeeds once its runtime is confirmed terminal.
+    fn cleanup_instance(
+        &self,
+        key: &DeployedPipelineKey,
         timeout_secs: u64,
+        reason: &str,
     ) -> Result<(), String> {
-        let mut failures = Vec::new();
-        for key in keys {
-            if let Err(error) = self.shutdown_instance(key, timeout_secs, "candidate cleanup") {
-                failures.push(format!(
-                    "{}:{} core={} generation={}: {error}",
-                    key.pipeline_group_id.as_ref(),
-                    key.pipeline_id.as_ref(),
-                    key.core_id,
-                    key.deployment_generation,
-                ));
-            }
+        if self.instance_exit(key).is_some() {
+            return Ok(());
         }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(failures.join("; "))
-        }
-    }
 
-    /// Cleans up candidates after a rollout failure and preserves cleanup failure separately.
-    pub(super) fn cleanup_candidates_after_failure(
-        self: &Arc<Self>,
-        keys: &[DeployedPipelineKey],
-        timeout_secs: u64,
-        failure_reason: String,
-    ) -> RolloutExecutionError {
-        match self.shutdown_instances(keys, timeout_secs) {
-            Ok(()) => RolloutExecutionError::Failed(failure_reason),
-            Err(cleanup_error) => RolloutExecutionError::RollbackFailed(format!(
-                "{failure_reason}; candidate cleanup failed: {cleanup_error}"
-            )),
+        match self.shutdown_instance(key, timeout_secs, reason) {
+            Ok(()) => Ok(()),
+            Err(_) if self.instance_exit(key).is_some() => Ok(()),
+            Err(error) => Err(error),
         }
     }
 }
