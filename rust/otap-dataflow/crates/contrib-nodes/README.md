@@ -61,10 +61,6 @@ Receivers ingest data into a pipeline.
 | [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
 
-The independently opt-in `sql-server` feature currently exposes only
-[internal configuration and T-SQL query preparation](src/receivers/sql_server_receiver/README.md).
-It does **not** register a receiver and cannot be used as a runtime YAML node.
-
 ## Processors
 
 Processors transform or validate data already moving through a pipeline.
@@ -89,7 +85,7 @@ Exporters send data out of a pipeline.
 ## Feature Aggregates
 
 - `contrib-nodes`: enables contrib receivers, processors, and exporters, except
-  the explicitly opt-in Oracle receiver and SQL Server preparation layer.
+  the explicitly opt-in Oracle and SQL Server integrations.
 - `contrib-receivers`: enables contrib receivers except Oracle and SQL Server.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
@@ -99,9 +95,12 @@ Enable `oracle` explicitly to include Oracle. It is excluded from both
 `contrib-receivers` and `contrib-nodes` because Oracle Client libraries must be
 provisioned separately.
 
+The `sql-server` feature is also explicitly opt-in and excluded from all
+aggregates. See the [SQL Server README](src/receivers/sql_server_receiver/README.md)
+for its capabilities and usage.
+
 When implemented node features are enabled in the top-level binary, their
-factories are registered into the OTAP pipeline factory maps. The `sql-server`
-preparation layer is excluded from all aggregates and has no factory yet.
+factories are registered into the OTAP pipeline factory maps.
 
 Features describe what the build includes rather than implementation
 directions. Each uses an unsuffixed name so future source or destination nodes
