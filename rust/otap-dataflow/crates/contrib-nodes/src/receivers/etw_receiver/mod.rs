@@ -556,14 +556,7 @@ async fn flush_batch(
         return Ok(());
     }
 
-    metrics
-        .borrow_mut()
-        .events
-        .with(EventAttributes {
-            outcome: EventOutcome::Forwarded,
-        })
-        .events
-        .add(item_count);
+    metrics.borrow_mut().events.forwarded.add(item_count);
     Ok(())
 }
 
@@ -606,14 +599,7 @@ fn try_flush_batch(
         return Ok(());
     }
 
-    metrics
-        .borrow_mut()
-        .events
-        .with(EventAttributes {
-            outcome: EventOutcome::Forwarded,
-        })
-        .events
-        .add(item_count);
+    metrics.borrow_mut().events.forwarded.add(item_count);
     Ok(())
 }
 
@@ -660,13 +646,7 @@ impl EventCountsDelta {
     /// did not advance.
     fn apply(&self, metrics: &mut EtwReceiverMetrics) {
         if self.total > 0 {
-            metrics
-                .events
-                .with(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .add(self.total);
+            metrics.events.received.add(self.total);
         }
         if self.dropped_slow_worker > 0 {
             metrics
@@ -678,22 +658,10 @@ impl EventCountsDelta {
                 .add(self.dropped_slow_worker);
         }
         if self.invalid > 0 {
-            metrics
-                .events
-                .with(EventAttributes {
-                    outcome: EventOutcome::Invalid,
-                })
-                .events
-                .add(self.invalid);
+            metrics.decode.errors.add(self.invalid);
         }
         if self.kernel_events_lost > 0 {
-            metrics
-                .events
-                .with(EventAttributes {
-                    outcome: EventOutcome::Lost,
-                })
-                .events
-                .add(self.kernel_events_lost);
+            metrics.kernel.events_lost.add(self.kernel_events_lost);
         }
         if self.kernel_real_time_buffers_lost > 0 {
             metrics
@@ -1413,16 +1381,7 @@ mod tests {
         // upholds the counter-algebra invariant.
         let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .get(),
-            10
-        );
+        assert_eq!(metrics.events.received.get(), 10);
         assert_eq!(
             metrics
                 .dropped
@@ -1433,16 +1392,7 @@ mod tests {
                 .get(),
             3
         );
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Invalid,
-                })
-                .events
-                .get(),
-            2
-        );
+        assert_eq!(metrics.decode.errors.get(), 2);
     }
 
     /// Scenario: Claiming kernel trace stats updates event loss and buffer metrics.
@@ -1488,26 +1438,8 @@ mod tests {
 
         let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .get(),
-            4
-        );
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Lost,
-                })
-                .events
-                .get(),
-            2
-        );
+        assert_eq!(metrics.events.received.get(), 4);
+        assert_eq!(metrics.kernel.events_lost.get(), 2);
         assert_eq!(
             metrics
                 .buffers
@@ -1566,16 +1498,7 @@ mod tests {
         let mut metrics = EtwReceiverMetrics::new_test();
         first.apply(&mut metrics);
         second.apply(&mut metrics);
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .get(),
-            7
-        );
+        assert_eq!(metrics.events.received.get(), 7);
         assert_eq!(
             metrics
                 .dropped
@@ -1604,16 +1527,7 @@ mod tests {
 
         let mut metrics = EtwReceiverMetrics::new_test();
         terminal.apply(&mut metrics);
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .get(),
-            5
-        );
+        assert_eq!(metrics.events.received.get(), 5);
 
         // A late producer increment lands after the terminal snapshot.
         let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
@@ -1623,13 +1537,7 @@ mod tests {
         // the documented "residual loss at teardown" behaviour.
         assert_eq!(telemetry.total.load(Ordering::Relaxed), 1);
         assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .get(),
+            metrics.events.received.get(),
             5,
             "metric must not reflect the post-terminal increment"
         );
@@ -1643,16 +1551,7 @@ mod tests {
         assert!(deltas.is_empty());
         let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Received,
-                })
-                .events
-                .get(),
-            0
-        );
+        assert_eq!(metrics.events.received.get(), 0);
         assert_eq!(
             metrics
                 .dropped
@@ -1663,26 +1562,8 @@ mod tests {
                 .get(),
             0
         );
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Invalid,
-                })
-                .events
-                .get(),
-            0
-        );
-        assert_eq!(
-            metrics
-                .events
-                .get(EventAttributes {
-                    outcome: EventOutcome::Lost,
-                })
-                .events
-                .get(),
-            0
-        );
+        assert_eq!(metrics.decode.errors.get(), 0);
+        assert_eq!(metrics.kernel.events_lost.get(), 0);
         assert_eq!(
             metrics
                 .buffers
