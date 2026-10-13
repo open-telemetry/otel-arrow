@@ -33,10 +33,10 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
 use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
-use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_telemetry::metrics::MetricValue;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message;
@@ -3596,3 +3596,6 @@ fn checkpoint_write_and_retry_wait_apply_pressure() {
 
 #[path = "controller_scalar_tests.rs"]
 mod scalar_tests;
+
+#[path = "controller_snapshot_tests.rs"]
+mod snapshot_tests;

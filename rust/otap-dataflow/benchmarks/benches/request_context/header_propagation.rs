@@ -220,13 +220,13 @@ fn small_composite_config(
     );
     let mut parts = (0..member_count)
         .map(|index| ContextEntryPart::TransportHeader {
-            name: context_ref(&format!("field_{index}")),
+            name: context_name(&format!("field_{index}")),
             store_as: None,
         })
         .collect::<Vec<_>>();
     if let Some(matches) = condition {
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref("field_0"),
+            name: context_name("field_0"),
             value: if matches { "value" } else { "missing" }.into(),
         });
     }
@@ -295,7 +295,7 @@ fn conditional_declaration(
     let selected_index = header_count - 1;
     let mut parts = Vec::with_capacity(condition_count + 1);
     parts.push(ContextEntryPart::TransportHeader {
-        name: context_ref(&format!("header_{selected_index}")),
+        name: context_name(&format!("header_{selected_index}")),
         store_as: Some(context_name("selected")),
     });
 
@@ -310,7 +310,7 @@ fn conditional_declaration(
             "missing".to_owned()
         };
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref(&format!("{name_variant}_{source_index}")),
+            name: context_name(&format!("{name_variant}_{source_index}")),
             value: expected_value,
         });
     }
@@ -354,12 +354,12 @@ default:
     )
     .expect("valid duplicate-source propagation policy");
     let mut parts = vec![ContextEntryPart::TransportHeader {
-        name: context_ref("selected_source"),
+        name: context_name("selected_source"),
         store_as: Some(context_name("selected")),
     }];
     for index in 0..CONDITION_COUNTS.len() {
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref(&format!("condition_{index}")),
+            name: context_name(&format!("condition_{index}")),
             value: if matches || index + 1 < CONDITION_COUNTS.len() {
                 format!("value_{index}")
             } else {
@@ -406,13 +406,13 @@ default:
     let mut parts = Vec::with_capacity(binding_count + CONDITION_COUNTS.len());
     for index in 0..binding_count {
         parts.push(ContextEntryPart::TransportHeader {
-            name: context_ref(&format!("selected_source_{index}")),
+            name: context_name(&format!("selected_source_{index}")),
             store_as: Some(context_name(&format!("selected_{index}"))),
         });
     }
     for index in 0..CONDITION_COUNTS.len() {
         parts.push(ContextEntryPart::TransportHeaderMatch {
-            name: context_ref(&format!("condition_{index}")),
+            name: context_name(&format!("condition_{index}")),
             value: if matches || index + 1 < CONDITION_COUNTS.len() {
                 format!("value_{index}")
             } else {

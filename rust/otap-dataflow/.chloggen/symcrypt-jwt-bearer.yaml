@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: OAuth 2.0 JWT-bearer authentication now uses the Rustls crypto provider selected for TLS.
-issues: [3002]
-subtext: Ring, AWS-LC, OpenSSL, and SymCrypt builds sign and verify RS256, RS384, and RS512 client assertions through one provider-neutral adapter.

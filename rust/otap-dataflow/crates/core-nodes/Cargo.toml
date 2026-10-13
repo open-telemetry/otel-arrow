@@ -22,6 +22,7 @@ otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-query-engine-languages = { workspace = true, optional = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-query-engine = { workspace = true, optional = true }
 otel-arrow-dfe-quiver = { workspace = true, optional = true }
@@ -51,6 +52,7 @@ prost-types.workspace = true
 rand.workspace = true
 regex.workspace = true
 regex-automata.workspace = true
+regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
@@ -143,6 +145,7 @@ bench = []
 dev-tools = []
 
 [dev-dependencies]
+libtest-mimic.workspace = true
 serde_yaml.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
@@ -152,6 +155,7 @@ otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 flate2.workspace = true
 http-body-util.workspace = true
@@ -204,3 +208,19 @@ path = "benches/filelog_framing/main.rs"
 name = "filelog_framing_allocations"
 harness = false
 path = "benches/filelog_framing/allocations.rs"
+
+[[bench]]
+name = "filelog_multiline"
+required-features = ["bench"]
+harness = false
+path = "benches/filelog_multiline/main.rs"
+
+[[bench]]
+name = "filelog_multiline_allocations"
+required-features = ["bench"]
+harness = false
+path = "benches/filelog_multiline/allocations.rs"
+
+[[test]]
+name = "filelog_multiline_memory"
+harness = false

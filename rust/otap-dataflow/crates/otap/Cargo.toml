@@ -43,6 +43,7 @@ otel-arrow-dfe-engine-macros = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
@@ -73,6 +74,7 @@ rustls-pki-types.workspace = true
 rustls-webpki.workspace = true
 tokio-rustls.workspace = true
 notify.workspace = true
+sha2.workspace = true
 rustls-openssl = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]

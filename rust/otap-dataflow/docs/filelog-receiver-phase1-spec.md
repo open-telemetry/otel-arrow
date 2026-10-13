@@ -465,9 +465,15 @@ The following relationships are enforced:
 15. Exactly zero or one multiline boundary pattern is configured.
 16. `re2-v1` is the only accepted regex profile.
 17. A multiline pattern contains at most 4,096 bytes.
-18. Counted repetition bounds do not exceed 1,000.
-19. Each compiled matcher has a 10 MiB program-size limit.
-20. Each matcher has a 2 MiB lazy-DFA cache limit.
+18. Counted repetition bounds do not exceed 1,000, including nested products.
+    Parsed syntax-tree depth does not exceed 64.
+19. The canonical forward-NFA compiler has a 10 MiB limit. Each compiled matcher
+    also has a provisional 10 MiB aggregate engine-reported
+    program-payload limit, including simultaneously retained forward/reverse
+    programs and prefilters. Allocator and capacity allowances are separate.
+20. Each lazy-DFA cache has a provisional 2 MiB capacity limit. This is not a
+    total worker-memory limit; all caches and fallback scratch require aggregate
+    admission under the [regex execution policy](#regex-execution-policy).
 21. Text patterns compile for validated decoded UTF-8.
 22. Raw patterns compile in non-Unicode byte mode.
 23. Backreferences, look-around, Unicode properties, unsupported set operations,
@@ -1902,16 +1908,101 @@ End-pattern mode begins buffering with the first physical line.
   ASCII semantics.
 - Counted repetition limits are at most 1,000.
 - Text patterns run over validated decoded UTF-8.
-- Raw patterns use non-Unicode byte semantics, including exact byte escapes.
+- Raw patterns use non-Unicode byte semantics. Fixed and braced hex escapes
+  denote bytes (`\xFF` and `\x{FF}` both denote byte `FF`); values above `FF`
+  are rejected in raw mode, including in classes and range endpoints.
+  Literal non-ASCII pattern characters outside character classes use their
+  UTF-8 source bytes. Non-ASCII literals inside raw character classes are
+  rejected; use byte hex escapes for class members and range endpoints.
 - Backreferences and look-around are rejected.
 - Rust-only `u`, `R`, and `x` flags are rejected.
 - Unicode property escapes are rejected.
 - Nested or set-operation character classes outside the profile are rejected.
 - Constructs unsupported by the selected linear-time engine are rejected.
-- Program and cache bounds are enforced at compile time.
+- Program admission and cache reservations are established before source activation.
 
 The receiver compiles defensively as well. A defensive mismatch fails the affected data
 source. It never silently falls back to different regex semantics.
+
+### Regex execution policy
+
+The `re2-v1` profile defines which patterns are supported and what they
+match. Choosing a different execution engine must not change those results.
+
+Implementations may use literal prefilters, a lazy DFA, or equivalent
+non-backtracking NFA matching. A bounded backtracker may be evaluated if
+it visits each input/state pair at most once. Unbounded backtracking is
+prohibited.
+
+#### Fallback and failures
+
+If an accelerator cannot be built, or repeatedly fills and clears its
+cache, the implementation may use an equivalent fallback. A pattern must
+not be rejected solely because its accelerator is too large when a
+fallback fits the applicable limits.
+
+Every search must return the correct match/no-match result or report an
+error that fails the affected source. Resource exhaustion and engine
+errors must never be treated as "no match."
+
+Switching engines must not change the original pattern, framing-profile
+digest, source boundaries, or decoding behavior.
+
+#### Memory budgeting
+
+The receiver must account for memory before activating a source. These
+are integration requirements; a matcher memory estimate alone does not
+reserve memory.
+
+1. **Compilation:** Before construction, reserve a conservative amount of
+   memory for temporary compilation allocations and limit how many patterns
+   can compile at once. Compilation during configuration is still subject
+   to the memory budget.
+
+2. **Compiled patterns:** Before activation, check the total retained program
+   payload against its limit. Count shared storage, allocated capacity, and
+   bookkeeping once. Limiting each individual NFA does not establish a limit
+   for the complete matcher.
+
+3. **Worker memory:** Reserve working memory for each worker and active
+   pattern. Include all lazy caches and memory that may be allocated when
+   fallback first runs. Workers own their caches; do not create a cache
+   for every pending file. Check arithmetic for overflow when calculating
+   totals. Never silently enlarge a cache to make an accelerator fit.
+
+4. **Verification:** Use engine memory reports to check the accounting
+   model. These reports may omit spare capacity or memory allocated later,
+   so they are not a complete measure of allocated memory. Exceeding the
+   reservation is an accounting failure, never a "no match" result.
+
+#### Matching time and worker responsiveness
+
+The initial limits must be qualified through testing. They do not
+guarantee a maximum matching time.
+
+Matching can require work proportional to program size multiplied by
+line length. A synchronous search cannot pause just because the worker
+has exhausted its turn budget.
+
+Oversized lines are not matched. However, a line within the size limit
+can still take long enough to delay other work on the worker.
+
+Before production qualification:
+
+- Define a numeric maximum acceptable delay to pending control work and record
+  the Linux hardware used for measurement.
+- Test maximum-sized lines that do not match, with both cold and warm
+  caches.
+- Exercise actual fallback paths and test with and without prefilters.
+- Measure peak allocations, throughput, and control-work delay in the
+  integrated receiver.
+
+If the latency target is missed, explicitly revise the bounds or supported
+workload, or implement matching that can pause and resume. Changing engines
+alone does not establish that the target is met.
+
+Any resumable implementation must preserve matching state across chunks,
+including anchors and word boundaries.
 
 ### Physical-line and logical-record bounds
 

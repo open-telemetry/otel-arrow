@@ -44,9 +44,8 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::Producer;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::encode::producer::ProducerOptions;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{
@@ -427,7 +426,7 @@ impl OTAPExporter {
         sender: &Sender<StreamBatch>,
         signal: SignalType,
         pdata: OtapPdata,
-        message: OtapArrowRecords,
+        records: OtapArrowRecords,
         export_started_at: Instant,
     ) -> Result<EnqueueResult, Error> {
         let queue_depth = sender.max_capacity() - sender.capacity();
@@ -435,7 +434,7 @@ impl OTAPExporter {
 
         match sender.try_send(StreamBatch {
             pdata,
-            records: message,
+            records,
             export_started_at,
         }) {
             Ok(()) => {
@@ -739,24 +738,29 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         ))
                     }
                     //send data
-                    Message::PData(mut pdata) => {
+                    Message::PData(pdata) => {
                         let export_started_at = Instant::now();
                         let signal_type = pdata.signal_type();
 
-                        let payload = pdata.take_payload();
-
-                        let message: OtapArrowRecords = match payload.try_into_with_default() {
-                            Ok(m) => m,
-                            Err(e) => {
+                        let (delivery, records) = match effect_handler
+                            .prepare_otap_work(pdata)
+                            .await
+                        {
+                            Ok(prepared) => prepared,
+                            Err(error) => {
                                 self.metrics.record_failure(
                                     signal_type,
                                     OtapExporterErrorType::PayloadConversion,
                                     export_started_at.elapsed(),
                                 );
-                                effect_handler.notify_nack(NackMsg::new_permanent("payload conversion failed", pdata)).await?;
-                                return Err(e.into());
+                                let (error, pdata) = error.into_parts();
+                                effect_handler
+                                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                    .await?;
+                                continue;
                             }
                         };
+                        let pdata = delivery.into_pdata();
 
                         // Route each batch to the stream with the smallest
                         // local backlog. This is intentionally based on queue
@@ -776,7 +780,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 sender,
                                 signal_type,
                                 pdata,
-                                message,
+                                records,
                                 export_started_at,
                             )
                             .await?

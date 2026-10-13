@@ -69,6 +69,12 @@ impl BackgroundProviderSource<BasicAuthCredential> for FlatFileUserPassAuth {
 
     /// Fetch a single credential.
     async fn fetch(&self) -> Result<BasicAuthCredential, Error> {
+        let username = read_credential(
+            self.config.username_file.as_ref(),
+            self.config.username.as_ref(),
+            "username",
+        )
+        .await?;
         let password = read_credential(
             self.config.password_secret_file.as_ref(),
             self.config.password_secret.as_ref(),
@@ -76,10 +82,8 @@ impl BackgroundProviderSource<BasicAuthCredential> for FlatFileUserPassAuth {
         )
         .await?;
 
-        BasicAuthCredential::new(self.config.username.clone(), password).map_err(|e| {
-            Error::CredentialAcquisition {
-                message: e.to_string(),
-            }
+        BasicAuthCredential::new(username, password).map_err(|e| Error::CredentialAcquisition {
+            message: e.to_string(),
         })
     }
 

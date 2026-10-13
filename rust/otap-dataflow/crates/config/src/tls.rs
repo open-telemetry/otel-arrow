@@ -33,8 +33,8 @@ pub struct TlsConfig {
 
     // /// Trusted platform module configuration
     // pub tpm_config: Option<TpmConfig>,
-    /// Minimum interval between certificate reload checks.
-    /// Certificates are only reloaded if file modification time has changed.
+    /// Minimum interval between checks for file-backed TLS material.
+    /// Change detection and explicit `null` behavior are consumer-specific.
     /// Defaults to 5 minutes ("5m").
     /// Format: Standard duration string (e.g., "30s", "5m", "1h").
     #[serde(default = "default_reload_interval", with = "humantime_serde")]

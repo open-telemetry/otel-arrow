@@ -925,6 +925,13 @@ impl KafkaReceiverConfigBuilder {
         self
     }
 
+    /// Set the authentication configuration.
+    #[must_use]
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
     /// Set the auto offset reset behavior.
     #[must_use]
     pub fn with_auto_offset_reset(mut self, reset: AutoOffsetReset) -> Self {
@@ -1366,6 +1373,15 @@ impl KafkaReceiverConfig {
     #[must_use]
     pub fn auth(&self) -> Option<&Auth> {
         self.inner.auth.as_ref()
+    }
+
+    /// Returns `true` when the receiver requires a SASL credential provider.
+    #[must_use]
+    pub fn uses_sasl_credential_provider(&self) -> bool {
+        self.inner
+            .auth
+            .as_ref()
+            .is_some_and(Auth::uses_sasl_credential_provider)
     }
 
     /// Build Kafka client configuration.
