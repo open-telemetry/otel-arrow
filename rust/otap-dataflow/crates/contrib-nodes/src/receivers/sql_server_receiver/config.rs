@@ -99,7 +99,7 @@ impl SqlServerReceiverConfig {
                 "source_id must contain 1..256 ASCII letters, digits, underscores, hyphens, or dots",
             ));
         }
-        raw.connection.validate()?;
+        let connection = SqlServerConnectionConfig::try_from(raw.connection)?;
         whole_seconds("query.interval", raw.query.interval, 60, 24 * 60 * 60)?;
         whole_seconds("query.timeout", raw.query.timeout, 1, 300)?;
         let polling = raw.query.polling();
@@ -154,9 +154,9 @@ impl SqlServerReceiverConfig {
             version: 1,
             database_system: "microsoft.sql_server",
             source_id: &raw.source_id,
-            host: &raw.connection.host,
-            port: raw.connection.port,
-            database: &raw.connection.database,
+            host: &connection.host,
+            port: connection.port,
+            database: &connection.database,
             statement: statement.canonical_sql(),
             watermark: FingerprintWatermark::from(&raw.watermark),
         };
@@ -175,7 +175,7 @@ impl SqlServerReceiverConfig {
         .map_err(|e| SqlServerConfigError(e.to_string()))?;
         Ok(Self {
             source_id: raw.source_id,
-            connection: raw.connection,
+            connection,
             query,
             statement,
             checkpoint: raw.checkpoint,
@@ -187,17 +187,39 @@ impl SqlServerReceiverConfig {
 /// SQL Server endpoint and secure-by-default, SQL Server-specific TLS settings.
 ///
 /// No credential, connection-string, or retry override is accepted.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SqlServerConnectionConfig {
     host: String,
-    #[serde(default = "default_port")]
     port: u16,
     database: String,
-    #[serde(default = "default_connect_timeout", with = "humantime_serde")]
     connect_timeout: Duration,
-    #[serde(default)]
     tls: TlsConfig,
+}
+
+impl<'de> Deserialize<'de> for SqlServerConnectionConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawConnectionConfig::deserialize(deserializer).map_err(|_| {
+            D::Error::custom(
+                "invalid SQL Server connection: check required fields, names, and types",
+            )
+        })?;
+        Self::try_from(raw).map_err(D::Error::custom)
+    }
+}
+
+impl TryFrom<RawConnectionConfig> for SqlServerConnectionConfig {
+    type Error = SqlServerConfigError;
+
+    fn try_from(raw: RawConnectionConfig) -> Result<Self, Self::Error> {
+        let mut connection = Self {
+            host: raw.host,
+            port: raw.port,
+            database: raw.database,
+            connect_timeout: raw.connect_timeout,
+            tls: raw.tls,
+        };
+        connection.validate()?;
+        Ok(connection)
+    }
 }
 
 impl fmt::Debug for SqlServerConnectionConfig {
@@ -355,10 +377,23 @@ impl Default for TlsConfig {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     source_id: String,
-    connection: SqlServerConnectionConfig,
+    connection: RawConnectionConfig,
     query: QueryConfig,
     watermark: WatermarkConfig,
     checkpoint: CheckpointConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConnectionConfig {
+    host: String,
+    #[serde(default = "default_port")]
+    port: u16,
+    database: String,
+    #[serde(default = "default_connect_timeout", with = "humantime_serde")]
+    connect_timeout: Duration,
+    #[serde(default)]
+    tls: TlsConfig,
 }
 
 #[derive(Deserialize)]

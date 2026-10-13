@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{SqlServerParameter as Parameter, SqlServerReceiverConfig};
+use super::{SqlServerConnectionConfig, SqlServerParameter as Parameter, SqlServerReceiverConfig};
 use otel_arrow_dfe_scraper::database::{CompiledWatermark, ScalarValue};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -804,6 +804,69 @@ fn rejects_credentials_and_unknown_fields() {
     let mut raw = composite();
     raw["authentication"] = json!({"password_file":"secret"});
     rejects(raw);
+}
+
+/// Scenario: Connection settings are deserialized directly instead of through receiver preparation.
+/// Guarantees: Invalid endpoints, timeouts, TLS combinations, and field types fail without leaking input.
+#[test]
+fn direct_connection_deserialization_rejects_invalid_values() {
+    for (field, value) in [
+        ("port", json!(0)),
+        ("host", json!("SENSITIVE;invalid")),
+        ("database", json!("")),
+        ("database", json!("x".repeat(129))),
+        ("connect_timeout", json!("0s")),
+        ("connect_timeout", json!("1.5s")),
+        ("connect_timeout", json!("SENSITIVE")),
+        ("port", json!("SENSITIVE")),
+        ("SENSITIVE", json!("unknown")),
+        ("tls", Value::Null),
+        ("tls", json!({"ca_file":""})),
+        ("tls", json!({"enabled":false,"ca_file":"SENSITIVE.pem"})),
+        (
+            "tls",
+            json!({"trust_server_certificate":true,"ca_file":"SENSITIVE.pem"}),
+        ),
+        ("tls", json!({"server_name_override":"SENSITIVE;invalid"})),
+        ("tls", json!({"enabled":"SENSITIVE"})),
+    ] {
+        let mut raw = composite()["connection"].clone();
+        raw[field] = value;
+        let error = serde_json::from_value::<SqlServerConnectionConfig>(raw).unwrap_err();
+        assert!(!format!("{error} {error:?}").contains("SENSITIVE"));
+    }
+}
+
+/// Scenario: Valid connection settings are deserialized through both public entry points.
+/// Guarantees: Direct construction applies identical defaults, normalization, and TLS validation.
+#[test]
+fn direct_connection_deserialization_matches_receiver_preparation() {
+    for tls in [
+        json!({}),
+        json!({"server_name_override":"TLS.EXAMPLE.TEST","ca_file":"not-loaded.pem"}),
+        json!({"enabled":false}),
+        json!({"trust_server_certificate":true}),
+    ] {
+        let mut raw = composite();
+        raw["connection"]["host"] = json!("SQL.EXAMPLE.TEST");
+        raw["connection"]["tls"] = tls;
+        let direct =
+            serde_json::from_value::<SqlServerConnectionConfig>(raw["connection"].clone()).unwrap();
+        let receiver = parse(raw);
+        let nested = receiver.connection();
+        assert_eq!(direct.host(), "sql.example.test");
+        assert_eq!(direct.host(), nested.host());
+        assert_eq!(direct.port(), nested.port());
+        assert_eq!(direct.database(), nested.database());
+        assert_eq!(direct.connect_timeout(), nested.connect_timeout());
+        assert_eq!(direct.tls_enabled(), nested.tls_enabled());
+        assert_eq!(
+            direct.trust_server_certificate(),
+            nested.trust_server_certificate()
+        );
+        assert_eq!(direct.server_name_override(), nested.server_name_override());
+        assert_eq!(direct.ca_file(), nested.ca_file());
+    }
 }
 
 /// Scenario: TLS is omitted, empty, or explicitly configured with secure defaults.
