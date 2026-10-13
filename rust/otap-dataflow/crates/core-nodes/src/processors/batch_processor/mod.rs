@@ -1180,13 +1180,18 @@ where
             let sizer = self.fmtcfg.sizer;
             match sizer {
                 Sizer::Items => {
-                    // This property holds because item-based batches never batches
-                    // short of min_size.
+                    // Logs and traces are split at boundaries aligned to the
+                    // running item total, so the first output always reaches
+                    // min_size. Metrics are split on whole metric rows without
+                    // that alignment, so their first output can fall short.
+                    // That is safe: Ack/Nack routing follows ownership weights,
+                    // not output sizes.
                     debug_assert!(
-                        sizer
-                            .batch_size(&output_batches[0].0)
-                            .expect("first over lower_limit")
-                            >= self.fmtcfg.lower_limit()
+                        self.signal == SignalType::Metrics
+                            || sizer
+                                .batch_size(&output_batches[0].0)
+                                .expect("first over lower_limit")
+                                >= self.fmtcfg.lower_limit()
                     );
                 }
                 Sizer::Requests => unreachable!("requests sizer not implemented"),
@@ -1793,7 +1798,9 @@ mod tests {
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::TestCallData;
     use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
-    use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use otel_arrow_dfe_pdata::encode::{
+        encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
+    };
     use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
@@ -1804,7 +1811,7 @@ mod tests {
         ResourceSpans, ScopeSpans, Span, TracesData,
     };
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
-    use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
+    use otel_arrow_dfe_pdata::testing::fixtures::{DataGenerator, MetricsConfig};
     use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_message_to_bytes, otlp_to_otap,
     };
@@ -2603,6 +2610,90 @@ mod tests {
                 // 3 inputs consumed; 2 batches produced (one size flush after
                 // the second input, one timer flush after the third).
             });
+    }
+
+    /// Scenario: one tracked OTAP metrics request carries two gauge metrics of
+    /// 2 data points each, with min_size = max_size = 3. The request exceeds
+    /// max_size, so it is buffered and flushed for size. A metric row is
+    /// indivisible, so the size flush cuts two batches of 2 points: the first
+    /// (below min_size) is sent and the second is retained until the timer
+    /// flush. Found by the TLA+ model in `formal/batch_processor` (property
+    /// P7, guard at the size-flush retention check).
+    /// Guarantees: the size flush does not panic, acking the first batch does
+    /// not Ack the request while its residual is buffered, the timer flush
+    /// sends the residual, and acking it yields exactly one Ack and no Nack.
+    #[test]
+    fn test_metrics_size_flush_first_batch_below_min_size() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 3,
+                "max_size": 3,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let input = DataGenerator::with_metrics_config(
+                    MetricsConfig::new().with_gauges(vec![2, 2]),
+                )
+                .generate_metrics_from_config();
+                let rec = encode_metrics_otap_batch(&input).expect("encode metrics");
+                let pdata = OtapPdata::new_default(rec.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    1,
+                );
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process input");
+
+                let mut upstream = (0, 0);
+                for (step, flush) in ["size", "timer"].into_iter().enumerate() {
+                    if flush == "timer" {
+                        ctx.process(Message::Control(NodeControlMsg::Wakeup {
+                            slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Metrics),
+                            when: Instant::now() + Duration::from_secs(2),
+                            revision: 0,
+                        }))
+                        .await
+                        .expect("process wakeup");
+                    }
+
+                    let outputs = ctx.drain_pdata().await;
+                    let points: Vec<usize> = outputs
+                        .iter()
+                        .map(|o| otap_pdata_to_message(o).num_items())
+                        .collect();
+                    assert_eq!(points, vec![2], "{flush} flush sends one metric");
+
+                    for output in outputs {
+                        let (node_id, ack) = next_ack(AckMsg::new(output)).expect("has subs");
+                        assert_eq!(node_id, batch_node_index());
+                        ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                            .await
+                            .expect("process ack");
+                    }
+
+                    while let Ok(msg) = pipeline_completion_rx.try_recv() {
+                        match msg {
+                            PipelineCompletionMsg::DeliverAck { .. } => upstream.0 += 1,
+                            PipelineCompletionMsg::DeliverNack { .. } => upstream.1 += 1,
+                        }
+                    }
+                    let expected = if step == 0 { (0, 0) } else { (1, 0) };
+                    assert_eq!(
+                        upstream, expected,
+                        "upstream (acks, nacks) after {flush} flush"
+                    );
+                }
+            })
+            .validate(move |_| async move {});
     }
 
     /// A size flush that empties the buffer must clear timer state. Otherwise
