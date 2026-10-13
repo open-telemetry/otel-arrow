@@ -120,6 +120,7 @@ csv-core = "0.1.13"
 data-encoding = "2.9.0"
 datafusion = { version = "54.0.0", default-features = false }
 dhat = "0.3.3"
+libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 fs2 = "0.4.3"
@@ -192,7 +193,8 @@ rand = "0.10.1"
 rcgen = "0.14"
 rdkafka = { version = "=0.39.0", features = ["tokio", "tracing"] }
 regex = "1.12"
-regex-automata = "0.4.14"
+regex-automata = "0.4.18"
+regex-syntax = "0.8.11"
 ring = "0.17"
 roaring = "0.11.2"
 ryu = "1"
