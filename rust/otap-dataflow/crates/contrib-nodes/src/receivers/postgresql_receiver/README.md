@@ -40,7 +40,7 @@ One receiver owns one query/collecting connection and requires a one-core pipeli
 | `watermark` | Required composite timestamp plus signed-integer tie-breaker; see the example. |
 | `checkpoint.directory` | Required persistent storage directory. |
 
-Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`. 
+Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`.
 
 ### Authentication and source identity
 
@@ -78,7 +78,7 @@ Timestamp cursors require `timestamp`/`timestamptz`, `timezone: UTC`, and an ISO
 | `json`, `jsonb` | Validated JSON text preserving numeric precision, not expanded OTLP fields. |
 | `interval`; nullable `NULL` | `months=N;days=N;microseconds=N`; empty OTLP value retaining the column name. |
 
-Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records fail explicitly without skipping, truncation, or automatic type-to-string fallback. 
+Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records fail explicitly without skipping, truncation, or automatic type-to-string fallback.
 
 ## Development
 
