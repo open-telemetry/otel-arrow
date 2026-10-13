@@ -9,6 +9,8 @@ use otel_arrow_dfe_telemetry_macros::metric_set;
 use crate::common::background_refresh::BackgroundProviderMetrics;
 
 /// Credential acquisition metrics using the shared provider's recording semantics.
+// TODO(#3530): Migrate with the shared tracker, which currently requires
+// separate success/failure counters, to bounded outcome attributes.
 #[metric_set(name = "extension.flat_file_sasl_auth")]
 #[derive(Debug, Default, Clone)]
 pub struct FlatFileSaslAuthMetrics {

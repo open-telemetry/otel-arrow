@@ -60,6 +60,12 @@ provider's coalesced acquisition. Each independent stream subscription immediate
 emits the latest cached credential, if available, then receives subsequent
 publications. Credentials have no expiry.
 
+Every successful acquisition publishes a credential, even when the file and
+credential values are unchanged. A stream item indicates successful acquisition,
+not necessarily password rotation; consumers deciding whether to reconnect
+should compare credential values. Watch subscriptions expose the latest value,
+so slow subscribers may coalesce multiple publications.
+
 A failed refresh retains the last good credential, keeps streams open, and
 retries using the existing shared backoff policy. File replacement or content
 changes are picked up on the next successful acquisition without restarting the

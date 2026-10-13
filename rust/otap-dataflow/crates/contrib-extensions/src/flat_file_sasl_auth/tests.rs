@@ -30,7 +30,6 @@ use secrecy::ExposeSecret;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, LocalSet};
-use tokio_stream::wrappers::WatchStream;
 
 use super::auth::FlatFileSaslAuth;
 use super::config::Config;
@@ -567,6 +566,49 @@ async fn periodic_rotation_publishes_to_independent_sasl_streams() {
     let _terminal = running.shutdown().await;
 }
 
+/// Scenario: Two periodic refreshes reread a password file whose contents never change.
+/// Guarantees: Both SASL streams receive each observed successful publication with identical credential values.
+#[tokio::test(start_paused = true)]
+async fn periodic_refresh_publishes_unchanged_credentials() {
+    let directory = test_directory();
+    let path = directory.path().join("password");
+    std::fs::write(&path, "unchanged-password").expect("initial password written");
+    let extension = make_extension(config_for(&path));
+    let consumer = extension.clone();
+    let mut first = consumer.credential_stream();
+    let mut second = consumer.credential_stream();
+    let running = start_extension(extension);
+
+    for publication in 0..3 {
+        if publication > 0 {
+            assert!(first.next().now_or_never().is_none());
+            assert!(second.next().now_or_never().is_none());
+            tokio::time::advance(REFRESH_INTERVAL).await;
+        }
+        for credential in [
+            observe(first.next())
+                .await
+                .expect("first subscriber publication"),
+            observe(second.next())
+                .await
+                .expect("second subscriber publication"),
+        ] {
+            assert_eq!(credential.expose_username(), TEST_USERNAME);
+            assert_eq!(credential.expose_password(), "unchanged-password");
+            assert!(credential.expires_on().is_none());
+        }
+        assert_eq!(
+            consumer
+                .get_credential()
+                .await
+                .expect("cached credential")
+                .expose_password(),
+            "unchanged-password"
+        );
+    }
+    let _terminal = running.shutdown().await;
+}
+
 /// A test-only observer delegates every acquisition to the real SASL source.
 /// Its bounded channel observes completed background failures without polling disk or sleeping.
 struct ObservedSource {
@@ -657,9 +699,7 @@ async fn initial_failure_has_no_publication_and_retry_recovers() {
             let path = directory.path().join("missing-password");
             let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config_for(&path));
             let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
-            let mut stream = Box::pin(
-                WatchStream::new(consumer.subscribe()).filter_map(|value| async move { value }),
-            );
+            let mut stream = consumer.credential_stream();
             let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
                 wrapper,
                 &local_tasks,
@@ -699,7 +739,7 @@ async fn initial_failure_has_no_publication_and_retry_recovers() {
             assert_eq!(recovered.expose_password(), "recovered-password");
             assert_eq!(
                 consumer
-                    .get_value()
+                    .get_credential()
                     .await
                     .expect("recovered cache")
                     .expose_password(),
@@ -722,8 +762,7 @@ async fn initial_failure_times_out_through_engine_readiness_gate() {
             config.startup_timeout = Duration::from_secs(3);
             let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config);
             let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
-            let mut stream =
-                Box::pin(WatchStream::new(consumer.subscribe()).filter_map(|value| async move { value }));
+            let mut stream = consumer.credential_stream();
             let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
                 wrapper,
                 &local_tasks,
@@ -773,8 +812,7 @@ async fn failed_refresh_retains_snapshot_and_open_stream_until_retry() {
     std::fs::write(&path, "last-good-password").expect("initial password written");
     let (extension, mut failures) = observed_extension(config_for(&path));
     let consumer = extension.clone();
-    let mut stream =
-        Box::pin(WatchStream::new(extension.subscribe()).filter_map(|value| async move { value }));
+    let mut stream = consumer.credential_stream();
     let running = start_extension(extension);
     let initial = observe(stream.next()).await.expect("initial publication");
     assert_eq!(initial.expose_password(), "last-good-password");
@@ -788,7 +826,7 @@ async fn failed_refresh_retains_snapshot_and_open_stream_until_retry() {
     );
     assert_eq!(
         consumer
-            .get_value()
+            .get_credential()
             .await
             .expect("last good cache")
             .expose_password(),

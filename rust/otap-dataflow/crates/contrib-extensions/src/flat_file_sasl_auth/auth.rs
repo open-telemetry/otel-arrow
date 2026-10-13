@@ -9,14 +9,17 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use otel_arrow_dfe_engine::capability::CapabilityError;
 use otel_arrow_dfe_engine::capability::auth::SaslCredential;
-use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::SaslCredentialStream;
+use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
+    SaslCredentialProvider, SaslCredentialStream,
+};
 use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
 use tokio_stream::wrappers::WatchStream;
 
-use crate::common::background_refresh::BackgroundProviderSource;
+use crate::common::background_refresh::{
+    BackgroundProviderExtension, BackgroundProviderMetrics, BackgroundProviderSource,
+};
 use crate::common::secret_file::{ReadSecretFileError, read_secret_file};
 
-use super::FlatFileSaslAuthExtension;
 use super::config::Config;
 use super::error::Error;
 
@@ -67,7 +70,10 @@ impl BackgroundProviderSource<SaslCredential> for FlatFileSaslAuth {
 }
 
 #[async_trait]
-impl SharedSaslCredentialProvider for FlatFileSaslAuthExtension {
+impl<S: BackgroundProviderSource<SaslCredential>, M: BackgroundProviderMetrics>
+    SharedSaslCredentialProvider
+    for BackgroundProviderExtension<S, M, SaslCredential, SaslCredentialProvider>
+{
     async fn get_credential(&self) -> Result<SaslCredential, CapabilityError> {
         self.get_value().await
     }
