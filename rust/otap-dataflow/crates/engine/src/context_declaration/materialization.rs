@@ -372,6 +372,9 @@ impl MaterializedContext {
     /// Existing entries are retained only when their originating declaration
     /// matches the destination plan. A same-named entry with different
     /// provenance is removed before the destination presence gate is evaluated.
+    ///
+    /// A retained entry is a snapshot: repeated calls with the same declaration
+    /// do not reread source values or re-evaluate its presence gate.
     pub fn materialize(
         &mut self,
         plan: &ContextMaterializationPlan,
@@ -637,6 +640,61 @@ mod tests {
         context.materialize(&second_plan, &TestSource::default());
 
         assert_eq!(context, first);
+    }
+
+    /// Scenario: source values and a satisfied presence gate change after materialization.
+    /// Guarantees: the same declaration retains its original member snapshot and presence.
+    #[test]
+    fn retains_source_snapshot_for_same_declaration() {
+        let plan = ContextMaterializationPlan::compile(&[declaration(vec![
+            ContextEntryPart::TransportHeader {
+                name: name("workspace"),
+                store_as: None,
+            },
+            ContextEntryPart::TransportHeaderMatch {
+                name: name("environment"),
+                value: "production".to_owned(),
+            },
+            ContextEntryPart::Constant {
+                name: name("route"),
+                value: "dedicated".to_owned(),
+            },
+        ])])
+        .expect("plan compiles");
+        let mut source = TestSource::default();
+        _ = source.values.insert(
+            (ContextDomain::TransportHeader, name("workspace")),
+            text("acme"),
+        );
+        _ = source.values.insert(
+            (ContextDomain::TransportHeader, name("environment")),
+            text("production"),
+        );
+        let mut context = MaterializedContext::default();
+        context.materialize(&plan, &source);
+
+        _ = source.values.insert(
+            (ContextDomain::TransportHeader, name("workspace")),
+            text("other"),
+        );
+        _ = source.values.insert(
+            (ContextDomain::TransportHeader, name("environment")),
+            text("staging"),
+        );
+        context.materialize(&plan, &source);
+
+        let entry = context
+            .entry(&name("request"))
+            .expect("snapshot remains present");
+        assert_eq!(
+            entry
+                .member(&name("workspace"))
+                .expect("workspace member")
+                .values()
+                .values()[0]
+                .as_str(),
+            Some("acme")
+        );
     }
 
     /// Scenario: a detached context reaches a same-named destination declaration with a new gate.
