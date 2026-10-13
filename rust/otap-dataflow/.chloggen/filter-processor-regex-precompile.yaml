@@ -19,4 +19,4 @@ issues: [4329]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Invalid regexp patterns are now rejected when the filter processor config is validated rather than panicking on the first batch. LargeUtf8 and Utf8View string columns are now accepted for regexp matching.
+  LargeUtf8 and Utf8View string columns are now accepted for regexp matching.

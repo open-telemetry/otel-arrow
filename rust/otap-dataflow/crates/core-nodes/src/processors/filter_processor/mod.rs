@@ -969,11 +969,7 @@ mod tests {
                 AnyValueFilter::Boolean(true),
             ],
         );
-        let log_filter = LogFilter::new(
-            Some(include_props),
-            Some(exclude_props),
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(Some(include_props), Some(exclude_props));
 
         let trace_filter = TraceFilter::new(None, None);
 
@@ -1067,7 +1063,7 @@ mod tests {
             Vec::new(),
         );
         let config = Config {
-            logs: LogFilter::new(Some(include_props), None, Vec::new()),
+            logs: LogFilter::new(Some(include_props), None),
             traces: TraceFilter::new(None, None),
             ..Default::default()
         };
@@ -1098,7 +1094,7 @@ mod tests {
             vec!["test.counter1".into(), "test.counter3".into()],
         );
         let metric_filter = MetricFilter::new(Some(metric_props), None);
-        let log_filter = LogFilter::new(None, None, Vec::new());
+        let log_filter = LogFilter::new(None, None);
         let trace_filter = TraceFilter::new(None, None);
 
         let config = Config {
@@ -1141,7 +1137,7 @@ mod tests {
         );
         let config = Config {
             metrics: metric_filter,
-            logs: LogFilter::new(None, None, Vec::new()),
+            logs: LogFilter::new(None, None),
             traces: TraceFilter::new(None, None),
         };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
@@ -1242,11 +1238,7 @@ mod tests {
                 AnyValueFilter::String(r"^heartbeat$".to_string()),
             ],
         );
-        let log_filter = LogFilter::new(
-            Some(include_props),
-            Some(exclude_props),
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(Some(include_props), Some(exclude_props));
 
         let trace_filter = TraceFilter::new(None, None);
 
@@ -1347,11 +1339,7 @@ mod tests {
             ], // test bodies
         );
 
-        let log_filter = LogFilter::new(
-            Some(include_props),
-            None,
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(Some(include_props), None);
 
         let trace_filter = TraceFilter::new(None, None);
 
@@ -1460,11 +1448,7 @@ mod tests {
             ],
         );
 
-        let log_filter = LogFilter::new(
-            None,
-            Some(exclude_props),
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(None, Some(exclude_props));
 
         let trace_filter = TraceFilter::new(None, None);
 
@@ -1619,7 +1603,7 @@ mod tests {
 
         let trace_filter = TraceFilter::new(Some(strict_include), Some(strict_exclude));
 
-        let log_filter = LogFilter::new(None, None, vec![]);
+        let log_filter = LogFilter::new(None, None);
 
         let config = Config {
             logs: log_filter,
@@ -1739,7 +1723,7 @@ mod tests {
         );
 
         let trace_filter = TraceFilter::new(Some(include_only), None);
-        let log_filter = LogFilter::new(None, None, vec![]);
+        let log_filter = LogFilter::new(None, None);
 
         let config = Config {
             logs: log_filter,
@@ -1924,7 +1908,7 @@ mod tests {
             Vec::new(),
         );
         let config = Config {
-            logs: LogFilter::new(None, None, Vec::new()),
+            logs: LogFilter::new(None, None),
             traces: TraceFilter::new(Some(include_only), None),
             ..Default::default()
         };
@@ -1987,7 +1971,7 @@ mod tests {
 
         let trace_filter = TraceFilter::new(None, Some(exclude_only));
 
-        let log_filter = LogFilter::new(None, None, vec![]);
+        let log_filter = LogFilter::new(None, None);
 
         let config = Config {
             logs: log_filter,
