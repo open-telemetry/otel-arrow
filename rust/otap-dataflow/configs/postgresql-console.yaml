@@ -54,6 +54,8 @@ groups:
                 output:
                   timestamp_column: event_ts
               watermark:
+                # Also supports typed scalar keys and repeated full snapshots.
+                # Replace both statement and watermark; see receiver README examples.
                 mode: composite
                 timestamp:
                   column: event_ts

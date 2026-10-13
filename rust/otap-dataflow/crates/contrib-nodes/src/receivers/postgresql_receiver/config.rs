@@ -9,7 +9,7 @@ use super::{
 };
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, OnNack, OnPermanentNack, OutputConfig,
-    PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
+    PollingConfig, ScalarValue, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
 use std::{net::IpAddr, time::Duration};
@@ -55,6 +55,12 @@ pub(crate) struct Query {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Watermark {
+    Snapshot {},
+    Scalar {
+        column: String,
+        bind: String,
+        initial: ScalarValue,
+    },
     Composite {
         timestamp: Timestamp,
         tie_breaker: Tie,
@@ -197,37 +203,54 @@ impl PostgreSqlReceiverConfig {
         if !(1..=300).contains(&query.timeout.as_secs()) || query.timeout.subsec_nanos() != 0 {
             return Err(Error::Config);
         }
-        let Watermark::Composite {
-            timestamp,
-            tie_breaker,
-        } = &self.watermark;
-        validate_name(&timestamp.column, 63)?;
-        validate_name(&tie_breaker.column, 63)?;
-        if timestamp.timezone != "UTC" || !timestamp.initial.ends_with('Z') {
-            return Err(Error::Config);
-        }
-        // Native typmod and integer range are checked after catalog discovery.
-        // Reject invalid UTC text and submicrosecond precision without I/O.
-        let _ = super::value::cursor_time(&timestamp.initial, 6)?;
+        let watermark = match &self.watermark {
+            Watermark::Snapshot {} => WatermarkConfig::Snapshot {},
+            Watermark::Scalar {
+                column,
+                bind,
+                initial,
+            } => {
+                validate_name(column, 63)?;
+                super::value::validate_scalar(initial)?;
+                WatermarkConfig::Scalar {
+                    column: column.clone(),
+                    bind: bind.clone(),
+                    initial: initial.clone(),
+                }
+            }
+            Watermark::Composite {
+                timestamp,
+                tie_breaker,
+            } => {
+                validate_name(&timestamp.column, 63)?;
+                validate_name(&tie_breaker.column, 63)?;
+                if timestamp.timezone != "UTC" || !timestamp.initial.ends_with('Z') {
+                    return Err(Error::Config);
+                }
+                // Native typmod and integer range are checked after catalog discovery.
+                // Reject invalid UTC text and submicrosecond precision without I/O.
+                let _ = super::value::cursor_time(&timestamp.initial, 6)?;
+                WatermarkConfig::Composite {
+                    timestamp: TimestampCursorConfig {
+                        column: timestamp.column.clone(),
+                        bind: timestamp.bind.clone(),
+                        initial: timestamp.initial.clone(),
+                        timezone: timestamp.timezone.clone(),
+                    },
+                    tie_breaker: TieBreakerCursorConfig {
+                        column: tie_breaker.column.clone(),
+                        bind: tie_breaker.bind.clone(),
+                        initial: tie_breaker.initial,
+                    },
+                }
+            }
+        };
         let checkpoint = CheckpointConfig {
             directory: self.checkpoint.directory.clone(),
             on_nack: self.checkpoint.on_nack,
             on_permanent_nack: self.checkpoint.on_permanent_nack,
             nack_backoff: self.checkpoint.nack_backoff,
             max_consecutive_failures: self.checkpoint.max_consecutive_failures,
-        };
-        let watermark = WatermarkConfig::Composite {
-            timestamp: TimestampCursorConfig {
-                column: timestamp.column.clone(),
-                bind: timestamp.bind.clone(),
-                initial: timestamp.initial.clone(),
-                timezone: timestamp.timezone.clone(),
-            },
-            tie_breaker: TieBreakerCursorConfig {
-                column: tie_breaker.column.clone(),
-                bind: tie_breaker.bind.clone(),
-                initial: tie_breaker.initial,
-            },
         };
         // Shared compilation validates the configured page/fetch/byte bounds
         // and catch-up settings, using the same contract as the Oracle receiver.

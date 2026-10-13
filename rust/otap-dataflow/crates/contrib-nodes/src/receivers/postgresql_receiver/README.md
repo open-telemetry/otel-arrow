@@ -42,7 +42,7 @@ pipeline. Unknown fields and null configuration values are rejected.
 | `connection.host` | Required single DNS name or IP address; no URI or host list. |
 | `connection.port` | Defaults to `5432`; must be nonzero. |
 | `connection.database` | Required name, 1-63 UTF-8 bytes. |
-| `query.statement` | Required read-only incremental SELECT, at most 16 KiB. |
+| `query.statement` | Required read-only SELECT, at most 16 KiB. |
 | `query.interval` | Defaults to `1m`; accepts `1m` through `24h` in whole seconds. `1.5m` is valid. |
 | `query.max_rows_per_poll` | Required per-page ceiling, `1` through `10000`; no default. Not a whole catch-up-cycle limit. |
 | `query.max_batch_bytes` | Required separate normalized-page and encoded-OTLP ceilings, `1` byte through `256 MiB`; no default. Accepts integer bytes or byte-unit strings such as `10 MiB`. |
@@ -51,7 +51,7 @@ pipeline. Unknown fields and null configuration values are rejected.
 | `query.catch_up.max_pages` | Defaults to `32`; accepts `1` through `1024`, including empty probes. |
 | `query.catch_up.max_duration` | Defaults to `10s`; accepts `1ms` through `5min`. Gates the next page, not an active page. |
 | `query.output.timestamp_column` | Optional `timestamp`/`timestamptz` event-time column; omission uses observation time. |
-| `watermark` | Required composite timestamp and signed-integer tie-breaker, as shown in the example. |
+| `watermark` | Required `composite`, typed `scalar`, or `snapshot` mode; see below. |
 | `checkpoint.directory` | Required persistent storage directory. |
 
 Checkpoint defaults are `on_nack: rewind`, `on_permanent_nack: pause`,
@@ -87,6 +87,69 @@ Checkpoint identity hashes the connection, authored SQL, watermark, and output
 contract, without guessed or discovered types. Incompatible checkpoints fail;
 they are never silently reset.
 
+### Watermark modes
+
+| Mode / scalar type | Native source contract |
+| --- | --- |
+| `composite` | Non-null `timestamp`/`timestamptz` plus `int2`/`int4`/`int8`; unique pair in ascending order. Existing bind defaults remain `last_timestamp` and `last_tie_breaker`. |
+| `scalar` / `int64` | Non-null `int2`, `int4`, or `int8`, with checked native range. |
+| `scalar` / `uint64` | Non-null `numeric(p,0)`, declared precision `1..20`; each value must fit both the declaration and `u64`. Native binary numeric binding preserves values above `i64::MAX`. |
+| `scalar` / `string` | Non-null `text`/`varchar`, at most 1024 UTF-8 bytes, no NUL; UTF-8 database with catalog-proven deterministic `pg_catalog.C` or `pg_catalog.POSIX` column collation. |
+| `scalar` / `timestamp` | Non-null `timestamp`/`timestamptz`; UTC `T`/`Z` text exactly representable at native precision, at most six fractional digits. |
+| `snapshot` | No cursor, initial value, bind, ordering, or uniqueness requirement. Each interval reads the complete bounded result again. |
+
+All scalar keys require a catalog-proven single-column unique index on the
+driving table and ascending `key > :bind` ordering. Supported inner joins may
+not multiply a scalar/composite position; each joined side must cover a unique
+key. Composite pair uniqueness is the operator's contract, additionally guarded
+by strict runtime ordering. No UUID, decimal, inferred type, cast, `bpchar`,
+locale, unknown/default, or nondeterministic collation is accepted as a scalar
+string key. Body columns retain their normal mappings.
+String-key connections must report native `server_encoding: UTF8` after every
+connect; catalog discovery also verifies UTF-8 database encoding. `C.UTF8` is
+not inferred to be equivalent to the explicitly proven C/POSIX collations.
+
+Replace the example's query statement and watermark together for scalar mode:
+
+```yaml
+query:
+  statement: >
+    SELECT e.event_id, e.actor FROM public.receiver_events AS e
+    WHERE e.event_id > :last_value ORDER BY e.event_id ASC
+  max_rows_per_poll: 10000
+  max_batch_bytes: 10 MiB
+watermark:
+  mode: scalar
+  column: event_id
+  bind: last_value
+  initial: {type: int64, value: 0}
+```
+
+Select the declared native key and one explicit initial type:
+`{type: uint64, value: 9223372036854775808}`, `{type: string, value: ""}`,
+or `{type: timestamp, value: "2026-01-01T00:00:00.000000Z"}`.
+No scalar type is guessed from the YAML value.
+
+For repeated complete snapshots, omit cursor predicates and ordering:
+
+```yaml
+query:
+  statement: SELECT e.event_id, e.actor FROM public.receiver_events AS e
+  max_rows_per_poll: 10000
+  max_batch_bytes: 10 MiB
+watermark:
+  mode: snapshot
+```
+
+Snapshot mode is not CDC or incremental collection: unchanged rows are emitted
+again each interval and deletions do not produce tombstones. Nullable/non-unique
+projections and row-multiplying supported inner joins are allowed. An internal
+`max_rows_per_poll + 1` probe detects oversized results. A row or normalized/
+encoded-byte overflow pauses the source without emitting a partial prefix.
+Increase the bound or narrow the query before restarting. Catalog/control
+receive-limit errors and unconfirmed cleanup remain terminal, not successful
+snapshots.
+
 ### Authentication
 
 Bind `basic_auth_provider` to the existing
@@ -106,11 +169,11 @@ must still read the same schema-qualified source.
 
 Use schema-qualified persistent ordinary tables with aliases and explicit,
 qualified column projections. Up to three inner joins are supported when their
-equality predicates cover a proven unique key on each joined side. Cursor
+equality predicates cover a proven unique key on each joined side for incremental modes. Cursor
 columns must be direct, non-null columns of the driving table. The timestamp
 and tie-breaker pair must uniquely identify each result position.
 
-Use either keyset below, optionally ANDed with supported static comparisons,
+For composite mode, use either keyset below, optionally ANDed with supported static comparisons,
 and order by timestamp then tie-breaker ascending:
 
 ```sql
@@ -203,8 +266,11 @@ cleanup retains source ownership until process exit.
 
 At-least-once delivery requires stable unique positions, commit-visible ordering,
 retained immutable rows, and a meaningful downstream ACK boundary. Late-visible
-rows behind the committed cursor, keyless/timestamp-only collection, automatic
-tail discovery, TLS, and full production qualification remain unsupported.
+rows behind the committed incremental cursor cannot be recovered automatically.
+Scalar timestamp keys must be unique; repeated timestamps require composite
+mode. Keep incremental rows immutable and retained through ACK/checkpoint and
+replay, and ensure new positions become commit-visible in source order.
+Automatic tail discovery, TLS, and full production qualification remain unsupported.
 
 ## Development checks
 

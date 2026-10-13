@@ -9,8 +9,8 @@ use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BASIC_AUTH_CREDENTIAL_USABLE_MARGIN;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledQuery, CompositeCursor, Cursor, DatabaseSystem, DriverAdapter,
-    DriverCancellation, QueryPage,
+    ColumnMetadata, CompiledQuery, Cursor, DatabaseSystem, DriverAdapter, DriverCancellation,
+    QueryPage,
 };
 use std::{
     sync::{
@@ -55,7 +55,7 @@ impl DriverCancellation for Cancellation {
 pub(crate) enum Action {
     Validate,
     Reconnect,
-    Execute(CompositeCursor),
+    Execute(Cursor),
     Shutdown,
 }
 pub(crate) enum Reply {
@@ -174,6 +174,9 @@ impl DriverAdapter for PostgreSqlAdapter {
             Error::Unavailable | Error::Cancelled | Error::Timeout
         )
     }
+    fn should_pause_source(error: &Error) -> bool {
+        matches!(error, Error::SnapshotRowLimit | Error::SnapshotByteLimit)
+    }
     async fn reconnect(&mut self, _: &CompiledQuery) -> Result<()> {
         match self.request(Action::Reconnect).await? {
             Reply::Done => Ok(()),
@@ -191,10 +194,6 @@ impl DriverAdapter for PostgreSqlAdapter {
             .watermark()
             .validate_cursor(cursor)
             .map_err(|_| Error::Value)?;
-        let cursor = match cursor {
-            Cursor::Composite(cursor) => cursor,
-            Cursor::Scalar(_) => return Err(Error::Config),
-        };
         match self.request(Action::Execute(cursor.clone())).await? {
             Reply::Page(page) => Ok(page),
             _ => Err(Error::Cleanup),
@@ -241,9 +240,14 @@ impl DriverAdapter for PostgreSqlAdapter {
             Error::Config | Error::Sql | Error::Metadata | Error::Credential => {
                 ReceiverErrorKind::Configuration
             }
-            Error::Value | Error::Limit | Error::Database | Error::Unavailable | Error::Timeout => {
-                ReceiverErrorKind::Transport
-            }
+            Error::Value
+            | Error::Limit
+            | Error::DataRowLimit
+            | Error::SnapshotRowLimit
+            | Error::SnapshotByteLimit
+            | Error::Database
+            | Error::Unavailable
+            | Error::Timeout => ReceiverErrorKind::Transport,
             Error::Cancelled | Error::Cleanup => ReceiverErrorKind::Shutdown,
         }
     }
@@ -267,6 +271,12 @@ pub(crate) enum Error {
     Value,
     #[error("postgresql: protocol or memory limit exceeded")]
     Limit,
+    #[error("postgresql: data row receive limit exceeded")]
+    DataRowLimit,
+    #[error("postgresql: complete snapshot exceeds row limit")]
+    SnapshotRowLimit,
+    #[error("postgresql: complete snapshot exceeds byte limit")]
+    SnapshotByteLimit,
     #[error("postgresql: credential provider unavailable, expired, or invalid")]
     Credential,
     #[error("postgresql: database operation rejected")]

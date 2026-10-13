@@ -8,7 +8,7 @@ change_type: new_component
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Add an opt-in, development-only PostgreSQL receiver with automatic result metadata, configurable page budgets, shared credentials, and acknowledged composite polling."
+note: "Add an opt-in, development-only PostgreSQL receiver with automatic metadata, bounded snapshots, and acknowledged composite or typed scalar polling."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4166, 3918]
@@ -19,5 +19,4 @@ issues: [4166, 3918]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Enable postgresql and bind basic_auth_provider. Set query.max_rows_per_poll and query.max_batch_bytes. Unencrypted TCP: trusted development only.
-  Result metadata is discovered automatically. Schema must remain stable across restarts.
+  Enable postgresql and bind basic_auth_provider. Set query.max_rows_per_poll and query.max_batch_bytes. Scalar keys require unique native columns; oversized snapshots pause without partial output. Unencrypted TCP: trusted development only. Keep source semantics stable across restarts.

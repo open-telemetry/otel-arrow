@@ -4,7 +4,7 @@
 //! Bounded parameter compilation, AST allowlist, and fixed catalog queries.
 
 use super::adapter::{Error, Result, database};
-use otel_arrow_dfe_scraper::database::CompiledQuery;
+use otel_arrow_dfe_scraper::database::{CompiledQuery, CompiledWatermark, ScalarValue};
 use sqlparser::{
     ast::{
         BinaryOperator as Op, Expr, Ident, JoinConstraint, JoinOperator, SelectItem, SetExpr,
@@ -21,8 +21,11 @@ const RELATION_SQL: &str = "SELECT c.oid, c.relkind::text, c.relpersistence::tex
      EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhrelid=c.oid OR i.inhparent=c.oid) \
      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
      WHERE n.nspname=$1 AND c.relname=$2 LIMIT 2";
-const ATTRIBUTES_SQL: &str = "SELECT a.attname::text,a.attnum,a.atttypid,a.atttypmod,a.attnotnull,a.attcollation,t.typcollation \
+const ATTRIBUTES_SQL: &str = "SELECT a.attname::text,a.attnum,a.atttypid,a.atttypmod,a.attnotnull,a.attcollation,t.typcollation, \
+     cn.nspname::text,co.collname::text,co.collisdeterministic,pg_catalog.getdatabaseencoding()='UTF8' \
      FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid \
+     LEFT JOIN pg_catalog.pg_collation co ON co.oid=a.attcollation \
+     LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=co.collnamespace \
      WHERE a.attrelid=$1 AND a.attname=ANY($2) AND a.attnum>0 AND NOT a.attisdropped \
      LIMIT (pg_catalog.cardinality($2) + 1)";
 const INDEXES_SQL: &str = "SELECT i.indkey::smallint[], i.indnkeyatts, i.indexrelid FROM pg_catalog.pg_index i \
@@ -91,9 +94,55 @@ pub(crate) struct Plan {
     pub referenced: BTreeSet<ColumnRef>,
     pub filters: Vec<(ColumnRef, Option<Value>)>,
     pub output_names: Vec<String>,
-    pub timestamp: usize,
-    pub tie: usize,
+    pub cursor: CursorColumns,
     pub output_timestamp: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScalarKind {
+    Int64,
+    UInt64,
+    String,
+    Timestamp,
+}
+
+impl ScalarKind {
+    fn of(value: &ScalarValue) -> Self {
+        match value {
+            ScalarValue::Int64(_) => Self::Int64,
+            ScalarValue::UInt64(_) => Self::UInt64,
+            ScalarValue::String(_) => Self::String,
+            ScalarValue::Timestamp(_) => Self::Timestamp,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CursorColumns {
+    Snapshot,
+    Scalar { index: usize, kind: ScalarKind },
+    Composite { timestamp: usize, tie: usize },
+}
+
+impl CursorColumns {
+    pub fn indices(self) -> Vec<usize> {
+        match self {
+            Self::Snapshot => vec![],
+            Self::Scalar { index, .. } => vec![index],
+            Self::Composite { timestamp, tie } => vec![timestamp, tie],
+        }
+    }
+
+    pub fn timestamp(self) -> Option<usize> {
+        match self {
+            Self::Composite { timestamp, .. } => Some(timestamp),
+            Self::Scalar {
+                index,
+                kind: ScalarKind::Timestamp,
+            } => Some(index),
+            _ => None,
+        }
+    }
 }
 
 fn identifier(id: &Ident) -> Result<String> {
@@ -224,11 +273,14 @@ fn literal(expr: &Expr) -> Result<Value> {
 }
 fn where_clause(
     expr: &Expr,
-    ts: &ColumnRef,
-    tie: &ColumnRef,
+    cursor: &[&ColumnRef],
     filters: &mut Vec<(ColumnRef, Option<Value>)>,
 ) -> Result<usize> {
-    if keyset(expr, ts, tie) {
+    if match cursor {
+        [key] => comparison(expr, key, Op::Gt, "$1"),
+        [ts, tie] => keyset(expr, ts, tie),
+        _ => false,
+    } {
         return Ok(1);
     }
     match unnest(expr) {
@@ -236,7 +288,7 @@ fn where_clause(
             left,
             op: Op::And,
             right,
-        } => Ok(where_clause(left, ts, tie, filters)? + where_clause(right, ts, tie, filters)?),
+        } => Ok(where_clause(left, cursor, filters)? + where_clause(right, cursor, filters)?),
         Expr::BinaryOp {
             left,
             op: Op::Eq | Op::NotEq | Op::Gt | Op::Lt | Op::GtEq | Op::LtEq,
@@ -253,7 +305,7 @@ fn where_clause(
     }
 }
 
-pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Result<String> {
+pub(crate) fn compile_parameters(sql: &str, roles: &[&str]) -> Result<String> {
     fn valid(name: &str) -> bool {
         !name.is_empty()
             && name.len() <= 64
@@ -262,7 +314,12 @@ pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Resul
                 .enumerate()
                 .all(|(i, b)| b == b'_' || b.is_ascii_lowercase() || (i > 0 && b.is_ascii_digit()))
     }
-    if sql.is_empty() || sql.len() > 16384 || timestamp == tie || !valid(timestamp) || !valid(tie) {
+    if sql.is_empty()
+        || sql.len() > 16384
+        || roles.len() > 2
+        || roles.iter().any(|name| !valid(name))
+        || roles.iter().collect::<BTreeSet<_>>().len() != roles.len()
+    {
         return Err(Error::Sql);
     }
     let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
@@ -287,7 +344,7 @@ pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Resul
     let _ = offsets.insert((line, col), sql.len());
     let mut edits = Vec::new();
     let (mut named, mut positional, mut depth) = (false, false, 0usize);
-    let mut used = [false; 2];
+    let mut used = vec![false; roles.len()];
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
@@ -310,13 +367,10 @@ pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Resul
                 if word.quote_style.is_some() {
                     return Err(Error::Sql);
                 }
-                let role = if word.value == timestamp {
-                    0
-                } else if word.value == tie {
-                    1
-                } else {
-                    return Err(Error::Sql);
-                };
+                let role = roles
+                    .iter()
+                    .position(|name| word.value == *name)
+                    .ok_or(Error::Sql)?;
                 let start = *offsets
                     .get(&(token.span.start.line, token.span.start.column))
                     .ok_or(Error::Sql)?;
@@ -337,6 +391,9 @@ pub(crate) fn compile_parameters(sql: &str, timestamp: &str, tie: &str) -> Resul
                     "$2" => 1,
                     _ => return Err(Error::Sql),
                 };
+                if role >= roles.len() {
+                    return Err(Error::Sql);
+                }
                 used[role] = true;
                 positional = true;
             }
@@ -398,7 +455,8 @@ fn relation(factor: &TableFactor) -> Result<Relation> {
     if schema.starts_with("pg_") || schema == "information_schema" {
         return Err(Error::Sql);
     }
-    let normalized = format!("SELECT 1 FROM {name} AS {}", alias.name);
+    let alias_keyword = if alias.explicit { "AS " } else { "" };
+    let normalized = format!("SELECT 1 FROM {name} {alias_keyword}{}", alias.name);
     let parsed = parse(&normalized)?;
     let Statement::Query(query) = &parsed[0] else {
         return Err(Error::Sql);
@@ -441,12 +499,12 @@ fn joins(expr: &Expr, pairs: &mut Vec<(ColumnRef, ColumnRef)>) -> Result<()> {
 
 impl Plan {
     pub fn compile(common: &CompiledQuery) -> Result<Self> {
-        let watermark = common.watermark().as_composite().ok_or(Error::Config)?;
-        let sql = compile_parameters(
-            common.sql(),
-            &watermark.timestamp_bind,
-            &watermark.tie_breaker_bind,
-        )?;
+        let roles: Vec<&str> = match common.watermark() {
+            CompiledWatermark::Snapshot => vec![],
+            CompiledWatermark::Scalar(w) => vec![&w.bind],
+            CompiledWatermark::Composite(w) => vec![&w.timestamp_bind, &w.tie_breaker_bind],
+        };
+        let sql = compile_parameters(common.sql(), &roles)?;
         let statements = parse(&sql)?;
         let [Statement::Query(query)] = statements.as_slice() else {
             return Err(Error::Sql);
@@ -504,45 +562,70 @@ impl Plan {
                 .position(|column| column.eq_ignore_ascii_case(name))
                 .ok_or(Error::Config)
         };
-        let timestamp = column_index(&watermark.timestamp_column)?;
-        let tie = column_index(&watermark.tie_breaker_column)?;
-        if timestamp == tie {
-            return Err(Error::Config);
-        }
+        let cursor = match common.watermark() {
+            CompiledWatermark::Snapshot => CursorColumns::Snapshot,
+            CompiledWatermark::Scalar(w) => CursorColumns::Scalar {
+                index: column_index(&w.column)?,
+                kind: ScalarKind::of(&w.initial),
+            },
+            CompiledWatermark::Composite(w) => {
+                let timestamp = column_index(&w.timestamp_column)?;
+                let tie = column_index(&w.tie_breaker_column)?;
+                if timestamp == tie {
+                    return Err(Error::Config);
+                }
+                CursorColumns::Composite { timestamp, tie }
+            }
+        };
         let output_timestamp = common
             .output()
             .timestamp_column
             .as_deref()
             .map(column_index)
             .transpose()?;
-        let ts = &projections[timestamp];
-        let id = &projections[tie];
-        if ts.alias != relations[0].alias
-            || id.alias != relations[0].alias
-            || projections.iter().filter(|c| *c == ts).count() != 1
-            || projections.iter().filter(|c| *c == id).count() != 1
-        {
-            return Err(Error::Sql);
-        }
-        let selection = select.selection.as_ref().ok_or(Error::Sql)?;
-        let mut filters = vec![];
-        if where_clause(selection, ts, id, &mut filters)? != 1 {
-            return Err(Error::Sql);
-        }
-        let order = query.order_by.as_ref().ok_or(Error::Sql)?.to_string();
-        let ts_expr = match &select.projection[timestamp] {
-            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => e,
-            _ => return Err(Error::Sql),
-        };
-        let id_expr = match &select.projection[tie] {
-            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => e,
-            _ => return Err(Error::Sql),
-        };
-        if !["", " ASC"].iter().any(|a| {
-            ["", " ASC"]
-                .iter()
-                .any(|b| order == format!("ORDER BY {ts_expr}{a}, {id_expr}{b}"))
+        let indices = cursor.indices();
+        let cursor_refs: Vec<_> = indices.iter().map(|&index| &projections[index]).collect();
+        if cursor_refs.iter().any(|key| {
+            key.alias != relations[0].alias
+                || projections.iter().filter(|c| *c == *key).count() != 1
         }) {
+            return Err(Error::Sql);
+        }
+        let mut filters = vec![];
+        let keysets = select
+            .selection
+            .as_ref()
+            .map(|selection| where_clause(selection, &cursor_refs, &mut filters))
+            .transpose()?
+            .unwrap_or(0);
+        if keysets != usize::from(!indices.is_empty()) {
+            return Err(Error::Sql);
+        }
+        let order = query
+            .order_by
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let expressions: Vec<_> = indices
+            .iter()
+            .map(|&index| match &select.projection[index] {
+                SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => Ok(e),
+                _ => Err(Error::Sql),
+            })
+            .collect::<Result<_>>()?;
+        let ordered = match expressions.as_slice() {
+            [] => order.is_empty(),
+            [key] => ["", " ASC"]
+                .iter()
+                .any(|suffix| order == format!("ORDER BY {key}{suffix}")),
+            [ts, id] => ["", " ASC"].iter().any(|a| {
+                ["", " ASC"]
+                    .iter()
+                    .any(|b| order == format!("ORDER BY {ts}{a}, {id}{b}"))
+            }),
+            _ => false,
+        };
+        if !ordered {
             return Err(Error::Sql);
         }
         // Equality with an allowlisted reconstruction rejects every unexamined
@@ -553,8 +636,13 @@ impl Plan {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let selection = select
+            .selection
+            .as_ref()
+            .map(|s| format!(" WHERE {s}"))
+            .unwrap_or_default();
         let allowed = parse(&format!(
-            "SELECT {projection} FROM {from} WHERE {selection} {order}"
+            "SELECT {projection} FROM {from}{selection} {order}"
         ))?;
         if allowed != statements {
             return Err(Error::Sql);
@@ -581,8 +669,11 @@ impl Plan {
         let SetExpr::Select(select) = optimized.body.as_mut() else {
             return Err(Error::Sql);
         };
-        canonicalize_keyset(select.selection.as_mut().ok_or(Error::Sql)?, ts, id);
-        let sql = format!("{optimized} LIMIT {}", common.max_rows());
+        if let [ts, id] = cursor_refs.as_slice() {
+            canonicalize_keyset(select.selection.as_mut().ok_or(Error::Sql)?, ts, id);
+        }
+        let limit = common.max_rows() + usize::from(matches!(cursor, CursorColumns::Snapshot));
+        let sql = format!("{optimized} LIMIT {limit}");
         Ok(Self {
             sql,
             relations,
@@ -590,8 +681,7 @@ impl Plan {
             referenced,
             filters,
             output_names,
-            timestamp,
-            tie,
+            cursor,
             output_timestamp,
         })
     }
@@ -605,6 +695,19 @@ pub(crate) struct NativeColumn {
     pub modifier: i32,
     pub not_null: bool,
     pub collation: u32,
+    pub collation_namespace: Option<String>,
+    pub collation_name: Option<String>,
+    pub collation_deterministic: Option<bool>,
+    pub utf8_database: bool,
+}
+
+impl NativeColumn {
+    fn binary_collation(&self) -> bool {
+        self.collation_namespace.as_deref() == Some("pg_catalog")
+            && matches!(self.collation_name.as_deref(), Some("C" | "POSIX"))
+            && self.collation_deterministic == Some(true)
+            && self.utf8_database
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Signature {
@@ -649,28 +752,58 @@ impl ResolvedSchema {
             });
             native_types.push(native);
         }
-        let timestamp = &columns[plan.timestamp];
-        let tie = &columns[plan.tie];
-        if timestamp.nullable
-            || tie.nullable
-            || !matches!(
-                native_types[plan.timestamp],
-                Type::TIMESTAMP | Type::TIMESTAMPTZ
-            )
-            || !matches!(native_types[plan.tie], Type::INT2 | Type::INT4 | Type::INT8)
-            || plan.output_timestamp.is_some_and(|index| {
-                !matches!(native_types[index], Type::TIMESTAMP | Type::TIMESTAMPTZ)
-            })
-        {
+        if plan.output_timestamp.is_some_and(|index| {
+            !matches!(native_types[index], Type::TIMESTAMP | Type::TIMESTAMPTZ)
+        }) {
             return Err(Error::Metadata);
         }
-        let watermark = common.watermark().as_composite().ok_or(Error::Config)?;
-        let _ = super::value::cursor_time(&watermark.initial.timestamp, timestamp.type_modifier)?;
-        super::value::check_tie(watermark.initial.tie_breaker, &tie.source_type)?;
-        Ok(Self {
+        match plan.cursor {
+            CursorColumns::Snapshot => {}
+            CursorColumns::Composite { timestamp, tie } => {
+                if columns[timestamp].nullable
+                    || columns[tie].nullable
+                    || !matches!(native_types[timestamp], Type::TIMESTAMP | Type::TIMESTAMPTZ)
+                    || !matches!(native_types[tie], Type::INT2 | Type::INT4 | Type::INT8)
+                {
+                    return Err(Error::Metadata);
+                }
+            }
+            CursorColumns::Scalar { index, kind } => {
+                let source = signature
+                    .columns
+                    .get(&plan.projections[index])
+                    .ok_or(Error::Metadata)?;
+                let native = &native_types[index];
+                let compatible = match kind {
+                    ScalarKind::Int64 => matches!(*native, Type::INT2 | Type::INT4 | Type::INT8),
+                    ScalarKind::UInt64 => {
+                        *native == Type::NUMERIC
+                            && super::value::numeric_precision(source.modifier).is_ok()
+                    }
+                    ScalarKind::String => {
+                        matches!(*native, Type::TEXT | Type::VARCHAR) && source.binary_collation()
+                    }
+                    ScalarKind::Timestamp => matches!(*native, Type::TIMESTAMP | Type::TIMESTAMPTZ),
+                };
+                if columns[index].nullable
+                    || !compatible
+                    || !signature.keys.iter().any(|(oid, keys)| {
+                        *oid == source.oid
+                            && keys
+                                .iter()
+                                .any(|(_, attrs)| attrs.as_slice() == [source.attribute])
+                    })
+                {
+                    return Err(Error::Metadata);
+                }
+            }
+        }
+        let schema = Self {
             columns,
             native_types,
-        })
+        };
+        let _ = super::value::parameters(&common.watermark().initial(), plan, &schema)?;
+        Ok(schema)
     }
 }
 
@@ -733,10 +866,21 @@ impl Plan {
                     modifier: row.try_get(3).map_err(database)?,
                     not_null: row.try_get(4).map_err(database)?,
                     collation: row.try_get(5).map_err(database)?,
+                    collation_namespace: row.try_get(7).map_err(database)?,
+                    collation_name: row.try_get(8).map_err(database)?,
+                    collation_deterministic: row.try_get(9).map_err(database)?,
+                    utf8_database: row.try_get(10).map_err(database)?,
                 };
                 let native = Type::from_oid(col.type_oid).ok_or(Error::Metadata)?;
                 let _ = super::value::native_type(native.name()).map_err(|_| Error::Metadata)?;
-                if col.collation != row.try_get::<_, u32>(6).map_err(database)? {
+                let scalar_string = matches!(self.cursor, CursorColumns::Scalar {
+                    index, kind: ScalarKind::String
+                } if self.projections[index].alias == relation.alias && self.projections[index].name == name);
+                if if scalar_string {
+                    !col.binary_collation()
+                } else {
+                    col.collation != row.try_get::<_, u32>(6).map_err(database)?
+                } {
                     return Err(Error::Metadata);
                 }
                 let _ = columns.insert(
@@ -778,9 +922,10 @@ impl Plan {
                 }
                 // Covering a unique key on the newly joined side prevents that
                 // join from multiplying a driving row into duplicate cursor positions.
-                if !unique
-                    .iter()
-                    .any(|(_, k)| k.iter().all(|a| joined.contains(a)))
+                if !matches!(self.cursor, CursorColumns::Snapshot)
+                    && !unique
+                        .iter()
+                        .any(|(_, k)| k.iter().all(|a| joined.contains(a)))
                 {
                     return Err(Error::Metadata);
                 }

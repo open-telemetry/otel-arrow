@@ -91,7 +91,7 @@ macro_rules! postgresql_module_tests {
                 let mut output = [0; 64];
                 let error = stream.read(&mut output).await.expect_err("oversized frame");
                 assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-                assert_eq!(stream.failure.get(), Some(Error::Limit));
+                assert_eq!(stream.failure.get(), Some(Error::DataRowLimit));
                 assert_eq!(stream.inner.consumed.get(), 5);
                 assert_eq!(output, [0; 64]);
                 assert!(!error.to_string().contains("private"));
@@ -116,7 +116,7 @@ macro_rules! postgresql_module_tests {
                 );
                 let mut output = [0; 64];
                 assert!(stream.read(&mut output).await.is_err());
-                assert_eq!(failure.get(), Some(Error::Limit));
+                assert_eq!(failure.get(), Some(Error::DataRowLimit));
                 assert!(consumed.get() <= READ_BUFFER_BYTES);
                 assert_eq!(output, [0; 64]);
             }
@@ -205,7 +205,7 @@ macro_rules! postgresql_module_tests {
                     let mut output = Vec::new();
                     assert!(rejected.read_to_end(&mut output).await.is_err());
                     assert!(output.is_empty());
-                    assert_eq!(rejected.failure.get(), Some(Error::Limit));
+                    assert_eq!(rejected.failure.get(), Some(Error::DataRowLimit));
                     assert_eq!(rejected.inner.consumed.get(), 5);
                     let larger = FrameLimits::new(budget + 1).expect("larger");
                     let mut accepted = fragmented_with_limits(bytes.clone(), 4096, larger);
@@ -404,7 +404,7 @@ macro_rules! postgresql_module_tests {
             }
 
             /// Scenario: An oversized response terminates the driver while a query awaits its channel.
-            /// Guarantees: The receive latch retains Limit even though the query receives only a closed error.
+            /// Guarantees: The receive latch retains DataRowLimit even though the query receives only a closed error.
             #[tokio::test]
             async fn receive_limit_survives_driver_channel_closure() {
                 let mut oversized = vec![b'D'];
@@ -440,7 +440,7 @@ macro_rules! postgresql_module_tests {
                 };
                 let (query, _) = tokio::join!(query, driver);
                 assert!(query.expect_err("driver closed").is_closed());
-                assert_eq!(failure.get(), Some(Error::Limit));
+                assert_eq!(failure.get(), Some(Error::DataRowLimit));
             }
 
             /// Scenario: The driver receives 300 64-KiB portal rows before the consumer polls.
@@ -625,6 +625,61 @@ macro_rules! postgresql_module_tests {
                 ));
             }
 
+            /// Scenario: Native rows carry all scalar cursor types and are also read without a snapshot position.
+            /// Guarantees: Binary decoding yields exact typed cursors, including full u64, UTF-8, and cached microseconds.
+            #[tokio::test]
+            async fn native_scalar_and_snapshot_rows() {
+                use bytes::BytesMut;
+                use super::super::tests::{scalar_config, scalar_signature};
+                use super::super::config::PostgreSqlReceiverConfig;
+                use tokio_postgres::types::Type;
+                let mut unsigned = BytesMut::new();
+                let _ = convert::UnsignedNumeric(u64::MAX).to_sql_checked(&Type::NUMERIC, &mut unsigned).expect("unsigned bytes");
+                for (initial, ty, modifier, data, expected) in [
+                    (serde_json::json!({"type":"int64","value":0}), Type::INT8, -1i32, i64::MAX.to_be_bytes().to_vec(), ScalarValue::Int64(i64::MAX)),
+                    (serde_json::json!({"type":"uint64","value":0}), Type::NUMERIC, (20 << 16) + 4, unsigned.to_vec(), ScalarValue::UInt64(u64::MAX)),
+                    (serde_json::json!({"type":"string","value":""}), Type::TEXT, -1, "a\u{e9} ".as_bytes().to_vec(), ScalarValue::String("a\u{e9} ".into())),
+                    (serde_json::json!({"type":"string","value":""}), Type::VARCHAR, 36, "z\u{e9}".as_bytes().to_vec(), ScalarValue::String("z\u{e9}".into())),
+                    (serde_json::json!({"type":"timestamp","value":"2000-01-01T00:00:00Z"}), Type::TIMESTAMP, 6, 1i64.to_be_bytes().to_vec(), ScalarValue::Timestamp("2000-01-01T00:00:00.000001Z".into())),
+                    (serde_json::json!({"type":"timestamp","value":"2000-01-01T00:00:00Z"}), Type::TIMESTAMPTZ, 6, 1i64.to_be_bytes().to_vec(), ScalarValue::Timestamp("2000-01-01T00:00:00.000001Z".into())),
+                ] {
+                    let mut description = 1i16.to_be_bytes().to_vec();
+                    description.extend_from_slice(b"id\0");
+                    description.extend_from_slice(&42u32.to_be_bytes());
+                    description.extend_from_slice(&1i16.to_be_bytes());
+                    description.extend_from_slice(&ty.oid().to_be_bytes());
+                    description.extend_from_slice(&(-1i16).to_be_bytes());
+                    description.extend_from_slice(&modifier.to_be_bytes());
+                    description.extend_from_slice(&1i16.to_be_bytes());
+                    let mut body = 1i16.to_be_bytes().to_vec();
+                    body.extend_from_slice(&(data.len() as i32).to_be_bytes());
+                    body.extend_from_slice(&data);
+                    let peer = Peer {
+                        responses: VecDeque::from([
+                            [frame(b'R', &0i32.to_be_bytes()), frame(b'Z', b"I")].concat(),
+                            [frame(b'1', &[]), frame(b't', &[0, 0]), frame(b'T', &description), frame(b'Z', b"I")].concat(),
+                            [frame(b'2', &[]), frame(b'D', &body), frame(b'C', b"SELECT 1\0"), frame(b'Z', b"I")].concat(),
+                        ]),
+                        current: Vec::new(), position: 0, consumed: Rc::default(), write_error: None,
+                    };
+                    let (client, mut connection) = tokio_postgres::Config::new().user("test").ssl_mode(SslMode::Disable)
+                        .connect_raw(BoundedBackend::new(peer, ReceiveFailure::default(), frame_limits()), NoTls).await.expect("startup");
+                    let rows = drive(&mut connection, client.query("SELECT id", &[])).await.expect("row");
+                    let validated = PostgreSqlReceiverConfig::parse(&scalar_config(initial)).expect("config").validate().expect("plan");
+                    let schema = ResolvedSchema::discover(&validated.plan, &validated.common, &scalar_signature(&validated.plan, ty, modifier)).expect("schema");
+                    let mut cache = convert::CursorTimestampCache::default();
+                    let decoded = convert::row(&rows[0], &validated.plan, &schema, &mut cache, frame_limits().raw_row()).expect("scalar");
+                    let expected = Cursor::Scalar(expected);
+                    assert_eq!(decoded.row.cursor, expected);
+                    assert_eq!(decoded.position.partial_cmp(&convert::cursor_position(&expected).expect("position")), Some(std::cmp::Ordering::Equal));
+                    let mut snapshot_plan = validated.plan.clone();
+                    snapshot_plan.cursor = CursorColumns::Snapshot;
+                    let snapshot = convert::row(&rows[0], &snapshot_plan, &schema, &mut cache, frame_limits().raw_row()).expect("snapshot");
+                    assert!(matches!(snapshot.row.cursor, Cursor::Snapshot));
+                    assert_eq!(snapshot.row.row.values, decoded.row.row.values);
+                }
+            }
+
             /// Scenario: A connected backend fails a subsequent query write with BrokenPipe.
             /// Guarantees: The driver error remains retryable and redacted, rather than terminating collection as a database error.
             #[tokio::test]
@@ -668,6 +723,43 @@ macro_rules! postgresql_module_tests {
     (value) => {
         mod tests {
             use super::*;
+
+            /// Scenario: Unsigned numeric binds include zero, base-10000 boundaries, and values above i64.
+            /// Guarantees: Native binary round trips preserve every u64 bit without floating-point conversion.
+            #[test]
+            fn unsigned_numeric_binary_round_trip() {
+                for value in [0, 1, 9999, 10_000, 100_000_001, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+                    let parameter = UnsignedNumeric(value);
+                    let mut bytes = BytesMut::new();
+                    assert!(matches!(parameter.to_sql_checked(&Type::NUMERIC, &mut bytes).expect("bind"), IsNull::No));
+                    assert!(bytes.len() <= 18);
+                    assert_eq!(numeric(&bytes).expect("exact decode"), value.to_string());
+                    assert_eq!(scalar_cell(&decode(&Type::NUMERIC, &bytes).expect("body"), ScalarKind::UInt64).expect("cursor"), ScalarValue::UInt64(value));
+                    assert_eq!(format!("{parameter:?}"), "UnsignedNumeric(<redacted>)");
+                    assert!(parameter.to_sql_checked(&Type::INT8, &mut BytesMut::new()).is_err());
+                }
+            }
+
+            /// Scenario: Unsigned keys contain negative, fractional, overflowing, null, or mismatched cells.
+            /// Guarantees: Only exact bounded unsigned integers become durable positions.
+            #[test]
+            fn unsigned_numeric_cursor_rejects_lossy_values() {
+                for cell in [
+                    CellValue::Decimal("-1".into()),
+                    CellValue::Decimal("1.0".into()),
+                    CellValue::Decimal("18446744073709551616".into()),
+                    CellValue::Null,
+                    CellValue::Int64(1),
+                ] {
+                    assert!(scalar_cell(&cell, ScalarKind::UInt64).is_err());
+                }
+                for modifier in [-1, 0, 4, (21 << 16) + 4, (20 << 16) + 5, (20 << 16) + 4 + 0x7ff] {
+                    assert!(numeric_precision(modifier).is_err());
+                }
+                for precision in 1..=20 {
+                    assert_eq!(numeric_precision((precision << 16) + 4).expect("integral typmod"), precision as u32);
+                }
+            }
 
             /// Scenario: Text and bytea values exceed the former one-MiB decoder ceiling.
             /// Guarantees: Both codecs preserve all bytes; configured framing and page admission supply their limits.
@@ -775,6 +867,78 @@ macro_rules! postgresql_module_tests {
         mod tests {
             use super::*;
 
+            /// Scenario: A string-key connection reports UTF8, a different encoding, or no server encoding.
+            /// Guarantees: Binary SQL ordering is accepted only when native server bytes match Rust UTF-8 ordering.
+            #[test]
+            fn scalar_strings_require_native_utf8_server_encoding() {
+                let cursor = CursorColumns::Scalar { index: 0, kind: ScalarKind::String };
+                assert!(validate_server_encoding(cursor, Some("UTF8")).is_ok());
+                for encoding in [None, Some("LATIN1"), Some("SQL_ASCII"), Some("UTF-8"), Some("C.UTF8")] {
+                    assert_eq!(validate_server_encoding(cursor, encoding), Err(Error::Metadata));
+                    assert!(validate_server_encoding(CursorColumns::Snapshot, encoding).is_ok());
+                    assert!(validate_server_encoding(CursorColumns::Scalar { index: 0, kind: ScalarKind::UInt64 }, encoding).is_ok());
+                }
+            }
+
+            /// Scenario: Complete snapshots are empty, exactly bounded, one row too long, or too large in bytes.
+            /// Guarantees: Empty and exact snapshots succeed; overflowing snapshots return no partial page.
+            #[test]
+            fn snapshot_admission_is_atomic() {
+                let collect = |count: usize, limit: u64| -> Result<Vec<CursorRow>> {
+                    let mut rows = Vec::new();
+                    let mut payload = 0;
+                    for _ in 0..count {
+                        let row = CursorRow { row: Row { values: vec![] }, cursor: Cursor::Snapshot };
+                        let _ = admit_row(&mut rows, &mut payload, row, 2, limit, true)?;
+                    }
+                    Ok(rows)
+                };
+                assert!(collect(0, 0).expect("empty snapshot").is_empty());
+                assert_eq!(collect(2, 1024).expect("exact row limit").len(), 2);
+                assert!(matches!(collect(3, 1024), Err(Error::SnapshotRowLimit)));
+                assert!(matches!(collect(1, 0), Err(Error::SnapshotByteLimit)));
+                assert!(matches!(collect(2, size_of::<CursorRow>() as u64), Err(Error::SnapshotByteLimit)));
+            }
+
+            /// Scenario: Snapshot execution, catalog discovery, and cleanup report different bounded failures.
+            /// Guarantees: Only confirmed snapshot row/byte failures pause a source; metadata and cleanup stay terminal.
+            #[test]
+            fn snapshot_limits_pause_only_after_confirmed_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                use super::super::adapter::PostgreSqlAdapter;
+                for error in [Error::SnapshotRowLimit, Error::SnapshotByteLimit] {
+                    assert!(PostgreSqlAdapter::should_pause_source(&error));
+                    assert!(!PostgreSqlAdapter::is_retryable(&error));
+                }
+                assert_eq!(after_cleanup(Error::DataRowLimit, true), Error::SnapshotByteLimit);
+                assert_eq!(after_cleanup(Error::DataRowLimit, false), Error::DataRowLimit);
+                for error in [Error::Limit, Error::Cleanup, Error::Metadata, Error::Database, Error::DataRowLimit] {
+                    assert!(!PostgreSqlAdapter::should_pause_source(&error));
+                }
+                for error in [Error::Limit, Error::Cleanup, Error::Metadata] {
+                    assert_eq!(after_cleanup(error, true), error);
+                }
+            }
+
+            /// Scenario: Typed scalar positions include UTF-8 text, unsigned boundaries, and native timestamps.
+            /// Guarantees: Duplicate/decreasing positions fail while binary and chronological increases succeed.
+            #[test]
+            fn scalar_positions_use_native_ordering() {
+                for (left, right) in [
+                    (ScalarValue::Int64(-1), ScalarValue::Int64(0)),
+                    (ScalarValue::UInt64(i64::MAX as u64), ScalarValue::UInt64(u64::MAX)),
+                    (ScalarValue::String("z".into()), ScalarValue::String("\u{e9}".into())),
+                    (ScalarValue::String("a".into()), ScalarValue::String("a ".into())),
+                    (ScalarValue::Timestamp("2026-01-01T00:00:00Z".into()), ScalarValue::Timestamp("2026-01-01T00:00:00.000001Z".into())),
+                ] {
+                    let left = convert::cursor_position(&Cursor::Scalar(left)).expect("left");
+                    let right = convert::cursor_position(&Cursor::Scalar(right)).expect("right");
+                    assert!(ensure_advance(&left, &right).is_ok());
+                    assert!(ensure_advance(&right, &left).is_err());
+                    assert!(ensure_advance(&left, &left).is_err());
+                }
+            }
+
             /// Scenario: Every page supplies fresh catalog metadata while decoder state is cached.
             /// Guarantees: Changed source/type/nullability/collation/key signatures fail without replacing the baseline.
             #[test]
@@ -789,7 +953,7 @@ macro_rules! postgresql_module_tests {
                 let mut cache = None;
                 let _ =
                     resolve_schema(&mut cache, &validated, baseline.clone()).expect("discovery");
-                for change in 0..8 {
+                for change in 0..12 {
                     let mut changed = baseline.clone();
                     let column = changed
                         .columns
@@ -803,9 +967,13 @@ macro_rules! postgresql_module_tests {
                         4 => column.not_null = false,
                         5 => column.collation = 1,
                         6 => changed.keys.clear(),
-                        _ => {
+                        7 => {
                             let _ = changed.columns.remove(&validated.plan.projections[1]);
                         }
+                        8 => column.collation_namespace = Some("public".into()),
+                        9 => column.collation_name = Some("C".into()),
+                        10 => column.collation_deterministic = Some(false),
+                        _ => column.utf8_database = false,
                     }
                     assert!(matches!(
                         resolve_schema(&mut cache, &validated, changed),
@@ -1001,7 +1169,7 @@ macro_rules! postgresql_module_tests {
                         (timestamp - chrono::Duration::microseconds(1), 2),
                     ),
                 ] {
-                    let cursor = |position: convert::CursorPosition| {
+                    let cursor = |position: (chrono::NaiveDateTime, i64)| {
                         Cursor::composite(
                             position.0.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
                             position.1,
@@ -1094,6 +1262,7 @@ macro_rules! postgresql_module_tests {
                             principal: None,
                             fetch_size: FetchSize::default(),
                             timestamp_cache: convert::CursorTimestampCache::default(),
+                            snapshot_active: false,
                         };
                         let baseline = super::super::tests::mock_signature(
                             &worker.validated.plan,
@@ -1220,7 +1389,7 @@ use super::{
     adapter::Error,
     adapter::Operation,
     config::PostgreSqlReceiverConfig as Config,
-    query::{NativeColumn, Plan, ResolvedSchema, Signature, compile_parameters},
+    query::{CursorColumns, NativeColumn, Plan, ResolvedSchema, Signature, compile_parameters},
     value as convert,
 };
 use otel_arrow_dfe_engine::capability::{
@@ -1336,12 +1505,431 @@ pub(super) fn mock_signature(plan: &Plan, columns: &[(Type, i32, bool)]) -> Sign
                         modifier: *modifier,
                         not_null: *not_null,
                         collation: 0,
+                        collation_namespace: None,
+                        collation_name: None,
+                        collation_deterministic: None,
+                        utf8_database: true,
                     },
                 )
             })
             .collect(),
         keys: vec![(42, vec![(43, vec![1, 2])])],
     }
+}
+
+pub(super) fn scalar_config(initial: Value) -> Value {
+    let mut cfg = config("SELECT e.id FROM public.events AS e WHERE e.id > :last ORDER BY e.id");
+    cfg["watermark"] = json!({"mode":"scalar","column":"id","bind":"last","initial":initial});
+    cfg
+}
+
+pub(super) fn scalar_signature(plan: &Plan, ty: Type, modifier: i32) -> Signature {
+    let mut signature = mock_signature(plan, &[(ty, modifier, true)]);
+    signature.keys = vec![(42, vec![(43, vec![1])])];
+    let column = signature
+        .columns
+        .get_mut(&plan.projections[0])
+        .expect("column");
+    column.collation = 950;
+    column.collation_namespace = Some("pg_catalog".into());
+    column.collation_name = Some("C".into());
+    column.collation_deterministic = Some(true);
+    signature
+}
+
+/// Scenario: Every watermark mode supplies its own fields and explicitly typed scalar initial position.
+/// Guarantees: Snapshot needs no initial value or binds; scalar types are not inferred or coerced.
+#[test]
+fn watermark_modes_validate_locally() {
+    use otel_arrow_dfe_scraper::database::Cursor;
+    let mut snapshot = config("SELECT e.id FROM public.events AS e");
+    snapshot["watermark"] = json!({"mode":"snapshot"});
+    let validated = validate(&snapshot).expect("snapshot");
+    assert_eq!(validated.plan.cursor, CursorColumns::Snapshot);
+    assert!(validated.plan.sql.ends_with("LIMIT 1001"));
+    assert!(matches!(
+        validated.common.watermark().initial(),
+        Cursor::Snapshot
+    ));
+    for initial in [
+        json!({"type":"int64","value":-1}),
+        json!({"type":"uint64","value":u64::MAX}),
+        json!({"type":"string","value":"\u{e9}"}),
+        json!({"type":"timestamp","value":"2026-01-01T00:00:00.123456Z"}),
+    ] {
+        let value = validate(&scalar_config(initial)).expect("scalar");
+        assert!(matches!(
+            value.plan.cursor,
+            CursorColumns::Scalar { index: 0, .. }
+        ));
+        assert!(value.plan.sql.ends_with("LIMIT 1000"));
+    }
+    for initial in [
+        json!(0),
+        json!({"value":0}),
+        json!({"type":"uint64","value":-1}),
+        json!({"type":"int64","value":u64::MAX}),
+        json!({"type":"int64","value":"1"}),
+        json!({"type":"string","value":1}),
+        json!({"type":"string","value":"x".repeat(1025)}),
+        json!({"type":"string","value":"private\0value"}),
+        json!({"type":"timestamp","value":"2026-01-01 00:00:00Z"}),
+        json!({"type":"timestamp","value":"2026-01-01T00:00:00+00:00"}),
+        json!({"type":"timestamp","value":"2026-01-01T00:00:00.1234567Z"}),
+    ] {
+        assert!(validate(&scalar_config(initial)).is_err());
+    }
+    assert!(
+        validate(&scalar_config(
+            json!({"type":"string","value":"\u{e9}".repeat(512)})
+        ))
+        .is_ok()
+    );
+    assert!(
+        validate(&scalar_config(
+            json!({"type":"string","value":"\u{e9}".repeat(513)})
+        ))
+        .is_err()
+    );
+    for extra in ["initial", "bind", "column"] {
+        let mut cfg = snapshot.clone();
+        cfg["watermark"][extra] = json!("unexpected");
+        assert!(validate(&cfg).is_err());
+    }
+}
+
+/// Scenario: Snapshot and scalar SQL use supported predicates or attempt to smuggle binds and unsafe AST fields.
+/// Guarantees: Mode-specific keysets and ascending order are enforced before any connection is opened.
+#[test]
+fn snapshot_and_scalar_sql_contracts() {
+    let scalar = scalar_config(json!({"type":"int64","value":0}));
+    for statement in [
+        "SELECT e.id FROM public.events e WHERE e.id > :last ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE (e.id > $1) AND e.id >= 0 ORDER BY e.id ASC",
+        "SELECT e.id FROM public.events e INNER JOIN public.lookup l ON e.id = l.id WHERE e.id > :last ORDER BY e.id",
+    ] {
+        let mut cfg = scalar.clone();
+        cfg["query"]["statement"] = json!(statement);
+        assert!(validate(&cfg).is_ok(), "{statement}");
+    }
+    for statement in [
+        "SELECT e.id FROM public.events e ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE e.id >= :last ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE e.id > :last",
+        "SELECT e.id FROM public.events e WHERE e.id > :last ORDER BY e.id DESC",
+        "SELECT e.id FROM public.events e WHERE e.id > :last ORDER BY e.id, e.id",
+        "SELECT e.id FROM public.events e WHERE e.id > :last AND e.id > :last ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE e.id > :last OR e.id = 0 ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE e.id > $2 ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE e.id > :last AND e.id > $1 ORDER BY e.id",
+        "SELECT e.id FROM public.events e WHERE e.id > :last ORDER BY e.id LIMIT 1",
+        "SELECT e.id::bigint FROM public.events e WHERE e.id > :last ORDER BY e.id",
+    ] {
+        let mut cfg = scalar.clone();
+        cfg["query"]["statement"] = json!(statement);
+        assert!(validate(&cfg).is_err(), "{statement}");
+    }
+    for statement in [
+        "SELECT e.id FROM public.events e",
+        "SELECT e.id FROM public.events e WHERE e.id >= 0 AND e.note IS NOT NULL",
+        "SELECT e.id, l.note FROM public.events e INNER JOIN public.lookup l ON e.id = l.id",
+    ] {
+        let mut cfg = config(statement);
+        cfg["watermark"] = json!({"mode":"snapshot"});
+        assert!(validate(&cfg).is_ok(), "{statement}");
+    }
+    for statement in [
+        "SELECT e.id FROM public.events e WHERE e.id > :last",
+        "SELECT e.id FROM public.events e WHERE e.id > $1",
+        "SELECT e.id FROM public.events e LIMIT 1",
+        "SELECT e.id FROM public.events e FOR UPDATE",
+        "SELECT e.id FROM public.events e WHERE e.id = 1 OR e.id = 2",
+        "SELECT pg_catalog.set_config('a', 'b', false) FROM public.events e",
+        "SELECT * FROM public.events e",
+        "SELECT e.id FROM public.events e; DELETE FROM public.events",
+    ] {
+        let mut cfg = config(statement);
+        cfg["watermark"] = json!({"mode":"snapshot"});
+        assert!(validate(&cfg).is_err(), "{statement}");
+    }
+    assert_eq!(
+        compile_parameters("SELECT '\u{e9}:last' /* $2 */", &[]).expect("no binds"),
+        "SELECT '\u{e9}:last' /* $2 */"
+    );
+    assert_eq!(
+        compile_parameters("SELECT '\u{e9}', :last -- :other", &["last"]).expect("one bind"),
+        "SELECT '\u{e9}', $1 -- :other"
+    );
+    assert!(compile_parameters("SELECT :last", &["last", "last"]).is_err());
+    assert!(compile_parameters("SELECT ':last'", &["last"]).is_err());
+}
+
+/// Scenario: Catalog discovery resolves each explicit scalar type against native columns and a unique index.
+/// Guarantees: Integer widths, integral numeric precision, binary strings, and both timestamp kinds are exact.
+#[test]
+fn scalar_schema_type_policy_and_uniqueness() {
+    for (initial, types) in [
+        (
+            json!({"type":"int64","value":0}),
+            vec![(Type::INT2, -1), (Type::INT4, -1), (Type::INT8, -1)],
+        ),
+        (
+            json!({"type":"uint64","value":0}),
+            vec![
+                (Type::NUMERIC, (20 << 16) + 4),
+                (Type::NUMERIC, (9 << 16) + 4),
+            ],
+        ),
+        (
+            json!({"type":"string","value":""}),
+            vec![(Type::TEXT, -1), (Type::VARCHAR, 32 + 4)],
+        ),
+        (
+            json!({"type":"timestamp","value":"2026-01-01T00:00:00Z"}),
+            vec![(Type::TIMESTAMP, 0), (Type::TIMESTAMPTZ, 6)],
+        ),
+    ] {
+        let validated = validate(&scalar_config(initial)).expect("config");
+        for (ty, modifier) in types {
+            let signature = scalar_signature(&validated.plan, ty, modifier);
+            assert!(
+                ResolvedSchema::discover(&validated.plan, &validated.common, &signature).is_ok()
+            );
+            for failure in 0..3 {
+                let mut bad = signature.clone();
+                match failure {
+                    0 => {
+                        bad.columns
+                            .get_mut(&validated.plan.projections[0])
+                            .expect("key")
+                            .not_null = false
+                    }
+                    1 => bad.keys.clear(),
+                    _ => bad.keys[0].1[0].1 = vec![1, 2],
+                }
+                assert!(matches!(
+                    ResolvedSchema::discover(&validated.plan, &validated.common, &bad),
+                    Err(Error::Metadata)
+                ));
+            }
+        }
+    }
+    for (kind, value, ty, modifier) in [
+        ("int64", json!(0), Type::NUMERIC, (20 << 16) + 4),
+        ("uint64", json!(0), Type::INT8, -1),
+        ("uint64", json!(0), Type::NUMERIC, -1),
+        ("uint64", json!(0), Type::NUMERIC, (20 << 16) + 5),
+        ("uint64", json!(0), Type::NUMERIC, (21 << 16) + 4),
+        ("string", json!(""), Type::BPCHAR, 14),
+        ("string", json!(""), Type::UUID, -1),
+        ("timestamp", json!("2026-01-01T00:00:00Z"), Type::DATE, -1),
+    ] {
+        let validated =
+            validate(&scalar_config(json!({"type":kind,"value":value}))).expect("config");
+        let signature = scalar_signature(&validated.plan, ty, modifier);
+        assert!(matches!(
+            ResolvedSchema::discover(&validated.plan, &validated.common, &signature),
+            Err(Error::Metadata)
+        ));
+    }
+}
+
+/// Scenario: Text keys have C/POSIX, locale, default, unknown, or nondeterministic collation provenance.
+/// Guarantees: Only catalog-proven deterministic binary ordering is accepted; bpchar padding equivalence is rejected.
+#[test]
+fn scalar_strings_require_proven_binary_collation() {
+    let validated =
+        validate(&scalar_config(json!({"type":"string","value":"a "}))).expect("string");
+    for (namespace, name, deterministic, accepted) in [
+        (Some("pg_catalog"), Some("C"), Some(true), true),
+        (Some("pg_catalog"), Some("POSIX"), Some(true), true),
+        (Some("pg_catalog"), Some("default"), Some(true), false),
+        (Some("pg_catalog"), Some("en_US"), Some(true), false),
+        (Some("public"), Some("C"), Some(true), false),
+        (Some("pg_catalog"), Some("C"), Some(false), false),
+        (None, None, None, false),
+    ] {
+        let mut signature = scalar_signature(&validated.plan, Type::TEXT, -1);
+        let key = signature
+            .columns
+            .get_mut(&validated.plan.projections[0])
+            .expect("key");
+        key.collation_namespace = namespace.map(str::to_owned);
+        key.collation_name = name.map(str::to_owned);
+        key.collation_deterministic = deterministic;
+        assert_eq!(
+            ResolvedSchema::discover(&validated.plan, &validated.common, &signature).is_ok(),
+            accepted
+        );
+    }
+    let signature = scalar_signature(&validated.plan, Type::BPCHAR, 14);
+    assert!(ResolvedSchema::discover(&validated.plan, &validated.common, &signature).is_err());
+    let mut signature = scalar_signature(&validated.plan, Type::TEXT, -1);
+    signature
+        .columns
+        .get_mut(&validated.plan.projections[0])
+        .expect("key")
+        .utf8_database = false;
+    assert!(ResolvedSchema::discover(&validated.plan, &validated.common, &signature).is_err());
+}
+
+/// Scenario: Initial and loaded scalar checkpoints reach native width, precision, and text bounds.
+/// Guarantees: Native bind construction rejects overflow, lossy timestamps, NUL, and mismatched cursor modes.
+#[test]
+fn scalar_native_bind_ranges_and_checkpoint_validation() {
+    use bytes::BytesMut;
+    use otel_arrow_dfe_scraper::database::{Cursor, ScalarValue};
+    for (initial, ty, modifier, good, bad) in [
+        (
+            json!({"type":"int64","value":0}),
+            Type::INT2,
+            -1,
+            ScalarValue::Int64(i16::MAX as i64),
+            ScalarValue::Int64(i16::MAX as i64 + 1),
+        ),
+        (
+            json!({"type":"int64","value":0}),
+            Type::INT4,
+            -1,
+            ScalarValue::Int64(i32::MIN as i64),
+            ScalarValue::Int64(i32::MIN as i64 - 1),
+        ),
+        (
+            json!({"type":"uint64","value":0}),
+            Type::NUMERIC,
+            (19 << 16) + 4,
+            ScalarValue::UInt64(9_999_999_999_999_999_999),
+            ScalarValue::UInt64(10_000_000_000_000_000_000),
+        ),
+        (
+            json!({"type":"string","value":""}),
+            Type::VARCHAR,
+            5,
+            ScalarValue::String("\u{e9}".into()),
+            ScalarValue::String("ab".into()),
+        ),
+        (
+            json!({"type":"timestamp","value":"2026-01-01T00:00:00Z"}),
+            Type::TIMESTAMP,
+            3,
+            ScalarValue::Timestamp("2026-01-01T00:00:00.123Z".into()),
+            ScalarValue::Timestamp("2026-01-01T00:00:00.123001Z".into()),
+        ),
+    ] {
+        let validated = validate(&scalar_config(initial)).expect("config");
+        let signature = scalar_signature(&validated.plan, ty.clone(), modifier);
+        let schema = ResolvedSchema::discover(&validated.plan, &validated.common, &signature)
+            .expect("schema");
+        let params = convert::parameters(&Cursor::Scalar(good), &validated.plan, &schema)
+            .expect("native bind");
+        assert_eq!(params.len(), 1);
+        let _ = params[0]
+            .to_sql_checked(&ty, &mut BytesMut::new())
+            .expect("native bytes");
+        assert!(convert::parameters(&Cursor::Scalar(bad), &validated.plan, &schema).is_err());
+        assert!(convert::parameters(&Cursor::Snapshot, &validated.plan, &schema).is_err());
+        assert!(
+            convert::parameters(
+                &Cursor::Scalar(ScalarValue::String("\0".into())),
+                &validated.plan,
+                &schema
+            )
+            .is_err()
+        );
+    }
+    let validated =
+        validate(&scalar_config(json!({"type":"uint64","value":u64::MAX}))).expect("unsigned");
+    let schema = ResolvedSchema::discover(
+        &validated.plan,
+        &validated.common,
+        &scalar_signature(&validated.plan, Type::NUMERIC, (20 << 16) + 4),
+    )
+    .expect("numeric");
+    let params = convert::parameters(
+        &validated.common.watermark().initial(),
+        &validated.plan,
+        &schema,
+    )
+    .expect("full unsigned range");
+    let mut bytes = BytesMut::new();
+    let _ = params[0]
+        .to_sql_checked(&Type::NUMERIC, &mut bytes)
+        .expect("bind");
+    assert_eq!(
+        convert::numeric(&bytes).expect("exact"),
+        u64::MAX.to_string()
+    );
+}
+
+/// Scenario: Snapshot projections are nullable and lack any unique cursor key.
+/// Guarantees: Automatic discovery imposes no cursor requirements and supplies zero native parameters.
+#[test]
+fn snapshot_discovery_needs_no_cursor_or_unique_key() {
+    use otel_arrow_dfe_scraper::database::Cursor;
+    let mut cfg = config("SELECT e.id FROM public.events e");
+    cfg["watermark"] = json!({"mode":"snapshot"});
+    let validated = validate(&cfg).expect("snapshot");
+    let mut signature = mock_signature(&validated.plan, &[(Type::TEXT, -1, false)]);
+    signature.keys.clear();
+    let schema = ResolvedSchema::discover(&validated.plan, &validated.common, &signature)
+        .expect("nullable snapshot");
+    assert!(
+        convert::parameters(&Cursor::Snapshot, &validated.plan, &schema)
+            .expect("no binds")
+            .is_empty()
+    );
+    assert!(validated.plan.cursor.indices().is_empty());
+}
+
+/// Scenario: Composite configuration predates the addition of scalar and snapshot modes.
+/// Guarantees: Its serialized identity retains the original shape while every new mode has a distinct identity.
+#[test]
+fn watermark_identity_preserves_existing_composite_shape() {
+    let validated = test_validated();
+    let watermark = json!({
+        "mode":"composite",
+        "timestamp":{"column":"ts","bind":"last_timestamp","initial":"2026-10-05T00:00:00.000000Z","timezone":"UTC"},
+        "tie_breaker":{"column":"id","bind":"last_tie_breaker","initial":0}
+    });
+    assert_eq!(
+        serde_json::to_value(&validated.config.watermark).expect("serialize"),
+        watermark
+    );
+    let legacy = serde_json::to_vec(&(
+        "postgresql/v4-auto",
+        "postgresql",
+        "localhost",
+        5432u16,
+        "fixture",
+        validated.common.sql(),
+        "named-parameters/v2",
+        &validated.config.watermark,
+        &validated.config.query.output,
+        "UTC/microseconds/native-v2",
+    ))
+    .expect("legacy identity");
+    assert_eq!(
+        validated.fingerprint,
+        blake3::hash(&legacy).to_hex().to_string()
+    );
+    let mut fingerprints = std::collections::BTreeSet::from([validated.fingerprint]);
+    for initial in [
+        json!({"type":"int64","value":0}),
+        json!({"type":"uint64","value":0}),
+        json!({"type":"string","value":""}),
+        json!({"type":"timestamp","value":"2026-01-01T00:00:00Z"}),
+    ] {
+        assert!(
+            fingerprints.insert(
+                validate(&scalar_config(initial))
+                    .expect("scalar")
+                    .fingerprint
+            )
+        );
+    }
+    let mut snapshot = config("SELECT e.id FROM public.events e");
+    snapshot["watermark"] = json!({"mode":"snapshot"});
+    assert!(fingerprints.insert(validate(&snapshot).expect("snapshot").fingerprint));
 }
 
 /// Scenario: Schema discovery is requested for reordered projections with quoted output aliases.
@@ -1360,8 +1948,14 @@ fn discovery_plan_tracks_aliases_and_cursor_positions() {
     let plan = &validated.plan;
     assert_eq!(plan.output_names, ["ID", "message", "event_time"]);
     assert_eq!(
-        (plan.timestamp, plan.tie, plan.output_timestamp),
-        (2, 0, Some(2))
+        (plan.cursor, plan.output_timestamp),
+        (
+            CursorColumns::Composite {
+                timestamp: 2,
+                tie: 0
+            },
+            Some(2)
+        )
     );
     let signature = mock_signature(
         plan,
@@ -1584,16 +2178,16 @@ fn parameter_compilation_preserves_bytes() {
         "SELECT E'\\\\:ts', $$:id$$, \"x:ts\", :ts::timestamp, :id /* :ts */",
         "SELECT :ts /* a /* :id */ b */, :id",
     ] {
-        let result = compile_parameters(source, "ts", "id").expect("compile");
+        let result = compile_parameters(source, &["ts", "id"]).expect("compile");
         assert!(result.contains("$1"));
         assert!(result.contains("$2"));
         assert_eq!(
-            compile_parameters(&result, "ts", "id").expect("native"),
+            compile_parameters(&result, &["ts", "id"]).expect("native"),
             result
         );
     }
     assert_eq!(
-        compile_parameters("SELECT '\u{e9}'\r\n, :id, :ts, :ts", "ts", "id").expect("compile"),
+        compile_parameters("SELECT '\u{e9}'\r\n, :id, :ts, :ts", &["ts", "id"]).expect("compile"),
         "SELECT '\u{e9}'\r\n, $2, $1, $1"
     );
 }
@@ -1616,7 +2210,7 @@ fn invalid_parameters_fail_closed() {
         "SELECT :ts, :id;",
         "SELECT $$:ts$$, $$:id$$",
     ] {
-        assert!(compile_parameters(text, "ts", "id").is_err(), "{text}");
+        assert!(compile_parameters(text, &["ts", "id"]).is_err(), "{text}");
     }
 }
 
@@ -1667,7 +2261,7 @@ fn keyset_optimization_preserves_query_tree() {
             let native = validate(&config(&expected_source)).expect("tuple query");
             let expected = format!(
                 "{} LIMIT {}",
-                compile_parameters(&expected_source, "last_timestamp", "last_tie_breaker")
+                compile_parameters(&expected_source, &["last_timestamp", "last_tie_breaker"])
                     .expect("parameters"),
                 original.common.max_rows()
             );
@@ -1802,24 +2396,21 @@ fn parser_budgets() {
     assert!(
         compile_parameters(
             &format!("SELECT :ts, :id {}", " ".repeat(16384)),
-            "ts",
-            "id"
+            &["ts", "id"]
         )
         .is_err()
     );
     assert!(
         compile_parameters(
             &format!("SELECT :ts, :id {}", "x ".repeat(4096)),
-            "ts",
-            "id"
+            &["ts", "id"]
         )
         .is_err()
     );
     assert!(
         compile_parameters(
             &format!("SELECT {}:ts{}, :id", "(".repeat(17), ")".repeat(17)),
-            "ts",
-            "id"
+            &["ts", "id"]
         )
         .is_err()
     );
@@ -2454,6 +3045,9 @@ fn redacted_errors() {
         Error::Metadata,
         Error::Value,
         Error::Limit,
+        Error::DataRowLimit,
+        Error::SnapshotRowLimit,
+        Error::SnapshotByteLimit,
         Error::Credential,
         Error::Database,
         Error::Unavailable,
@@ -2545,7 +3139,7 @@ async fn provider_errors_are_redacted() {
     adapter.shutdown().await.expect("worker joined");
 }
 
-/// Scenario: PostgreSQL configuration supplies a TLS block, old inline credentials, or a scalar watermark.
+/// Scenario: PostgreSQL configuration supplies TLS, old inline credentials, or scalar metadata with composite SQL.
 /// Guarantees: Unsupported transport/authentication fields and cursor modes fail rather than being ignored or reinterpreted.
 #[test]
 fn unsupported_transport_and_cursor_modes_fail_closed() {

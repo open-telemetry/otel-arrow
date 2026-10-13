@@ -6,12 +6,14 @@
 use super::{
     adapter::{Action, Command, Error, Operation, Reply, Result, database},
     config::Validated,
-    query::{CatalogStatements, ResolvedSchema, Signature},
+    query::{CatalogStatements, CursorColumns, ResolvedSchema, ScalarKind, Signature},
     value as convert,
 };
 use futures::{StreamExt, future::poll_fn};
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
-use otel_arrow_dfe_scraper::database::{ColumnMetadata, CursorRow, QueryPage, Row};
+use otel_arrow_dfe_scraper::database::{
+    ColumnMetadata, Cursor, CursorRow, QueryPage, Row, ScalarValue,
+};
 use secrecy::ExposeSecret;
 use std::{
     cell::{Cell, RefCell},
@@ -191,7 +193,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for BoundedBackend<S> {
                 }
                 if length as usize >= this.limits.for_tag(this.header[0]) {
                     return Poll::Ready(Err(this.fail(
-                        Error::Limit,
+                        if this.header[0] == b'D' {
+                            Error::DataRowLimit
+                        } else {
+                            Error::Limit
+                        },
                         io::ErrorKind::InvalidData,
                         "postgresql backend frame exceeds receive limit",
                     )));
@@ -263,6 +269,7 @@ struct Worker {
     principal: Option<secrecy::SecretString>,
     fetch_size: FetchSize,
     timestamp_cache: convert::CursorTimestampCache,
+    snapshot_active: bool,
 }
 
 struct CachedSchema {
@@ -320,6 +327,7 @@ pub(crate) async fn run(
         principal: None,
         fetch_size: FetchSize::default(),
         timestamp_cache: convert::CursorTimestampCache::default(),
+        snapshot_active: false,
     };
     while let Some(command) = commands.recv().await {
         if matches!(command.action, Action::Shutdown) {
@@ -379,6 +387,10 @@ pub(crate) async fn run(
                 result = Err(Error::Cleanup);
             }
         }
+        // Only data-query frames are snapshot budget failures. Catalog and
+        // control-frame failures retain their terminal classification. Pause
+        // becomes safe only after the worker has confirmed connection cleanup.
+        result = result.map_err(|error| after_cleanup(error, worker.snapshot_active));
         busy.store(false, Ordering::Release);
         let _ = command.reply.send(result);
     }
@@ -388,6 +400,28 @@ pub(crate) async fn run(
     } else {
         Ok(())
     }
+}
+
+fn after_cleanup(error: Error, snapshot_active: bool) -> Error {
+    if snapshot_active && error == Error::DataRowLimit {
+        Error::SnapshotByteLimit
+    } else {
+        error
+    }
+}
+
+fn validate_server_encoding(cursor: CursorColumns, encoding: Option<&str>) -> Result<()> {
+    if matches!(
+        cursor,
+        CursorColumns::Scalar {
+            kind: ScalarKind::String,
+            ..
+        }
+    ) && encoding != Some("UTF8")
+    {
+        return Err(Error::Metadata);
+    }
+    Ok(())
 }
 
 async fn cancel_native(slot: &CancelSlot) {
@@ -488,6 +522,10 @@ impl Worker {
         drop(pg);
         let (client, mut connection, address) =
             connected.map_err(|_| receive_failure.get().unwrap_or(Error::Unavailable))??;
+        validate_server_encoding(
+            self.validated.plan.cursor,
+            connection.parameter("server_encoding"),
+        )?;
         let driver_failure = receive_failure.clone();
         let driver = tokio::task::spawn_local(async move {
             loop {
@@ -526,6 +564,7 @@ impl Worker {
         op: &Operation,
         credential: &BasicAuthCredential,
     ) -> Result<Reply> {
+        self.snapshot_active = false;
         op.check()?;
         if self.poisoned {
             return Err(Error::Cleanup);
@@ -564,14 +603,18 @@ impl Worker {
             let cached = resolve_schema(&mut self.schema, &self.validated, signature)?;
             let schema = &cached.resolved;
             if session.statement.is_none() {
-                let timestamp_type = schema.native_types[plan.timestamp].clone();
-                let tie_type = schema.native_types[plan.tie].clone();
+                let parameter_types: Vec<_> = plan
+                    .cursor
+                    .indices()
+                    .iter()
+                    .map(|&index| schema.native_types[index].clone())
+                    .collect();
                 let statement = tx
-                    .prepare_typed(&plan.sql, &[timestamp_type.clone(), tie_type.clone()])
+                    .prepare_typed(&plan.sql, &parameter_types)
                     .await
                     .map_err(database)?;
                 op.check()?;
-                if statement.params() != [timestamp_type, tie_type]
+                if statement.params() != parameter_types
                     || statement.columns().len() != schema.columns.len()
                 {
                     return Err(Error::Metadata);
@@ -604,31 +647,19 @@ impl Worker {
             let Action::Execute(cursor) = action else {
                 return Ok(Reply::Columns(columns));
             };
-            let timestamp = convert::cursor_time(
-                &cursor.timestamp,
-                schema.columns[plan.timestamp].type_modifier,
-            )?;
-            let tie_type = &schema.columns[plan.tie].source_type;
-            convert::check_tie(cursor.tie_breaker, tie_type)?;
-            let mut previous = (timestamp.naive_utc(), cursor.tie_breaker);
-            let timestamp: Box<dyn ToSql + Sync> =
-                if schema.columns[plan.timestamp].source_type == "timestamp" {
-                    Box::new(timestamp.naive_utc())
-                } else {
-                    Box::new(timestamp)
-                };
-            let tie: Box<dyn ToSql + Sync> = match tie_type.as_str() {
-                "int2" => Box::new(i16::try_from(cursor.tie_breaker).map_err(|_| Error::Value)?),
-                "int4" => Box::new(i32::try_from(cursor.tie_breaker).map_err(|_| Error::Value)?),
-                "int8" => Box::new(cursor.tie_breaker),
-                _ => return Err(Error::Metadata),
-            };
+            self.validated
+                .common
+                .watermark()
+                .validate_cursor(&cursor)
+                .map_err(|_| Error::Value)?;
+            let parameters = convert::parameters(&cursor, plan, schema)?;
+            let parameters: Vec<&(dyn ToSql + Sync)> =
+                parameters.iter().map(|p| p.as_ref()).collect();
+            let mut previous = convert::cursor_position(&cursor)?;
+            let snapshot = matches!(plan.cursor, CursorColumns::Snapshot);
             op.check()?;
             let statement = session.statement.as_ref().ok_or(Error::Metadata)?;
-            let portal = tx
-                .bind(statement, &[timestamp.as_ref(), tie.as_ref()])
-                .await
-                .map_err(database)?;
+            let portal = tx.bind(statement, &parameters).await.map_err(database)?;
             op.check()?;
             let mut page = QueryPage {
                 columns,
@@ -639,9 +670,15 @@ impl Worker {
             let raw_limit = FrameLimits::new(limit)?.raw_row();
             let mut payload = page_metadata_bytes(&page);
             if payload > limit {
-                return Err(Error::Limit);
+                return Err(if snapshot {
+                    Error::SnapshotByteLimit
+                } else {
+                    Error::Limit
+                });
             }
-            'page: while page.rows.len() < max_rows {
+            self.snapshot_active = snapshot;
+            let probe_rows = max_rows + usize::from(snapshot);
+            'page: while page.rows.len() < probe_rows {
                 op.check()?;
                 // Probe one row initially; retain the largest observed size across
                 // pages so wide rows do not repeatedly drain oversized fetch groups.
@@ -652,7 +689,7 @@ impl Worker {
                 let target = self
                     .fetch_size
                     .target(
-                        (max_rows - page.rows.len()).min(self.validated.common.fetch_size_rows()),
+                        (probe_rows - page.rows.len()).min(self.validated.common.fetch_size_rows()),
                         limit.saturating_sub(used),
                     )
                     .max(1);
@@ -666,16 +703,28 @@ impl Worker {
                 while let Some(native) = stream.next().await {
                     op.check()?;
                     let native = native.map_err(database)?;
+                    if snapshot && page.rows.len() == max_rows {
+                        return Err(Error::SnapshotRowLimit);
+                    }
                     let decoded =
-                        convert::row(&native, plan, schema, &mut self.timestamp_cache, raw_limit)?;
+                        convert::row(&native, plan, schema, &mut self.timestamp_cache, raw_limit)
+                            .map_err(|error| {
+                            if snapshot && error == Error::Limit {
+                                Error::SnapshotByteLimit
+                            } else {
+                                error
+                            }
+                        })?;
                     op.check()?;
-                    ensure_advance(&previous, &decoded.position)?;
+                    if !snapshot {
+                        ensure_advance(&previous, &decoded.position)?;
+                    }
                     let row = decoded.row;
                     let size = row_payload_bytes(&row)? + size_of::<CursorRow>() as u64;
                     self.fetch_size.observe(size);
                     // Fetch sizing is only an estimate. Enforce the byte ceiling
                     // without advancing the returned cursor past an unaccepted row.
-                    if !push_bounded_row(&mut page.rows, &mut payload, row, max_rows, limit)? {
+                    if !admit_row(&mut page.rows, &mut payload, row, max_rows, limit, snapshot)? {
                         break 'page;
                     }
                     previous = decoded.position;
@@ -709,13 +758,35 @@ fn page_metadata_bytes(page: &QueryPage) -> u64 {
 }
 
 fn row_payload_bytes(row: &CursorRow) -> Result<u64> {
-    let cursor = row.cursor.as_composite().ok_or(Error::Value)?;
+    let cursor_bytes = match &row.cursor {
+        Cursor::Snapshot => 0,
+        Cursor::Composite(cursor) => cursor.timestamp.capacity(),
+        Cursor::Scalar(ScalarValue::String(text) | ScalarValue::Timestamp(text)) => text.capacity(),
+        Cursor::Scalar(_) => 0,
+    };
     // Row and cursor headers are already included in the CursorRow slots.
     Ok(row
         .row
         .normalized_size()
         .saturating_sub(size_of::<Row>() as u64)
-        + cursor.timestamp.capacity() as u64)
+        + cursor_bytes as u64)
+}
+
+fn admit_row(
+    rows: &mut Vec<CursorRow>,
+    payload: &mut u64,
+    row: CursorRow,
+    max_rows: usize,
+    limit: u64,
+    snapshot: bool,
+) -> Result<bool> {
+    if snapshot && rows.len() >= max_rows {
+        return Err(Error::SnapshotRowLimit);
+    }
+    match push_bounded_row(rows, payload, row, max_rows, limit) {
+        Ok(false) | Err(Error::Limit) if snapshot => Err(Error::SnapshotByteLimit),
+        result => result,
+    }
 }
 
 fn push_bounded_row(
@@ -771,11 +842,8 @@ fn metadata(schema: &ResolvedSchema) -> Vec<ColumnMetadata> {
         .collect()
 }
 
-fn ensure_advance(
-    previous: &convert::CursorPosition,
-    next: &convert::CursorPosition,
-) -> Result<()> {
-    if previous >= next {
+fn ensure_advance<T: PartialOrd>(previous: &T, next: &T) -> Result<()> {
+    if previous.partial_cmp(next) != Some(std::cmp::Ordering::Less) {
         return Err(Error::Value);
     }
 
