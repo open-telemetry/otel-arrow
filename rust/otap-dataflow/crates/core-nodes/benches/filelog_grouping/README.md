@@ -16,26 +16,38 @@ Output is CSV. Set `FILELOG_GROUPING_SAMPLES` (default 7) or
 `FILELOG_GROUPING_REPEATS` (default 8) to change the run length. Each scan checks
 its record count, body-byte count, and final source offset.
 
-## Preliminary macOS results (2026-10-10)
+## macOS results (2026-10-13)
 
-Source MiB/s; higher is better. "Before" replays every buffered line through the
-decoder. "After" copies already-decoded lines when they fit, reserving space for
-the line and separator together. Overflow still uses source-unit replay.
+Measured revision: [`7f7429fdf`](https://github.com/lalitb/otel-arrow/commit/7f7429fdff3a2764ea00e0c04119911ac4eb3cc4),
+including start-pattern precedence over record overflow.
+Source MiB/s; higher is better.
 
-| Input | Newline | Start before | Start after | End before | End after |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 128-byte UTF-8, one line/record | 76.01 | 15.13 | 28.77 | 15.30 | 29.18 |
-| 128-byte UTF-8, four lines/group | 78.52 | 15.35 | 28.73 | 15.17 | 28.51 |
-| 16-KiB UTF-8, four lines/group | 86.79 | 15.83 | 30.48 | 15.67 | 30.60 |
-| UTF-16LE, four 128-char lines | 112.86 | 26.73 | 52.92 | 26.91 | 52.92 |
+| Input | Newline | Start grouping | End grouping |
+| --- | ---: | ---: | ---: |
+| 128-byte UTF-8, one line/record | 120.91 | 45.36 | 45.62 |
+| 128-byte UTF-8, four lines/group | 120.09 | 44.94 | 45.19 |
+| 16-KiB UTF-8, four lines/group | 133.31 | 46.96 | 46.96 |
+| UTF-16LE, four 128-char lines | 168.42 | 81.71 | 81.96 |
 
-Apple M4 Pro, macOS arm64, one thread, not CPU-pinned. Rust 1.98.1,
-regex-automata 0.4.18; isolated release build with optimization level 3, fat LTO,
-and one codegen unit. Medians of seven samples, eight scans per sample, with a
-warm matcher cache and 128-KiB input chunks. Policy is `preserve_raw` with
-`^START` / `END$` patterns; bounds are 64 KiB per line and 1 MiB per record.
+Apple M4 Pro, macOS 26.7.1 arm64, one thread, not CPU-pinned. Rust 1.98.1,
+regex-automata 0.4.18; workspace `bench` profile with optimization level 3, fat
+LTO, and one codegen unit. The command above built and ran the benchmark; the
+same executable was then run twice more. Each run used seven samples and eight
+scans per sample, with a warm matcher cache and 128-KiB input chunks. The table
+reports the median of the three per-run medians. Across all cases, the largest
+spread between run medians was 1.83% of that case's reported median; this is a
+repeatability observation, not a confidence interval.
+
+Policy is `preserve_raw` with `^START` / `END$` patterns; bounds are 64 KiB per
+line and 1 MiB per record. All record-count, body-byte-count, and final-offset
+checks passed in all three runs.
+
+These measurements replace the October 10 preliminary results. Both newline
+and grouping throughput are higher in this run; the historical comparison is
+not a controlled measurement of the start-boundary fix's performance effect.
 
 Four-line cases produce fewer records than newline framing. The one-line case
-keeps record counts equal. These are local comparisons, not full-receiver
-throughput or Linux qualification results. Repeat on the Linux test VM before
-using them for deployment sizing.
+keeps record counts equal. None of these inputs crosses a line or record bound,
+so this benchmark does not measure overflow, split/truncate, or recovery costs.
+These are local comparisons, not full-receiver throughput or Linux qualification
+results. Repeat on Linux before using them for deployment sizing.
