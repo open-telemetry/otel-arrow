@@ -801,16 +801,8 @@ fn fingerprint_excludes_operational_configuration() {
         ("/checkpoint/max_consecutive_failures", json!(10)),
     ] {
         let mut raw = composite();
-        if path == "/connection/connect_timeout"
-            || path == "/query/interval"
-            || path == "/query/timeout"
-            || path == "/query/fetch_size_rows"
-        {
-            let (object, field) = path.trim_start_matches('/').split_once('/').unwrap();
-            raw[object][field] = value;
-        } else {
-            *raw.pointer_mut(path).unwrap() = value;
-        }
+        let (object, field) = path.trim_start_matches('/').split_once('/').unwrap();
+        raw[object][field] = value;
         assert_eq!(parse(raw).config_fingerprint(), expected);
     }
     let mut raw = composite();
