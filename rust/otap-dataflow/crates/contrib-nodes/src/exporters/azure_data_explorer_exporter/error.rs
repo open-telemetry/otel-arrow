@@ -8,6 +8,17 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// A caller supplied an unsafe transformation limit.
+    #[error("invalid transformation limit `{name}`: expected 1..={maximum}, got {actual}")]
+    InvalidTransformationLimit {
+        /// Name of the invalid limit.
+        name: &'static str,
+        /// Supplied limit.
+        actual: usize,
+        /// Largest supported limit.
+        maximum: usize,
+    },
+
     /// A serialized row exceeded the configured safety limit.
     #[error("serialized ADX row is {actual} bytes, exceeding the {limit}-byte limit")]
     RowTooLarge {

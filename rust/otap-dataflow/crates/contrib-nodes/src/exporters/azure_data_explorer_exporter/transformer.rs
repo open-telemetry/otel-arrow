@@ -42,6 +42,7 @@ use otel_arrow_dfe_pdata_views::views::trace::{
 use std::cell::Cell;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::config::{MAX_SAFE_ROW_BYTES, MAX_STREAMING_REQUEST_BYTES, MAX_STREAMING_REQUEST_ROWS};
 use super::encoding;
 use super::error::Error;
 
@@ -53,6 +54,37 @@ const HOST_KEY: &[u8] = b"host.name";
 // byte budget, so bounded conversion also caps recursive depth and visits.
 const MAX_ANY_VALUE_NESTING_DEPTH: usize = 64;
 const MAX_ANY_VALUE_TRAVERSAL_WORK: usize = 65_536;
+
+#[derive(Clone, Copy)]
+struct TransformLimits {
+    max_rows: usize,
+    max_row_bytes: usize,
+    max_bytes: usize,
+}
+
+impl TransformLimits {
+    fn try_new(max_rows: usize, max_row_bytes: usize, max_bytes: usize) -> Result<Self, Error> {
+        Self::validate("max_rows", max_rows, MAX_STREAMING_REQUEST_ROWS)?;
+        Self::validate("max_row_bytes", max_row_bytes, MAX_SAFE_ROW_BYTES)?;
+        Self::validate("max_bytes", max_bytes, MAX_STREAMING_REQUEST_BYTES)?;
+        Ok(Self {
+            max_rows,
+            max_row_bytes,
+            max_bytes,
+        })
+    }
+
+    fn validate(name: &'static str, actual: usize, maximum: usize) -> Result<(), Error> {
+        if actual == 0 || actual > maximum {
+            return Err(Error::InvalidTransformationLimit {
+                name,
+                actual,
+                maximum,
+            });
+        }
+        Ok(())
+    }
+}
 
 struct ScopeEntries {
     json: Vec<u8>,
@@ -130,18 +162,14 @@ impl JsonWriter {
 
 struct TraversalBudget<'a> {
     work: &'a Cell<usize>,
-    bounded: bool,
 }
 
 impl<'a> TraversalBudget<'a> {
-    fn new(work: &'a Cell<usize>, bounded: bool) -> Self {
-        Self { work, bounded }
+    fn new(work: &'a Cell<usize>) -> Self {
+        Self { work }
     }
 
     fn visit(&mut self, depth: usize) -> Result<(), Error> {
-        if !self.bounded {
-            return Ok(());
-        }
         self.check_depth(depth)?;
         let work = self.work.get().saturating_add(1);
         self.work.set(work);
@@ -155,7 +183,7 @@ impl<'a> TraversalBudget<'a> {
     }
 
     fn check_depth(&self, depth: usize) -> Result<(), Error> {
-        if self.bounded && depth > MAX_ANY_VALUE_NESTING_DEPTH {
+        if depth > MAX_ANY_VALUE_NESTING_DEPTH {
             return Err(Error::TransformationDepthLimitExceeded {
                 actual: depth,
                 limit: MAX_ANY_VALUE_NESTING_DEPTH,
@@ -171,25 +199,17 @@ struct RowOutput {
     max_rows: usize,
     max_row_bytes: usize,
     max_bytes: usize,
-    bounded_traversal: bool,
     traversal_work: Cell<usize>,
 }
 
 impl RowOutput {
-    fn new(
-        capacity: usize,
-        max_rows: usize,
-        max_row_bytes: usize,
-        max_bytes: usize,
-        bounded_traversal: bool,
-    ) -> Self {
+    fn new(capacity: usize, limits: TransformLimits) -> Self {
         Self {
-            rows: Vec::with_capacity(capacity.min(max_rows)),
+            rows: Vec::with_capacity(capacity.min(limits.max_rows)),
             bytes: 0,
-            max_rows,
-            max_row_bytes,
-            max_bytes,
-            bounded_traversal,
+            max_rows: limits.max_rows,
+            max_row_bytes: limits.max_row_bytes,
+            max_bytes: limits.max_bytes,
             traversal_work: Cell::new(0),
         }
     }
@@ -221,15 +241,7 @@ impl RowOutput {
     }
 
     fn traversal_budget(&self) -> TraversalBudget<'_> {
-        TraversalBudget::new(&self.traversal_work, self.bounded_traversal)
-    }
-
-    fn reject_invalid_metric(&self, reason: &'static str) -> Result<(), Error> {
-        if self.bounded_traversal {
-            Err(Error::InvalidMetricData { reason })
-        } else {
-            Ok(())
-        }
+        TraversalBudget::new(&self.traversal_work)
     }
 
     fn push(&mut self, row: Vec<u8>) -> Result<(), Error> {
@@ -261,13 +273,15 @@ impl RowOutput {
 }
 
 struct ValidatedHistogram {
-    buckets: Vec<(f64, u64)>,
+    bucket_rows: usize,
     total: u64,
 }
 
 struct ValidatedExponentialHistogram {
-    negative: Vec<(f64, u64)>,
-    positive: Vec<(f64, u64)>,
+    negative_offset: i32,
+    negative_counts: Vec<u64>,
+    positive_offset: i32,
+    positive_counts: Vec<u64>,
     zero_total: u64,
     zero_threshold: f64,
     total: u64,
@@ -322,36 +336,27 @@ impl Transformer {
         self
     }
 
-    /// Convert an OTLP logs view into a vector of JSON-encoded log records
-    /// matching the ADX OTELLogs table schema.
-    #[must_use]
-    pub fn convert_logs<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
-        self.convert_logs_with_limits(logs_view, usize::MAX, usize::MAX, usize::MAX, false)
-            .expect("unbounded log transformation cannot exceed its limits")
-    }
-
-    /// Convert an OTLP logs view while enforcing row count, row size, request
-    /// size, nesting depth, and traversal work limits.
-    pub fn convert_logs_bounded<T: LogsDataView>(
+    /// Convert an OTLP logs view while enforcing validated row count, row
+    /// size, request size, nesting depth, and traversal work limits.
+    pub fn convert_logs<T: LogsDataView>(
         &self,
         logs_view: &T,
         max_rows: usize,
         max_row_bytes: usize,
         max_bytes: usize,
     ) -> Result<Vec<Bytes>, Error> {
-        self.convert_logs_with_limits(logs_view, max_rows, max_row_bytes, max_bytes, true)
+        self.convert_logs_with_limits(
+            logs_view,
+            TransformLimits::try_new(max_rows, max_row_bytes, max_bytes)?,
+        )
     }
 
     fn convert_logs_with_limits<T: LogsDataView>(
         &self,
         logs_view: &T,
-        max_rows: usize,
-        max_row_bytes: usize,
-        max_bytes: usize,
-        bounded_traversal: bool,
+        limits: TransformLimits,
     ) -> Result<Vec<Bytes>, Error> {
-        let mut results =
-            RowOutput::new(1024, max_rows, max_row_bytes, max_bytes, bounded_traversal);
+        let mut results = RowOutput::new(1024, limits);
 
         for resource_logs in logs_view.resources() {
             let resource = resource_logs.resource();
@@ -745,37 +750,30 @@ impl Transformer {
         writer.extend_from_slice(buf.format(n).as_bytes())
     }
 
-    /// Convert an OTLP metrics view into JSON records matching the ADX
-    /// OTELMetrics table schema, exploding Histogram/Summary data points
-    /// into sum/count/bucket/quantile rows the same way the Go exporter does.
-    #[must_use]
-    pub fn convert_metrics<T: MetricsView>(&self, metrics_view: &T) -> Vec<Bytes> {
-        self.convert_metrics_with_limits(metrics_view, usize::MAX, usize::MAX, usize::MAX, false)
-            .expect("unbounded metric transformation cannot exceed its limits")
-    }
-
-    /// Convert an OTLP metrics view while enforcing row count, row size,
-    /// request size, nesting depth, and traversal work limits.
-    pub fn convert_metrics_bounded<T: MetricsView>(
+    /// Convert an OTLP metrics view while enforcing validated row count, row
+    /// size, request size, nesting depth, and traversal work limits.
+    ///
+    /// Histogram and summary data points are expanded into sum, count,
+    /// bucket, and quantile rows matching the Go exporter.
+    pub fn convert_metrics<T: MetricsView>(
         &self,
         metrics_view: &T,
         max_rows: usize,
         max_row_bytes: usize,
         max_bytes: usize,
     ) -> Result<Vec<Bytes>, Error> {
-        self.convert_metrics_with_limits(metrics_view, max_rows, max_row_bytes, max_bytes, true)
+        self.convert_metrics_with_limits(
+            metrics_view,
+            TransformLimits::try_new(max_rows, max_row_bytes, max_bytes)?,
+        )
     }
 
     fn convert_metrics_with_limits<T: MetricsView>(
         &self,
         metrics_view: &T,
-        max_rows: usize,
-        max_row_bytes: usize,
-        max_bytes: usize,
-        bounded_traversal: bool,
+        limits: TransformLimits,
     ) -> Result<Vec<Bytes>, Error> {
-        let mut results =
-            RowOutput::new(1024, max_rows, max_row_bytes, max_bytes, bounded_traversal);
+        let mut results = RowOutput::new(1024, limits);
 
         for resource_metrics in metrics_view.resources() {
             let resource = resource_metrics.resource();
@@ -829,10 +827,9 @@ impl Transformer {
                 if let Some(gauge) = data.as_gauge() {
                     for dp in gauge.data_points() {
                         let Some(value) = Self::number_value(dp.value()) else {
-                            results.reject_invalid_metric(
-                                "number data point does not contain a value",
-                            )?;
-                            continue;
+                            return Err(Error::InvalidMetricData {
+                                reason: "number data point does not contain a value",
+                            });
                         };
                         let attrs_json = Self::serialize_attributes_map(dp.attributes(), results)?;
                         Self::write_metric_row(
@@ -855,10 +852,9 @@ impl Transformer {
                 if let Some(sum) = data.as_sum() {
                     for dp in sum.data_points() {
                         let Some(value) = Self::number_value(dp.value()) else {
-                            results.reject_invalid_metric(
-                                "number data point does not contain a value",
-                            )?;
-                            continue;
+                            return Err(Error::InvalidMetricData {
+                                reason: "number data point does not contain a value",
+                            });
                         };
                         let attrs_json = Self::serialize_attributes_map(dp.attributes(), results)?;
                         Self::write_metric_row(
@@ -941,13 +937,13 @@ impl Transformer {
         host: &[u8],
         results: &mut RowOutput,
     ) -> Result<(), Error> {
-        let Some(validated) = Self::validate_histogram(dp) else {
-            return results.reject_invalid_metric("explicit histogram is malformed");
-        };
-        let additional_rows = usize::from(dp.sum().is_some_and(f64::is_finite))
-            .saturating_add(1)
-            .saturating_add(validated.buckets.len());
-        results.ensure_additional_rows(additional_rows)?;
+        if dp.sum().is_some_and(|sum| !sum.is_finite()) {
+            return Err(Error::InvalidMetricData {
+                reason: "metric value is not finite",
+            });
+        }
+        let fixed_rows = usize::from(dp.sum().is_some()).saturating_add(1);
+        let validated = Self::validate_histogram(dp, fixed_rows, results)?;
 
         let ts = Self::normalize_metric_timestamp(dp.time_unix_nano());
         let attrs_json = Self::serialize_attributes_map(dp.attributes(), results)?;
@@ -987,8 +983,44 @@ impl Transformer {
             host,
         )?;
 
-        for (bound, cumulative_count) in validated.buckets {
-            let le_attrs_json = Self::merge_extra_attr(&attrs_json, "le", bound, results)?;
+        if validated.bucket_rows > 0 {
+            let mut counts = dp.bucket_counts();
+            let mut cumulative_count = 0_u64;
+            for bound in dp.explicit_bounds() {
+                let count = counts.next().ok_or(Error::InvalidMetricData {
+                    reason: "explicit histogram is malformed",
+                })?;
+                cumulative_count =
+                    cumulative_count
+                        .checked_add(count)
+                        .ok_or(Error::InvalidMetricData {
+                            reason: "explicit histogram is malformed",
+                        })?;
+                let le_attrs_json = Self::merge_extra_attr(&attrs_json, "le", bound, results)?;
+                Self::write_metric_row(
+                    results,
+                    ts,
+                    &bucket_name,
+                    b"Histogram",
+                    unit,
+                    b"",
+                    cumulative_count as f64,
+                    &le_attrs_json,
+                    scope_entries,
+                    resource_attrs_json,
+                    host,
+                )?;
+            }
+            let final_count = counts.next().ok_or(Error::InvalidMetricData {
+                reason: "explicit histogram is malformed",
+            })?;
+            cumulative_count =
+                cumulative_count
+                    .checked_add(final_count)
+                    .ok_or(Error::InvalidMetricData {
+                        reason: "explicit histogram is malformed",
+                    })?;
+            let le_attrs_json = Self::merge_extra_attr(&attrs_json, "le", f64::INFINITY, results)?;
             Self::write_metric_row(
                 results,
                 ts,
@@ -1006,37 +1038,61 @@ impl Transformer {
         Ok(())
     }
 
-    fn validate_histogram<D: HistogramDataPointView>(dp: &D) -> Option<ValidatedHistogram> {
-        let bounds = dp.explicit_bounds().collect::<Vec<_>>();
-        let counts = dp.bucket_counts().collect::<Vec<_>>();
-        if counts.is_empty() && bounds.is_empty() {
-            return Some(ValidatedHistogram {
-                buckets: Vec::new(),
+    fn validate_histogram<D: HistogramDataPointView>(
+        dp: &D,
+        fixed_rows: usize,
+        results: &RowOutput,
+    ) -> Result<ValidatedHistogram, Error> {
+        let mut bounds = dp.explicit_bounds().peekable();
+        let mut counts = dp.bucket_counts().peekable();
+        if bounds.peek().is_none() && counts.peek().is_none() {
+            results.ensure_additional_rows(fixed_rows)?;
+            return Ok(ValidatedHistogram {
+                bucket_rows: 0,
                 total: dp.count(),
             });
         }
-        if counts.len() != bounds.len().checked_add(1)? {
-            return None;
-        }
-        if bounds.iter().any(|bound| !bound.is_finite())
-            || bounds.windows(2).any(|pair| pair[0] >= pair[1])
-        {
-            return None;
-        }
 
+        results.ensure_additional_rows(fixed_rows.saturating_add(1))?;
         let mut running = 0_u64;
-        let mut buckets = Vec::with_capacity(counts.len());
-        for (bound, count) in bounds.into_iter().zip(counts.iter().copied()) {
-            running = running.checked_add(count)?;
-            buckets.push((bound, running));
+        let mut bucket_rows = 1_usize;
+        let mut previous_bound = f64::NEG_INFINITY;
+        for bound in bounds {
+            if !bound.is_finite() || bound <= previous_bound {
+                return Err(Error::InvalidMetricData {
+                    reason: "explicit histogram is malformed",
+                });
+            }
+            previous_bound = bound;
+            let count = counts.next().ok_or(Error::InvalidMetricData {
+                reason: "explicit histogram is malformed",
+            })?;
+            running = running.checked_add(count).ok_or(Error::InvalidMetricData {
+                reason: "explicit histogram is malformed",
+            })?;
+            bucket_rows = bucket_rows.saturating_add(1);
+            results.ensure_additional_rows(fixed_rows.saturating_add(bucket_rows))?;
         }
-        let total = running.checked_add(*counts.last()?)?;
+        let final_count = counts.next().ok_or(Error::InvalidMetricData {
+            reason: "explicit histogram is malformed",
+        })?;
+        if counts.next().is_some() {
+            return Err(Error::InvalidMetricData {
+                reason: "explicit histogram is malformed",
+            });
+        }
+        let total = running
+            .checked_add(final_count)
+            .ok_or(Error::InvalidMetricData {
+                reason: "explicit histogram is malformed",
+            })?;
         if total != dp.count() {
-            return None;
+            return Err(Error::InvalidMetricData {
+                reason: "explicit histogram is malformed",
+            });
         }
-        buckets.push((f64::INFINITY, total));
 
-        Some(ValidatedHistogram { buckets, total })
+        Ok(ValidatedHistogram { bucket_rows, total })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1051,14 +1107,13 @@ impl Transformer {
         host: &[u8],
         results: &mut RowOutput,
     ) -> Result<(), Error> {
-        let Some(validated) = Self::validate_exponential_histogram(dp) else {
-            return results.reject_invalid_metric("exponential histogram is malformed");
-        };
-        let additional_rows = usize::from(dp.sum().is_some_and(f64::is_finite))
-            .saturating_add(3)
-            .saturating_add(validated.negative.len())
-            .saturating_add(validated.positive.len());
-        results.ensure_additional_rows(additional_rows)?;
+        if dp.sum().is_some_and(|sum| !sum.is_finite()) {
+            return Err(Error::InvalidMetricData {
+                reason: "metric value is not finite",
+            });
+        }
+        let fixed_rows = usize::from(dp.sum().is_some()).saturating_add(3);
+        let validated = Self::validate_exponential_histogram(dp, fixed_rows, results)?;
 
         let ts = Self::normalize_metric_timestamp(dp.time_unix_nano());
         let attrs_json = Self::serialize_attributes_map(dp.attributes(), results)?;
@@ -1100,7 +1155,26 @@ impl Transformer {
 
         // Negative buckets are ordered by decreasing index. Their upper
         // boundary is -base^index after reversing the OTLP count array.
-        for (bound, cumulative_count) in validated.negative {
+        let mut cumulative_count = 0_u64;
+        for position in (0..validated.negative_counts.len()).rev() {
+            cumulative_count = cumulative_count
+                .checked_add(validated.negative_counts[position])
+                .ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
+            let position = i64::try_from(position).map_err(|_| Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            })?;
+            let index = i64::from(validated.negative_offset)
+                .checked_add(position)
+                .ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
+            let bound = -Self::exponential_histogram_boundary(dp.scale(), index).ok_or(
+                Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                },
+            )?;
             let le_attrs_json = Self::merge_extra_attr(&attrs_json, "le", bound, results)?;
             Self::write_metric_row(
                 results,
@@ -1133,7 +1207,28 @@ impl Transformer {
             host,
         )?;
 
-        for (bound, cumulative_count) in validated.positive {
+        cumulative_count = validated.zero_total;
+        for (position, count) in validated.positive_counts.into_iter().enumerate() {
+            cumulative_count =
+                cumulative_count
+                    .checked_add(count)
+                    .ok_or(Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    })?;
+            let position = i64::try_from(position).map_err(|_| Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            })?;
+            let index = i64::from(validated.positive_offset)
+                .checked_add(position)
+                .and_then(|index| index.checked_add(1))
+                .ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
+            let bound = Self::exponential_histogram_boundary(dp.scale(), index).ok_or(
+                Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                },
+            )?;
             let le_attrs_json = Self::merge_extra_attr(&attrs_json, "le", bound, results)?;
             Self::write_metric_row(
                 results,
@@ -1169,84 +1264,125 @@ impl Transformer {
 
     fn validate_exponential_histogram<D: ExponentialHistogramDataPointView>(
         dp: &D,
-    ) -> Option<ValidatedExponentialHistogram> {
+        fixed_rows: usize,
+        results: &RowOutput,
+    ) -> Result<ValidatedExponentialHistogram, Error> {
         let scale = dp.scale();
         if !(-10..=20).contains(&scale) {
-            return None;
+            return Err(Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            });
         }
         let zero_threshold = dp.zero_threshold();
         if !zero_threshold.is_finite() || zero_threshold < 0.0 {
-            return None;
+            return Err(Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            });
         }
 
-        let (negative_offset, negative_counts) = dp.negative().map_or_else(
-            || (0, Vec::new()),
-            |buckets| {
-                (
-                    buckets.offset(),
-                    buckets.bucket_counts().collect::<Vec<_>>(),
-                )
-            },
-        );
-        let (positive_offset, positive_counts) = dp.positive().map_or_else(
-            || (0, Vec::new()),
-            |buckets| {
-                (
-                    buckets.offset(),
-                    buckets.bucket_counts().collect::<Vec<_>>(),
-                )
-            },
-        );
-
+        results.ensure_additional_rows(fixed_rows)?;
+        let negative_offset = dp.negative().as_ref().map_or(0, BucketsView::offset);
+        let positive_offset = dp.positive().as_ref().map_or(0, BucketsView::offset);
+        let mut negative_len = 0_usize;
+        let mut positive_len = 0_usize;
+        let mut total = 0_u64;
+        let mut previous_bound = f64::INFINITY;
+        if let Some(buckets) = dp.negative() {
+            for count in buckets.bucket_counts() {
+                let position =
+                    i64::try_from(negative_len).map_err(|_| Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    })?;
+                let index = i64::from(negative_offset).checked_add(position).ok_or(
+                    Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    },
+                )?;
+                let bound = -Self::exponential_histogram_boundary(scale, index).ok_or(
+                    Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    },
+                )?;
+                if bound >= previous_bound || bound > -zero_threshold {
+                    return Err(Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    });
+                }
+                previous_bound = bound;
+                negative_len = negative_len.saturating_add(1);
+                results.ensure_additional_rows(fixed_rows.saturating_add(negative_len))?;
+                total = total.checked_add(count).ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
+            }
+        }
         let zero_count = dp.zero_count();
-        let total = negative_counts
-            .iter()
-            .chain(std::iter::once(&zero_count))
-            .chain(positive_counts.iter())
-            .try_fold(0_u64, |total, count| total.checked_add(*count))?;
-        if total != dp.count() {
-            return None;
-        }
-
-        let mut running = 0_u64;
-        let mut negative = Vec::with_capacity(negative_counts.len());
-        let mut previous_bound = f64::NEG_INFINITY;
-        for position in (0..negative_counts.len()).rev() {
-            running = running.checked_add(negative_counts[position])?;
-            let position = i64::try_from(position).ok()?;
-            let index = i64::from(negative_offset).checked_add(position)?;
-            let bound = -Self::exponential_histogram_boundary(scale, index)?;
-            if bound <= previous_bound || bound > -zero_threshold {
-                return None;
-            }
-            previous_bound = bound;
-            negative.push((bound, running));
-        }
-
-        running = running.checked_add(zero_count)?;
-        let zero_total = running;
-        let mut positive = Vec::with_capacity(positive_counts.len());
+        total = total
+            .checked_add(zero_count)
+            .ok_or(Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            })?;
+        let zero_total = total;
         previous_bound = zero_threshold;
-        for (position, count) in positive_counts.into_iter().enumerate() {
-            running = running.checked_add(count)?;
-            let position = i64::try_from(position).ok()?;
-            let index = i64::from(positive_offset)
-                .checked_add(position)?
-                .checked_add(1)?;
-            let bound = Self::exponential_histogram_boundary(scale, index)?;
-            if bound <= previous_bound {
-                return None;
+        if let Some(buckets) = dp.positive() {
+            for count in buckets.bucket_counts() {
+                let position =
+                    i64::try_from(positive_len).map_err(|_| Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    })?;
+                let index = i64::from(positive_offset)
+                    .checked_add(position)
+                    .and_then(|index| index.checked_add(1))
+                    .ok_or(Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    })?;
+                let bound = Self::exponential_histogram_boundary(scale, index).ok_or(
+                    Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    },
+                )?;
+                if bound <= previous_bound {
+                    return Err(Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    });
+                }
+                previous_bound = bound;
+                positive_len = positive_len.saturating_add(1);
+                results.ensure_additional_rows(
+                    fixed_rows
+                        .saturating_add(negative_len)
+                        .saturating_add(positive_len),
+                )?;
+                total = total.checked_add(count).ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
             }
-            previous_bound = bound;
-            positive.push((bound, running));
         }
-        if running != total {
-            return None;
+        if total != dp.count() {
+            return Err(Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            });
         }
 
-        Some(ValidatedExponentialHistogram {
-            negative,
-            positive,
+        let mut negative_counts = Vec::with_capacity(negative_len);
+        if let Some(buckets) = dp.negative() {
+            negative_counts.extend(buckets.bucket_counts());
+        }
+        let mut positive_counts = Vec::with_capacity(positive_len);
+        if let Some(buckets) = dp.positive() {
+            positive_counts.extend(buckets.bucket_counts());
+        }
+        if negative_counts.len() != negative_len || positive_counts.len() != positive_len {
+            return Err(Error::InvalidMetricData {
+                reason: "exponential histogram is malformed",
+            });
+        }
+
+        Ok(ValidatedExponentialHistogram {
+            negative_offset,
+            negative_counts,
+            positive_offset,
+            positive_counts,
             zero_total,
             zero_threshold,
             total,
@@ -1273,6 +1409,7 @@ impl Transformer {
         host: &[u8],
         results: &mut RowOutput,
     ) -> Result<(), Error> {
+        Self::validate_summary(dp, results)?;
         let ts = Self::normalize_metric_timestamp(dp.time_unix_nano());
         let attrs_json = Self::serialize_attributes_map(dp.attributes(), results)?;
         let sum_name = Self::concatenate(&[name, b"_sum"], results)?;
@@ -1325,6 +1462,33 @@ impl Transformer {
                 resource_attrs_json,
                 host,
             )?;
+        }
+        Ok(())
+    }
+
+    fn validate_summary<D: SummaryDataPointView>(dp: &D, results: &RowOutput) -> Result<(), Error> {
+        if !dp.sum().is_finite() {
+            return Err(Error::InvalidMetricData {
+                reason: "summary sum is not finite",
+            });
+        }
+        let mut additional_rows = 2_usize;
+        results.ensure_additional_rows(additional_rows)?;
+        for quantile_value in dp.quantile_values() {
+            let quantile = quantile_value.quantile();
+            if !quantile.is_finite() || !(0.0..=1.0).contains(&quantile) {
+                return Err(Error::InvalidMetricData {
+                    reason: "summary quantile is outside [0, 1]",
+                });
+            }
+            let value = quantile_value.value();
+            if !value.is_finite() || value < 0.0 {
+                return Err(Error::InvalidMetricData {
+                    reason: "summary quantile value is negative or not finite",
+                });
+            }
+            additional_rows = additional_rows.saturating_add(1);
+            results.ensure_additional_rows(additional_rows)?;
         }
         Ok(())
     }
@@ -1530,7 +1694,9 @@ impl Transformer {
         host: &[u8],
     ) -> Result<(), Error> {
         if !value.is_finite() {
-            return results.reject_invalid_metric("metric value is not finite");
+            return Err(Error::InvalidMetricData {
+                reason: "metric value is not finite",
+            });
         }
 
         // Internal telemetry can omit the OTLP datapoint timestamp. ADX needs
@@ -1609,36 +1775,27 @@ impl Transformer {
         }
     }
 
-    /// Convert an OTLP traces view into JSON records matching the ADX
-    /// OTELTraces table schema.
-    #[must_use]
-    pub fn convert_traces<T: TracesView>(&self, traces_view: &T) -> Vec<Bytes> {
-        self.convert_traces_with_limits(traces_view, usize::MAX, usize::MAX, usize::MAX, false)
-            .expect("unbounded trace transformation cannot exceed its limits")
-    }
-
-    /// Convert an OTLP traces view while enforcing row count, row size,
-    /// request size, nesting depth, and traversal work limits.
-    pub fn convert_traces_bounded<T: TracesView>(
+    /// Convert an OTLP traces view while enforcing validated row count, row
+    /// size, request size, nesting depth, and traversal work limits.
+    pub fn convert_traces<T: TracesView>(
         &self,
         traces_view: &T,
         max_rows: usize,
         max_row_bytes: usize,
         max_bytes: usize,
     ) -> Result<Vec<Bytes>, Error> {
-        self.convert_traces_with_limits(traces_view, max_rows, max_row_bytes, max_bytes, true)
+        self.convert_traces_with_limits(
+            traces_view,
+            TransformLimits::try_new(max_rows, max_row_bytes, max_bytes)?,
+        )
     }
 
     fn convert_traces_with_limits<T: TracesView>(
         &self,
         traces_view: &T,
-        max_rows: usize,
-        max_row_bytes: usize,
-        max_bytes: usize,
-        bounded_traversal: bool,
+        limits: TransformLimits,
     ) -> Result<Vec<Bytes>, Error> {
-        let mut results =
-            RowOutput::new(256, max_rows, max_row_bytes, max_bytes, bounded_traversal);
+        let mut results = RowOutput::new(256, limits);
 
         for resource_spans in traces_view.resources() {
             let resource = resource_spans.resource();
@@ -1788,10 +1945,12 @@ impl Transformer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::MAX_SAFE_ROW_BYTES;
+    use super::super::config::{
+        MAX_SAFE_ROW_BYTES, MAX_STREAMING_REQUEST_BYTES, MAX_STREAMING_REQUEST_ROWS,
+    };
     use super::{
         Error, JsonWriter, MAX_ANY_VALUE_NESTING_DEPTH, MAX_ANY_VALUE_TRAVERSAL_WORK, RowOutput,
-        ScopeEntries, Transformer,
+        ScopeEntries, TransformLimits, Transformer,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -2000,25 +2159,105 @@ mod tests {
     fn metric_rows(request: ExportMetricsServiceRequest) -> Vec<serde_json::Value> {
         let bytes = request.encode_to_vec();
         Transformer::new()
-            .convert_metrics(&RawMetricsData::new(&bytes))
+            .convert_metrics(
+                &RawMetricsData::new(&bytes),
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid metric data should transform")
             .iter()
             .map(|row| serde_json::from_slice(row).expect("metric row should be valid JSON"))
             .collect()
     }
 
-    fn bounded_metric_error(request: ExportMetricsServiceRequest) -> Error {
+    fn metric_error(request: ExportMetricsServiceRequest) -> Error {
         let bytes = request.encode_to_vec();
+        let view = RawMetricsData::new(&bytes);
         Transformer::new()
-            .convert_metrics_bounded(
-                &RawMetricsData::new(&bytes),
-                usize::MAX,
-                usize::MAX,
-                usize::MAX,
+            .convert_metrics(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
             )
-            .expect_err("bounded conversion must refuse malformed metric data")
+            .expect_err("conversion must refuse malformed metric data")
     }
 
-    /// Scenario: bounded conversion receives missing, NaN, or infinite number data point values.
+    /// Scenario: a caller attempts to disable transformation bounds with zero or unbounded limits.
+    /// Guarantees: public conversion rejects unsafe limits before allocating rows or traversing input.
+    #[test]
+    fn public_conversion_rejects_unsafe_limits() {
+        let bytes = log_request("", Vec::new()).encode_to_vec();
+        let view = RawLogsData::new(&bytes);
+
+        for (name, max_rows, max_row_bytes, max_bytes, actual, maximum) in [
+            (
+                "max_rows",
+                0,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+                0,
+                MAX_STREAMING_REQUEST_ROWS,
+            ),
+            (
+                "max_rows",
+                usize::MAX,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+                usize::MAX,
+                MAX_STREAMING_REQUEST_ROWS,
+            ),
+            (
+                "max_row_bytes",
+                MAX_STREAMING_REQUEST_ROWS,
+                0,
+                MAX_STREAMING_REQUEST_BYTES,
+                0,
+                MAX_SAFE_ROW_BYTES,
+            ),
+            (
+                "max_row_bytes",
+                MAX_STREAMING_REQUEST_ROWS,
+                usize::MAX,
+                MAX_STREAMING_REQUEST_BYTES,
+                usize::MAX,
+                MAX_SAFE_ROW_BYTES,
+            ),
+            (
+                "max_bytes",
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                0,
+                0,
+                MAX_STREAMING_REQUEST_BYTES,
+            ),
+            (
+                "max_bytes",
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                usize::MAX,
+                usize::MAX,
+                MAX_STREAMING_REQUEST_BYTES,
+            ),
+        ] {
+            let error = Transformer::new()
+                .convert_logs(&view, max_rows, max_row_bytes, max_bytes)
+                .expect_err("unsafe limits must be rejected");
+            assert!(matches!(
+                error,
+                Error::InvalidTransformationLimit {
+                    name: actual_name,
+                    actual: actual_value,
+                    maximum: actual_maximum,
+                } if actual_name == name
+                    && actual_value == actual
+                    && actual_maximum == maximum
+            ));
+        }
+    }
+
+    /// Scenario: public metric conversion receives missing, NaN, or infinite values.
     /// Guarantees: values ADX cannot represent are refused instead of being substituted or dropped.
     #[test]
     fn invalid_number_data_points_are_refused() {
@@ -2034,7 +2273,7 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                bounded_metric_error(gauge_request(value)),
+                metric_error(gauge_request(value)),
                 Error::InvalidMetricData { reason: actual } if actual == reason
             ));
         }
@@ -2063,10 +2302,23 @@ mod tests {
         let bytes = request.encode_to_vec();
         let view = RawLogsData::new(&bytes);
 
-        let evolved = Transformer::new().convert_logs(&view);
+        let evolved = Transformer::new()
+            .convert_logs(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid evolved log should transform");
         let legacy = Transformer::new()
             .with_legacy_logs_body_string(true)
-            .convert_logs(&view);
+            .convert_logs(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid legacy log should transform");
 
         assert!(String::from_utf8_lossy(&evolved[0]).contains("\"Body\":42"));
         assert!(String::from_utf8_lossy(&legacy[0]).contains("\"Body\":\"42\""));
@@ -2122,7 +2374,14 @@ mod tests {
         let bytes = request.encode_to_vec();
         let view = RawLogsData::new(&bytes);
 
-        let rows = Transformer::new().convert_logs(&view);
+        let rows = Transformer::new()
+            .convert_logs(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid composite log should transform");
         let row: serde_json::Value = serde_json::from_slice(&rows[0]).expect("valid JSON row");
 
         assert_eq!(
@@ -2156,11 +2415,11 @@ mod tests {
         let bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_logs_bounded(
+            .convert_logs(
                 &RawLogsData::new(&bytes),
-                usize::MAX,
+                MAX_STREAMING_REQUEST_ROWS,
                 MAX_SAFE_ROW_BYTES,
-                usize::MAX,
+                MAX_STREAMING_REQUEST_BYTES,
             )
             .expect_err("escaped output must honor the row budget during serialization");
 
@@ -2181,7 +2440,12 @@ mod tests {
         let bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_logs_bounded(&RawLogsData::new(&bytes), usize::MAX, 64, usize::MAX)
+            .convert_logs(
+                &RawLogsData::new(&bytes),
+                MAX_STREAMING_REQUEST_ROWS,
+                64,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
             .expect_err("configured row limit must be enforced");
 
         assert!(matches!(
@@ -2196,7 +2460,14 @@ mod tests {
     fn bounded_log_conversion_honors_remaining_request_budget() {
         let mut request = log_request("", Vec::new());
         let one_record_bytes = request.encode_to_vec();
-        let one_row = Transformer::new().convert_logs(&RawLogsData::new(&one_record_bytes));
+        let one_row = Transformer::new()
+            .convert_logs(
+                &RawLogsData::new(&one_record_bytes),
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid log should transform");
         let max_bytes = one_row[0].len().saturating_add(1);
         request.resource_logs[0].scope_logs[0]
             .log_records
@@ -2204,9 +2475,9 @@ mod tests {
         let two_record_bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_logs_bounded(
+            .convert_logs(
                 &RawLogsData::new(&two_record_bytes),
-                usize::MAX,
+                MAX_STREAMING_REQUEST_ROWS,
                 MAX_SAFE_ROW_BYTES,
                 max_bytes,
             )
@@ -2252,11 +2523,11 @@ mod tests {
         let bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_logs_bounded(
+            .convert_logs(
                 &RawLogsData::new(&bytes),
-                usize::MAX,
+                MAX_STREAMING_REQUEST_ROWS,
                 MAX_SAFE_ROW_BYTES,
-                usize::MAX,
+                MAX_STREAMING_REQUEST_BYTES,
             )
             .expect_err("deep AnyValue traversal must be bounded");
 
@@ -2280,11 +2551,11 @@ mod tests {
         let bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_logs_bounded(
+            .convert_logs(
                 &RawLogsData::new(&bytes),
-                usize::MAX,
+                MAX_STREAMING_REQUEST_ROWS,
                 MAX_SAFE_ROW_BYTES,
-                usize::MAX,
+                MAX_STREAMING_REQUEST_BYTES,
             )
             .expect_err("source-wide traversal work must be bounded");
 
@@ -2306,7 +2577,13 @@ mod tests {
 
         let attribute_only = Transformer::new()
             .with_log_event_name_options(false, true)
-            .convert_logs(&view);
+            .convert_logs(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid attribute-only log should transform");
         let attribute_only: serde_json::Value =
             serde_json::from_slice(&attribute_only[0]).expect("log row should be valid JSON");
         assert!(attribute_only.get("EventName").is_none());
@@ -2317,7 +2594,13 @@ mod tests {
 
         let column_only = Transformer::new()
             .with_log_event_name_options(true, false)
-            .convert_logs(&view);
+            .convert_logs(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid column-only log should transform");
         let column_only: serde_json::Value =
             serde_json::from_slice(&column_only[0]).expect("log row should be valid JSON");
         assert_eq!(column_only["EventName"], "checkout.completed");
@@ -2335,7 +2618,14 @@ mod tests {
         .encode_to_vec();
         let view = RawLogsData::new(&bytes);
 
-        let rows = Transformer::new().convert_logs(&view);
+        let rows = Transformer::new()
+            .convert_logs(
+                &view,
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid event-name log should transform");
         let row = String::from_utf8_lossy(&rows[0]);
         let parsed: serde_json::Value =
             serde_json::from_slice(&rows[0]).expect("log row should be valid JSON");
@@ -2396,11 +2686,11 @@ mod tests {
         };
         let bytes = request.encode_to_vec();
         let rows = Transformer::new()
-            .convert_traces_bounded(
+            .convert_traces(
                 &RawTraceData::new(&bytes),
                 1,
                 MAX_SAFE_ROW_BYTES,
-                4 * 1024 * 1024,
+                MAX_STREAMING_REQUEST_BYTES,
             )
             .expect("trace row should fit configured bounds");
 
@@ -2506,7 +2796,14 @@ mod tests {
             }],
         };
         let bytes = request.encode_to_vec();
-        let rows = Transformer::new().convert_metrics(&RawMetricsData::new(&bytes));
+        let rows = Transformer::new()
+            .convert_metrics(
+                &RawMetricsData::new(&bytes),
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("valid browser metrics should transform");
         let rows = rows
             .iter()
             .map(|row| std::str::from_utf8(row).expect("metric row should be UTF-8"))
@@ -2629,11 +2926,87 @@ mod tests {
         );
     }
 
+    /// Scenario: summary points contain non-finite or out-of-range quantiles and invalid values.
+    /// Guarantees: transformation refuses the complete source message before emitting summary rows.
+    #[test]
+    fn invalid_summary_quantiles_and_values_are_refused() {
+        for (quantile, value, reason) in [
+            (f64::NAN, 1.0, "summary quantile is outside [0, 1]"),
+            (-0.1, 1.0, "summary quantile is outside [0, 1]"),
+            (1.1, 1.0, "summary quantile is outside [0, 1]"),
+            (
+                0.5,
+                -1.0,
+                "summary quantile value is negative or not finite",
+            ),
+            (
+                0.5,
+                f64::NAN,
+                "summary quantile value is negative or not finite",
+            ),
+            (
+                0.5,
+                f64::INFINITY,
+                "summary quantile value is negative or not finite",
+            ),
+        ] {
+            let error = metric_error(summary_request(SummaryDataPoint {
+                count: 1,
+                sum: 1.0,
+                quantile_values: vec![summary_data_point::ValueAtQuantile { quantile, value }],
+                ..Default::default()
+            }));
+            assert!(matches!(
+                error,
+                Error::InvalidMetricData { reason: actual } if actual == reason
+            ));
+        }
+    }
+
+    /// Scenario: a large explicit histogram exceeds a small configured row budget.
+    /// Guarantees: cardinality is rejected while iterating input, before bucket vectors are materialized.
+    #[test]
+    fn explicit_histogram_cardinality_is_preflighted() {
+        let bucket_count = 10_000_usize;
+        let request = explicit_histogram_request(HistogramDataPoint {
+            count: 0,
+            bucket_counts: vec![0; bucket_count + 1],
+            explicit_bounds: (0..bucket_count).map(|index| index as f64).collect(),
+            ..Default::default()
+        });
+        let bytes = request.encode_to_vec();
+
+        let error = Transformer::new()
+            .convert_metrics(
+                &RawMetricsData::new(&bytes),
+                2,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect_err("histogram cardinality must honor the row budget");
+
+        assert!(matches!(
+            error,
+            Error::TooManyRows {
+                actual: 3,
+                limit: 2
+            }
+        ));
+    }
+
     /// Scenario: generated dimensions contain positive and negative infinity.
     /// Guarantees: both values use Go spellings and are encoded as JSON strings.
     #[test]
     fn generated_infinite_dimensions_use_go_string_spellings() {
-        let results = RowOutput::new(0, usize::MAX, usize::MAX, usize::MAX, false);
+        let results = RowOutput::new(
+            0,
+            TransformLimits::try_new(
+                MAX_STREAMING_REQUEST_ROWS,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect("test limits should be valid"),
+        );
 
         let positive =
             Transformer::merge_extra_attr(b"{}", "le", f64::INFINITY, &results).expect("le");
@@ -2685,8 +3058,8 @@ mod tests {
         assert_eq!(timestamps.len(), 1);
     }
 
-    /// Scenario: bounded conversion receives explicit histograms with invalid structure or totals.
-    /// Guarantees: the complete source message is refused instead of being ACKed after silent row loss.
+    /// Scenario: public metric conversion receives explicit histograms with invalid structure or totals.
+    /// Guarantees: the complete source message is refused instead of silently dropping malformed rows.
     #[test]
     fn malformed_explicit_histograms_are_refused() {
         let malformed_points = [
@@ -2754,7 +3127,7 @@ mod tests {
         for (case, point) in malformed_points {
             assert!(
                 matches!(
-                    bounded_metric_error(explicit_histogram_request(point)),
+                    metric_error(explicit_histogram_request(point)),
                     Error::InvalidMetricData {
                         reason: "explicit histogram is malformed"
                     }
@@ -2850,19 +3223,52 @@ mod tests {
         let bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_metrics_bounded(
+            .convert_metrics(
                 &RawMetricsData::new(&bytes),
                 2,
                 MAX_SAFE_ROW_BYTES,
-                usize::MAX,
+                MAX_STREAMING_REQUEST_BYTES,
             )
             .expect_err("expanded rows must honor the configured limit");
 
         assert!(matches!(
             error,
             Error::TooManyRows {
-                actual: 6,
+                actual: 4,
                 limit: 2
+            }
+        ));
+    }
+
+    /// Scenario: a large exponential histogram exceeds a small configured row budget.
+    /// Guarantees: cardinality is rejected before count or expanded-bucket vectors are allocated.
+    #[test]
+    fn exponential_histogram_cardinality_is_preflighted() {
+        let request = exponential_histogram_request(ExponentialHistogramDataPoint {
+            count: 0,
+            scale: 0,
+            positive: Some(exponential_histogram_data_point::Buckets {
+                offset: 0,
+                bucket_counts: vec![0; 10_000],
+            }),
+            ..Default::default()
+        });
+        let bytes = request.encode_to_vec();
+
+        let error = Transformer::new()
+            .convert_metrics(
+                &RawMetricsData::new(&bytes),
+                3,
+                MAX_SAFE_ROW_BYTES,
+                MAX_STREAMING_REQUEST_BYTES,
+            )
+            .expect_err("histogram cardinality must honor the row budget");
+
+        assert!(matches!(
+            error,
+            Error::TooManyRows {
+                actual: 4,
+                limit: 3
             }
         ));
     }
@@ -2884,9 +3290,9 @@ mod tests {
         let bytes = request.encode_to_vec();
 
         let error = Transformer::new()
-            .convert_metrics_bounded(
+            .convert_metrics(
                 &RawMetricsData::new(&bytes),
-                usize::MAX,
+                MAX_STREAMING_REQUEST_ROWS,
                 MAX_SAFE_ROW_BYTES,
                 1,
             )
@@ -2947,11 +3353,11 @@ mod tests {
         assert_eq!(rows[1]["Timestamp"], rows[2]["Timestamp"]);
     }
 
-    /// Scenario: a zero-only exponential histogram uses a scale outside the OTLP range.
-    /// Guarantees: bounded conversion refuses the point even when it has no positive or negative buckets.
+    /// Scenario: public metric conversion receives a zero-only exponential histogram with an invalid scale.
+    /// Guarantees: conversion refuses the point even when it has no positive or negative buckets.
     #[test]
     fn zero_only_exponential_histogram_rejects_scale_21() {
-        let error = bounded_metric_error(exponential_histogram_request(
+        let error = metric_error(exponential_histogram_request(
             ExponentialHistogramDataPoint {
                 count: 3,
                 sum: Some(4.5),
@@ -2970,8 +3376,8 @@ mod tests {
         ));
     }
 
-    /// Scenario: bounded conversion receives exponential histograms with invalid structure or totals.
-    /// Guarantees: the complete source message is refused instead of being ACKed after silent row loss.
+    /// Scenario: public metric conversion receives exponential histograms with invalid structure or totals.
+    /// Guarantees: the complete source message is refused instead of silently dropping malformed rows.
     #[test]
     fn malformed_exponential_histograms_are_refused() {
         let malformed_points = [
@@ -3032,7 +3438,7 @@ mod tests {
         for (case, point) in malformed_points {
             assert!(
                 matches!(
-                    bounded_metric_error(exponential_histogram_request(point)),
+                    metric_error(exponential_histogram_request(point)),
                     Error::InvalidMetricData {
                         reason: "exponential histogram is malformed"
                     }
