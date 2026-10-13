@@ -109,14 +109,13 @@ pub struct Config {
 }
 
 impl Config {
-    /// Applies the deprecated `compression_method` alias onto the shared gRPC compression settings.
+    /// Validates the deprecated `compression_method` alias against the shared gRPC settings.
     ///
-    /// Setting `compression_method` is mutually exclusive with `request_compression` and
-    /// `response_compression`; combining them is rejected as an ambiguous configuration. When set
-    /// on its own, the method is applied to both the request and response compression lists so the
-    /// receiver keeps the pre-`GrpcServerSettings` single-knob behavior.
-    fn resolve_compression_method(&mut self) -> Result<(), otel_arrow_dfe_config::error::Error> {
-        let Some(methods) = self.compression_method.take() else {
+    /// This performs no mutation. The legacy field only ever accepted a single method (or
+    /// `"none"`), and it is mutually exclusive with `request_compression`/`response_compression`;
+    /// combining them is rejected as an ambiguous configuration.
+    fn validate_compression(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
+        let Some(methods) = self.compression_method.as_ref() else {
             return Ok(());
         };
 
@@ -137,16 +136,29 @@ impl Config {
             });
         }
 
-        otel_warn!(
-            "otap_receiver.deprecated_compression_method",
-            message = "`compression_method` is deprecated; use `request_compression` and \
-                 `response_compression` instead"
-        );
-
-        // A single method applies to both directions; `"none"` (empty list) disables both.
-        self.grpc.request_compression = Some(methods.clone());
-        self.grpc.response_compression = Some(methods);
         Ok(())
+    }
+
+    /// Returns the compression methods accepted for requests, honoring the deprecated alias.
+    ///
+    /// When the deprecated `compression_method` is set it applies to both directions; otherwise the
+    /// shared gRPC default applies (an omitted `request_compression` accepts zstd, gzip, deflate).
+    fn effective_request_compression(&self) -> Vec<CompressionMethod> {
+        match self.compression_method.as_ref() {
+            Some(methods) => methods.clone(),
+            None => self.grpc.request_compression_methods(),
+        }
+    }
+
+    /// Returns the compression methods offered for responses, honoring the deprecated alias.
+    ///
+    /// When the deprecated `compression_method` is set it applies to both directions; otherwise the
+    /// shared gRPC default applies (an omitted `response_compression` sends uncompressed).
+    fn effective_response_compression(&self) -> Vec<CompressionMethod> {
+        match self.compression_method.as_ref() {
+            Some(methods) => methods.clone(),
+            None => self.grpc.response_compression_methods(),
+        }
     }
 }
 
@@ -218,14 +230,22 @@ impl OTAPReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let mut config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
 
-        // Resolve the deprecated `compression_method` alias onto the shared gRPC settings.
-        config.resolve_compression_method()?;
+        // Validate the deprecated `compression_method` alias without mutating the config.
+        config.validate_compression()?;
+
+        if config.compression_method.is_some() {
+            otel_warn!(
+                "otap_receiver.deprecated_compression_method",
+                message = "`compression_method` is deprecated; use `request_compression` and \
+                           `response_compression` instead"
+            );
+        }
 
         // Register OTAP receiver metrics for this node.
         let metrics = Arc::new(SharedOtapReceiverMetrics::new(
@@ -578,8 +598,9 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let mut traces_server = ArrowTracesServiceServer::new(traces_service);
 
         // Apply accepted request compression. An omitted `request_compression` defaults to
-        // accepting zstd, gzip, and deflate, matching the OTLP receiver.
-        for codec in self.config.grpc.request_compression_methods() {
+        // accepting zstd, gzip, and deflate, matching the OTLP receiver. The deprecated
+        // `compression_method` alias, when set, applies to both directions.
+        for codec in self.config.effective_request_compression() {
             let encoding = codec.map_to_compression_encoding();
             logs_server = logs_server.accept_compressed(encoding);
             metrics_server = metrics_server.accept_compressed(encoding);
@@ -588,7 +609,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
         // Apply response compression. Enabling several codecs lets tonic pick one per request from
         // the client's `grpc-accept-encoding` header; an omitted setting sends uncompressed.
-        for codec in self.config.grpc.response_compression_methods() {
+        for codec in self.config.effective_response_compression() {
             let encoding = codec.map_to_compression_encoding();
             logs_server = logs_server.send_compressed(encoding);
             metrics_server = metrics_server.send_compressed(encoding);
@@ -1956,9 +1977,9 @@ mod tests {
         assert!(OTAPReceiver::from_config(pipeline_ctx, &config_unknown_field).is_err());
     }
 
-    /// Scenario: The deprecated `compression_method` alias is resolved onto the shared settings.
-    /// Guarantees: A single method fans out to both directions, "none" clears both, a list is
-    /// rejected, and combining it with the new fields is an error.
+    /// Scenario: The deprecated `compression_method` alias drives effective compression purely.
+    /// Guarantees: A single method fans out to both directions without mutating the shared gRPC
+    /// fields, "none" clears both, a list is rejected, and combining it with the new fields errors.
     #[test]
     fn deprecated_compression_method_alias() {
         use otel_arrow_dfe_otap::compression::CompressionMethod;
@@ -1971,7 +1992,7 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
-        // A single legacy method is applied to both request and response compression.
+        // A single legacy method drives both request and response compression...
         let config_legacy = json!({
             "listening_addr": "127.0.0.1:4330",
             "response_stream_channel_size": 100,
@@ -1979,13 +2000,16 @@ mod tests {
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_legacy).unwrap();
         assert_eq!(
-            receiver.config.grpc.request_compression,
-            Some(vec![CompressionMethod::Zstd])
+            receiver.config.effective_request_compression(),
+            vec![CompressionMethod::Zstd]
         );
         assert_eq!(
-            receiver.config.grpc.response_compression,
-            Some(vec![CompressionMethod::Zstd])
+            receiver.config.effective_response_compression(),
+            vec![CompressionMethod::Zstd]
         );
+        // ...without mutating the shared gRPC settings.
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
 
         // "none" clears compression in both directions.
         let config_legacy_none = json!({
@@ -1995,8 +2019,8 @@ mod tests {
         });
         let receiver =
             OTAPReceiver::from_config(pipeline_ctx.clone(), &config_legacy_none).unwrap();
-        assert_eq!(receiver.config.grpc.request_compression, Some(vec![]));
-        assert_eq!(receiver.config.grpc.response_compression, Some(vec![]));
+        assert_eq!(receiver.config.effective_request_compression(), vec![]);
+        assert_eq!(receiver.config.effective_response_compression(), vec![]);
 
         // The legacy field rejects a list (it only ever accepted a single method).
         let config_legacy_list = json!({
