@@ -158,12 +158,7 @@ fn compile_values(
 pub struct LogFilterConfig {
     include: Option<LogMatchPropertiesConfig>,
     exclude: Option<LogMatchPropertiesConfig>,
-
-    // LogConditions is a list of OTTL conditions for an ottllog context.
     // ToDo: Add OTTL Support and accept OTTL expressions
-    #[allow(dead_code)]
-    #[serde(default)]
-    log_record: Vec<String>,
 }
 
 impl LogFilterConfig {
@@ -172,13 +167,8 @@ impl LogFilterConfig {
     pub const fn new(
         include: Option<LogMatchPropertiesConfig>,
         exclude: Option<LogMatchPropertiesConfig>,
-        log_record: Vec<String>,
     ) -> Self {
-        Self {
-            include,
-            exclude,
-            log_record,
-        }
+        Self { include, exclude }
     }
 
     fn compile(&self) -> Result<LogFilter, ConfigError> {

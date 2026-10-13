@@ -554,6 +554,27 @@ impl Pattern {
     }
 }
 
+#[cfg(test)]
+impl Pattern {
+    /// Build a list of exact-match patterns from string literals.
+    pub(crate) fn many_exact(values: &[&str]) -> Vec<Pattern> {
+        values
+            .iter()
+            .map(|v| Pattern::Exact((*v).to_string()))
+            .collect()
+    }
+
+    /// Compile a list of regex patterns from string literals.
+    ///
+    /// Panics if any pattern is not a valid regex.
+    pub(crate) fn many_regex(patterns: &[&str]) -> Vec<Pattern> {
+        patterns
+            .iter()
+            .map(|p| Pattern::Regex(Regex::new(p).unwrap()))
+            .collect()
+    }
+}
+
 /// A compiled matcher for an attribute value of any supported type.
 #[derive(Debug, Clone)]
 pub enum ValueMatcher {

@@ -138,23 +138,6 @@ mod test {
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap};
-    use regex::Regex;
-
-    /// Compile a list of names into exact-match patterns.
-    fn exact(names: &[&str]) -> Vec<Pattern> {
-        names
-            .iter()
-            .map(|n| Pattern::Exact((*n).to_string()))
-            .collect()
-    }
-
-    /// Compile a list of regex patterns.
-    fn regexes(patterns: &[&str]) -> Vec<Pattern> {
-        patterns
-            .iter()
-            .map(|p| Pattern::Regex(Regex::new(p).unwrap()))
-            .collect()
-    }
 
     fn build_metrics(names: &[&str]) -> MetricsData {
         build_metrics_with_indices(&names.iter().copied().enumerate().collect::<Vec<_>>())
@@ -191,7 +174,8 @@ mod test {
 
     #[test]
     fn test_filter_include_metric_names() {
-        let include = MetricMatchProperties::new(exact(&["test.counter1", "test.counter3"]));
+        let include =
+            MetricMatchProperties::new(Pattern::many_exact(&["test.counter1", "test.counter3"]));
         let filter = MetricFilter::new(Some(include), None);
         let mut pool = IdBitmapPool::new();
 
@@ -215,7 +199,7 @@ mod test {
 
     #[test]
     fn test_filter_exclude_metric_names() {
-        let exclude = MetricMatchProperties::new(exact(&["test.counter2"]));
+        let exclude = MetricMatchProperties::new(Pattern::many_exact(&["test.counter2"]));
         let filter = MetricFilter::new(None, Some(exclude));
         let mut pool = IdBitmapPool::new();
 
@@ -239,7 +223,7 @@ mod test {
 
     #[test]
     fn test_filter_metric_names_regex() {
-        let include = MetricMatchProperties::new(regexes(&[r"^aio_.*_count$"]));
+        let include = MetricMatchProperties::new(Pattern::many_regex(&[r"^aio_.*_count$"]));
         let filter = MetricFilter::new(Some(include), None);
         let mut pool = IdBitmapPool::new();
 
@@ -273,7 +257,9 @@ mod test {
             (
                 "include-only",
                 MetricFilter::new(
-                    Some(MetricMatchProperties::new(exact(&["test.counter"]))),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&[
+                        "test.counter",
+                    ]))),
                     None,
                 ),
             ),
@@ -281,14 +267,16 @@ mod test {
                 "exclude-only",
                 MetricFilter::new(
                     None,
-                    Some(MetricMatchProperties::new(exact(&["test.counter"]))),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&[
+                        "test.counter",
+                    ]))),
                 ),
             ),
             (
                 "include-and-exclude",
                 MetricFilter::new(
-                    Some(MetricMatchProperties::new(exact(&["a"]))),
-                    Some(MetricMatchProperties::new(exact(&["b"]))),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&["a"]))),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&["b"]))),
                 ),
             ),
         ];
@@ -329,7 +317,7 @@ mod test {
         assert_eq!(rows(&input, ArrowPayloadType::NumberDataPoints), 3);
 
         let filter = MetricFilter::new(
-            Some(MetricMatchProperties::new(exact(&[
+            Some(MetricMatchProperties::new(Pattern::many_exact(&[
                 "test.counter1",
                 "test.counter3",
             ]))),

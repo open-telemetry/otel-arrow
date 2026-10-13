@@ -684,20 +684,12 @@ mod test {
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap};
 
-    /// Compile a list of strings into exact-match patterns.
-    fn exact(values: &[&str]) -> Vec<Pattern> {
-        values
-            .iter()
-            .map(|v| Pattern::Exact((*v).to_string()))
-            .collect()
-    }
-
     #[test]
     fn test_filter_include_no_attributes() {
         let include = TraceMatchProperties::new(
             Vec::new(),
             Vec::new(),
-            exact(&["span_name_1"]),
+            Pattern::many_exact(&["span_name_1"]),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -746,7 +738,7 @@ mod test {
         let exclude = TraceMatchProperties::new(
             Vec::new(),
             Vec::new(),
-            exact(&["span_name_1"]),
+            Pattern::many_exact(&["span_name_1"]),
             Vec::new(),
             Vec::new(),
             Vec::new(),
