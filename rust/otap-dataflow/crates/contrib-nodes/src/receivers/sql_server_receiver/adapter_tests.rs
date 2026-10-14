@@ -610,6 +610,106 @@ async fn query_deadline_and_failed_cleanup_prevent_reconnect() {
     assert!(adapter.shutdown().await.is_err());
 }
 
+/// Scenario: An outer timeout drops validation or execution while ATTENTION is unacknowledged.
+/// Guarantees: Cleanup failure survives future drop and prevents reuse or successful shutdown.
+#[tokio::test(start_paused = true)]
+async fn stock_driver_cleanup_survives_outer_timeout() {
+    for validating in [true, false] {
+        let responses = if validating {
+            vec![vec![], vec![]]
+        } else {
+            vec![metadata_response(), metadata_response(), vec![], vec![]]
+        };
+        let config = config(false);
+        let query = config.query().clone();
+        let connector = FixtureConnector::new([responses]);
+        let calls = Arc::clone(&connector.calls);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+        if !validating {
+            _ = adapter.begin_operation().unwrap();
+            _ = adapter.validate_query(&query).await.unwrap();
+        }
+        let cancellation = adapter.begin_operation().unwrap();
+        let cursor = query.watermark().initial();
+        let mut operation = Box::pin(async {
+            if validating {
+                adapter.validate_query(&query).await.map(|_| ())
+            } else {
+                adapter.execute(&query, &cursor).await.map(|_| ())
+            }
+        });
+        assert!(futures::poll!(operation.as_mut()).is_pending());
+        cancellation.cancel().await.unwrap();
+        assert!(futures::poll!(operation.as_mut()).is_pending());
+        let requests = if validating { 4 } else { 6 };
+        assert_eq!(
+            calls.requests.load(Ordering::Relaxed),
+            requests,
+            "ATTENTION was sent before the outer timeout",
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), operation)
+                .await
+                .is_err()
+        );
+        assert!(adapter.begin_operation().is_err());
+        assert_eq!(adapter.reconnect(&query).await, Err(Error::NotValidated));
+        assert_eq!(
+            adapter.validate_query(&query).await,
+            Err(Error::NotValidated)
+        );
+        assert_eq!(
+            adapter.execute(&query, &cursor).await,
+            Err(Error::NotValidated)
+        );
+        assert_eq!(adapter.shutdown().await, Err(Error::Driver));
+        assert_eq!(calls.requests.load(Ordering::Relaxed), requests);
+    }
+}
+
+/// Scenario: Cancellation of validation or execution receives a confirmed ATTENTION response.
+/// Guarantees: Successful cleanup clears the failure latch and permits a fresh validated connection.
+#[tokio::test]
+async fn stock_driver_confirmed_cleanup_allows_revalidation() {
+    for validating in [true, false] {
+        let responses = if validating {
+            vec![vec![], attention_done()]
+        } else {
+            vec![
+                metadata_response(),
+                metadata_response(),
+                vec![],
+                attention_done(),
+            ]
+        };
+        let config = config(false);
+        let query = config.query().clone();
+        let connector = FixtureConnector::new([responses, vec![metadata_response()]]);
+        let calls = Arc::clone(&connector.calls);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+        if !validating {
+            _ = adapter.begin_operation().unwrap();
+            _ = adapter.validate_query(&query).await.unwrap();
+        }
+        let cancellation = adapter.begin_operation().unwrap();
+        let cursor = query.watermark().initial();
+        let mut operation = Box::pin(async {
+            if validating {
+                adapter.validate_query(&query).await.map(|_| ())
+            } else {
+                adapter.execute(&query, &cursor).await.map(|_| ())
+            }
+        });
+        assert!(futures::poll!(operation.as_mut()).is_pending());
+        cancellation.cancel().await.unwrap();
+        assert_eq!(operation.await, Err(Error::Cancelled));
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        assert_eq!(calls.connections.load(Ordering::Relaxed), 2);
+        adapter.shutdown().await.unwrap();
+    }
+}
+
 /// Scenario: A result keeps its column name but changes its wire type after metadata discovery.
 /// Guarantees: Real driver metadata cannot bypass the previously validated type.
 #[tokio::test]
@@ -807,6 +907,120 @@ async fn byte_limited_prefix_reconnects_before_continuing() {
         .unwrap();
     assert_eq!(next.rows[0].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
     adapter.shutdown().await.unwrap();
+}
+
+/// Scenario: An outer deadline interrupts cleanup of an otherwise valid byte-limited prefix.
+/// Guarantees: An unconfirmed partial stream cannot yield a page or make shutdown report success.
+#[tokio::test(start_paused = true)]
+async fn stock_driver_prefix_cleanup_survives_outer_timeout() {
+    use otel_arrow_dfe_scraper::database::{CursorRow, Row};
+    let row = Row {
+        values: vec![CellValue::Int64(1)],
+    };
+    let config = config_with_bytes(false, row.normalized_size() + size_of::<CursorRow>() as u64);
+    let query = config.query().clone();
+    let connector = FixtureConnector::new([vec![
+        metadata_response(),
+        metadata_response(),
+        rows_response(&[1, 2]),
+        vec![],
+    ]]);
+    let calls = Arc::clone(&connector.calls);
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            adapter.execute(&query, &query.watermark().initial()),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(calls.requests.load(Ordering::Relaxed), 6);
+    assert!(adapter.begin_operation().is_err());
+    assert_eq!(adapter.shutdown().await, Err(Error::Driver));
+}
+
+/// Scenario: Three rows fit the byte budget exactly but doubling row capacity would exceed it.
+/// Guarantees: Snapshots and incremental pages retain all fitting rows without unnecessary cancellation.
+#[tokio::test]
+async fn stock_driver_fits_exact_capacity_budget() {
+    use otel_arrow_dfe_scraper::database::{CursorRow, Row};
+    let row = Row {
+        values: vec![CellValue::Int64(1)],
+    };
+    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64);
+    for snapshot in [true, false] {
+        let mut raw = raw_config(snapshot, budget);
+        raw["query"]["max_rows_per_poll"] = json!(4);
+        let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+        let query = config.query().clone();
+        let connector = FixtureConnector::new([vec![
+            metadata_response(),
+            metadata_response(),
+            rows_response(&[1, 2, 3]),
+        ]]);
+        let calls = Arc::clone(&connector.calls);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        _ = adapter.begin_operation().unwrap();
+        let page = adapter
+            .execute(&query, &query.watermark().initial())
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 3);
+        assert_eq!(
+            calls.requests.load(Ordering::Relaxed),
+            5,
+            "no ATTENTION needed"
+        );
+        adapter.shutdown().await.unwrap();
+    }
+}
+
+/// Scenario: The minimum capacity for three rows exceeds the normalized byte budget by one byte.
+/// Guarantees: Snapshots still fail wholly and incremental pages cancel before returning a fitting prefix.
+#[tokio::test]
+async fn stock_driver_minimum_capacity_preserves_byte_limit() {
+    use otel_arrow_dfe_scraper::database::{CursorRow, Row};
+    let row = Row {
+        values: vec![CellValue::Int64(1)],
+    };
+    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64) - 1;
+    for snapshot in [true, false] {
+        let mut raw = raw_config(snapshot, budget);
+        raw["query"]["max_rows_per_poll"] = json!(4);
+        let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+        let query = config.query().clone();
+        let connector = FixtureConnector::new([vec![
+            metadata_response(),
+            metadata_response(),
+            rows_response(&[1, 2, 3]),
+            attention_done(),
+        ]]);
+        let calls = Arc::clone(&connector.calls);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        _ = adapter.begin_operation().unwrap();
+        let result = adapter.execute(&query, &query.watermark().initial()).await;
+        if snapshot {
+            assert_eq!(result, Err(Error::SnapshotLimit));
+        } else {
+            let page = result.unwrap();
+            assert_eq!(page.rows.len(), 2);
+            assert_eq!(page.rows[1].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+        }
+        assert_eq!(
+            calls.requests.load(Ordering::Relaxed),
+            6,
+            "ATTENTION confirmed"
+        );
+        adapter.shutdown().await.unwrap();
+    }
 }
 
 fn error_response(code: u32, message: &str) -> Vec<u8> {

@@ -188,13 +188,15 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
 
     async fn cancel_client(&mut self, client: &mut Client<C::Stream>) -> Result<(), Error> {
         // A partial stream is not assumed reusable. Cap ATTENTION and discard the client.
+        // An outer deadline may drop this future before the acknowledgement arrives.
+        self.cleanup_failed = true;
         match tokio::time::timeout(Duration::from_secs(1), driver_call(client.cancel_query())).await
         {
-            Ok(Ok(())) => Ok(()),
-            _ => {
-                self.cleanup_failed = true;
-                Err(Error::Driver)
+            Ok(Ok(())) => {
+                self.cleanup_failed = false;
+                Ok(())
             }
+            _ => Err(Error::Driver),
         }
     }
 

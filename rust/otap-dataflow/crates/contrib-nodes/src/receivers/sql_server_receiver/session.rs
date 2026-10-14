@@ -170,18 +170,24 @@ where
                     .row
                     .normalized_size()
                     .saturating_add(cursor_bytes(&row.cursor));
+                let retained_bytes = |capacity: usize| {
+                    bytes
+                        .saturating_add(row_bytes)
+                        .saturating_add((capacity * size_of::<CursorRow>()) as u64)
+                };
                 let required_capacity = rows.len() + 1;
-                let future_capacity = if required_capacity > rows.capacity() {
+                let mut future_capacity = if required_capacity > rows.capacity() {
                     required_capacity
                         .max(rows.capacity().saturating_mul(2))
                         .min(query.max_rows())
                 } else {
                     rows.capacity()
                 };
-                let projected = bytes
-                    .saturating_add(row_bytes)
-                    .saturating_add((future_capacity * size_of::<CursorRow>()) as u64);
-                if projected > query.max_normalized_bytes() {
+                if retained_bytes(future_capacity) > query.max_normalized_bytes() {
+                    // Spare growth slots must not reject a page that fits at minimum capacity.
+                    future_capacity = required_capacity.max(rows.capacity());
+                }
+                if retained_bytes(future_capacity) > query.max_normalized_bytes() {
                     if snapshot {
                         return Err(Error::SnapshotLimit);
                     }
@@ -195,10 +201,7 @@ where
                     rows.try_reserve_exact(future_capacity - rows.len())
                         .map_err(|_| Error::OversizeRow)?;
                 }
-                let retained = bytes
-                    .saturating_add(row_bytes)
-                    .saturating_add((rows.capacity() * size_of::<CursorRow>()) as u64);
-                if retained > query.max_normalized_bytes() {
+                if retained_bytes(rows.capacity()) > query.max_normalized_bytes() {
                     return Err(if snapshot {
                         Error::SnapshotLimit
                     } else {

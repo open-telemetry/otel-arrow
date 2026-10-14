@@ -230,9 +230,11 @@ Cancellation handles are generation-specific: an old handle cannot cancel a
 later operation. For an interrupted or partial query, the adapter attempts
 ATTENTION under a one-second cap and discards the session. Unconfirmed cleanup
 blocks subsequent operations and causes shutdown to fail so the shared runtime
-retains ownership. A connector must cancel on future drop and confirm any owned
-connection work has stopped in `shutdown`; the default no-op shutdown is only
-appropriate for connectors with no outstanding off-core work.
+retains ownership, including when an outer deadline drops the cancellation
+future before ATTENTION is acknowledged. A connector must cancel on future drop
+and confirm any owned connection work has stopped in `shutdown`; the default
+no-op shutdown is only appropriate for connectors with no outstanding off-core
+work.
 
 Only allowlisted transient transport failures and server codes are retried by
 the shared controller. SQL, metadata, authorization, conversion, TLS, and
