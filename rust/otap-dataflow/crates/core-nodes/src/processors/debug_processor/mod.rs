@@ -24,13 +24,13 @@ use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{CallData, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, CallData, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::process_duration::ComputeDuration;
-use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
 };
@@ -334,7 +334,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 Ok(())
             }
             Message::PData(mut pdata) => {
-                if self.config.verbosity() == Verbosity::Detailed {
+                // With output ports configured and none of them a main port,
+                // this processor is the end of the line for the data.
+                let is_sink = main_ports.as_ref().is_some_and(Vec::is_empty);
+                if self.config.verbosity() == Verbosity::Detailed && !is_sink {
                     // Print ACK/NACK detail only in Detailed mode.
                     effect_handler.subscribe_to(
                         Interests::ACKS | Interests::NACKS,
@@ -342,12 +345,26 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         &mut pdata,
                     );
                 }
-                // ToDo: handle multiple outputs differently here?
+                if is_sink {
+                    // Nothing is forwarded, so answer the upstream subscriber
+                    // here; otherwise it would wait forever.
+                    let mut consumed = pdata.clone();
+                    consumed.complete_processor_without_output(effect_handler);
+                    effect_handler.notify_ack(AckMsg::new(consumed)).await?;
+                }
                 if let Some(ports) = main_ports {
-                    for port in ports {
-                        // Note each clone has its own clone of the context.
+                    // The first main port (ports are sorted) carries the request
+                    // context, so its outcome answers upstream. The other main
+                    // ports get detached copies: a copy of the context would
+                    // answer the same upstream subscriber once per port.
+                    for (index, port) in ports.into_iter().enumerate() {
+                        let out = if index == 0 {
+                            pdata.clone()
+                        } else {
+                            pdata.clone_without_context()
+                        };
                         effect_handler
-                            .send_message_with_source_node_to(port, pdata.clone())
+                            .send_message_with_source_node_to(port, out)
                             .await?;
                     }
                 } else {
@@ -1690,5 +1707,195 @@ mod tests {
             .validate(|_| Box::pin(async {}));
 
         let _ = remove_file(output_file);
+    }
+
+    /// Direct harness for output-ports mode: a debug processor whose effect
+    /// handler is wired to `connected` ports, of which `debug_ports` receive the
+    /// debug text and the rest are main ports.
+    struct OutportsHarness {
+        processor: DebugProcessor,
+        effect: otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+        outputs: std::collections::HashMap<
+            String,
+            otel_arrow_dfe_engine::local::message::LocalReceiver<OtapPdata>,
+        >,
+        completion_rx: otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
+        _runtime_ctrl_rx: otel_arrow_dfe_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
+    }
+
+    fn build_outports_harness(
+        connected: &[&str],
+        debug_ports: &[&str],
+        verbosity: Verbosity,
+    ) -> OutportsHarness {
+        use otel_arrow_dfe_config::PortName;
+        use otel_arrow_dfe_engine::control::{
+            pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        };
+        use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+        use otel_arrow_dfe_engine::message::Sender;
+
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let config = Config::new(
+            verbosity,
+            DisplayMode::Batch,
+            HashSet::from([SignalActive::Logs]),
+            OutputMode::Outports(
+                debug_ports
+                    .iter()
+                    .map(|p| PortName::from(p.to_string()))
+                    .collect(),
+            ),
+            Vec::new(),
+            SamplingConfig::NoSampling,
+        );
+
+        let mut senders = std::collections::HashMap::new();
+        let mut outputs = std::collections::HashMap::new();
+        for port in connected {
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
+            let _ = senders.insert(
+                PortName::from(port.to_string()),
+                Sender::Local(LocalSender::mpsc(tx)),
+            );
+            let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
+        }
+        let mut effect = otel_arrow_dfe_engine::local::processor::EffectHandler::new(
+            test_node("debug"),
+            senders,
+            None,
+            metrics_system.reporter(),
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (runtime_ctrl_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+        let (completion_tx, completion_rx) = pipeline_completion_msg_channel(10);
+        effect.set_runtime_ctrl_msg_sender(runtime_ctrl_tx);
+        effect.set_pipeline_completion_msg_sender(completion_tx);
+
+        OutportsHarness {
+            processor: DebugProcessor::new(config, pipeline_ctx),
+            effect,
+            outputs,
+            completion_rx,
+            _runtime_ctrl_rx: runtime_ctrl_rx,
+        }
+    }
+
+    /// Upstream subscriber node id used by the output-ports tests.
+    const OUTPORTS_UPSTREAM_NODE_ID: usize = 4242;
+
+    /// Sends one request from an upstream subscriber through the debug processor,
+    /// Acks every copy that reached a main port (re-entering the processor when a
+    /// copy's Ack is routed to it), and returns how many Acks reached the
+    /// upstream subscriber.
+    async fn outports_upstream_acks(connected: &[&str], verbosity: Verbosity) -> usize {
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{AckMsg, PipelineCompletionMsg};
+        use otel_arrow_dfe_engine::local::processor::Processor as _;
+        use otel_arrow_dfe_otap::testing::TestCallData;
+
+        let mut h = build_outports_harness(connected, &[], verbosity);
+        let pdata = create_empty_test_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::default().into(),
+            OUTPORTS_UPSTREAM_NODE_ID,
+        );
+        h.processor
+            .process(Message::PData(pdata), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut upstream_acks = 0;
+        for port in connected {
+            let receiver = h.outputs.get_mut(*port).expect("port");
+            while let Ok(copy) = receiver.try_recv() {
+                let mut next = next_ack(AckMsg::new(copy));
+                while let Some((node_id, ack)) = next {
+                    if node_id == OUTPORTS_UPSTREAM_NODE_ID {
+                        upstream_acks += 1;
+                        break;
+                    }
+                    // The Ack is for the debug processor's own subscription.
+                    h.processor
+                        .process(Message::ack_ctrl_msg(ack), &mut h.effect)
+                        .await
+                        .expect("process ack ok");
+                    next = match h.completion_rx.try_recv() {
+                        Ok(PipelineCompletionMsg::DeliverAck { ack }) => next_ack(ack),
+                        _ => None,
+                    };
+                }
+            }
+        }
+        upstream_acks
+    }
+
+    /// Scenario: the debug processor in output-ports mode has two main ports,
+    /// and each destination Acks the copy it received.
+    /// Guarantees: the upstream subscriber receives at most one Ack for the
+    /// request (one outcome per subscription).
+    #[tokio::test]
+    async fn outports_two_main_ports_answer_upstream_once() {
+        let acks = outports_upstream_acks(&["a", "b"], Verbosity::Normal).await;
+        assert!(acks <= 1, "upstream subscriber received {acks} Acks");
+    }
+
+    /// Scenario: same as `outports_two_main_ports_answer_upstream_once`, in
+    /// Detailed verbosity, where the processor subscribes before copying.
+    /// Guarantees: the processor's own subscription does not turn two copy
+    /// outcomes into two upstream Acks.
+    #[tokio::test]
+    async fn outports_two_main_ports_detailed_answer_upstream_once() {
+        let acks = outports_upstream_acks(&["a", "b"], Verbosity::Detailed).await;
+        assert!(acks <= 1, "upstream subscriber received {acks} Acks");
+    }
+
+    /// Scenario: the debug processor in output-ports mode has every connected
+    /// port configured as a debug port, so it has no main port to forward to.
+    /// Guarantees: the upstream subscriber receives exactly one outcome for the
+    /// request instead of waiting forever, and nothing sent to the debug port
+    /// can answer it a second time.
+    #[tokio::test]
+    async fn outports_without_main_port_answers_upstream() {
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{AckMsg, PipelineCompletionMsg};
+        use otel_arrow_dfe_engine::local::processor::Processor as _;
+        use otel_arrow_dfe_otap::testing::TestCallData;
+
+        let mut h = build_outports_harness(&["dbg"], &["dbg"], Verbosity::Normal);
+        let pdata = create_empty_test_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::default().into(),
+            OUTPORTS_UPSTREAM_NODE_ID,
+        );
+        h.processor
+            .process(Message::PData(pdata), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let reached = match h.completion_rx.try_recv() {
+            Ok(PipelineCompletionMsg::DeliverAck { ack }) => next_ack(ack).map(|(id, _)| id),
+            Ok(PipelineCompletionMsg::DeliverNack { nack }) => next_nack(nack).map(|(id, _)| id),
+            Err(_) => None,
+        };
+        assert_eq!(
+            reached,
+            Some(OUTPORTS_UPSTREAM_NODE_ID),
+            "the request was consumed without an outcome for the upstream subscriber"
+        );
+        assert!(
+            h.completion_rx.try_recv().is_err(),
+            "the upstream subscriber received more than one outcome"
+        );
+        let debug_port = h.outputs.get_mut("dbg").expect("dbg");
+        while let Ok(msg) = debug_port.try_recv() {
+            assert!(
+                next_ack(AckMsg::new(msg)).is_none(),
+                "debug output carries the request's frames"
+            );
+        }
     }
 }

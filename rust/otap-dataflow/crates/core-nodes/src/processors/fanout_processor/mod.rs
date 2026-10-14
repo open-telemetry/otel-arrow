@@ -940,7 +940,10 @@ impl FanoutProcessor {
             if dest.fallback_for.is_some() {
                 continue;
             }
-            let dest_data = pdata.clone();
+            // Hand-off: the copy must not carry the upstream frames, or its
+            // downstream Ack/Nack would answer the upstream subscriber again
+            // after (or before) the Ack below.
+            let dest_data = pdata.clone_without_context();
             // No subscription - we don't care about downstream acks/nacks.
             effect_handler
                 .send_message_to(dest.port.clone(), dest_data)
@@ -2199,6 +2202,93 @@ mod tests {
             }
         }
         assert_eq!(delivered, 1);
+    }
+
+    /// Scenario: fanout with `await_ack: none` and two destinations forwards a
+    /// request from an upstream subscriber, Acks it upstream, and then one
+    /// destination Acks its copy.
+    /// Guarantees: the copy's Ack does not reach the upstream subscriber, which
+    /// already received fanout's own Ack (at most one outcome per subscription).
+    #[tokio::test]
+    async fn fire_and_forget_copy_ack_does_not_reach_upstream() {
+        let mut h = build_harness(
+            json!([
+                make_dest("a", true, None, None),
+                make_dest("b", false, None, None)
+            ]),
+            "parallel",
+            "none",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Fanout's own Ack reaches the upstream subscriber.
+        let Ok(PipelineCompletionMsg::DeliverAck { ack }) = h.pipeline_completion_rx.recv().await
+        else {
+            panic!("expected fanout's own DeliverAck");
+        };
+        let (node_id, _) = next_ack(ack).expect("upstream subscriber");
+        assert_eq!(node_id, TEST_UPSTREAM_NODE_ID);
+
+        // Destination "a" Acks its copy.
+        let copy = drain(h.outputs.get_mut("a").expect("a"))
+            .pop()
+            .expect("copy sent to a");
+        if let Some((node_id, _)) = next_ack(AckMsg::new(copy)) {
+            assert_ne!(
+                node_id, TEST_UPSTREAM_NODE_ID,
+                "a copy's Ack reached the upstream subscriber a second time"
+            );
+        }
+    }
+
+    /// Scenario: fanout with `await_ack: none` sits below a retry-style
+    /// subscriber (ACKS | NACKS | RETURN_DATA); fanout Acks the request, and then
+    /// one destination Nacks its copy.
+    /// Guarantees: the copy's Nack does not reach the subscriber that fanout
+    /// already Acked, so a retry processor upstream cannot resend data that was
+    /// reported as delivered.
+    #[tokio::test]
+    async fn fire_and_forget_copy_nack_does_not_reach_acked_subscriber() {
+        let mut h = build_harness(
+            json!([
+                make_dest("a", true, None, None),
+                make_dest("b", false, None, None)
+            ]),
+            "parallel",
+            "none",
+        );
+        let payload = OtapPayload::from(OtlpProtoBytes::empty(SignalType::Logs));
+        let pdata = OtapPdata::new(Context::default(), payload).test_subscribe_to(
+            Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+            smallvec![],
+            TEST_UPSTREAM_NODE_ID,
+        );
+        h.fanout
+            .process(Message::PData(pdata), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Fanout's own Ack reaches the upstream subscriber.
+        let Ok(PipelineCompletionMsg::DeliverAck { ack }) = h.pipeline_completion_rx.recv().await
+        else {
+            panic!("expected fanout's own DeliverAck");
+        };
+        let (node_id, _) = next_ack(ack).expect("upstream subscriber");
+        assert_eq!(node_id, TEST_UPSTREAM_NODE_ID);
+
+        // Destination "b" Nacks its copy.
+        let copy = drain(h.outputs.get_mut("b").expect("b"))
+            .pop()
+            .expect("copy sent to b");
+        if let Some((node_id, _)) = next_nack(NackMsg::new("export failed", copy)) {
+            assert_ne!(
+                node_id, TEST_UPSTREAM_NODE_ID,
+                "a copy's Nack reached the subscriber that fanout already Acked"
+            );
+        }
     }
 
     #[tokio::test]
