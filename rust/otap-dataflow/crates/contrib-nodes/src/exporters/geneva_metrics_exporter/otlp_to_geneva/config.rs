@@ -40,18 +40,23 @@ pub struct Config {
     pub metric_namespace: String,
 
     /// Resource attribute keys to add as dimensions, or `*` for all attributes.
+    /// Non-string attribute values become empty dimension values.
     #[serde(default)]
     pub resource_attributes: Vec<String>,
 
-    /// Whether resource dimensions override point and scope dimensions.
+    /// Whether resource dimensions override point dimensions. Scope dimensions
+    /// still win when `honor_scope_attributes` is also enabled.
     #[serde(default)]
     pub honor_resource_attributes: bool,
 
-    /// Scope-specific attribute keys to add as dimensions.
+    /// Scope-specific attribute keys to add as dimensions. The first entry
+    /// named `*` applies to every scope and replaces all other entries.
+    /// Non-string attribute values become empty dimension values.
     #[serde(default)]
     pub scope_attributes: Vec<ScopeAttributes>,
 
-    /// Whether scope dimensions override point and resource dimensions.
+    /// Whether scope dimensions override point and resource dimensions. This
+    /// takes precedence over `honor_resource_attributes`.
     #[serde(default)]
     pub honor_scope_attributes: bool,
 
