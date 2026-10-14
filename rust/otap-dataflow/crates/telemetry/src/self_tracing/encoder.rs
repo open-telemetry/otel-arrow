@@ -134,87 +134,22 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
 
     /// Encodes a structured value as one attribute within the per-attribute budget.
     pub fn write_structured(&mut self, key: &str, value: &Structured) {
+        self.write_value_attribute(key, |w| value.value().write(w));
+    }
+
+    /// Encodes one attribute whose value is written by `f`.
+    fn write_value_attribute(&mut self, key: &str, mut f: impl FnMut(&mut dyn ValueWriter)) {
         self.write_attribute(|buf| {
             let mut lost = false;
             buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
                 buf.encode_string(KEY_VALUE_KEY, key)?;
                 buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                    lost = write_value(buf, 0, &mut |w| value.value().write(w))?;
+                    lost = write_value(buf, 0, &mut f)?;
                     Ok::<_, EncodeFailure>(())
                 })
             })?;
             Ok(lost)
         });
-    }
-
-    /// Encode a string attribute, truncating the value if it doesn't fit.
-    ///
-    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
-    /// value was truncated (with a `[...]` suffix), or `Err(EncodeFailure)` if even
-    /// a truncated form would not fit. On `Err`, the buffer is left in a state
-    /// that is invalid for OTLP (an unfinished partial KeyValue may have been
-    /// written), so callers must invoke this within a [`BoundedBuf::try_encode`]
-    /// transaction so the partial bytes are rolled back.
-    #[inline]
-    fn encode_string_attribute_truncating_to(
-        buf: &mut B,
-        key: &str,
-        value: &str,
-    ) -> Result<bool, EncodeFailure> {
-        let mut truncated = false;
-        // Use _partial variants so the wrapper length placeholders are patched
-        // even when the inner truncating encoder writes partial bytes (it
-        // signals truncation to the caller via the captured `truncated` flag,
-        // not via Err, so wrappers complete cleanly).
-        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
-                match buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value) {
-                    Ok(was_truncated) => {
-                        truncated = was_truncated;
-                        Ok(())
-                    }
-                    Err(failure) => Err(failure),
-                }
-            })
-        })?;
-        Ok(truncated)
-    }
-
-    /// Encode an i64 attribute into a buffer.
-    #[inline]
-    fn encode_int_attribute_to(buf: &mut B, key: &str, value: i64) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                buf.encode_varint(value as u64)
-            })
-        })
-    }
-
-    /// Encode a bool attribute into a buffer.
-    #[inline]
-    fn encode_bool_attribute_to(buf: &mut B, key: &str, value: bool) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-                buf.encode_varint(u64::from(value))
-            })
-        })
-    }
-
-    /// Encode a double attribute into a buffer.
-    #[inline]
-    fn encode_double_attribute_to(buf: &mut B, key: &str, value: f64) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
-                buf.extend_from_slice(&value.to_le_bytes())
-            })
-        })
     }
 
     /// Encode a Debug attribute into a buffer, truncating the value with a
@@ -605,17 +540,13 @@ impl<B: BoundedBuf> ArrayWriter for ArrayEncoder<'_, B> {
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() != "message" {
-            self.write_attribute(|buf| {
-                Self::encode_double_attribute_to(buf, field.name(), value).map(|()| false)
-            });
+            self.write_value_attribute(field.name(), |w| w.write_f64(value));
         }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         if field.name() != "message" {
-            self.write_attribute(|buf| {
-                Self::encode_int_attribute_to(buf, field.name(), value).map(|()| false)
-            });
+            self.write_value_attribute(field.name(), |w| w.write_i64(value));
         }
     }
 
@@ -625,9 +556,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() != "message" {
-            self.write_attribute(|buf| {
-                Self::encode_bool_attribute_to(buf, field.name(), value).map(|()| false)
-            });
+            self.write_value_attribute(field.name(), |w| w.write_bool(value));
         }
     }
 
@@ -635,9 +564,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
         if field.name() == "message" {
             self.encode_body_string(value);
         } else {
-            self.write_attribute(|buf| {
-                Self::encode_string_attribute_truncating_to(buf, field.name(), value)
-            });
+            self.write_value_attribute(field.name(), |w| w.write_str(value));
         }
     }
 
