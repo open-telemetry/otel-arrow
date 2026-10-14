@@ -14,6 +14,7 @@ use otel_arrow_dfe_scraper::database::{ColumnMetadata, CursorRow, QueryPage, Row
 use secrecy::ExposeSecret;
 use std::{
     cell::{Cell, RefCell},
+    future::Future,
     io,
     net::SocketAddr,
     pin::Pin,
@@ -24,6 +25,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     task::JoinHandle,
+    time::Instant,
 };
 use tokio_postgres::{
     CancelToken, Client, IsolationLevel, NoTls, Statement, config::SslMode, types::ToSql,
@@ -307,6 +309,17 @@ pub(crate) enum Reply {
     Done,
 }
 
+enum OperationCompletion<T> {
+    Completed(Result<T>),
+    Incomplete(Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SessionClose {
+    Graceful,
+    Aborted,
+}
+
 async fn cancel_native(slot: &CancelSlot) {
     let token = slot.borrow().clone();
     if let Some((token, address)) = token {
@@ -319,6 +332,35 @@ async fn cancel_native(slot: &CancelSlot) {
                 .map_err(io::Error::other)
         })
         .await;
+    }
+}
+
+async fn await_operation<T>(
+    future: impl Future<Output = Result<T>>,
+    operation: &Operation,
+    cancel: &CancelSlot,
+    timeout: Duration,
+) -> OperationCompletion<T> {
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        result = &mut future => OperationCompletion::Completed(result),
+        _ = operation.notify.notified() => {
+            operation.cancel();
+            cancel_native(cancel).await;
+            match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
+                Ok(_) => OperationCompletion::Completed(Err(Error::Cancelled)),
+                Err(_) => OperationCompletion::Incomplete(Error::Cancelled),
+            }
+        }
+        _ = tokio::time::sleep(timeout) => {
+            operation.cancel();
+            cancel_native(cancel).await;
+            match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
+                Ok(_) => OperationCompletion::Completed(Err(Error::Timeout)),
+                Err(_) => OperationCompletion::Incomplete(Error::Timeout),
+            }
+        }
     }
 }
 
@@ -342,28 +384,17 @@ impl PostgreSqlAdapter {
     ) -> Result<Reply> {
         let cancel = self.cancel.clone();
         let timeout = self.validated.common.timeout();
-        let mut result = {
-            let future = self.perform(action, operation, credential);
-            tokio::pin!(future);
-            tokio::select! {
-                biased;
-                result = &mut future => result,
-                _ = operation.notify.notified() => {
-                    operation.cancel();
-                    cancel_native(&cancel).await;
-                    match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
-                        Ok(_) => Err(Error::Cancelled),
-                        Err(_) => Err(Error::Cleanup),
-                    }
-                }
-                _ = tokio::time::sleep(timeout) => {
-                    operation.cancel();
-                    cancel_native(&cancel).await;
-                    match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
-                        Ok(_) => Err(Error::Timeout),
-                        Err(_) => Err(Error::Cleanup),
-                    }
-                }
+        let completion = await_operation(
+            self.perform(action, operation, credential),
+            operation,
+            &cancel,
+            timeout,
+        )
+        .await;
+        let mut result = match completion {
+            OperationCompletion::Completed(result) => result,
+            OperationCompletion::Incomplete(error) => {
+                return Err(self.recover_incomplete_operation(error).await);
             }
         };
         // Requests see only a closed driver after a framing failure. Preserve the
@@ -391,41 +422,93 @@ impl PostgreSqlAdapter {
         result
     }
 
-    pub(crate) async fn close_session(&mut self) -> Result<()> {
+    async fn recover_incomplete_operation(&mut self, error: Error) -> Error {
+        let had_session = self.session.is_some();
+        let close = match self.close_session().await {
+            Ok(close) => close,
+            Err(_) => {
+                self.poisoned = true;
+                return Error::Cleanup;
+            }
+        };
+        if had_session && close == SessionClose::Graceful {
+            // The joined local driver proves that it cannot send more work, but
+            // a partitioned server may still be executing the last statement.
+            // Every session uses this same statement timeout, so waiting one
+            // full interval after the join safely fences that old backend work.
+            self.fence_server_query();
+        }
+        error
+    }
+
+    fn fence_server_query(&mut self) {
+        let deadline = Instant::now() + self.validated.common.timeout();
+        self.reconnect_not_before = Some(
+            self.reconnect_not_before
+                .map_or(deadline, |existing| existing.max(deadline)),
+        );
+    }
+
+    async fn await_reconnect_fence(&mut self, op: &Operation) -> Result<()> {
+        let Some(deadline) = self.reconnect_not_before else {
+            return Ok(());
+        };
+        if deadline > Instant::now() {
+            tokio::select! {
+                biased;
+                _ = op.notify.notified() => return Err(Error::Cancelled),
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+        }
+        op.check()?;
+        self.reconnect_not_before = None;
+        Ok(())
+    }
+
+    pub(crate) async fn close_session(&mut self) -> Result<SessionClose> {
         let _ = self.cancel.borrow_mut().take();
         if let Some(session) = self.session.as_mut() {
             let _ = session.statement.take();
             let _ = session.catalog.take();
             let _ = session.client.take();
-            let stopped = match tokio::time::timeout(
+            let outcome = match tokio::time::timeout(
                 CONNECTION_SHUTDOWN_TIMEOUT,
                 &mut session.driver,
             )
             .await
             {
-                // Either task result confirms the driver stopped. Only a
+                // Either task result confirms the driver stopped. A panic-style
                 // JoinError means cleanup itself was not observed completing.
-                Ok(joined) => joined.is_ok(),
+                Ok(Ok(_)) => Ok(SessionClose::Graceful),
+                Ok(Err(_)) => Err(Error::Cleanup),
                 Err(_) => {
-                    // Aborting is not proof that the server operation stopped.
+                    // Aborting and then observing a cancellation-style JoinError
+                    // proves the local task stopped. It does not prove the server
+                    // query stopped, so the outcome installs a reconnect fence.
                     session.driver.abort();
-                    let _ = (&mut session.driver).await;
-                    false
+                    match (&mut session.driver).await {
+                        Err(error) if error.is_cancelled() => Ok(SessionClose::Aborted),
+                        Ok(_) => Ok(SessionClose::Graceful),
+                        Err(_) => Err(Error::Cleanup),
+                    }
                 }
             };
             let _ = self.session.take();
-            if !stopped {
-                self.poisoned = true;
-                return Err(Error::Cleanup);
+            match outcome {
+                Ok(SessionClose::Aborted) => self.fence_server_query(),
+                Err(_) => self.poisoned = true,
+                Ok(SessionClose::Graceful) => {}
             }
+            return outcome;
         }
-        Ok(())
+        Ok(SessionClose::Graceful)
     }
 
     async fn connect(&mut self, op: &Operation, credential: &BasicAuthCredential) -> Result<()> {
         if self.poisoned {
             return Err(Error::Cleanup);
         }
+        self.await_reconnect_fence(op).await?;
         op.check()?;
         let config = &self.validated.config.connection;
         // Password refresh may reconnect the same principal, but switching users
@@ -512,7 +595,7 @@ impl PostgreSqlAdapter {
             return Err(Error::Cleanup);
         }
         if matches!(action, Action::Reconnect) {
-            self.close_session().await?;
+            _ = self.close_session().await?;
             self.connect(op, credential).await?;
             return Ok(Reply::Done);
         }

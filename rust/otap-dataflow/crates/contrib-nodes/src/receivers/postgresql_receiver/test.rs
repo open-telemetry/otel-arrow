@@ -352,11 +352,130 @@ macro_rules! postgresql_module_tests {
                             catalog: None,
                             receive_failure: ReceiveFailure::default(),
                         });
-                        adapter.close_session().await.expect("joined failure");
+                        assert_eq!(adapter.close_session().await, Ok(SessionClose::Graceful));
                         assert!(!adapter.poisoned);
                         adapter.shutdown().await.expect("clean shutdown");
                     })
                     .await;
+            }
+
+            /// Scenario: A fetch and its local connection driver both remain silent after timeout and cancellation.
+            /// Guarantees: The pending driver is aborted and observably joined, then retry waits for the full server statement-timeout fence.
+            #[tokio::test(start_paused = true)]
+            async fn silent_fetch_recovers_after_server_query_fence() {
+                use futures::future;
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = PostgreSqlAdapter::new(
+                            super::super::tests::test_validated(),
+                            super::super::tests::test_provider(),
+                        )
+                        .expect("adapter");
+                        adapter.session = Some(Session {
+                            client: None,
+                            driver: tokio::task::spawn_local(future::pending()),
+                            statement: None,
+                            catalog: None,
+                            receive_failure: ReceiveFailure::default(),
+                        });
+                        let operation = Operation::default();
+                        let cancel = adapter.cancel.clone();
+                        let completion = {
+                            let completion = await_operation(
+                                future::pending::<Result<Reply>>(),
+                                &operation,
+                                &cancel,
+                                Duration::from_secs(30),
+                            );
+                            tokio::pin!(completion);
+                            assert!(futures::poll!(&mut completion).is_pending());
+                            tokio::time::advance(Duration::from_secs(30)).await;
+                            assert!(futures::poll!(&mut completion).is_pending());
+                            tokio::time::advance(CANCEL_COMPLETION_TIMEOUT).await;
+                            completion.await
+                        };
+                        assert!(matches!(
+                            completion,
+                            OperationCompletion::Incomplete(Error::Timeout)
+                        ));
+
+                        let error = {
+                            let recovery = adapter.recover_incomplete_operation(Error::Timeout);
+                            tokio::pin!(recovery);
+                            assert!(futures::poll!(&mut recovery).is_pending());
+                            tokio::time::advance(CONNECTION_SHUTDOWN_TIMEOUT).await;
+                            recovery.await
+                        };
+                        assert_eq!(error, Error::Timeout);
+                        assert!(!adapter.poisoned);
+                        assert!(adapter.session.is_none());
+
+                        let reconnect_operation = Operation::default();
+                        {
+                            let reconnect = adapter.await_reconnect_fence(&reconnect_operation);
+                            tokio::pin!(reconnect);
+                            assert!(futures::poll!(&mut reconnect).is_pending());
+                            tokio::time::advance(Duration::from_secs(29)).await;
+                            assert!(futures::poll!(&mut reconnect).is_pending());
+                            tokio::time::advance(Duration::from_secs(1)).await;
+                            reconnect.await.expect("server query fenced");
+                        }
+                        assert!(adapter.reconnect_not_before.is_none());
+                    })
+                    .await;
+            }
+
+            /// Scenario: Normal session cleanup finds a connection driver that remains pending after its client is dropped.
+            /// Guarantees: An observed abort-and-join is reported separately, installs the server fence, and does not poison the adapter.
+            #[tokio::test(start_paused = true)]
+            async fn pending_connection_driver_confirms_aborted_cleanup() {
+                use futures::future;
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = PostgreSqlAdapter::new(
+                            super::super::tests::test_validated(),
+                            super::super::tests::test_provider(),
+                        )
+                        .expect("adapter");
+                        adapter.session = Some(Session {
+                            client: None,
+                            driver: tokio::task::spawn_local(future::pending()),
+                            statement: None,
+                            catalog: None,
+                            receive_failure: ReceiveFailure::default(),
+                        });
+                        let outcome = {
+                            let close = adapter.close_session();
+                            tokio::pin!(close);
+                            assert!(futures::poll!(&mut close).is_pending());
+                            tokio::time::advance(CONNECTION_SHUTDOWN_TIMEOUT).await;
+                            close.await
+                        };
+                        assert_eq!(outcome, Ok(SessionClose::Aborted));
+                        assert!(!adapter.poisoned);
+                        assert!(adapter.session.is_none());
+                        assert!(adapter.reconnect_not_before.is_some());
+                    })
+                    .await;
+            }
+
+            /// Scenario: Pipeline shutdown begins while an aborted session's server-side query fence is active.
+            /// Guarantees: Shutdown remains terminal so source ownership is not released while old server work may still exist.
+            #[tokio::test(start_paused = true)]
+            async fn shutdown_during_server_query_fence_stays_terminal() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+
+                let mut adapter = PostgreSqlAdapter::new(
+                    super::super::tests::test_validated(),
+                    super::super::tests::test_provider(),
+                )
+                .expect("adapter");
+                adapter.reconnect_not_before =
+                    Some(Instant::now() + adapter.validated.common.timeout());
+                assert_eq!(adapter.shutdown().await, Err(Error::Cleanup));
+                assert_eq!(adapter.shutdown().await, Err(Error::Cleanup));
             }
 
             /// Scenario: The retained PostgreSQL connection driver panics before cleanup.

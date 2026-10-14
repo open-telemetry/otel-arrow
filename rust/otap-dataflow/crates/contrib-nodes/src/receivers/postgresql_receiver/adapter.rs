@@ -7,7 +7,7 @@ use super::{
     config::Validated,
     query::{ResolvedSchema, Signature},
     value,
-    worker::{CancelSlot, FetchSize, Session},
+    worker::{CancelSlot, FetchSize, Session, SessionClose},
 };
 use async_trait::async_trait;
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
@@ -23,6 +23,7 @@ use std::{
     rc::Rc,
     time::Duration,
 };
+use tokio::time::Instant;
 
 #[derive(Default)]
 pub(crate) struct Operation {
@@ -110,6 +111,7 @@ pub(crate) struct PostgreSqlAdapter {
     pub(crate) fetch_size: FetchSize,
     pub(crate) timestamp_cache: value::CursorTimestampCache,
     pub(crate) operation: Rc<Operation>,
+    pub(crate) reconnect_not_before: Option<Instant>,
     stopped: bool,
     shutdown_result: Option<Result<()>>,
     timeout: Duration,
@@ -132,6 +134,7 @@ impl PostgreSqlAdapter {
             fetch_size: FetchSize::default(),
             timestamp_cache: value::CursorTimestampCache::default(),
             operation: Rc::new(Operation::default()),
+            reconnect_not_before: None,
             stopped: false,
             shutdown_result: None,
             timeout,
@@ -243,11 +246,18 @@ impl DriverAdapter for PostgreSqlAdapter {
         }
         self.stopped = true;
         self.operation.cancel();
-        let result = self.close_session().await.and(if self.poisoned {
-            Err(Error::Cleanup)
-        } else {
-            Ok(())
-        });
+        if self
+            .reconnect_not_before
+            .is_some_and(|deadline| deadline > Instant::now())
+        {
+            // Do not release source ownership while an abandoned server query
+            // may still be running. Process shutdown remains the escape hatch.
+            self.poisoned = true;
+        }
+        let result = match self.close_session().await {
+            Ok(SessionClose::Graceful) if !self.poisoned => Ok(()),
+            Ok(SessionClose::Graceful | SessionClose::Aborted) | Err(_) => Err(Error::Cleanup),
+        };
         self.shutdown_result = Some(result);
         result
     }
