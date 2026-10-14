@@ -130,58 +130,27 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         self.write_attribute(|buf| write_key_value(buf, LOG_RECORD_ATTRIBUTES, key, 0, &mut f));
     }
 
-    /// Encode a Debug attribute into a buffer, truncating the value with a
-    /// `[...]` suffix if it does not fit.
-    ///
-    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
-    /// value was truncated, or `Err(Dropped)` if even a truncated form would
-    /// not fit.
-    #[inline]
-    fn encode_debug_attribute_to(
-        buf: &mut B,
-        key: &str,
-        value: &dyn std::fmt::Debug,
-    ) -> Result<bool, EncodeFailure> {
-        let mut truncated = false;
-        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
-                match encode_debug_string(buf, value) {
-                    Ok(was_truncated) => {
-                        truncated = was_truncated;
-                        Ok(())
-                    }
-                    Err(failure) => Err(failure),
-                }
-            })
-        })?;
-        Ok(truncated)
-    }
-
     /// Encode the body as a string (empty strings are skipped), truncating
     /// safely via [`BoundedBuf::encode_string_truncating`].
     #[inline]
     pub fn encode_body_string(&mut self, value: &str) {
-        if value.is_empty() {
-            return;
+        if !value.is_empty() {
+            self.write_body(|w| w.write_str(value));
         }
-        let _ = self.buf.try_encode(|buf| {
-            buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
-                buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value)
-                    .map(|_| ())
-            })
-        });
     }
 
     /// Encode the body from a Debug value without allocation, truncating
     /// safely (see [`Self::encode_body_string`]).
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
-        let _ = self.buf.try_encode(|buf| {
-            buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
-                encode_debug_string(buf, value).map(|_| ())
-            })
-        });
+        self.write_body(|w| w.write_debug(value));
+    }
+
+    /// Encodes the body, written by `f`, rolling it back if it cannot fit.
+    fn write_body(&mut self, mut f: impl FnMut(&mut dyn ValueWriter)) {
+        let _ = self
+            .buf
+            .try_encode(|buf| write_value(buf, LOG_RECORD_BODY, 0, &mut f).map(drop));
     }
 }
 
@@ -283,9 +252,6 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 /// buffer, the value is truncated with a `[...]` suffix and `Ok(true)` is
 /// returned. `Err(Dropped)` is returned only when even a minimal truncated
 /// form cannot fit (nothing useful was written).
-///
-/// This function is separate from `DirectFieldVisitor` to avoid borrow
-/// conflicts with the macro.
 #[inline]
 fn encode_debug_string<B: BoundedBuf>(
     buf: &mut B,
@@ -441,6 +407,11 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
         self.put(result);
     }
 
+    fn write_debug(&mut self, value: &dyn std::fmt::Debug) {
+        let result = encode_debug_string(self.buf, value);
+        self.put(result);
+    }
+
     fn write_i64(&mut self, value: i64) {
         self.put_tagged(ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
             buf.encode_varint(value as u64)
@@ -558,7 +529,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
         if field.name() == "message" {
             self.encode_body_debug(value);
         } else {
-            self.write_attribute(|buf| Self::encode_debug_attribute_to(buf, field.name(), value));
+            self.write_value_attribute(field.name(), |w| w.write_debug(value));
         }
     }
 

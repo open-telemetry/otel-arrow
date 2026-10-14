@@ -50,6 +50,9 @@ pub trait StructuredValue: Send + Sync + 'static {
 pub trait ValueWriter {
     /// Writes a string, truncated if it does not fit.
     fn write_str(&mut self, value: &str);
+    /// Writes the `Debug` rendering of `value` as a string, formatted in
+    /// place and truncated if it does not fit.
+    fn write_debug(&mut self, value: &dyn fmt::Debug);
     /// Writes a signed integer.
     fn write_i64(&mut self, value: i64);
     /// Writes a floating point number.
