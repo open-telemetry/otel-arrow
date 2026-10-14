@@ -90,21 +90,21 @@ INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, acto
 
 One receiver owns one query/collecting connection and requires a one-core pipeline. Unknown fields and null configuration values are rejected.
 
-| Field | Contract |
-| --- | --- |
-| `source_id` | Required stable name, 1-128 UTF-8 bytes without control characters. |
-| `connection.host` | Required single DNS name or IP address; no URI or host list. |
-| `connection.port` | Defaults to `5432`; nonzero. |
-| `connection.database` | Required name, 1-63 UTF-8 bytes. |
-| `query.statement` | Required read-only SELECT, at most 16 KiB. |
-| `query.interval` | Default `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
-| `query.max_rows_per_poll` | Required page ceiling, `1`-`10000`; no default or whole-cycle row cap. |
-| `query.max_batch_bytes` | Required separate normalized-page and encoded-OTLP ceilings, `1` byte-`256 MiB`; integer bytes or strings such as `10 MiB`. |
-| `query.fetch_size_rows` | Default `300`; `1`-`10000`, no greater than the page ceiling. The largest of the last 32 rows may reduce a fetch; sustained smaller rows let it grow again. |
-| `query.catch_up.max_pages` | Default `32`; `1`-`1024`, including empty probes. |
-| `query.catch_up.max_duration` | Default `10s`; `1ms`-`5min`. Gates the next page, not an active page. |
-| `watermark` | Required composite timestamp plus signed-integer tie-breaker; see the example. |
-| `checkpoint.directory` | Required persistent storage directory. |
+| Field | Required? | Default / contract |
+| --- | --- | --- |
+| `source_id` | Yes | Stable name, 1-128 UTF-8 bytes without control characters. |
+| `connection.host` | Yes | One DNS name or IP address; no URI or host list. |
+| `connection.port` | No | `5432`; must be nonzero. |
+| `connection.database` | Yes | Database name, 1-63 UTF-8 bytes. |
+| `query.statement` | Yes | One read-only `SELECT`, at most 16 KiB. |
+| `query.interval` | No | `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
+| `query.max_rows_per_poll` | Yes | Page ceiling, `1`-`10000`; no default or whole-cycle row cap. |
+| `query.max_batch_bytes` | Yes | Separate normalized-page and encoded-OTLP ceilings, `1` byte-`256 MiB`; integer bytes or strings such as `10 MiB`. |
+| `query.fetch_size_rows` | No | `300`; `1`-`10000`, no greater than the page ceiling. The largest of the last 32 rows may reduce a fetch; sustained smaller rows let it grow again. |
+| `query.catch_up.max_pages` | No | `32`; `1`-`1024`, including empty probes. |
+| `query.catch_up.max_duration` | No | `10s`; `1ms`-`5min`. Gates the next page, not an active page. |
+| `watermark` | Yes | Composite timestamp plus signed-integer tie-breaker; see the example. |
+| `checkpoint.directory` | Yes | Persistent writable state directory. |
 
 Database, credential, and native statement operations use a fixed 30-second timeout. Connection attempts use a separate 10-second cap.
 
@@ -113,6 +113,41 @@ Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backof
 ### Authentication and source identity
 
 Bind `basic_auth_provider` to the [flat-file provider](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md), included by the root `postgresql` feature. The capability supplies credentials for PostgreSQL's native protocol, not HTTP Basic headers.
+
+The PostgreSQL receiver config accepts no direct `username`, `password`,
+`password_secret`, `username_file`, or `password_secret_file` fields. Its
+credential reference is the required `capabilities.basic_auth_provider`
+binding. Configure the referenced provider with both `username_file` and
+`password_secret_file`; do not put either credential value in YAML.
+
+```yaml
+extensions:
+  pg-credentials:
+    type: urn:otel:extension:flat_file_user_pass_auth
+    config:
+      username_file: /run/secrets/postgresql/username
+      password_secret_file: /run/secrets/postgresql/password
+      password_secret_file_refresh: 1m
+nodes:
+  pg:
+    type: urn:otel:receiver:postgresql
+    capabilities:
+      basic_auth_provider: pg-credentials
+    config:
+      # PostgreSQL receiver fields begin here; no credential fields are accepted.
+```
+
+| Credential field | Required for PostgreSQL? | Contract |
+| --- | --- | --- |
+| `username_file` | Yes | Readable UTF-8 file containing a valid PostgreSQL username. |
+| `password_secret_file` | Yes | Readable UTF-8 file containing the password. |
+| `password_secret_file_refresh` | No | Defaults to `1h`; accepted range `10s`-`365d`. Both files are reread on this interval. |
+| `username` | Not accepted by the PostgreSQL deployment contract | Use `username_file`. |
+| `password_secret` | Not accepted by the PostgreSQL deployment contract | Use `password_secret_file`. |
+
+Credential files use the shared 4 MiB read limit. Trailing CR/LF line endings
+are removed; other whitespace is preserved. File contents are not included in
+receiver configuration, logs, or telemetry.
 
 Files refresh at `password_secret_file_refresh`; a reconnect before refresh may use the old password and fail. Healthy sessions are not replaced. Username changes during a receiver's lifetime are rejected: stop, review source identity/grants, and restart. After restart the principal must still read the same source.
 

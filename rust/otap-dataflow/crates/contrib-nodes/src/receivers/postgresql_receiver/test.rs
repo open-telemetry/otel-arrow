@@ -267,8 +267,8 @@ macro_rules! postgresql_module_tests {
                 );
             }
 
-            /// Scenario: One large row is followed by a sustained run of small rows.
-            /// Guarantees: Fetch sizing stays conservative for recent data, then regrows after the large sample ages out.
+            /// Scenario: One large row is followed by ten thousand small rows.
+            /// Guarantees: The outlier ages out after the bounded window, target returns to 300, and estimated native requests stay bounded.
             #[test]
             fn fetch_size_recovers_after_recent_small_rows() {
                 let mut size = FetchSize::default();
@@ -280,6 +280,22 @@ macro_rules! postgresql_module_tests {
                 assert_eq!(size.target(300, 300 * 1024), 0);
                 size.observe(1024);
                 assert_eq!(size.target(300, 300 * 1024), 300);
+
+                let mut size = FetchSize::default();
+                size.observe(1024 * 1024);
+                let mut remaining = 10_000;
+                let mut adaptive_requests = 0;
+                while remaining > 0 {
+                    let fetched = size.target(remaining.min(300), 300 * 1024).max(1);
+                    for _ in 0..fetched {
+                        size.observe(1024);
+                    }
+                    remaining -= fetched;
+                    adaptive_requests += 1;
+                }
+                let lifetime_requests = 10_000;
+                assert_eq!(adaptive_requests, 66);
+                assert_eq!(lifetime_requests / adaptive_requests, 151);
             }
 
             /// Scenario: The retained PostgreSQL connection driver exits with an observed transport failure.
@@ -693,6 +709,13 @@ fn strict_configuration() {
         assert!(validate(&cfg).is_err(), "{mode}");
     }
     for pointer in [
+        "/username",
+        "/password",
+        "/password_secret",
+        "/username_file",
+        "/password_secret_file",
+        "/credentialReference",
+        "/connection/username",
         "/connection/password",
         "/connection/tls",
         "/query/output",
