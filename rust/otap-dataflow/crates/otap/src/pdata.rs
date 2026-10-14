@@ -20,10 +20,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
 use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
+    ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
+    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
+};
 use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, NodeControlMsg, RouteData, nanos_since_birth,
 };
@@ -377,7 +382,7 @@ fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
 
 /// Context for OTAP requests.
 ///
-/// Carries four independent concerns:
+/// Carries independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
@@ -385,6 +390,8 @@ fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
 /// - **Authorized identity**: Verified claims selected by policy and kept
 ///   separate from untrusted transport headers. Preserved across transport
 ///   boundaries.
+/// - **Materialized entries**: Selected constant/randomness composites whose
+///   values are fixed for this context's lifetime.
 /// - **Peer address**: Optional socket address observed by the receiving
 ///   socket at request acceptance time. Populated by receivers that have a
 ///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
@@ -400,6 +407,8 @@ pub struct Context {
     transport_headers: TransportHeaders,
     /// Verified authorization claims selected by policy.
     authorized_identity: AuthorizedIdentityEntries,
+    /// Selected constant/randomness composites materialized for this request.
+    materialized: MaterializedContext,
     /// Peer address observed by the receiving socket at request acceptance
     /// time. `None` for receivers without a real socket.
     peer_addr: Option<SocketAddr>,
@@ -431,6 +440,7 @@ impl Context {
             stack: Vec::with_capacity(capacity),
             transport_headers: TransportHeaders::default(),
             authorized_identity: AuthorizedIdentityEntries::default(),
+            materialized: MaterializedContext::default(),
             peer_addr: None,
             flow_compute_ns: None,
             signal: None,
@@ -784,6 +794,31 @@ impl Context {
             AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
     }
 
+    /// Materializes selected constant/randomness composites exactly once.
+    pub fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        let source = PdataContextValueSource {
+            transport_headers: &self.transport_headers,
+            authorized_identity: &self.authorized_identity,
+        };
+        self.materialized.materialize(plan, &source);
+    }
+
+    /// Returns the materialized constant/randomness composites, if any.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        (!self.materialized.is_empty()).then_some(&self.materialized)
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.materialized.resolve(plan, projection)
+    }
+
     /// Returns the peer address observed by the receiving socket, if any.
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
@@ -834,8 +869,8 @@ impl Context {
     }
 
     /// Clone the request-scoped metadata (transport headers, authorized
-    /// identity entries, and peer address) and leave the Ack/Nack routing state
-    /// behind.
+    /// identity entries, materialized entries, and peer address) and leave the
+    /// Ack/Nack routing state behind.
     ///
     /// Frames are not copied: a processor that splits a batch parks the inbound
     /// context and subscribes each outbound batch separately, so copied frames
@@ -849,9 +884,73 @@ impl Context {
             stack: Vec::new(),
             transport_headers: self.transport_headers.clone(),
             authorized_identity: self.authorized_identity.clone(),
+            materialized: self.materialized.clone(),
             peer_addr: self.peer_addr,
             flow_compute_ns: None,
             signal: None,
+        }
+    }
+}
+
+struct PdataContextValueSource<'a> {
+    transport_headers: &'a TransportHeaders,
+    authorized_identity: &'a AuthorizedIdentityEntries,
+}
+
+impl ContextValueSource for PdataContextValueSource<'_> {
+    fn values(&self, field: &ContextFieldLayout) -> Option<MaterializedContextValues> {
+        match field.domain {
+            ContextDomain::TransportHeader => {
+                let values = self
+                    .transport_headers
+                    .iter()
+                    .filter(|header| {
+                        header
+                            .name
+                            .as_str()
+                            .eq_ignore_ascii_case(field.name.as_str())
+                    })
+                    .map(|header| {
+                        MaterializedContextValue::new(
+                            header.value.original_name.map(Box::from),
+                            match header.value.value_kind {
+                                ValueKind::Text => ContextValueKind::Text,
+                                ValueKind::Binary => ContextValueKind::Binary,
+                            },
+                            header.value.bytes,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if values.is_empty() {
+                    return None;
+                }
+                let cardinality = if values.len() == 1 {
+                    ContextValueCardinality::One
+                } else {
+                    ContextValueCardinality::Many
+                };
+                MaterializedContextValues::new(cardinality, values.into_boxed_slice())
+            }
+            ContextDomain::AuthorizedIdentity => {
+                let entry = self.authorized_identity.get(field.name.as_str())?;
+                let claim = entry.value();
+                let cardinality = if claim.is_many() {
+                    ContextValueCardinality::Many
+                } else {
+                    ContextValueCardinality::One
+                };
+                let values = claim
+                    .values()
+                    .map(|value| {
+                        MaterializedContextValue::new(
+                            None,
+                            ContextValueKind::Text,
+                            value.as_bytes().to_vec(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                MaterializedContextValues::new(cardinality, values.into_boxed_slice())
+            }
         }
     }
 }
@@ -971,11 +1070,20 @@ impl FlowMetricAccumulation for OtapPdata {
 }
 
 impl OtapPdata {
+    /// Materializes selected constant/randomness composites.
+    pub(crate) fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        self.context.materialize_context(plan);
+    }
+
     /// Returns `true` if a flow_metric accumulator is currently active.
     #[must_use]
     fn has_active_flow_metric(&self) -> bool {
         self.context.flow_compute_ns.is_some()
     }
+}
+
+pub(crate) fn materialize_context(pdata: &mut OtapPdata, plan: &ContextMaterializationPlan) {
+    pdata.materialize_context(plan);
 }
 
 /// Context + container for telemetry data
@@ -1171,10 +1279,11 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers, authorized identity entries, and peer address are
-    /// **preserved** because they represent request-scoped metadata (tenant ID,
-    /// verified identity, trace context, originating peer) that should survive
-    /// cross-pipeline hops.
+    /// Transport headers, authorized identity entries, materialized context,
+    /// and peer address are **preserved** because they represent request-scoped
+    /// metadata that should survive cross-pipeline hops. Materialized entries
+    /// retain declaration provenance, so a destination plan accepts them only
+    /// when its declaration is identical.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
@@ -1319,6 +1428,22 @@ impl OtapPdata {
     #[must_use]
     pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
         self.context.authorized_identity_entries()
+    }
+
+    /// Returns selected constant/randomness composites materialized for this pdata.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        self.context.materialized_context()
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.context.resolve_materialized_context(plan, projection)
     }
 
     pub(crate) fn capture_authorized_identity(
@@ -1787,13 +1912,15 @@ impl FlowMetricHook for OtapPdata {
 ///   $trait_name   - `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      - fully-qualified EffectHandler type
 ///   $id_method    - `processor_id` or `receiver_id`
-///   $hook         - `with_hook` (processors: invokes `before_processor_send`)
-///                   or `no_hook` (receivers: no per-send bookkeeping)
-macro_rules! maybe_processor_send_hook {
-    (with_hook, $handler:expr, $data:expr) => {
+///   $before_send  - `processor_flow_metrics` invokes `before_processor_send`
+///                   or `receiver_materialization` materializes configured context
+macro_rules! before_message_source_send {
+    (processor_flow_metrics, $handler:expr, $data:expr) => {
         $data.before_processor_send($handler);
     };
-    (no_hook, $handler:expr, $data:expr) => {};
+    (receiver_materialization, $handler:expr, $data:expr) => {
+        $handler.materialize_context($data);
+    };
 }
 
 macro_rules! impl_message_source_ext {
@@ -1802,7 +1929,7 @@ macro_rules! impl_message_source_ext {
         $trait_name:ident,
         $handler:ty,
         $id_method:ident,
-        $hook:ident,
+        $before_send:ident,
         $completion_from_output:expr
     ) => {
         #[$async_attr]
@@ -1816,7 +1943,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -1829,7 +1956,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -1846,7 +1973,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -1863,7 +1990,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -1875,7 +2002,7 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook,
+    processor_flow_metrics,
     false
 );
 impl_message_source_ext!(
@@ -1883,7 +2010,7 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook,
+    receiver_materialization,
     true
 );
 impl_message_source_ext!(
@@ -1891,7 +2018,7 @@ impl_message_source_ext!(
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook,
+    processor_flow_metrics,
     false
 );
 impl_message_source_ext!(
@@ -1899,7 +2026,7 @@ impl_message_source_ext!(
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook,
+    receiver_materialization,
     true
 );
 
@@ -1939,6 +2066,10 @@ mod test {
     };
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
     use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context_policy::{
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
+        ContextScope,
+    };
     use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
@@ -1962,12 +2093,30 @@ mod test {
     use std::mem::size_of;
     use tokio::sync::mpsc;
 
+    fn materialization_plan(
+        parts: Vec<ContextEntryPart>,
+    ) -> (ContextMaterializationPlan, ContextProjection) {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: ContextEntryName::try_from("request").expect("valid composite name"),
+            definition: ContextEntryDefinition(parts),
+        };
+        let plan = ContextMaterializationPlan::compile(&[declaration]).expect("plan compiles");
+        let projection = plan
+            .layout()
+            .resolve_composite(
+                &ContextEntryName::try_from("request").expect("valid composite name"),
+            )
+            .expect("projection resolves");
+        (plan, projection)
+    }
+
     /// Scenario: Queued and native-capability pdata are built for a 64-bit target.
-    /// Guarantees: Transitional encoded storage remains eight bytes below the upstream queue layout.
+    /// Guarantees: Transitional encoded storage plus materialized context remains compact.
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn legacy_otap_pdata_layout_is_stable() {
-        assert_eq!(size_of::<OtapPdata>(), 152);
+        assert_eq!(size_of::<OtapPdata>(), 160);
         assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
         assert_eq!(size_of::<PdataDelivery>(), size_of::<OtapPdata>());
     }
@@ -2901,6 +3050,324 @@ mod test {
         assert_eq!(sent.get_source_node(), Some(2));
     }
 
+    fn assert_materialized_uuid(
+        sent: &OtapPdata,
+        plan: &ContextMaterializationPlan,
+        projection: &ContextProjection,
+        expected_source: Option<usize>,
+    ) {
+        assert_eq!(sent.get_source_node(), expected_source);
+        let resolved = sent
+            .resolve_materialized_context(plan, projection)
+            .expect("context was materialized");
+        resolved.visit_members(|member| {
+            let value = member.values().values()[0].as_str().expect("UUID is text");
+            assert_eq!(value.len(), 36);
+            assert_eq!(value.as_bytes()[14], b'7');
+        });
+    }
+
+    /// Scenario: a local receiver uses every base and source-tagged send variant.
+    /// Guarantees: default, named-port, blocking, and try-send paths materialize UUID-v7.
+    #[tokio::test]
+    async fn local_receiver_send_paths_materialize_context() {
+        let (default_tx, default_rx) = LocalChannel::<OtapPdata>::new(4);
+        let (named_tx, named_rx) = LocalChannel::<OtapPdata>::new(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert(
+            "default".into(),
+            Sender::Local(LocalSender::mpsc(default_tx)),
+        );
+        let _ = senders.insert("named".into(), Sender::Local(LocalSender::mpsc(named_tx)));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = LocalReceiverEffectHandler::new(
+            NodeId {
+                index: 2,
+                name: "recv_local".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a shared receiver uses every base and source-tagged send variant.
+    /// Guarantees: production-style shared paths materialize UUID-v7 before delivery.
+    #[tokio::test]
+    async fn shared_receiver_send_paths_materialize_context() {
+        let (default_tx, mut default_rx) = mpsc::channel::<OtapPdata>(4);
+        let (named_tx, mut named_rx) = mpsc::channel::<OtapPdata>(4);
+        let senders = HashMap::from([
+            ("default".into(), SharedSender::mpsc(default_tx)),
+            ("named".into(), SharedSender::mpsc(named_tx)),
+        ]);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = SharedReceiverEffectHandler::new(
+            NodeId {
+                index: 3,
+                name: "recv_shared".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a composite combines trusted identity, a header condition, and a constant.
+    /// Guarantees: pdata-backed source resolution materializes the composite only when all gates pass.
+    #[test]
+    fn materializes_mixed_pdata_sources() {
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("sub").expect("valid claim name"),
+                store_as: Some(ContextEntryName::try_from("customer").expect("valid member name")),
+            },
+            ContextEntryPart::TransportHeaderMatch {
+                name: ContextEntryName::try_from("environment").expect("valid header name"),
+                value: "production".to_owned(),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "sub",
+                "store_as": "sub"
+            }]))
+            .expect("valid identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("customer-42");
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
+            ContextEntryName::try_from("environment").expect("valid header name"),
+            b"production",
+        ));
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut values = Vec::new();
+        resolved.visit_members(|member| {
+            values.push((
+                member.name().as_str().to_owned(),
+                member.values().values()[0]
+                    .as_str()
+                    .expect("member is text")
+                    .to_owned(),
+            ));
+        });
+        assert_eq!(
+            values,
+            [
+                ("customer".to_owned(), "customer-42".to_owned()),
+                ("route".to_owned(), "dedicated".to_owned()),
+            ]
+        );
+    }
+
+    /// Scenario: a selected authorized identity claim is a present empty multi-valued list.
+    /// Guarantees: materialization retains the zero-value member instead of omitting its composite.
+    #[test]
+    fn materializes_empty_multi_valued_identity_claim() {
+        let member_name = ContextEntryName::try_from("access_groups").expect("valid member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("groups").expect("valid claim name"),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "groups",
+                "store_as": "groups"
+            }]))
+            .expect("valid identity policy");
+        let identity =
+            AuthorizedIdentity::new().with_claim_values("groups", std::iter::empty::<&str>());
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_empty_groups = false;
+        resolved.visit_members(|member| {
+            if member.name() == &member_name {
+                found_empty_groups = true;
+                assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+                assert!(member.values().values().is_empty());
+            }
+        });
+        assert!(found_empty_groups);
+    }
+
+    /// Scenario: repeated captured binary headers retain their complete source representation.
+    /// Guarantees: materialization preserves kind, original name, order, bytes, and cardinality.
+    #[test]
+    fn materializes_repeated_binary_header_fidelity() {
+        let header_name =
+            ContextEntryName::try_from("custom-bin").expect("valid stored header name");
+        let member_name =
+            ContextEntryName::try_from("payload").expect("valid materialized member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::TransportHeader {
+                name: header_name.clone(),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("source").expect("valid constant member name"),
+                value: "test".to_owned(),
+            },
+        ]);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::captured(
+            header_name.clone(),
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x00, 0xff],
+        ));
+        headers.push(TransportHeader::captured(
+            header_name,
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x01, 0xfe],
+        ));
+        let mut pdata = create_test_pdata();
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_header = false;
+        resolved.visit_members(|member| {
+            if member.name() != &member_name {
+                return;
+            }
+            found_header = true;
+            assert_eq!(member.name(), &member_name);
+            assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+            let values = member.values().values();
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0].kind(), ContextValueKind::Binary);
+            assert_eq!(values[0].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[0].bytes(), [0x00, 0xff]);
+            assert_eq!(values[1].kind(), ContextValueKind::Binary);
+            assert_eq!(values[1].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[1].bytes(), [0x01, 0xfe]);
+        });
+        assert!(found_header, "materialized header member is present");
+    }
+
     #[tokio::test]
     async fn local_receiver_send_with_source_to_named_port() {
         let (a_tx, a_rx) = LocalChannel::<OtapPdata>::new(2);
@@ -3581,9 +4048,9 @@ mod test {
     /// Scenario: a context carrying transport headers, authorized identity
     /// entries, a peer address, Ack/Nack subscribers, an active flow_metric
     /// accumulator and a captured signal is detached for a split output.
-    /// Guarantees: request-scoped metadata is copied while routing and metric
-    /// state is left behind, so outputs retain trusted identity without
-    /// re-Acking the upstream node.
+    /// Guarantees: request-scoped metadata and materialized values are copied
+    /// while routing and metric state is left behind, so outputs retain stable
+    /// context without re-Acking the upstream node.
     #[test]
     fn clone_detached_keeps_request_metadata_and_drops_routing_state() {
         let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
@@ -3608,6 +4075,15 @@ mod test {
         .expect("valid authorized identity policy");
         let identity = AuthorizedIdentity::new().with_subject("customer-42");
         pdata.capture_authorized_identity(&identity_policy, &identity);
+        let (materialization_plan, _) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        pdata.context.materialize_context(&materialization_plan);
+        let materialized = pdata
+            .materialized_context()
+            .expect("randomness materialized")
+            .clone();
         pdata.start_flow_metric();
         pdata.add_flow_compute(42);
 
@@ -3630,6 +4106,7 @@ mod test {
                 .and_then(|entry| entry.value().as_str()),
             Some("customer-42")
         );
+        assert_eq!(detached.materialized_context(), Some(&materialized));
         assert_eq!(detached.peer_addr(), Some(addr));
         assert!(
             !detached.has_ack_or_nack_subscribers(),

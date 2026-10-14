@@ -11833,6 +11833,7 @@ dependencies = [
  "atomic",
  "getrandom 0.4.3",
  "js-sys",
+ "rand 0.10.3",
  "wasm-bindgen",
 ]
 
