@@ -525,7 +525,12 @@ macro_rules! postgresql_module_tests {
                 let timeout = sqlstate("57014");
                 assert_eq!(timeout, Error::Timeout);
                 assert!(PostgreSqlAdapter::is_retryable(&timeout));
-                for code in ["28P01", "42501", "42P01", "23505", "53200", "XX000"] {
+                for code in ["28P01", "28000"] {
+                    let error = sqlstate(code);
+                    assert_eq!(error, Error::Credential);
+                    assert!(!PostgreSqlAdapter::is_retryable(&error));
+                }
+                for code in ["42501", "42P01", "23505", "53200", "XX000"] {
                     let error = sqlstate(code);
                     assert_eq!(error, Error::Database);
                     assert!(!PostgreSqlAdapter::is_retryable(&error));
@@ -923,6 +928,62 @@ fn cursor_precision_and_range() {
     assert!(convert::check_tie(i32::MIN as i64, "int4").is_ok());
     assert!(convert::check_tie(i32::MIN as i64 - 1, "int4").is_err());
     assert!(convert::check_tie(i64::MAX, "int8").is_ok());
+}
+
+/// Scenario: Equivalent UTC instants use RFC 3339 offsets, canonical Z text, or timezone-less UTC text.
+/// Guarantees: Configuration, compiled cursors, and fingerprints use one exact six-digit UTC representation.
+#[test]
+fn canonicalizes_exact_postgresql_timestamp_values() {
+    let mut baseline = None;
+    for value in [
+        "2026-01-01T00:00:00.123456Z",
+        "2026-01-01T00:00:00.123456000Z",
+        "2026-01-01T02:00:00.123456000+02:00",
+        "2026-01-01 00:00:00.123456",
+        "2026-01-01 00:00:00.123456000",
+    ] {
+        let mut raw = config(&sql(KEY));
+        raw["watermark"]["timestamp"]["initial"] = json!(value);
+        raw["watermark"]["timestamp"]["timezone"] = json!("utc");
+        let validated = validate(&raw).expect("exact PostgreSQL timestamp");
+        let watermark = validated
+            .common
+            .watermark()
+            .as_composite()
+            .expect("composite watermark");
+        assert_eq!(watermark.initial.timestamp, "2026-01-01T00:00:00.123456Z");
+        let super::config::Watermark::Composite { timestamp, .. } = &validated.config.watermark;
+        assert_eq!(timestamp.initial, "2026-01-01T00:00:00.123456Z");
+        assert_eq!(timestamp.timezone, "UTC");
+        if let Some(fingerprint) = &baseline {
+            assert_eq!(&validated.fingerprint, fingerprint);
+        } else {
+            baseline = Some(validated.fingerprint);
+        }
+    }
+}
+
+/// Scenario: PostgreSQL initial timestamps would round, overflow supported years, or encode invalid time.
+/// Guarantees: Customer timestamp input is rejected rather than rounded or interpreted in a host timezone.
+#[test]
+fn rejects_lossy_or_invalid_postgresql_timestamp_values() {
+    for value in [
+        "2026-01-01T00:00:00.1234567Z",
+        "2026-01-01T00:00:00.123456789Z",
+        "2026-01-01T00:00:00.1234560001Z",
+        "2026-01-01T02:00:00.123456700+02:00",
+        "2026-01-01 00:00:00.1234567",
+        "0000-01-01T00:00:00Z",
+        "+10000-01-01T00:00:00Z",
+        "0001-01-01T00:00:00+01:00",
+        "2016-12-31T23:59:60Z",
+        "2026-01-01T00:00:00+99:99",
+        "not-a-timestamp",
+    ] {
+        let mut raw = config(&sql(KEY));
+        raw["watermark"]["timestamp"]["initial"] = json!(value);
+        assert!(validate(&raw).is_err(), "{value}");
+    }
 }
 
 fn number(weight: i16, sign: u16, scale: u16, digits: &[u16]) -> Vec<u8> {

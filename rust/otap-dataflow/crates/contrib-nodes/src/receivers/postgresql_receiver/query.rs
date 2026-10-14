@@ -785,7 +785,7 @@ impl Plan {
                 // join from multiplying a driving row into duplicate cursor positions.
                 if !unique
                     .iter()
-                    .any(|(_, k)| k.iter().all(|a| joined.contains(a)))
+                    .any(|(_, key)| key.iter().all(|attribute| joined.contains(attribute)))
                 {
                     return Err(Error::Metadata);
                 }

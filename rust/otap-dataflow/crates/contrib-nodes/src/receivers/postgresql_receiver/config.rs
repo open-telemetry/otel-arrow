@@ -185,15 +185,15 @@ impl PostgreSqlReceiverConfig {
         let Watermark::Composite {
             timestamp,
             tie_breaker,
-        } = &self.watermark;
+        } = &mut self.watermark;
         validate_name(&timestamp.column, 63)?;
         validate_name(&tie_breaker.column, 63)?;
-        if timestamp.timezone != "UTC" || !timestamp.initial.ends_with('Z') {
+        if !timestamp.timezone.eq_ignore_ascii_case("UTC") {
             return Err(Error::Config);
         }
-        // Native typmod and integer range are checked after catalog discovery.
-        // Reject invalid UTC text and submicrosecond precision without I/O.
-        let _ = super::value::cursor_time(&timestamp.initial, 6)?;
+        timestamp.timezone = "UTC".into();
+        timestamp.initial =
+            super::value::normalize_cursor_time(&timestamp.initial).map_err(|_| Error::Config)?;
         let checkpoint = CheckpointConfig {
             directory: self.checkpoint.directory.clone(),
             on_nack: self.checkpoint.on_nack,

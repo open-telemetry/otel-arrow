@@ -342,6 +342,8 @@ pub(crate) fn database(error: tokio_postgres::Error) -> Error {
 fn sqlstate(code: &str) -> Error {
     if code == "57014" {
         Error::Timeout
+    } else if code.starts_with("28") {
+        Error::Credential
     } else if code.starts_with("08")
         || matches!(
             code,

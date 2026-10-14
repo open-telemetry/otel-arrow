@@ -63,6 +63,24 @@ pub(crate) fn cursor_time(text: &str, modifier: i32) -> Result<DateTime<Utc>> {
     Ok(dt)
 }
 
+pub(crate) fn normalize_cursor_time(text: &str) -> Result<String> {
+    if text.len() > 64
+        || text.split_once('.').is_some_and(|(_, fraction)| {
+            fraction.bytes().take_while(u8::is_ascii_digit).count() > 9
+        })
+    {
+        return Err(Error::Value);
+    }
+    let timestamp = DateTime::parse_from_rfc3339(text)
+        .map(|value| value.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f").map(|value| value.and_utc())
+        })
+        .map_err(|_| Error::Value)?;
+    validate_timestamp(timestamp.naive_utc(), 6)?;
+    timestamp_text(timestamp.naive_utc())
+}
+
 fn validate_timestamp(dt: NaiveDateTime, modifier: i32) -> Result<()> {
     let precision = if modifier == -1 { 6 } else { modifier };
     if !(0..=6).contains(&precision)

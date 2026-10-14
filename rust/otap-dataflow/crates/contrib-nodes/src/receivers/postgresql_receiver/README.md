@@ -16,10 +16,6 @@ releases.
 
 **Database transport is unencrypted TCP without server-identity verification. Use only isolated, trusted development environments and disposable credentials.**
 
-The async PostgreSQL session and connection driver run as pipeline-local
-`!Send` tasks on the existing engine runtime. The receiver does not create a
-second Tokio runtime or a dedicated database thread.
-
 ## Getting started
 
 The [console example](../../../../../configs/postgresql-console.yaml) reads
@@ -88,8 +84,6 @@ INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, acto
 
 ## Configuration
 
-One receiver owns one query/collecting connection and requires a one-core pipeline. Unknown fields and null configuration values are rejected.
-
 | Field | Required? | Default / contract |
 | --- | --- | --- |
 | `source_id` | Yes | Stable name, 1-128 UTF-8 bytes without control characters. |
@@ -105,8 +99,6 @@ One receiver owns one query/collecting connection and requires a one-core pipeli
 | `query.catch_up.max_duration` | No | `10s`; `1ms`-`5min`. Gates the next page, not an active page. |
 | `watermark` | Yes | Composite timestamp plus signed-integer tie-breaker; see the example. |
 | `checkpoint.directory` | Yes | Persistent writable state directory. |
-
-Database, credential, and native statement operations use a fixed 30-second timeout. Connection attempts use a separate 10-second cap.
 
 Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`.
 
@@ -142,20 +134,19 @@ nodes:
 | `username_file` | Yes | Readable UTF-8 file containing a valid PostgreSQL username. |
 | `password_secret_file` | Yes | Readable UTF-8 file containing the password. |
 | `password_secret_file_refresh` | No | Defaults to `1h`; accepted range `10s`-`365d`. Both files are reread on this interval. |
-| `username` | Not accepted by the PostgreSQL deployment contract | Use `username_file`. |
-| `password_secret` | Not accepted by the PostgreSQL deployment contract | Use `password_secret_file`. |
-
-Credential files use the shared 4 MiB read limit. Trailing CR/LF line endings
-are removed; other whitespace is preserved. File contents are not included in
-receiver configuration, logs, or telemetry.
 
 Files refresh at `password_secret_file_refresh`; a reconnect before refresh may use the old password and fail. Healthy sessions are not replaced. Username changes during a receiver's lifetime are rejected: stop, review source identity/grants, and restart. After restart the principal must still read the same source.
 
 ### SQL and cursor contract
 
-Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections. Cursor columns must be direct, non-null columns of the driving table, and their pair must uniquely identify each result position.
+Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections. Cursor columns must be direct, non-null columns of the driving table.
 
-The at-least-once guarantee also requires cursor-ordered commit visibility: no row may become visible later at or before a committed cursor. Keep cursor and selected values stable, and retain rows unchanged throughout the maximum outage, downstream retry, and checkpoint-recovery window. Backdated inserts, late commits, updates, or early deletion can otherwise be skipped or make a NACK replay differ from the original page.
+The timestamp/tie-breaker pair must uniquely identify each result position.
+The receiver checks column presence, types, nullability, predicate, ordering,
+and joined-side uniqueness, but cannot prove driving-source uniqueness, commit
+ordering, or immutability.
+
+The at-least-once guarantee also requires cursor-ordered commit visibility: no row may become visible later at or before a committed cursor. The initial cursor excludes rows at or before that position.
 
 Use either keyset below, optionally ANDed with supported static comparisons, and order by timestamp then tie-breaker ascending:
 
@@ -168,10 +159,13 @@ Use either keyset below, optionally ANDed with supported static comparisons, and
 
 Native `$1`/`$2` binds are also accepted; do not mix styles.
 
-Timestamp cursors require `timestamp`/`timestamptz`, `timezone: UTC`, and an ISO 8601 initial value with `T`/`Z`, at most six fractional digits, exactly representable at native precision. Numeric offsets, spaces, and precision loss are rejected. Tie-breakers use range-checked `int2`, `int4`, or `int8`.
-
-The initial cursor is exclusive: rows at or before its timestamp/tie-breaker
-pair are not collected.
+Timestamp cursors require `timestamp`/`timestamptz` and `timezone: UTC`.
+Initial values accept UTC RFC 3339, offset-qualified RFC 3339, or
+timezone-less `YYYY-MM-DD HH:MM:SS[.fraction]` interpreted as UTC. They
+normalize to `YYYY-MM-DDTHH:MM:SS.ffffffZ`. Input may contain up to nine
+fractional digits but must be exactly representable at PostgreSQL's
+microsecond precision; rounding, leap seconds, and years outside `0001`-`9999`
+are rejected. Tie-breakers use range-checked `int2`, `int4`, or `int8`.
 
 ### Supported SQL forms
 
@@ -211,7 +205,7 @@ advances the acknowledged checkpoint.
 | Authentication | Missing, expired, unavailable, or rejected username/password | Credential details are redacted. The latest provider credential is fetched for each operation, but an authentication failure is terminal rather than retried indefinitely. | Repair or rotate the provider credential, wait for provider refresh if configured, then restart the receiver. |
 | Transient transport | Connection reset/refused, EOF, broken pipe, failover, server restart, overload, idle-session or temporary lock timeout, serialization failure, deadlock | The partial page is discarded. The receiver reconnects and revalidates after shared backoff (`1s`, `2s`, `4s`, `8s`, `16s`, then `30s`); the checkpoint remains unchanged. | Usually none. Investigate the database or network if retries continue. |
 | Timeout or cancellation | Native operation exceeds the fixed 30-second deadline, pipeline stop interrupts a query | PostgreSQL cancellation is requested and the local connection task is stopped and joined. Retryable timeouts reconnect after backoff; possible old server work is fenced for the statement timeout. Unconfirmed cleanup fails closed. | Usually none for a recovered timeout. Perform a full process restart after terminal `Cleanup`. |
-| Query or metadata | Syntax error, missing table, permission denied, changed result columns/types, lost cursor uniqueness | The query is non-retryable and collection terminates without emitting or checkpointing the failed page. | Restore the expected query, schema, indexes, and grants. For an intentional semantic change, use a reviewed initial cursor and new source/checkpoint identity. |
+| Query or metadata | Syntax error, missing table, permission denied, changed result columns/types, lost joined-side uniqueness | The query is non-retryable and collection terminates without emitting or checkpointing the failed page. | Restore the expected query, schema, indexes, and grants. For an intentional semantic change, use a reviewed initial cursor and new source/checkpoint identity. |
 | Conversion or bounds | Unsupported type/value, overflow, malformed timestamp or UTF-8, precision loss, non-advancing cursor, oversized frame/row/page | The entire page fails without skipping, truncating, coercing to text, or advancing the checkpoint. | Repair the source value/query or increase `max_batch_bytes`, then restart the receiver. |
 | Downstream delivery | Closed output channel, retryable NACK, permanent NACK/export rejection | A matching ACK and successful checkpoint write are both required to commit. Retryable NACK re-queries from the durable cursor after `nack_backoff`; permanent NACK pauses the source by default or uses explicitly configured capped retry. | Repair downstream delivery. Restart a source that remains paused under the default permanent-NACK policy. |
 | Checkpoint or ownership | Corrupt/oversized state, checksum/version/source/fingerprint/revision mismatch, lease conflict, unavailable storage | Startup and reads fail closed. Write failures retry up to `max_consecutive_failures`, then terminate. The receiver never assumes a cursor position. | Repair or restore the exact checkpoint storage and ownership issue; do not delete or edit state without reviewing the replay position. |
