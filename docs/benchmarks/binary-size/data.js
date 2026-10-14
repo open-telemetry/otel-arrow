@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791937712498,
+  "lastUpdate": 1791940672839,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -61651,6 +61651,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/31dc74527fb2c1403cde78939d3b26cf429641f3"
         },
         "date": 1791937698654,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "73203753+sochen0714@users.noreply.github.com",
+            "name": "sochen0714",
+            "username": "sochen0714"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e65c92fe736f09f495bb715774fe830b857fd0ea",
+          "message": "feat(extensions): add SASL credentials with password-file refresh (#4321)\n\n# Change summary\n\nAdd the opt-in `flat_file_sasl_auth` extension\n(`urn:otel:extension:flat_file_sasl_auth`, feature\n`flat-file-sasl-auth`) to supply SASL credentials with an **inline\nusername and a local password file**. `password_secret_file_refresh`\ndefaults to `1h` and accepts `10s` through `365d`. Configurable\n`startup_timeout` defaults to `30s`, allowing initial acquisition\nretries before startup fails.\n\n**Why a separate extension?** `flat_file_user_pass_auth` provides the\nHTTP-specific `basic_auth_provider` capability, whereas SASL consumers\nrequire `sasl_credential_provider`. A separate extension provides the\nSASL-specific capability without changing the existing HTTP Basic Auth\nextension.\n\nIncludes SASL-specific metrics, redacted acquisition errors, tests,\nfeature wiring, documentation, and one user-facing changelog entry. No\nOracle or Kafka receiver/live-connection changes.\n\n**A follow-up PR will add file-backed username support.** This PR\ndeliberately keeps the username inline.\n\n```yaml\nextensions:\n  kafka_credentials:\n    type: urn:otel:extension:flat_file_sasl_auth\n    config:\n      username: kafka-user\n      password_secret_file: /var/run/secrets/kafka/password\n      password_secret_file_refresh: 1h\n      startup_timeout: 30s\n```\n\n## Related issue\n\n* Related to #4310; does not close its broader both-file scope.\n* Kafka receiver capability integration is separate and startup-only:\n#4276.\n\n## Validation\n\nLatest review updates: `12c6d7f9876966bd0a887c248b9c958b5a7de270`, on\nthe branch's merged-main baseline.\n\n**Passed:** standalone and aggregate feature checks and strict\nall-target Clippy; contrib-extension regressions (**231 passed, 0\nfailed, 8 ignored**); standalone SASL tests (**16 passed**);\nMarkdownlint for both changed documents; scoped sanity/ASCII, test\ndocumentation, and changelog validation. Observed-source tests now call\nthe production SASL capability methods. A paused-clock test verifies\nunchanged credentials are republished on two periodic refreshes. Startup\ntests exercise the actual engine readiness gate. No Basic Auth\nsource/tests or shared provider/tracker code changed in these review\nupdates.\n\n**Required full check:** `cargo xtask check` passed structure, component\ninventory, formatting, workspace strict all-target Clippy, and no_std\nbuilds. Contrib-nodes finished with **1664 passed, 2 failed, 11\nignored**: the existing unsupported Windows Snappy test and\n`demo_multiple_consumers_rebalance`. The rebalance test passed an\nisolated exact rerun using the same full-check binary (**1 passed**).\nAcross 12 completed binaries, the full-run partial subtotal was **2512\npassed, 2 failed, 19 ignored**; this is not a green whole-workspace\nresult. No tests were skipped or altered to bypass failures.\n\n**Other host limitations:** global sanitycheck reports **837 unrelated\nCRLF checkout failures**; touched Markdown passes scoped rules. Official\nGo/chloggen tooling is unavailable; PyYAML validates the entry (pipeline\ncomponent, note 116/200, subtext 257/300 characters).\n\n## User-facing changes\n\nRequired nonempty `username` and `password_secret_file`; optional\nbounded `password_secret_file_refresh` and nonzero `startup_timeout`;\nunknown fields rejected. No username-file, inline-password, or AKV\noptions. Typed configuration and credentials redact secrets. Files must\nbe readable UTF-8 within the shared 4 MiB limit; only trailing CR/LF is\nstripped. Acquisition errors include field/path context without secret\ncontents. Kubernetes-mounted Secret files contain the decoded real\nvalue, not base64 text.\n\nThe extension becomes ready only after successful acquisition. Initial\nfailure publishes no credential; startup fails if acquisition does not\nsucceed within `startup_timeout`. Its 30-second default permits the\nfirst retry's 5-10-second backoff; shorter timeouts can intentionally\nfail sooner. This setting does not change running refresh/retry\nbehavior. Late subscriptions receive the latest cached credential;\nfailed refreshes retain the last good credential and keep streams open.\n\nSuccessful acquisitions publish even when credential values are\nunchanged. A stream item is not proof of password rotation; consumers\nshould compare values before deciding to reconnect. Slow watch\nsubscribers may coalesce publications. Password-file changes are adopted\non successful refresh; username/config changes require a restart.\nProvider refresh does not automatically rotate or reconnect live Kafka\nconnections.\n\nOutcome-attribute metrics migration remains a follow-up under #3530,\ncoordinated with the shared background-provider tracker.\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-10-14T00:20:03Z",
+          "tree_id": "549284bdb3a6e7aaa8b247d8718e7120b726845a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e65c92fe736f09f495bb715774fe830b857fd0ea"
+        },
+        "date": 1791940654384,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
