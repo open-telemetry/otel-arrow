@@ -73,6 +73,14 @@ config:
     type: no_sampling
 ```
 
+When `output` is a list of ports, the debug text goes to those ports and the
+data is forwarded to the other connected ports (the main ports). If every
+connected port is listed in `output`, the processor is the end of the line:
+it Acks each request itself. With several main ports, only the first one in
+name order decides the Ack or Nack returned to the sender; the others receive
+fire-and-forget copies. To wait for several destinations, put a fanout
+processor after the debug processor.
+
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine
