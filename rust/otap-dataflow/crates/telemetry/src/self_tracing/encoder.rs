@@ -139,17 +139,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
 
     /// Encodes one attribute whose value is written by `f`.
     fn write_value_attribute(&mut self, key: &str, mut f: impl FnMut(&mut dyn ValueWriter)) {
-        self.write_attribute(|buf| {
-            let mut lost = false;
-            buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-                buf.encode_string(KEY_VALUE_KEY, key)?;
-                buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                    lost = write_value(buf, 0, &mut f)?;
-                    Ok::<_, EncodeFailure>(())
-                })
-            })?;
-            Ok(lost)
-        });
+        self.write_attribute(|buf| write_key_value(buf, LOG_RECORD_ATTRIBUTES, key, 0, &mut f));
     }
 
     /// Encode a Debug attribute into a buffer, truncating the value with a
@@ -362,25 +352,49 @@ fn bounded<B: BoundedBuf>(
     Ok(truncated)
 }
 
-/// Runs `f` against a value writer at `depth`. `Ok(true)` means part of the
-/// value was lost; `Err` means it could not be written and must be rolled back.
+/// Encodes `f`'s value as a length-delimited `field` at `depth`. `Ok(true)`
+/// means part of the value was lost; `Err` means it could not be written and
+/// must be rolled back.
 fn write_value<B: BoundedBuf>(
     buf: &mut B,
+    field: u64,
     depth: usize,
     f: &mut dyn FnMut(&mut dyn ValueWriter),
 ) -> Result<bool, EncodeFailure> {
-    let mut writer = ValueEncoder {
-        buf,
-        depth,
-        lost: false,
-        failed: false,
-    };
-    f(&mut writer);
-    if writer.failed {
-        Err(EncodeFailure::Dropped)
-    } else {
-        Ok(writer.lost)
-    }
+    let mut lost = false;
+    buf.encode_len_delimited(field, |buf| {
+        let mut writer = ValueEncoder {
+            buf,
+            depth,
+            lost: false,
+            failed: false,
+        };
+        f(&mut writer);
+        lost = writer.lost;
+        if writer.failed {
+            Err(EncodeFailure::Dropped)
+        } else {
+            Ok(())
+        }
+    })?;
+    Ok(lost)
+}
+
+/// Encodes a `KeyValue` as a length-delimited `field`; see [`write_value`].
+fn write_key_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    key: &str,
+    depth: usize,
+    f: &mut dyn FnMut(&mut dyn ValueWriter),
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited(field, |buf| {
+        buf.encode_string(KEY_VALUE_KEY, key)?;
+        lost = write_value(buf, KEY_VALUE_VALUE, depth, f)?;
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(lost)
 }
 
 /// Writes one AnyValue into a bounded buffer.
@@ -493,19 +507,10 @@ struct MapEncoder<'a, B: BoundedBuf> {
 
 impl<B: BoundedBuf> MapWriter for MapEncoder<'_, B> {
     fn write_entry(&mut self, key: &str, f: &mut dyn FnMut(&mut dyn ValueWriter)) {
-        let depth = self.depth;
-        let mut lost = false;
         let result = bounded(self.buf, |buf| {
-            buf.encode_len_delimited(KEY_VALUE_LIST_VALUES, |buf| {
-                buf.encode_string(KEY_VALUE_KEY, key)?;
-                buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                    lost = write_value(buf, depth, f)?;
-                    Ok::<_, EncodeFailure>(())
-                })
-            })?;
-            Ok(false)
+            write_key_value(buf, KEY_VALUE_LIST_VALUES, key, self.depth, f)
         });
-        self.lost |= result.is_err() || lost;
+        self.lost |= result.unwrap_or(true);
     }
 }
 
@@ -522,18 +527,12 @@ impl<B: BoundedBuf> ArrayWriter for ArrayEncoder<'_, B> {
         if self.stopped {
             return;
         }
-        let depth = self.depth;
-        let mut lost = false;
         let result = bounded(self.buf, |buf| {
-            buf.encode_len_delimited(ARRAY_VALUE_VALUES, |buf| {
-                lost = write_value(buf, depth, f)?;
-                Ok::<_, EncodeFailure>(())
-            })?;
-            Ok(false)
+            write_value(buf, ARRAY_VALUE_VALUES, self.depth, f)
         });
         // Keep a prefix rather than shifting later element positions.
         self.stopped = result.is_err();
-        self.lost |= self.stopped || lost;
+        self.lost |= result.unwrap_or(true);
     }
 }
 
