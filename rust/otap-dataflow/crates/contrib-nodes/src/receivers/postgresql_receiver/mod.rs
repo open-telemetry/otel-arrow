@@ -24,7 +24,7 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, pdata::OtapPdata};
 use otel_arrow_dfe_scraper::{
-    CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, SourceBinding,
+    CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, LeaseError, SourceBinding,
 };
 use std::{path::Path, sync::Arc};
 
@@ -59,6 +59,28 @@ fn config_error(error: adapter::Error) -> ConfigError {
     }
 }
 
+fn source_lease_error(error: LeaseError) -> ConfigError {
+    let error = match error {
+        LeaseError::AlreadyOwned => {
+            "another database receiver already owns this PostgreSQL checkpoint source".into()
+        }
+        LeaseError::Unavailable => "PostgreSQL checkpoint lease registry is unavailable".into(),
+        LeaseError::InvalidPath { .. } => "PostgreSQL checkpoint lease path is invalid".into(),
+        LeaseError::InvalidGeneration { .. } => {
+            "PostgreSQL checkpoint lease generation is invalid".into()
+        }
+        LeaseError::GenerationOverflow { .. } => {
+            "PostgreSQL checkpoint lease generation overflowed".into()
+        }
+        LeaseError::Io { source, .. } => format!(
+            "PostgreSQL checkpoint lease I/O failed (kind {:?}, OS {:?})",
+            source.kind(),
+            source.raw_os_error(),
+        ),
+    };
+    ConfigError::InvalidUserConfig { error }
+}
+
 fn create(
     pipeline: PipelineContext,
     node: NodeId,
@@ -90,8 +112,7 @@ fn create(
     );
     // Acquire exclusive ownership before driver work starts; the shared receiver
     // retains the binding through ACK/checkpoint handling and confirmed shutdown.
-    let binding =
-        SourceBinding::acquire(store).map_err(|_| config_error(adapter::Error::Config))?;
+    let binding = SourceBinding::acquire(store).map_err(source_lease_error)?;
     let query = validated.common.clone();
     let backoff = validated.config.checkpoint.nack_backoff;
     let failures = validated.config.checkpoint.max_consecutive_failures;

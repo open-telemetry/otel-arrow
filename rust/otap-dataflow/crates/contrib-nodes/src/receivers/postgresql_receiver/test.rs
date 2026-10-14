@@ -970,6 +970,61 @@ fn exact_numeric() {
     assert!(convert::numeric(&number(4096, 0, 0, &[1])).is_err());
 }
 
+/// Scenario: PostgreSQL source ownership fails for each lease-error category.
+/// Guarantees: Operators receive distinct actionable categories without exposing checkpoint paths.
+#[test]
+fn source_lease_errors_are_distinct_and_redacted() {
+    use otel_arrow_dfe_config::error::Error as ConfigError;
+    use otel_arrow_dfe_scraper::LeaseError;
+    use std::{io, path::PathBuf};
+
+    let cases = [
+        (
+            LeaseError::AlreadyOwned,
+            "another database receiver already owns this PostgreSQL checkpoint source",
+        ),
+        (
+            LeaseError::Unavailable,
+            "PostgreSQL checkpoint lease registry is unavailable",
+        ),
+        (
+            LeaseError::InvalidPath {
+                path: PathBuf::from("PRIVATE_PATH"),
+            },
+            "PostgreSQL checkpoint lease path is invalid",
+        ),
+        (
+            LeaseError::InvalidGeneration {
+                path: PathBuf::from("PRIVATE_PATH"),
+            },
+            "PostgreSQL checkpoint lease generation is invalid",
+        ),
+        (
+            LeaseError::GenerationOverflow {
+                path: PathBuf::from("PRIVATE_PATH"),
+            },
+            "PostgreSQL checkpoint lease generation overflowed",
+        ),
+        (
+            LeaseError::Io {
+                operation: "open",
+                path: PathBuf::from("PRIVATE_PATH"),
+                source: io::Error::from(io::ErrorKind::PermissionDenied),
+            },
+            "PostgreSQL checkpoint lease I/O failed (kind PermissionDenied, OS None)",
+        ),
+    ];
+
+    for (lease_error, expected) in cases {
+        let ConfigError::InvalidUserConfig { error } = super::source_lease_error(lease_error)
+        else {
+            panic!("lease errors must remain invalid user configuration");
+        };
+        assert_eq!(error, expected);
+        assert!(!error.contains("PRIVATE_PATH"));
+    }
+}
+
 /// Scenario: A pipeline-local adapter receives shutdown without ever connecting to a database.
 /// Guarantees: Local cleanup is confirmed and repeated shutdown remains idempotent.
 #[tokio::test]

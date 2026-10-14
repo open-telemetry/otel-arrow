@@ -52,7 +52,7 @@ GRANT SELECT ON public.receiver_events TO otel_reader;
 
 Enter the same password into a protected file without putting it in YAML:
 
-```sh
+```bash
 mkdir -p .secrets/postgresql
 printf '%s\n' 'otel_reader' > .secrets/postgresql/username
 read -r -s -p 'PostgreSQL password: ' PG_PASSWORD
@@ -202,14 +202,19 @@ Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records 
 
 ## Failure recovery
 
-| Condition | Behavior | Operator action |
-| --- | --- | --- |
-| Connection loss, server restart, idle-session timeout, temporary lock timeout, serialization failure, deadlock, or fixed query timeout | The partial page is discarded, the transaction/session is cleaned up, and the receiver reconnects and revalidates after shared backoff (`1s`, `2s`, `4s`, `8s`, `16s`, then `30s`). The acknowledged checkpoint does not advance. | Usually none. Investigate if retries continue. |
-| Rejected or unavailable credentials | Terminal configuration failure; collection does not retry with an unusable credential. | Repair the credential file/provider, wait for its configured refresh if applicable, then restart the receiver/pipeline. |
-| SQL, permissions, unsupported type/value, or schema/signature change | Fails closed without emitting or checkpointing the failed page. | Restore the expected query/schema/grants and restart the receiver. For an intentional semantic change, use a reviewed initial cursor and a new source/checkpoint identity. |
-| Oversized row, frame, normalized-page, or encoded-page byte limit | The row/page is not truncated and the failed page is not checkpointed. Composite collection stops because the error is non-retryable. | Increase `max_batch_bytes` or narrow the query, then restart the receiver. |
-| Downstream NACK | With the default `on_nack: rewind`, the page is re-queried after `nack_backoff`. A permanent NACK pauses the source by default. | Repair downstream; restart a permanently paused receiver. |
-| Cleanup cannot be confirmed | Terminal `Cleanup`; source ownership is quarantined to prevent overlapping collection. | Perform a full process restart. |
+The receiver fails closed: a failed page is never emitted partially and never
+advances the acknowledged checkpoint.
+
+| Class | Examples | Behavior | Operator action |
+| --- | --- | --- | --- |
+| Configuration | Unknown or null fields, invalid host/database/cursor, unsupported SQL mapping, zero or out-of-range limits | Validation fails before collection starts. PostgreSQL has no configurable driver field. | Correct the configuration and restart the receiver. |
+| Authentication | Missing, expired, unavailable, or rejected username/password | Credential details are redacted. The latest provider credential is fetched for each operation, but an authentication failure is terminal rather than retried indefinitely. | Repair or rotate the provider credential, wait for provider refresh if configured, then restart the receiver. |
+| Transient transport | Connection reset/refused, EOF, broken pipe, failover, server restart, overload, idle-session or temporary lock timeout, serialization failure, deadlock | The partial page is discarded. The receiver reconnects and revalidates after shared backoff (`1s`, `2s`, `4s`, `8s`, `16s`, then `30s`); the checkpoint remains unchanged. | Usually none. Investigate the database or network if retries continue. |
+| Timeout or cancellation | Native operation exceeds the fixed 30-second deadline, pipeline stop interrupts a query | PostgreSQL cancellation is requested and the local connection task is stopped and joined. Retryable timeouts reconnect after backoff; possible old server work is fenced for the statement timeout. Unconfirmed cleanup fails closed. | Usually none for a recovered timeout. Perform a full process restart after terminal `Cleanup`. |
+| Query or metadata | Syntax error, missing table, permission denied, changed result columns/types, lost cursor uniqueness | The query is non-retryable and collection terminates without emitting or checkpointing the failed page. | Restore the expected query, schema, indexes, and grants. For an intentional semantic change, use a reviewed initial cursor and new source/checkpoint identity. |
+| Conversion or bounds | Unsupported type/value, overflow, malformed timestamp or UTF-8, precision loss, non-advancing cursor, oversized frame/row/page | The entire page fails without skipping, truncating, coercing to text, or advancing the checkpoint. | Repair the source value/query or increase `max_batch_bytes`, then restart the receiver. |
+| Downstream delivery | Closed output channel, retryable NACK, permanent NACK/export rejection | A matching ACK and successful checkpoint write are both required to commit. Retryable NACK re-queries from the durable cursor after `nack_backoff`; permanent NACK pauses the source by default or uses explicitly configured capped retry. | Repair downstream delivery. Restart a source that remains paused under the default permanent-NACK policy. |
+| Checkpoint or ownership | Corrupt/oversized state, checksum/version/source/fingerprint/revision mismatch, lease conflict, unavailable storage | Startup and reads fail closed. Write failures retry up to `max_consecutive_failures`, then terminate. The receiver never assumes a cursor position. | Repair or restore the exact checkpoint storage and ownership issue; do not delete or edit state without reviewing the replay position. |
 
 ## Development
 
