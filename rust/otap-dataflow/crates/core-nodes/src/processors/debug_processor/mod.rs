@@ -36,13 +36,13 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension};
 use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
+use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use prost::Message as _;
 use serde_json::Value;
@@ -337,11 +337,9 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     );
                 }
                 if is_sink {
-                    // Nothing is forwarded, so answer the upstream subscriber
-                    // here; otherwise it would wait forever.
-                    let mut consumed = pdata.clone();
-                    consumed.complete_processor_without_output(effect_handler);
-                    effect_handler.notify_ack(AckMsg::new(consumed)).await?;
+                    // Nothing is forwarded; the request is Acked below, after
+                    // its debug output is written.
+                    pdata.complete_processor_without_output(effect_handler);
                 }
                 if let Some(ports) = main_ports {
                     // The first main port (ports are sorted) carries the request
@@ -364,7 +362,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         .await?;
                 }
 
-                let (_context, payload) = pdata.into_parts();
+                let signal = pdata.signal_type();
+                let (context, payload) = pdata.into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload.try_into_with_default()?;
 
                 match otlp_bytes {
@@ -404,6 +403,17 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             self.process_trace(req, debug_output.as_mut()).await?;
                         }
                     }
+                }
+                if is_sink {
+                    // Answer the upstream subscriber; otherwise it would wait
+                    // forever. The payload was consumed above and is not
+                    // needed for an Ack.
+                    effect_handler
+                        .notify_ack(AckMsg::new(OtapPdata::new(
+                            context,
+                            OtapPayload::empty(signal),
+                        )))
+                        .await?;
                 }
                 Ok(())
             }
