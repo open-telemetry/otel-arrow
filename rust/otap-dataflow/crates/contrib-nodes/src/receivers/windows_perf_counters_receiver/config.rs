@@ -3,10 +3,19 @@
 
 //! Configuration parsing, validation, and exact-path normalization.
 //!
-//! Metric kind defaults to Gauge. Sum requires explicit aggregation and defaults
-//! to non-monotonic. Only cumulative, non-monotonic Sum is supported.
-//! Omitted or blank units default to "1"; descriptions default to empty.
-//! Unused metric definitions are allowed and produce no metric records.
+//! `metrics.<name>` (unused definitions emit nothing):
+//! - `gauge` | `sum`: metric kind; defaults to Gauge.
+//!   - `aggregation`: required for Sum; only `cumulative`.
+//!   - `monotonic`: only `false` (the default).
+//! - `unit`: blank or omitted defaults to `"1"`.
+//! - `description`: blank or omitted defaults to empty.
+//!
+//! `perfcounters[].counters[]`:
+//! - `metric`: definition name; blank or omitted uses the counter path.
+//!   - An explicit name must be defined.
+//!   - A path name uses an exact matching definition, otherwise a Gauge
+//!     with default metadata.
+//! - `attributes`: applied only with an explicit `metric`; otherwise ignored.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -25,6 +34,9 @@ const MAX_METRIC_NAME_LEN: usize = 255;
 const MAX_METRIC_UNIT_LEN: usize = 63;
 const MAX_COUNTERS: usize = 256;
 const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
+
+const OBJECT_INSTANCE_RESERVED: &[char] = &['\\', '(', ')', '*', '?', '\0'];
+const COUNTER_RESERVED: &[char] = &['\\', '*', '?', '\0'];
 
 /// OTel metric kind used to project a performance counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,6 +89,7 @@ pub(super) struct RuntimeConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
     metrics: BTreeMap<String, MetricConfig>,
     #[serde(rename = "perfcounters")]
     perf_counters: Vec<ObjectConfig>,
@@ -190,11 +203,20 @@ impl OneOrMany {
 #[serde(deny_unknown_fields)]
 struct CounterMapping {
     name: String,
-    metric: String,
+    // Point null-reference errors to the specific counter that needs fixing.
+    #[serde(default, deserialize_with = "present_metric")]
+    metric: Option<Option<String>>,
     #[serde(default)]
     attributes: BTreeMap<String, String>,
     #[serde(default)]
     scale_power10: i32,
+}
+
+fn present_metric<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 fn default_interval() -> Duration {
@@ -218,48 +240,74 @@ fn require_name(field: &str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_object_or_instance<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
+fn validate_path_segment<'a>(
+    field: &str,
+    value: &'a str,
+    reserved: &[char],
+) -> Result<&'a str, Error> {
     let value = value.trim();
     require_name(field, value)?;
-    if value.contains(['\\', '(', ')', '*', '?', '\0']) {
+    if value.contains(reserved) {
         return Err(invalid(format!(
             "{field} contains a reserved performance-counter path character"
+        )));
+    }
+    Ok(value)
+}
+
+fn validate_object<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
+    validate_path_segment(field, value, OBJECT_INSTANCE_RESERVED)
+}
+
+/// Splits a PDH duplicate-instance suffix, such as `app#2`, into name and index.
+fn instance_index(value: &str) -> Option<(&str, &str)> {
+    value
+        .rsplit_once('#')
+        .filter(|(_, index)| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn validate_instance<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
+    let value = validate_path_segment(field, value, OBJECT_INSTANCE_RESERVED)?;
+    if instance_index(value).is_some_and(|(name, _)| name.is_empty()) {
+        return Err(invalid(format!(
+            "{field} must include an instance name before its index"
         )));
     }
     Ok(value)
 }
 
 /// Canonicalizes PDH's decimal instance index, where the first occurrence omits `#0`.
+/// Returns `(canonical, configured)`.
 fn normalize_instance<'a>(field: &str, value: &'a str) -> Result<(String, &'a str), Error> {
-    let value = validate_object_or_instance(field, value)?;
-    let Some((name, index)) = value.rsplit_once('#') else {
-        return Ok((value.to_owned(), value));
+    let value = validate_instance(field, value)?;
+    let canonical = match instance_index(value) {
+        Some((name, index)) => match index.trim_start_matches('0') {
+            "" => name.to_owned(),
+            index => format!("{name}#{index}"),
+        },
+        None => value.to_owned(),
     };
-    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Ok((value.to_owned(), value));
-    }
-    if name.is_empty() {
-        return Err(invalid(format!(
-            "{field} must include an instance name before its index"
-        )));
-    }
-    let index = index.trim_start_matches('0');
-    if index.is_empty() {
-        Ok((name.to_owned(), value))
-    } else {
-        Ok((format!("{name}#{index}"), value))
-    }
+    Ok((canonical, value))
 }
 
 fn validate_counter_name<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
-    let value = value.trim();
-    require_name(field, value)?;
-    if value.contains(['\\', '*', '?', '\0']) {
+    validate_path_segment(field, value, COUNTER_RESERVED)
+}
+
+fn validate_path_length(field: &str, path: &str) -> Result<(), Error> {
+    if path.encode_utf16().count() > MAX_COUNTER_PATH_LEN {
         return Err(invalid(format!(
-            "{field} contains a reserved performance-counter path character"
+            "{field} {path:?} must contain at most {MAX_COUNTER_PATH_LEN} UTF-16 code units"
         )));
     }
-    Ok(value)
+    Ok(())
+}
+
+fn counter_path(object: &str, instance: Option<&str>, counter: &str) -> String {
+    match instance {
+        Some(instance) => format!(r"\{object}({instance})\{counter}"),
+        None => format!(r"\{object}\{counter}"),
+    }
 }
 
 /// Counts expanded counter paths before allocating them, so instance-by-counter
@@ -284,10 +332,46 @@ fn expanded_counter_count(objects: &[ObjectConfig]) -> Result<usize, Error> {
     Ok(total)
 }
 
-/// Enforces the OpenTelemetry instrument-name syntax on the trimmed name.
+/// A metric definition after trimming and validation.
+struct NormalizedMetric<'a> {
+    description: Arc<str>,
+    unit: &'a str,
+    kind: MetricKind,
+}
+
+/// Accepts configured local counter paths or ordinary instrument names.
 fn validate_metric_name(name: &str) -> Result<&str, Error> {
     let name = name.trim();
     require_name("metric name", name)?;
+    if let Some(path) = name.strip_prefix('\\') {
+        let field = format!("metric name {name:?}");
+        let invalid_padding = || {
+            invalid(format!(
+                "{field} segments must not have surrounding whitespace"
+            ))
+        };
+        let (object, counter) = path
+            .split_once('\\')
+            .ok_or_else(|| invalid(format!("{field} must be a full counter path")))?;
+        let object = if let Some((object, instance)) = object.split_once('(') {
+            let instance = instance
+                .strip_suffix(')')
+                .ok_or_else(|| invalid(format!("{field} must close its instance parentheses")))?;
+            if validate_instance(&field, instance)? != instance {
+                return Err(invalid_padding());
+            }
+            object
+        } else {
+            object
+        };
+        let checked_object = validate_object(&field, object)?;
+        let checked_counter = validate_counter_name(&field, counter)?;
+        if checked_object != object || checked_counter != counter {
+            return Err(invalid_padding());
+        }
+        validate_path_length("metric name", name)?;
+        return Ok(name);
+    }
     let mut chars = name.chars();
     let valid = name.len() <= MAX_METRIC_NAME_LEN
         && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
@@ -340,20 +424,8 @@ fn normalize_attributes(
     Ok(normalized)
 }
 
-/// A metric definition after trimming and validation.
-struct NormalizedMetric<'a> {
-    description: Arc<str>,
-    unit: &'a str,
-    kind: MetricKind,
-}
-
 fn validate_counter(counter: &CounterConfig) -> Result<(), Error> {
-    if counter.path.encode_utf16().count() > MAX_COUNTER_PATH_LEN {
-        return Err(invalid(format!(
-            "counter path {:?} must contain at most {MAX_COUNTER_PATH_LEN} UTF-16 code units",
-            counter.path
-        )));
-    }
+    validate_path_length("counter path", &counter.path)?;
     if !(MIN_SCALE_POWER10..=MAX_SCALE_POWER10).contains(&counter.scale_power10) {
         return Err(invalid(format!(
             "counter path {:?} scale_power10 must be between {MIN_SCALE_POWER10} and {MAX_SCALE_POWER10}",
@@ -389,9 +461,6 @@ impl RuntimeConfig {
                 humantime::format_duration(MAX_INITIAL_DELAY)
             )));
         }
-        if user.metrics.is_empty() {
-            return Err(invalid("metrics must contain at least one entry"));
-        }
         if user.perf_counters.is_empty() {
             return Err(invalid("perfcounters must contain at least one entry"));
         }
@@ -400,7 +469,7 @@ impl RuntimeConfig {
         let mut metric_identities = HashSet::new();
         for (name, metric) in &user.metrics {
             let name = validate_metric_name(name)?;
-            // OTel instrument names are case-insensitive.
+            // Reject case-insensitive duplicates; preserve names for case-sensitive lookup.
             if !metric_identities.insert(name.to_ascii_lowercase()) {
                 return Err(invalid(format!("metrics contains duplicate {name:?}")));
             }
@@ -417,12 +486,16 @@ impl RuntimeConfig {
             );
         }
 
+        let default_metric = NormalizedMetric {
+            description: Arc::from(""),
+            unit: "1",
+            kind: MetricKind::Gauge,
+        };
         let expanded_count = expanded_counter_count(&user.perf_counters)?;
         let mut counters = Vec::with_capacity(expanded_count);
         for (object_index, object) in user.perf_counters.iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
-            let object_name =
-                validate_object_or_instance(&format!("{object_field}.object"), &object.object)?;
+            let object_name = validate_object(&format!("{object_field}.object"), &object.object)?;
             if object.counters.is_empty() {
                 return Err(invalid(format!(
                     "{object_field}.counters must contain at least one entry"
@@ -448,7 +521,7 @@ impl RuntimeConfig {
                                     "{object_field}.instances contains duplicate {instance:?}"
                                 )));
                             }
-                            Ok(Some(normalized))
+                            Ok(Some((normalized, instance)))
                         })
                         .collect::<Result<Vec<_>, Error>>()?
                 }
@@ -457,24 +530,50 @@ impl RuntimeConfig {
                 let counter_field = format!("{object_field}.counters[{counter_index}]");
                 let counter_name =
                     validate_counter_name(&format!("{counter_field}.name"), &mapping.name)?;
-                let metric_name = mapping.metric.trim();
-                let metric = metrics.get(metric_name).ok_or_else(|| {
-                    invalid(format!(
+                let metric_name = match &mapping.metric {
+                    None => None,
+                    Some(Some(name)) => Some(name.trim()).filter(|name| !name.is_empty()),
+                    Some(None) => {
+                        return Err(invalid(format!(
+                            "{counter_field}.metric must be a string when present; null metric is invalid"
+                        )));
+                    }
+                };
+                if let Some(metric_name) = metric_name
+                    && !metrics.contains_key(metric_name)
+                {
+                    return Err(invalid(format!(
                         "{counter_field}.metric references undefined metric {metric_name:?}"
-                    ))
-                })?;
-                let attributes =
-                    Arc::new(normalize_attributes(&counter_field, &mapping.attributes)?);
+                    )));
+                }
+                let attributes = Arc::new(if metric_name.is_some() {
+                    normalize_attributes(&counter_field, &mapping.attributes)?
+                } else {
+                    BTreeMap::new()
+                });
                 for instance in &instances {
-                    let path = match instance {
-                        Some(instance) => {
-                            format!(r"\{object_name}({instance})\{counter_name}")
+                    let path = counter_path(
+                        object_name,
+                        instance.as_ref().map(|(normalized, _)| normalized.as_str()),
+                        counter_name,
+                    );
+                    let name = match metric_name {
+                        Some(name) => name.to_owned(),
+                        None => {
+                            // Keep configured spelling for the emitted metric name and definition lookup.
+                            let name = counter_path(
+                                object_name,
+                                instance.as_ref().map(|(_, configured)| *configured),
+                                counter_name,
+                            );
+                            validate_path_length("counter path", &name)?;
+                            name
                         }
-                        None => format!(r"\{object_name}\{counter_name}"),
                     };
+                    let metric = metrics.get(name.as_str()).unwrap_or(&default_metric);
                     counters.push(CounterConfig {
                         path,
-                        name: metric_name.to_owned(),
+                        name,
                         unit: metric.unit.to_owned(),
                         description: Arc::clone(&metric.description),
                         kind: metric.kind,
@@ -810,16 +909,16 @@ mod tests {
         }
     }
 
-    /// Scenario: Required metric and performance-counter collections are empty.
-    /// Guarantees: Validation rejects configurations that cannot emit any telemetry.
+    /// Scenario: An explicit reference has no definition, or no performance counters are configured.
+    /// Guarantees: Empty definitions do not satisfy explicit references and counters remain required.
     #[test]
-    fn rejects_empty_required_collections() {
+    fn rejects_undefined_references_and_empty_perfcounters() {
         assert_config_error(
             json!({"metrics": {}, "perfcounters": [{
                 "object": "Memory",
                 "counters": [{"name": "Available Bytes", "metric": "available"}]
             }]}),
-            "metrics must contain at least one entry",
+            "references undefined metric \"available\"",
         );
         assert_config_error(
             json!({"metrics": {"available": {
@@ -828,6 +927,192 @@ mod tests {
                 "gauge": {}
             }}, "perfcounters": []}),
             "perfcounters must contain at least one entry",
+        );
+    }
+
+    /// Scenario: Definitions are omitted or empty and metric references are omitted or blank.
+    /// Guarantees: Path-named Gauges retain configured index spelling and canonical native paths.
+    #[test]
+    fn defaults_path_metrics_without_definitions() {
+        for definitions in [None, Some(json!({}))] {
+            let mut value = json!({"perfcounters": [{
+                "object": " Process ", "instances": [" app#00 ", "worker#001"],
+                "counters": [{"name": " Private Bytes ", "scale_power10": -3}]
+            }]});
+            if let Some(definitions) = definitions {
+                value["metrics"] = definitions;
+            }
+            for reference in [None, Some(""), Some(" \t ")] {
+                if let Some(reference) = reference {
+                    value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
+                }
+                let config = RuntimeConfig::from_json(&value).unwrap();
+                for (counter, name, path) in [
+                    (
+                        &config.counters[0],
+                        r"\Process(app#00)\Private Bytes",
+                        r"\Process(app)\Private Bytes",
+                    ),
+                    (
+                        &config.counters[1],
+                        r"\Process(worker#001)\Private Bytes",
+                        r"\Process(worker#1)\Private Bytes",
+                    ),
+                ] {
+                    assert_eq!(counter.name, name);
+                    assert_eq!(counter.path, path);
+                    assert_eq!(counter.kind, MetricKind::Gauge);
+                    assert_eq!(counter.unit, "1");
+                    assert!(counter.description.is_empty());
+                    assert!(counter.attributes.is_empty());
+                    assert_eq!(counter.scale_power10, -3);
+                }
+            }
+        }
+    }
+
+    /// Scenario: A metric reference or the definitions map is explicitly null.
+    /// Guarantees: Null references identify both entry indexes and never select path-name fallback.
+    #[test]
+    fn rejects_null_metric_forms() {
+        for (object_index, counter_index) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            let mut value = json!({"perfcounters": [
+                {"object": "Memory", "counters": [
+                    {"name": "Available Bytes"}, {"name": "Committed Bytes"}
+                ]},
+                {"object": "Process", "instances": "worker", "counters": [
+                    {"name": "Private Bytes"}, {"name": "Working Set"}
+                ]}
+            ]});
+            value["perfcounters"][object_index]["counters"][counter_index]["metric"] = json!(null);
+            assert_config_error(
+                value,
+                &format!(
+                    "perfcounters[{object_index}].counters[{counter_index}].metric must be a string when present; null metric is invalid"
+                ),
+            );
+        }
+        let mut value = config_with_timing("30s", "1s");
+        value["metrics"] = json!(null);
+        assert_config_error(value, "expected a map");
+    }
+
+    /// Scenario: Definitions and explicit references use exact local paths, including long and Unicode names.
+    /// Guarantees: Path names use existing segment and UTF-16 bounds rather than instrument-name restrictions.
+    #[test]
+    fn accepts_path_shaped_metric_definitions_and_references() {
+        let at_limit = format!(r"\Memory\{}", "a".repeat(MAX_COUNTER_PATH_LEN - 8));
+        for name in [
+            r"\Memory\Available (Bytes)",
+            r"\Process(app#001)\Private Bytes",
+            "\\M\u{e9}moire\\Octets disponibles",
+            at_limit.as_str(),
+        ] {
+            let config = RuntimeConfig::from_json(&json!({
+                "metrics": {name: {}},
+                "perfcounters": [{
+                    "object": "Memory",
+                    "counters": [{"name": "Available Bytes", "metric": name}]
+                }]
+            }))
+            .unwrap();
+            assert_eq!(config.counters[0].name, name);
+        }
+        let too_long = format!("{at_limit}a");
+        let expected =
+            format!("metric name {too_long:?} must contain at most 2047 UTF-16 code units");
+        assert_config_error(
+            json!({"metrics": {too_long: {}}, "perfcounters": [{
+                "object": "Memory", "counters": [{"name": "Available Bytes"}]
+            }]}),
+            &expected,
+        );
+    }
+
+    /// Scenario: Unused path-shaped definitions contain malformed or unsupported path segments.
+    /// Guarantees: The name accommodation does not bypass existing exact-path safety validation.
+    #[test]
+    fn rejects_invalid_path_shaped_metric_definitions() {
+        for name in [
+            r"\Memory",
+            r"\\host\Memory\X",
+            r"\Memory(*)\X",
+            r"\Memory(app\X",
+            r"\Memory()\X",
+            r"\Memory(#0)\X",
+            r"\Memory\X\Y",
+            r"\Memory\X?",
+            "\\Memory\\X\0",
+        ] {
+            assert_config_error(
+                json!({"metrics": {name: {}}, "perfcounters": [{
+                    "object": "Memory", "counters": [{"name": "Available Bytes"}]
+                }]}),
+                "metric name",
+            );
+        }
+    }
+
+    /// Scenario: Path-shaped definition names contain padding around object, instance, or counter segments.
+    /// Guarantees: Definition identities are rejected rather than accepted with padded path segments.
+    #[test]
+    fn rejects_padding_in_path_shaped_metric_definitions() {
+        for name in [
+            r"\Memory \Available Bytes",
+            r"\Process( app )\X",
+            r"\Memory\ Available Bytes",
+        ] {
+            assert_config_error(
+                json!({"metrics": {name: {}}, "perfcounters": [{
+                    "object": "Memory", "counters": [{"name": "Available Bytes"}]
+                }]}),
+                &format!("metric name {name:?} segments must not have surrounding whitespace"),
+            );
+        }
+    }
+
+    /// Scenario: An implicitly matched path definition selects invalid metadata or an unsupported kind.
+    /// Guarantees: Path-name resolution never replaces an invalid definition with the default Gauge.
+    #[test]
+    fn validates_implicit_path_metric_definitions() {
+        for (definition, expected) in [
+            (
+                json!({"sum": {"aggregation": "delta"}}),
+                "delta Sum is not supported yet",
+            ),
+            (
+                json!({"sum": {"aggregation": "cumulative", "monotonic": true}}),
+                "monotonic Sum",
+            ),
+            (
+                json!({"gauge": {}, "sum": {"aggregation": "cumulative"}}),
+                "must not contain both",
+            ),
+            (json!({"sum": null}), "null Sum is invalid"),
+            (json!({"unit": "\u{b5}s"}), "unit must be printable ASCII"),
+        ] {
+            assert_config_error(
+                json!({"metrics": {r"\Memory\Available Bytes": definition}, "perfcounters": [{
+                    "object": "Memory", "counters": [{"name": "Available Bytes"}]
+                }]}),
+                expected,
+            );
+        }
+    }
+
+    /// Scenario: Implicit and explicit mappings configure equivalent native paths with different index spellings.
+    /// Guarantees: Path-derived names do not weaken canonical, case-insensitive native duplicate rejection.
+    #[test]
+    fn rejects_duplicate_paths_with_omitted_metric_references() {
+        assert_config_error(
+            json!({
+                "metrics": {"explicit": {}},
+                "perfcounters": [
+                    {"object": "Process", "instances": "app#001", "counters": [{"name": "Private Bytes"}]},
+                    {"object": "process", "instances": "APP#1", "counters": [{"name": "private bytes", "metric": "explicit"}]}
+                ]
+            }),
+            "duplicate counter path",
         );
     }
 
@@ -1272,12 +1557,15 @@ mod tests {
         .unwrap();
 
         let over_limit = "a".repeat(MAX_COUNTER_PATH_LEN - 7);
+        let over_limit_path = format!(r"\Memory\{over_limit}");
+        let expected =
+            format!("counter path {over_limit_path:?} must contain at most 2047 UTF-16 code units");
         assert_config_error(
             gauge_config(json!({
                 "object": "Memory",
                 "counters": [{"name": over_limit, "metric": "available"}]
             })),
-            "must contain at most 2047 UTF-16 code units",
+            &expected,
         );
 
         // `\Process(` + `)\X` is 12 code units; each U+1F600 is 2 code units, 1 char, 4 bytes.
