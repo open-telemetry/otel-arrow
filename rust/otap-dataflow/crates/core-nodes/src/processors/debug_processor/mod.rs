@@ -342,7 +342,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     pdata.complete_processor_without_output(effect_handler);
                 }
                 if let Some(ports) = main_ports {
-                    // The first main port (ports are sorted) carries the request
+                    // The first main port (sorted by
+                    // `OutputRouter::connected_ports`) carries the request
                     // context, so its outcome answers upstream. The other main
                     // ports get detached copies: a copy of the context would
                     // answer the same upstream subscriber once per port.
