@@ -76,9 +76,10 @@ A routing error does not crash. It silently produces one of these failures:
 ## Behavior patterns
 
 The model does not reproduce processors. It builds nodes from the patterns
-below. The table names the Rust code that each pattern stands for. The step 1
-inventory lists every copy or new-context site in `core-nodes` and
-`contrib-nodes`, and each one maps to a pattern here or is out of scope.
+below. The table names the Rust code that each pattern stands for. The
+appendix "Copy and new-context inventory" lists every site in `core-nodes`
+and `contrib-nodes` that copies a message or builds a new context, and maps
+each one to a pattern here or marks it out of scope.
 
 | Pattern | What happens to the message | Rust |
 | --- | --- | --- |
@@ -362,3 +363,63 @@ why, and what would make us reopen it.
 - Why: the fanout `none` fix removes its cause; the routing half is covered
   by `fire_and_forget_copy_nack_does_not_reach_acked_subscriber`.
 - Revisit when: a similar copy pattern appears that the fix does not cover.
+
+## Appendix: Copy and new-context inventory
+
+Every site in `crates/core-nodes` and `crates/contrib-nodes` that copies an
+`OtapPdata`, or builds a new context, and sends the result on. Line numbers
+are at `298846b57`. Paths are relative to `rust/otap-dataflow/crates/`.
+
+How it was built: a search of non-test code for `.clone()` of a message,
+`clone_detached`, `clone_without_context`, `OtapPdata::new`,
+`Context::default`, `Context::with_capacity`, `into_parts`, and
+`send_message*` with a clone argument. Every hit was then read by hand.
+Exporters only answer the message they receive, so they appear only where
+they keep a copy.
+
+"Own subscription" means the node pushes its own Ack/Nack frame on each
+copy it sends. A copy made with `clone()` and no own subscription keeps the
+sender's frames, which is the hazard behind Q1.
+
+### Copies of a message
+
+| Site | Pattern | Own subscription | Copy kind | Status |
+| --- | --- | --- | --- | --- |
+| `core-nodes/src/processors/fanout_processor/mod.rs` 943 (`await_ack: none`) | Copy without subscribe | no | `clone()` | Fixed: `clone_without_context()` (Q1, Q8) |
+| `fanout_processor/mod.rs` 986, 981 (`primary`, slim) | Copy with subscribe on top | yes | `clone()`; original kept in `slim_inflight` | OK |
+| `fanout_processor/mod.rs` 510 (`all` and full path) | Copy with subscribe on top | yes | `clone()`; original kept in `inflight` | OK |
+| `fanout_processor/mod.rs` 661 | Nack upstream from the kept original | n/a | `clone()` of the original, entry then removed | OK: one Nack per request |
+| `core-nodes/src/processors/debug_processor/mod.rs` 337-346 (2 or more main ports) | Copy without subscribe (Detailed: shared subscription) | no (Detailed: one frame shared by all copies) | `clone()` | Fixed: first port keeps the context, others `clone_without_context()` (Q1, Q4, D2) |
+| `debug_processor/mod.rs` 337-350 (no main port) | Consume without answer | n/a | none | Fixed: Ack after the output (Q5) |
+| `debug_processor/mod.rs` 346 (no output ports) | Forward | no | `clone()`, original consumed locally | OK: one copy |
+| `core-nodes/src/processors/debug_processor/output.rs` 389 | New lineage per debug port | no | `clone()` of a message with no frames | OK: outcomes have no subscriber |
+| `core-nodes/src/exporters/otap_exporter/mod.rs` 992 | Kept for a Nack if the stream fails | n/a | `clone()` | OK: settled once (`FirstPdataOutcome`); not modeled |
+
+### New or detached contexts
+
+| Site | Pattern | Own subscription | Copy kind | Status |
+| --- | --- | --- | --- | --- |
+| `core-nodes/src/processors/transform_processor/mod.rs` 323, 348, 392 | Detached split | yes, unless no tracking is needed | `clone_detached` | OK |
+| `transform_processor/mod.rs` 269, 696 | Forward | no | move | OK |
+| `transform_processor/mod.rs` 456 | Report upstream from the kept inbound context | n/a | move | OK |
+| `core-nodes/src/processors/partition_processor/mod.rs` 374 | Detached split | yes, unless no tracking is needed | `clone_detached` | OK |
+| `partition_processor/mod.rs` 329 | Inbound context kept in the slot map | n/a | `clone()`, never sent | OK |
+| `partition_processor/mod.rs` 296, 320, 170 | Answer locally / forward / report upstream | no | move | OK |
+| `core-nodes/src/processors/temporal_reaggregation_processor/mod.rs` 709, 864 | Detached merge | yes | `Context::with_capacity` | OK; a passthrough Nack can answer early (semantic, not protocol) |
+| `temporal_reaggregation_processor/mod.rs` 831 | New context, nobody waiting | no | `Context::default` | OK |
+| `temporal_reaggregation_processor/mod.rs` 672, 467, 537 | Forward / report upstream | no | move | OK |
+| `core-nodes/src/processors/batch_processor/mod.rs` 983, 1071, 1238, 1262 | Detached split and merge | yes | new contexts | OK; checked in Part 1 |
+| `core-nodes/src/processors/retry_processor/mod.rs` 588-595, 668 | Park and resend | yes | move | OK |
+| `core-nodes/src/exporters/topic_exporter/mod.rs` 208, 324, 384 | Transport boundary | n/a | `clone_without_context()` | OK |
+| `core-nodes/src/receivers/topic_receiver/mod.rs` 580-593 | Start a lineage | yes, when tracked | `clone_without_context()` | OK |
+| `core-nodes/src/processors/durable_buffer_processor/bundle_adapter.rs` 670, 685 | New lineage after persistence | no | `Context::default` | Out of scope |
+| Receivers: `otap/src/otap_grpc/otlp/server_new.rs` 502; `host_metrics_receiver` 763; `internal_telemetry_receiver/metrics.rs` 243; `journald_receiver` 895 | Admit / start a lineage | yes when waiting, else none | new context | OK |
+
+### Nodes that only move the message
+
+These take the message apart and send it on, or answer it, without copying
+it: `attributes_processor` (423, 486), `filter_processor` (159, 231),
+`log_sampling_processor` (118, 154, 176), `log_parser_processor` (94, 112),
+`content_router` (786, 824), `signal_type_router` (427, 468), and in
+`contrib-nodes`: `condense_attributes_processor` (650, 681),
+`recordset_kql_processor` (154, 190), `resource_validator_processor` (527).
