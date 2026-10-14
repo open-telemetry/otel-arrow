@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791936731440,
+  "lastUpdate": 1791937712498,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -61569,6 +61569,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-text-size",
             "value": 74.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 120.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 107.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "31dc74527fb2c1403cde78939d3b26cf429641f3",
+          "message": "chore(deps): update opentelemetry crates to v0.33.1 (#4349)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[opentelemetry](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry))\n| workspace.dependencies | patch | `0.33.0` → `0.33.1` |\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-proto)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry-proto))\n| workspace.dependencies | patch | `0.33.0` → `0.33.1` |\n|\n[opentelemetry_sdk](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-sdk)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust/tree/HEAD/opentelemetry-sdk))\n| workspace.dependencies | patch | `0.33.0` → `0.33.1` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-rust (opentelemetry)</summary>\n\n###\n[`v0.33.1`](https://redirect.github.com/open-telemetry/opentelemetry-rust/blob/HEAD/opentelemetry/CHANGELOG.md#0331)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-0.33.0...opentelemetry-0.33.1)\n\nReleased 2026-Oct-08\n\n- Fix a panic when a value stored with `Context::with_value()` calls\n  `Context::current()` from its `Drop` implementation.\n- Expand tracing documentation on async context propagation and child\nspans\n\n([#&#8203;828](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/828)).\n- Document the panic contract for observable metric callbacks\n(`Callback` and\n  `AsyncInstrumentBuilder::with_callback`).\n\n([#&#8203;3640](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3640))\n- Fix `TraceState::from_str` rejecting valid optional whitespace around\nlist members.\n\n([#&#8203;3757](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3757))\n\n</details>\n\n<details>\n<summary>open-telemetry/opentelemetry-rust\n(opentelemetry-proto)</summary>\n\n###\n[`v0.33.1`](https://redirect.github.com/open-telemetry/opentelemetry-rust/blob/HEAD/opentelemetry-proto/CHANGELOG.md#0331)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-proto-0.33.0...opentelemetry-proto-0.33.1)\n\nReleased 2026-Oct-08\n\n- **Performance**: `group_spans_by_resource_and_scope` no longer clones\nevery `SpanData`. The batch is owned by the function, so spans are now\nmoved into the proto conversion instead of being grouped by reference\nand cloned. This cuts the transform time of a 512-span batch roughly in\nhalf.\n([#&#8203;3652](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3652))\n- **Bug fix**: Accept omitted default fields in OTLP/JSON exponential\nhistogram data points and buckets, summary quantile values, and\nexemplars instead of silently dropping the metric data.\n([#&#8203;3755](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3755))\n- **Bug fix**: Encode `asInt` in OTLP/JSON `NumberDataPoint` and\n`Exemplar` as a decimal string, and accept both strings and numbers when\ndecoding. A quoted `asInt`, as written by other OTLP/JSON producers, was\nsilently dropped on decode.\n- **Bug fix**: Write and read the `Exemplar` value (`asInt` or\n`asDouble`) directly on the exemplar object instead of nesting it under\n`\"value\"`, so exemplar values round-trip with other OTLP/JSON producers\nand consumers.\n- **Feature**: Add support for protobuffer descriptor output.\n([#&#8203;3675](https://redirect.github.com/open-telemetry/opentelemetry-rust/pull/3675))\n\n</details>\n\n<details>\n<summary>open-telemetry/opentelemetry-rust (opentelemetry_sdk)</summary>\n\n###\n[`v0.33.1`](https://redirect.github.com/open-telemetry/opentelemetry-rust/blob/HEAD/opentelemetry-sdk/CHANGELOG.md#0331)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry_sdk-0.33.0...opentelemetry_sdk-0.33.1)\n\nReleased 2026-Oct-08\n\n- Emit a one-time internal error diagnostic when the default\n`PeriodicReader`\nworker thread panics (such as from an observable metric callback), and\ndocument\n  the callback panic contract.\n\n([#&#8203;3640](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3640))\n- Added `Sampler::parent_based(root)`, returning a `ParentBasedSampler`\nthat lets\nall 5 branches of the ParentBased sampler spec be configured\nindependently\n(root, and remote/local parent that is/isn't sampled) via\n`with_remote_parent_sampled`,\n  `with_remote_parent_not_sampled`, `with_local_parent_sampled`, and\n`with_local_parent_not_sampled`. Previously `Sampler::ParentBased` only\nlet you\noverride the root case; the other 4 were fixed to the spec defaults.\nUnset\n  branches keep those same defaults, so this is purely additive.\n\n([#&#8203;3657](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3657))\n- Fixed `Histogram`, `Sum`, `LastValue`, and `PrecomputedSum`\naggregators (and\n  their bound-instrument handles) silently accepting NaN/Infinity\n  measurements. For `Histogram` and `Sum`, a single NaN measurement\n  permanently corrupted the cumulative `sum`/total for the rest of the\nprocess's lifetime (`x + NaN == NaN`); `LastValue` and `PrecomputedSum`\nself-healed on the next valid measurement but still exported one bad\nvalue\nin the meantime, and `PrecomputedSum` under delta temporality corrupted\ntwo\nexport cycles. Non-finite measurements are now dropped before recording,\n  matching `ExponentialHistogram`'s existing behavior.\n\n([#&#8203;3656](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3656))\n- Fixed `SdkTracer` inheriting an invalid parent span context (e.g. a\ncontext\ncarrying an invalid active span context). Such a parent is now treated\nas no\nparent: the span gets a freshly generated trace id instead of the\nparent's\n  all-zero one, and is not recorded as a child of it.\n\n([#&#8203;3657](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3657))\n- Log metric export failures at ERROR level in `PeriodicReader`, making\nfailures such as an unreachable collector visible without enabling DEBUG\n  logging.\n\n([#&#8203;3754](https://redirect.github.com/open-telemetry/opentelemetry-rust/issues/3754))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about these\nupdates again.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xMzQuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjEzNC4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-13T23:15:23Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/31dc74527fb2c1403cde78939d3b26cf429641f3"
+        },
+        "date": 1791937698654,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 87.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 3.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.44,
             "unit": "MB"
           },
           {
