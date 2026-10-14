@@ -11,7 +11,7 @@ component: pipeline
 note: "Fanout with `await_ack: none` and the debug processor in output-ports mode now answer each request exactly once, so senders no longer get duplicate or missing Acks and Nacks."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: []
+issues: [4395]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
