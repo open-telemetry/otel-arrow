@@ -298,6 +298,41 @@ macro_rules! postgresql_module_tests {
                 assert_eq!(lifetime_requests / adaptive_requests, 151);
             }
 
+            /// Scenario: PostgreSQL rebuilds an equivalent unique index with a new internal OID.
+            /// Guarantees: Physical index identity changes are accepted, while column-contract changes still fail closed.
+            #[test]
+            fn equivalent_rebuilt_index_preserves_cached_schema() {
+                use tokio_postgres::types::Type;
+
+                let validated = super::super::tests::test_validated();
+                let mut signature = super::super::tests::mock_signature(
+                    &validated.plan,
+                    &[(Type::TIMESTAMPTZ, 6, true), (Type::INT8, -1, true)],
+                );
+                let mut cache = None;
+                _ = resolve_schema(&mut cache, &validated, signature.clone())
+                    .expect("initial schema");
+                signature.keys[0].1[0].0 = 999;
+                _ = resolve_schema(&mut cache, &validated, signature.clone())
+                    .expect("equivalent rebuilt index");
+                signature
+                    .columns
+                    .get_mut(&validated.plan.projections[0])
+                    .expect("timestamp")
+                    .type_oid = Type::TEXT.oid();
+                assert!(resolve_schema(&mut cache, &validated, signature).is_err());
+            }
+
+            /// Scenario: RLS is enabled after catalog validation but before query execution.
+            /// Guarantees: Every session requests fail-closed PostgreSQL RLS behavior rather than filtered rows.
+            #[test]
+            fn session_options_disable_filtered_rls_results() {
+                let options = session_options(Duration::from_secs(30));
+                assert!(options.contains("-c row_security=off"));
+                assert!(options.contains("-c statement_timeout=30000"));
+                assert!(options.contains("-c idle_in_transaction_session_timeout=30000"));
+            }
+
             /// Scenario: The retained PostgreSQL connection driver exits with an observed transport failure.
             /// Guarantees: Joining the completed task confirms cleanup without poisoning the adapter.
             #[tokio::test]

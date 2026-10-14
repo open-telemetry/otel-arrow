@@ -255,7 +255,10 @@ fn resolve_schema<'a>(
     signature: Signature,
 ) -> Result<&'a CachedSchema> {
     if let Some(cached) = cache {
-        if cached.signature != signature {
+        // Fresh catalog queries already recheck every required uniqueness
+        // property. Compare stable column semantics, not physical index OIDs:
+        // REINDEX CONCURRENTLY can replace an equivalent index.
+        if cached.signature.columns != signature.columns {
             return Err(Error::Metadata);
         }
     } else {
@@ -317,6 +320,17 @@ async fn cancel_native(slot: &CancelSlot) {
         })
         .await;
     }
+}
+
+fn session_options(timeout: Duration) -> String {
+    format!(
+        "-c search_path=pg_catalog -c TimeZone=UTC -c row_security=off \
+         -c default_transaction_read_only=on -c statement_timeout={} \
+         -c idle_in_transaction_session_timeout={} \
+         -c application_name=otel_arrow_postgresql_receiver",
+        timeout.as_millis(),
+        timeout.as_millis(),
+    )
 }
 
 impl PostgreSqlAdapter {
@@ -433,13 +447,7 @@ impl PostgreSqlAdapter {
             .password(credential.expose_password())
             .ssl_mode(SslMode::Disable)
             .connect_timeout(CONNECTION_TIMEOUT)
-            .options(format!(
-                "-c search_path=pg_catalog -c TimeZone=UTC -c default_transaction_read_only=on \
-                -c statement_timeout={} -c idle_in_transaction_session_timeout={} \
-                -c application_name=otel_arrow_postgresql_receiver",
-                self.validated.common.timeout().as_millis(),
-                self.validated.common.timeout().as_millis(),
-            ));
+            .options(session_options(self.validated.common.timeout()));
         let receive_failure = ReceiveFailure::default();
         let limits = FrameLimits::new(self.validated.common.max_normalized_bytes())?;
         let connected = tokio::time::timeout(CONNECTION_TIMEOUT, async {
