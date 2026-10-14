@@ -413,6 +413,23 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
         }
     }
 
+    /// Writes a length-delimited container at the next depth; `body` returns
+    /// whether part of its content was lost. Containers beyond [`MAX_DEPTH`]
+    /// are dropped.
+    fn nested(&mut self, field: u64, body: impl FnOnce(&mut B, usize) -> bool) {
+        if self.depth >= MAX_DEPTH {
+            self.lost = true;
+            return;
+        }
+        let depth = self.depth + 1;
+        let mut lost = false;
+        let result = self.buf.encode_len_delimited(field, |buf| {
+            lost = body(buf, depth);
+            Ok::<_, EncodeFailure>(())
+        });
+        self.put(result.map(|()| lost));
+    }
+
     fn put_tagged(
         &mut self,
         field: u64,
@@ -455,35 +472,19 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
     }
 
     fn write_map(&mut self, f: &mut dyn FnMut(&mut dyn MapWriter)) {
-        if self.depth >= MAX_DEPTH {
-            self.lost = true;
-            return;
-        }
-        let depth = self.depth + 1;
-        let mut lost = false;
-        let result = self
-            .buf
-            .encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
-                let mut writer = MapEncoder {
-                    buf,
-                    depth,
-                    lost: false,
-                };
-                f(&mut writer);
-                lost = writer.lost;
-                Ok::<_, EncodeFailure>(())
-            });
-        self.put(result.map(|()| lost));
+        self.nested(ANY_VALUE_KVLIST_VALUE, |buf, depth| {
+            let mut writer = MapEncoder {
+                buf,
+                depth,
+                lost: false,
+            };
+            f(&mut writer);
+            writer.lost
+        });
     }
 
     fn write_array(&mut self, f: &mut dyn FnMut(&mut dyn ArrayWriter)) {
-        if self.depth >= MAX_DEPTH {
-            self.lost = true;
-            return;
-        }
-        let depth = self.depth + 1;
-        let mut lost = false;
-        let result = self.buf.encode_len_delimited(ANY_VALUE_ARRAY_VALUE, |buf| {
+        self.nested(ANY_VALUE_ARRAY_VALUE, |buf, depth| {
             let mut writer = ArrayEncoder {
                 buf,
                 depth,
@@ -491,10 +492,8 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
                 stopped: false,
             };
             f(&mut writer);
-            lost = writer.lost;
-            Ok::<_, EncodeFailure>(())
+            writer.lost
         });
-        self.put(result.map(|()| lost));
     }
 }
 
