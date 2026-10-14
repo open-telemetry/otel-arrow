@@ -299,7 +299,7 @@ mod tests {
     }
 
     /// Scenario: a record batch slice selects subsets of primitive and UTF-8 arrays.
-    /// Guarantees: logical sizing follows Arrow's active-slice accounting.
+    /// Guarantees: logical sizing counts active values and the UTF-8 terminal offset.
     #[test]
     fn logical_bytes_follow_primitive_and_utf8_slices() {
         let batch = batch_with_columns(vec![
@@ -317,7 +317,7 @@ mod tests {
 
         let slice = batch.slice(1, 2);
         let primitive_bytes = 2 * size_of::<u32>();
-        let utf8_offset_bytes = 2 * size_of::<i32>();
+        let utf8_offset_bytes = (slice.num_rows() + 1) * size_of::<i32>();
         let utf8_value_bytes = "betagamma".len();
 
         assert_eq!(
@@ -327,7 +327,7 @@ mod tests {
     }
 
     /// Scenario: two dictionary columns share one dictionary values array.
-    /// Guarantees: logical sizing counts the dictionary for each logical array reference.
+    /// Guarantees: each logical reference counts dictionary values and their terminal offset.
     #[test]
     fn logical_bytes_count_shared_dictionary_per_array_reference() {
         let values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta"]));
@@ -352,7 +352,7 @@ mod tests {
             ),
         ]);
         let keys_bytes = 4 * size_of::<u8>();
-        let dictionary_bytes = 2 * size_of::<i32>() + "alphabeta".len();
+        let dictionary_bytes = (values.len() + 1) * size_of::<i32>() + "alphabeta".len();
 
         assert_eq!(logical_bytes(&batch), 2 * (keys_bytes + dictionary_bytes));
     }
@@ -378,7 +378,7 @@ mod tests {
     }
 
     /// Scenario: a ListArray slice selects one list while retaining its original child array.
-    /// Guarantees: logical sizing preserves Arrow's recursive child-array semantics.
+    /// Guarantees: logical sizing counts the terminal offset and the full retained child array.
     #[test]
     fn logical_bytes_follow_arrow_list_child_semantics() {
         let array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
@@ -389,7 +389,7 @@ mod tests {
         let data_type = array.data_type().clone();
         let slice = array.slice(1, 1);
         let batch = batch_with_columns(vec![("list", data_type, Arc::new(slice) as ArrayRef)]);
-        let list_offset_bytes = size_of::<i32>();
+        let list_offset_bytes = (batch.num_rows() + 1) * size_of::<i32>();
         let child_bytes = size_of::<[i32; 8]>();
 
         assert_eq!(logical_bytes(&batch), list_offset_bytes + child_bytes);
