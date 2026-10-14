@@ -21,17 +21,23 @@ fn default_startup_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
-/// Inline username and the file containing its SASL password.
+/// Inline or file-backed username and the file containing its SASL password.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// SASL username supplied inline, redacted in debug output.
-    pub username: SecretString,
+    /// Required unless `username_file` is set.
+    #[serde(default)]
+    pub username: Option<SecretString>,
+
+    /// Path to a UTF-8 username file; takes precedence over `username`.
+    #[serde(default)]
+    pub username_file: Option<PathBuf>,
 
     /// Path to a UTF-8 password file read during acquisition and refresh.
     pub password_secret_file: PathBuf,
 
-    /// Password-file refresh interval. Defaults to `1h`; accepts `10s` through `365d`.
+    /// Refresh interval for both credential files. Defaults to `1h`; accepts `10s` through `365d`.
     #[serde(
         with = "humantime_serde",
         default = "default_password_secret_file_refresh"
@@ -46,8 +52,16 @@ pub struct Config {
 impl Config {
     /// Rejects empty required fields without restricting SASL username syntax.
     pub fn validate(&self) -> Result<(), String> {
-        if self.username.expose_secret().is_empty() {
-            return Err("`username` cannot be empty".to_string());
+        if let Some(path) = &self.username_file {
+            if path.as_os_str().is_empty() {
+                return Err("`username_file` cannot be empty".to_string());
+            }
+        } else {
+            match &self.username {
+                Some(username) if !username.expose_secret().is_empty() => {}
+                Some(_) => return Err("`username` cannot be empty".to_string()),
+                None => return Err("either `username` or `username_file` must be set".to_string()),
+            }
         }
         if self.password_secret_file.as_os_str().is_empty() {
             return Err("`password_secret_file` cannot be empty".to_string());
