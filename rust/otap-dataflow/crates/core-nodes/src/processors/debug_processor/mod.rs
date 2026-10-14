@@ -1822,22 +1822,22 @@ mod tests {
 
     /// Scenario: the debug processor in output-ports mode has two main ports,
     /// and each destination Acks the copy it received.
-    /// Guarantees: the upstream subscriber receives at most one Ack for the
-    /// request (one outcome per subscription).
+    /// Guarantees: the upstream subscriber receives exactly one Ack for the
+    /// request: no duplicate answer and no missing answer.
     #[tokio::test]
     async fn outports_two_main_ports_answer_upstream_once() {
         let acks = outports_upstream_acks(&["a", "b"], Verbosity::Normal).await;
-        assert!(acks <= 1, "upstream subscriber received {acks} Acks");
+        assert_eq!(acks, 1, "expected exactly one upstream Ack, got {acks}");
     }
 
     /// Scenario: same as `outports_two_main_ports_answer_upstream_once`, in
     /// Detailed verbosity, where the processor subscribes before copying.
-    /// Guarantees: the processor's own subscription does not turn two copy
-    /// outcomes into two upstream Acks.
+    /// Guarantees: the processor's own subscription turns the copies' outcomes
+    /// into exactly one upstream Ack: no duplicate answer and no missing answer.
     #[tokio::test]
     async fn outports_two_main_ports_detailed_answer_upstream_once() {
         let acks = outports_upstream_acks(&["a", "b"], Verbosity::Detailed).await;
-        assert!(acks <= 1, "upstream subscriber received {acks} Acks");
+        assert_eq!(acks, 1, "expected exactly one upstream Ack, got {acks}");
     }
 
     /// Scenario: the debug processor in output-ports mode has every connected
