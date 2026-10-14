@@ -225,6 +225,8 @@ and credential acquisition share one absolute connect timeout. Refreshing
 credentials does not reauthenticate an already-open session or reset progress.
 Metadata validation and each metadata-plus-fetch operation have an absolute
 query timeout. Driver timeout defaults are disabled in favor of these budgets.
+Deterministic tests cover credential expiry, stalled acquisition, the shared
+connect budget, and rotated credentials in the actual in-memory LOGIN7 exchange.
 
 Cancellation handles are generation-specific: an old handle cannot cancel a
 later operation. Response-completion state is retained by the adapter from

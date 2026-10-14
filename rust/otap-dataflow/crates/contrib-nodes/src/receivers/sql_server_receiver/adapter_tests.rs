@@ -11,7 +11,10 @@ use futures::io::{AsyncRead, AsyncWrite};
 use otel_arrow_dfe_engine::{
     capability::{
         CapabilityError,
-        auth::{BasicAuthCredential, basic_auth_provider::BasicAuthCredentialStream},
+        auth::{
+            BasicAuthCredential,
+            basic_auth_provider::{BASIC_AUTH_CREDENTIAL_USABLE_MARGIN, BasicAuthCredentialStream},
+        },
     },
     error::Error as EngineError,
     local::{capability::auth::basic_auth_provider::BasicAuthProvider, receiver as local},
@@ -24,9 +27,11 @@ use otel_arrow_dfe_scraper::database::{
 };
 use serde_json::{Value, json};
 use std::{
+    cell::{Cell, RefCell},
     collections::VecDeque,
     io,
     pin::Pin,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -220,7 +225,48 @@ impl BasicAuthProvider for Credentials {
     }
 }
 
-struct PendingConnector;
+struct ScriptedCredentials {
+    values: RefCell<VecDeque<BasicAuthCredential>>,
+    delay: Option<Duration>,
+    calls: Rc<Cell<usize>>,
+}
+
+impl ScriptedCredentials {
+    fn new(values: impl IntoIterator<Item = BasicAuthCredential>) -> Self {
+        Self {
+            values: RefCell::new(values.into_iter().collect()),
+            delay: Some(Duration::ZERO),
+            calls: Rc::default(),
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl BasicAuthProvider for ScriptedCredentials {
+    async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
+        self.calls.set(self.calls.get() + 1);
+        let Some(delay) = self.delay else {
+            return futures::future::pending().await;
+        };
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(self
+            .values
+            .borrow_mut()
+            .pop_front()
+            .expect("scripted credential"))
+    }
+
+    fn credential_stream(&self) -> BasicAuthCredentialStream {
+        Box::pin(futures::stream::empty())
+    }
+}
+
+#[derive(Default)]
+struct PendingConnector {
+    calls: Rc<Cell<usize>>,
+}
 #[async_trait(?Send)]
 impl SqlServerConnector for PendingConnector {
     type Stream = ScriptedStream;
@@ -229,6 +275,7 @@ impl SqlServerConnector for PendingConnector {
         _: &SqlServerConnectionConfig,
         _: tiberius::Config,
     ) -> Result<tiberius::Client<Self::Stream>, Error> {
+        self.calls.set(self.calls.get() + 1);
         futures::future::pending().await
     }
 }
@@ -239,7 +286,8 @@ impl SqlServerConnector for PendingConnector {
 async fn connection_cancellation_is_local_and_generation_scoped() {
     let config = config(false);
     let query = config.query().clone();
-    let mut adapter = SqlServerAdapter::new(config, PendingConnector, Box::new(Credentials));
+    let mut adapter =
+        SqlServerAdapter::new(config, PendingConnector::default(), Box::new(Credentials));
     let stale = adapter.begin_operation().unwrap();
     let cancel = stale.clone();
     let (result, _) = tokio::join!(adapter.validate_query(&query), async {
@@ -256,6 +304,179 @@ async fn connection_cancellation_is_local_and_generation_scoped() {
         "old generation must not cancel the connector"
     );
     current.cancel().await.unwrap();
+    adapter.shutdown().await.unwrap();
+}
+
+/// Scenario: A provider supplies expired credentials or credentials at/inside the shared usability margin.
+/// Guarantees: Unusable credentials fail permanently before any connector or login work starts.
+#[tokio::test]
+async fn unusable_credentials_are_rejected_before_connecting() {
+    let now = std::time::Instant::now();
+    for expiry in [
+        now,
+        now + BASIC_AUTH_CREDENTIAL_USABLE_MARGIN / 2,
+        now + BASIC_AUTH_CREDENTIAL_USABLE_MARGIN,
+    ] {
+        let config = config(false);
+        let query = config.query().clone();
+        let credentials = ScriptedCredentials::new([BasicAuthCredential::new(
+            "expired-user",
+            "expired-password",
+        )
+        .unwrap()
+        .with_expiry(expiry)]);
+        let acquisitions = Rc::clone(&credentials.calls);
+        let connector = FixtureConnector::new([]);
+        let calls = Arc::clone(&connector.calls);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(credentials));
+        _ = adapter.begin_operation().unwrap();
+        assert_eq!(
+            adapter.validate_query(&query).await,
+            Err(Error::Credentials)
+        );
+        assert!(!SqlServerAdapter::<FixtureConnector>::is_retryable(
+            &Error::Credentials
+        ));
+        assert_eq!(acquisitions.get(), 1);
+        assert_eq!(calls.connections.load(Ordering::Relaxed), 0);
+        assert_eq!(calls.requests.load(Ordering::Relaxed), 0);
+        adapter.shutdown().await.unwrap();
+    }
+}
+
+/// Scenario: A provider supplies a credential without expiry or comfortably outside the usability margin.
+/// Guarantees: Valid credentials reach the driver's actual login unchanged.
+#[tokio::test]
+async fn usable_credentials_reach_the_login() {
+    for expiring in [false, true] {
+        let mut credential = BasicAuthCredential::new("usable-user", "usable-password").unwrap();
+        if expiring {
+            credential = credential
+                .with_expiry(std::time::Instant::now() + BASIC_AUTH_CREDENTIAL_USABLE_MARGIN * 2);
+        }
+        let config = config(false);
+        let query = config.query().clone();
+        let mut connector = FixtureConnector::new([vec![metadata_response()]]);
+        connector.expected_credentials.push_back(credential.clone());
+        let calls = Arc::clone(&connector.calls);
+        let credentials = ScriptedCredentials::new([credential]);
+        let acquisitions = Rc::clone(&credentials.calls);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(credentials));
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        assert_eq!(acquisitions.get(), 1);
+        assert_eq!(calls.connections.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.checked_logins.load(Ordering::Relaxed), 1);
+        adapter.shutdown().await.unwrap();
+    }
+}
+
+/// Scenario: Credential acquisition never completes and reaches the configured connect deadline.
+/// Guarantees: The adapter returns its own deadline error without invoking the connector.
+#[tokio::test(start_paused = true)]
+async fn credential_acquisition_obeys_connect_deadline() {
+    let mut raw = raw_config(false, 4096);
+    raw["connection"]["connect_timeout"] = json!("1s");
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let query = config.query().clone();
+    let mut credentials = ScriptedCredentials::new([]);
+    credentials.delay = None;
+    let acquisitions = Rc::clone(&credentials.calls);
+    let connector = FixtureConnector::new([]);
+    let calls = Arc::clone(&connector.calls);
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(credentials));
+    _ = adapter.begin_operation().unwrap();
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(2), adapter.validate_query(&query))
+        .await
+        .expect("adapter must enforce its own connect deadline");
+    assert_eq!(result, Err(Error::Deadline));
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    assert_eq!(acquisitions.get(), 1);
+    assert_eq!(calls.connections.load(Ordering::Relaxed), 0);
+    assert_eq!(calls.requests.load(Ordering::Relaxed), 0);
+    adapter.shutdown().await.unwrap();
+}
+
+/// Scenario: Credential acquisition consumes most of the connect budget before the connector stalls.
+/// Guarantees: Connection setup receives only the remaining budget, not a fresh connect timeout.
+#[tokio::test(start_paused = true)]
+async fn credentials_and_connector_share_one_deadline() {
+    let mut raw = raw_config(false, 4096);
+    raw["connection"]["connect_timeout"] = json!("1s");
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let query = config.query().clone();
+    let mut credentials =
+        ScriptedCredentials::new([
+            BasicAuthCredential::new("delayed-user", "delayed-password").unwrap()
+        ]);
+    credentials.delay = Some(Duration::from_millis(750));
+    let acquisitions = Rc::clone(&credentials.calls);
+    let connector = PendingConnector::default();
+    let connections = Rc::clone(&connector.calls);
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(credentials));
+    _ = adapter.begin_operation().unwrap();
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(2), adapter.validate_query(&query))
+        .await
+        .expect("credential acquisition must not restart the connect deadline");
+    assert_eq!(result, Err(Error::Deadline));
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    assert_eq!(acquisitions.get(), 1);
+    assert_eq!(connections.get(), 1);
+    adapter.shutdown().await.unwrap();
+}
+
+/// Scenario: Credentials rotate after the first connection and the shared lifecycle reconnects.
+/// Guarantees: Existing-session polling does not reacquire credentials; the next login uses both new secrets.
+#[tokio::test]
+async fn reconnect_uses_newly_acquired_credentials() {
+    let first = BasicAuthCredential::new("first-user", "first-password").unwrap();
+    let second = BasicAuthCredential::new("second-user", "second-password").unwrap();
+    let credentials = ScriptedCredentials::new([first.clone(), second.clone()]);
+    let acquisitions = Rc::clone(&credentials.calls);
+    let mut connector = FixtureConnector::new([
+        vec![
+            metadata_response(),
+            metadata_response(),
+            rows_response(&[1]),
+        ],
+        vec![
+            metadata_response(),
+            metadata_response(),
+            rows_response(&[2]),
+        ],
+    ]);
+    connector.expected_credentials = VecDeque::from([first, second]);
+    let calls = Arc::clone(&connector.calls);
+    let config = config(false);
+    let query = config.query().clone();
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(credentials));
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    let first_page = adapter
+        .execute(&query, &query.watermark().initial())
+        .await
+        .unwrap();
+    assert_eq!(acquisitions.get(), 1);
+    assert_eq!(calls.checked_logins.load(Ordering::Relaxed), 1);
+    _ = adapter.begin_operation().unwrap();
+    adapter.reconnect(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    let second_page = adapter
+        .execute(&query, &first_page.rows[0].cursor)
+        .await
+        .unwrap();
+    assert_eq!(
+        second_page.rows[0].cursor,
+        Cursor::Scalar(ScalarValue::Int64(2))
+    );
+    assert_eq!(acquisitions.get(), 2);
+    assert_eq!(calls.connections.load(Ordering::Relaxed), 2);
+    assert_eq!(calls.checked_logins.load(Ordering::Relaxed), 2);
     adapter.shutdown().await.unwrap();
 }
 
@@ -300,6 +521,7 @@ fn driver_errors_are_redacted_and_retries_are_allowlisted() {
 struct ProtocolCalls {
     connections: AtomicUsize,
     requests: AtomicUsize,
+    checked_logins: AtomicUsize,
 }
 
 // A complete request releases one in-memory response, exercising the real driver's
@@ -309,6 +531,7 @@ struct ScriptedStream {
     readable: VecDeque<u8>,
     writing: Vec<u8>,
     calls: Arc<ProtocolCalls>,
+    expected_login: Option<BasicAuthCredential>,
 }
 
 impl AsyncRead for ScriptedStream {
@@ -344,6 +567,15 @@ impl AsyncWrite for ScriptedStream {
                 break;
             }
             let end = self.writing[1] & 1 != 0;
+            if self.writing[0] == 0x10
+                && let Some(expected) = self.expected_login.take()
+            {
+                assert!(end, "fixture LOGIN7 must fit one packet");
+                let login = &self.writing[8..length];
+                assert!(login_field(login, 40, false) == expected.expose_username());
+                assert!(login_field(login, 44, true) == expected.expose_password());
+                _ = self.calls.checked_logins.fetch_add(1, Ordering::Relaxed);
+            }
             _ = self.writing.drain(..length);
             if end {
                 _ = self.calls.requests.fetch_add(1, Ordering::Relaxed);
@@ -362,6 +594,27 @@ impl AsyncWrite for ScriptedStream {
     fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+}
+
+fn login_field(login: &[u8], offset: usize, password: bool) -> String {
+    let start = usize::from(u16::from_le_bytes([login[offset], login[offset + 1]]));
+    let length = usize::from(u16::from_le_bytes([login[offset + 2], login[offset + 3]]));
+    let value = login[start..start + length * 2]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| {
+            let decode = |byte: u8| {
+                if password {
+                    (byte ^ 0xa5).rotate_left(4)
+                } else {
+                    byte
+                }
+            };
+            u16::from_le_bytes([decode(bytes[0]), decode(bytes[1])])
+        })
+        .collect::<Vec<_>>();
+    String::from_utf16(&value).unwrap()
 }
 
 fn packet(body: Vec<u8>) -> Vec<u8> {
@@ -470,6 +723,7 @@ fn rows_response(values: &[i64]) -> Vec<u8> {
 struct FixtureConnector {
     sessions: VecDeque<Vec<Vec<u8>>>,
     calls: Arc<ProtocolCalls>,
+    expected_credentials: VecDeque<BasicAuthCredential>,
 }
 
 impl FixtureConnector {
@@ -477,6 +731,7 @@ impl FixtureConnector {
         Self {
             sessions: sessions.into_iter().collect(),
             calls: Arc::default(),
+            expected_credentials: VecDeque::new(),
         }
     }
 }
@@ -487,12 +742,10 @@ impl SqlServerConnector for FixtureConnector {
     async fn connect(
         &mut self,
         _: &SqlServerConnectionConfig,
-        _: tiberius::Config,
+        mut config: tiberius::Config,
     ) -> Result<tiberius::Client<Self::Stream>, Error> {
         _ = self.calls.connections.fetch_add(1, Ordering::Relaxed);
         // Test-only login against in-memory bytes, not a production TLS connector.
-        let mut config = tiberius::Config::new();
-        config.authentication(tiberius::AuthMethod::sql_server("fixture", "fixture"));
         config.encryption(tiberius::EncryptionLevel::NotSupported);
         config.handshake_timeout(Some(Duration::from_secs(1)));
         let mut responses = VecDeque::from([packet(vec![1, 0, 6, 0, 1, 0xff, 2]), login()]);
@@ -504,6 +757,7 @@ impl SqlServerConnector for FixtureConnector {
                 readable: VecDeque::new(),
                 writing: Vec::new(),
                 calls: Arc::clone(&self.calls),
+                expected_login: self.expected_credentials.pop_front(),
             },
         )
         .await
