@@ -13,9 +13,13 @@ pub mod kafka_receiver;
 #[cfg(feature = "oracle")]
 pub mod oracle_receiver;
 
-/// Development-only PostgreSQL database receiver.
+/// PostgreSQL database receiver.
 #[cfg(feature = "postgresql")]
 pub mod postgresql_receiver;
+
+/// SQL Server configuration and query preparation without a runtime factory.
+#[cfg(feature = "sql-server")]
+pub mod sql_server_receiver;
 
 /// Linux user_events receiver.
 #[cfg(all(feature = "user-events", target_os = "linux"))]

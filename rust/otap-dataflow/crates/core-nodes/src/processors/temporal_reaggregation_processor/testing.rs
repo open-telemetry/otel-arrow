@@ -36,7 +36,7 @@ use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
 pub(super) use otel_arrow_dfe_pdata::testing::round_trip::{
     otap_to_otlp, otlp_message_to_bytes, otlp_to_otap,
 };
-use otel_arrow_dfe_pdata::{OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use serde_json;
 
@@ -346,10 +346,11 @@ pub(super) fn create_test_pipeline_context() -> PipelineContext {
 /// equivalence comparison.
 fn payload_to_otlp(payload: &OtapPayload) -> otel_arrow_dfe_pdata::proto::OtlpProtoMessage {
     match payload.data() {
-        PayloadData::OtapArrowRecords(records) => otap_to_otlp(records),
+        PayloadData::OtapRecords(records) => otap_to_otlp(records),
         PayloadData::OtlpBytes(bytes) => {
             otel_arrow_dfe_pdata::testing::round_trip::otlp_bytes_to_message(bytes.clone())
         }
+        PayloadData::Encoded(_) => panic!("unexpected encoded payload in legacy test helper"),
     }
 }
 
@@ -357,7 +358,7 @@ fn payload_to_otlp(payload: &OtapPayload) -> otel_arrow_dfe_pdata::proto::OtlpPr
 /// expected set of [`OtapArrowRecords`] batches combined.
 pub(super) fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrowRecords]) {
     let actual = match output.payload_ref().data() {
-        PayloadData::OtapArrowRecords(r) => r,
+        PayloadData::OtapRecords(r) => r,
         _ => panic!("expected OtapArrowRecords payload"),
     };
     let expected_msgs: Vec<_> = expected.iter().map(otap_to_otlp).collect();
@@ -368,7 +369,7 @@ pub(super) fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrow
 /// expected OTLP [`MetricsData`].
 pub(super) fn assert_output_otlp_equivalent(output: &OtapPdata, expected: MetricsData) {
     let actual = match output.payload_ref().data() {
-        PayloadData::OtapArrowRecords(r) => r,
+        PayloadData::OtapRecords(r) => r,
         _ => panic!("expected OtapArrowRecords payload"),
     };
     assert_equivalent(

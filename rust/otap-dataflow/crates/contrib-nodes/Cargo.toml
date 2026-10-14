@@ -23,6 +23,7 @@ otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-scraper = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
@@ -103,8 +104,9 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-# Keep these umbrella lists exhaustive. Features can appear in both directional
-# categories when they intentionally include source and destination nodes.
+# Keep these umbrella lists exhaustive except for explicitly opt-in integrations.
+# Features can appear in both directional categories when they intentionally
+# include source and destination nodes.
 contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
@@ -159,6 +161,15 @@ postgresql = [
 oracle = [
     "dep:otel-arrow-dfe-scraper",
     "dep:oracle",
+    "dep:blake3",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:secrecy",
+]
+# Independently opt-in preparation only; no SQL Server runtime is registered yet.
+sql-server = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:sqlparser",
     "dep:blake3",
     "dep:chrono",
     "dep:humantime-serde",
@@ -262,6 +273,7 @@ otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
