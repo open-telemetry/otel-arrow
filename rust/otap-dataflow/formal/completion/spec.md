@@ -366,6 +366,21 @@ why, and what would make us reopen it.
   by `fire_and_forget_copy_nack_does_not_reach_acked_subscriber`.
 - Revisit when: a similar copy pattern appears that the fix does not cover.
 
+### D6. Temporal reaggregation can Nack a request whose data is still exported
+
+- Observation: an input to `temporal_reaggregation_processor` can leave in
+  two parts, a passthrough batch and a share of a later aggregated batch.
+  If the passthrough batch is Nacked first, `handle_nack` (503-540) Nacks
+  the inbound request at once, but its share in the aggregated batch is
+  still exported at the next flush. A client that retries after the Nack
+  re-sends data that was delivered.
+- Decision: recorded, not fixed. It is at-least-once behavior (a Nack
+  followed by delivery), not a routing error: each subscriber still gets one
+  answer, so Q1-Q8 hold. The processor's aggregation logic is outside the
+  four parts of this experiment, so no follow-up is opened from here.
+- Revisit when: the processor's owners decide whether a Nack should wait for
+  the aggregated part.
+
 ## Appendix: Copy and new-context inventory
 
 Every site in `crates/core-nodes` and `crates/contrib-nodes` that copies an
@@ -407,7 +422,7 @@ sender's frames, which is the hazard behind Q1.
 | `core-nodes/src/processors/partition_processor/mod.rs` 374 | Detached split | yes, unless no tracking is needed | `clone_detached` | OK |
 | `partition_processor/mod.rs` 329 | Inbound context kept in the slot map | n/a | `clone()`, never sent | OK |
 | `partition_processor/mod.rs` 296, 320, 170 | Answer locally / forward / report upstream | no | move | OK |
-| `core-nodes/src/processors/temporal_reaggregation_processor/mod.rs` 709, 864 | Detached merge | yes | `Context::with_capacity` | OK; a passthrough Nack can answer early (semantic, not protocol) |
+| `core-nodes/src/processors/temporal_reaggregation_processor/mod.rs` 709, 864 | Detached merge | yes | `Context::with_capacity` | OK; a passthrough Nack can answer early, see D6 |
 | `temporal_reaggregation_processor/mod.rs` 831 | New context, nobody waiting | no | `Context::default` | OK |
 | `temporal_reaggregation_processor/mod.rs` 672, 467, 537 | Forward / report upstream | no | move | OK |
 | `core-nodes/src/processors/batch_processor/mod.rs` 983, 1071, 1238, 1262 | Detached split and merge | yes | new contexts | OK; checked in Part 1 |
