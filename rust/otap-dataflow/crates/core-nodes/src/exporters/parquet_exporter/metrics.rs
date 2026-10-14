@@ -3,43 +3,319 @@
 
 //! Metrics specific to the Parquet exporter IO lifecycle.
 
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
+use otel_arrow_dfe_telemetry::error::Error;
 use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::metrics::{
+    MeasurementMetricSet, MetricSet, MetricSetHandler, MetricSetRegistrar, MetricSetSnapshot,
+};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-/// Parquet exporter IO metrics.
-/// Grouped under `otap.exporter.parquet`.
-#[metric_set(name = "otap.exporter.parquet")]
+/// Lifecycle operations for Parquet exporter files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum FileOperation {
+    /// A file was created.
+    Created,
+    /// A file was closed.
+    Closed,
+    /// A flush was scheduled because the max rows threshold was reached.
+    FlushScheduledMaxRows,
+    /// A flush was scheduled because the max age threshold was reached.
+    FlushScheduledMaxAge,
+    /// A flush attempt was made.
+    FlushAttempts,
+    /// A flush completed successfully.
+    FlushSuccesses,
+    /// A flush failed.
+    FlushFailures,
+}
+
+/// Parquet exporter IO metrics attributes.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ParquetExporterFileAttributes {
+    /// The file operation type.
+    pub operation: FileOperation,
+}
+
+/// Parquet exporter file IO metrics.
+/// Grouped under `exporter.parquet.file`.
+#[metric_set(
+    name = "exporter.parquet.file",
+    measurement_attributes = ParquetExporterFileAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct ParquetExporterMetrics {
-    /// Number of Parquet files created (across all payload types and partitions).
-    #[metric(unit = "{file}")]
-    pub files_created: Counter<u64>,
+pub struct ParquetExporterFileMetrics {
+    /// Number of Parquet file lifecycle and flush operations.
+    #[metric(unit = "{operation}")]
+    pub operations: Counter<u64>,
+}
 
-    /// Number of Parquet files successfully closed (flushed and visible to readers).
-    #[metric(unit = "{file}")]
-    pub files_closed: Counter<u64>,
-
+/// Parquet exporter row IO metrics.
+/// Grouped under `exporter.parquet.rows`.
+#[metric_set(name = "exporter.parquet.rows")]
+#[derive(Debug, Default, Clone)]
+pub struct ParquetExporterRowMetrics {
     /// Total number of rows written into Parquet writers (appended, not necessarily flushed yet).
     #[metric(unit = "{row}")]
-    pub rows_written: Counter<u64>,
+    pub written: Counter<u64>,
+}
 
-    /// Files scheduled for flush due to reaching target rows per file.
-    #[metric(unit = "{file}")]
-    pub flush_scheduled_max_rows: Counter<u64>,
+/// Shared bounded-cardinality Parquet exporter metrics tracker.
+pub struct ParquetExporterMetrics {
+    /// Shared exporter boundary metrics (attempted, duration, payload, items).
+    pub boundary: ExporterMetrics,
+    /// File metrics.
+    pub files: MeasurementMetricSet<ParquetExporterFileMetrics>,
+    /// Row metrics.
+    pub rows: MetricSet<ParquetExporterRowMetrics>,
+}
 
-    /// Files scheduled for flush due to exceeding max age threshold.
-    #[metric(unit = "{file}")]
-    pub flush_scheduled_max_age: Counter<u64>,
+impl ParquetExporterMetrics {
+    /// Registers Parquet exporter metric sets for a pipeline node.
+    #[must_use]
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            boundary: ExporterMetrics::register(pipeline_ctx),
+            files: ParquetExporterFileMetrics::register(pipeline_ctx),
+            rows: pipeline_ctx.register_metric_set::<ParquetExporterRowMetrics>(),
+        }
+    }
 
-    /// File close/flush attempts initiated by the exporter.
-    #[metric(unit = "{file}")]
-    pub flush_attempts: Counter<u64>,
+    /// Reports touched metric buckets.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
+        self.boundary.report(reporter)?;
+        reporter.report_measurement(&mut self.files)?;
+        reporter.report(&mut self.rows)?;
+        Ok(())
+    }
 
-    /// File close/flush attempts that succeeded and made the file visible to readers.
-    #[metric(unit = "{file}")]
-    pub flush_successes: Counter<u64>,
+    /// Takes every touched metric bucket for terminal handoff.
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.boundary.terminal_snapshots();
+        snapshots.extend(self.files.terminal_snapshots());
+        if self.rows.needs_flush() {
+            snapshots.extend(self.rows.terminal_snapshots());
+        }
+        snapshots
+    }
+}
 
-    /// File close/flush attempts that failed after the lower-level retry policy was exhausted.
-    #[metric(unit = "{file}")]
-    pub flush_failures: Counter<u64>,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+
+    fn pipeline_context() -> PipelineContext {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+    }
+
+    /// Scenario: File metrics are partitioned by operation type.
+    /// Guarantees: Each `FileOperation` variant isolates its counter independently.
+    #[test]
+    fn file_metrics_are_partitioned_by_operation() {
+        let pipeline = pipeline_context();
+        let mut metrics = ParquetExporterMetrics::register(&pipeline);
+
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::Created,
+            })
+            .operations
+            .add(3);
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::Closed,
+            })
+            .operations
+            .add(2);
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::FlushAttempts,
+            })
+            .operations
+            .add(5);
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::FlushSuccesses,
+            })
+            .operations
+            .add(4);
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::FlushFailures,
+            })
+            .operations
+            .inc();
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::FlushScheduledMaxRows,
+            })
+            .operations
+            .add(6);
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::FlushScheduledMaxAge,
+            })
+            .operations
+            .add(7);
+
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::Created,
+                })
+                .operations
+                .get(),
+            3
+        );
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::Closed,
+                })
+                .operations
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::FlushAttempts,
+                })
+                .operations
+                .get(),
+            5
+        );
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::FlushSuccesses,
+                })
+                .operations
+                .get(),
+            4
+        );
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::FlushFailures,
+                })
+                .operations
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::FlushScheduledMaxRows,
+                })
+                .operations
+                .get(),
+            6
+        );
+        assert_eq!(
+            metrics
+                .files
+                .get(ParquetExporterFileAttributes {
+                    operation: FileOperation::FlushScheduledMaxAge,
+                })
+                .operations
+                .get(),
+            7
+        );
+    }
+
+    /// Scenario: Row metrics track written rows independently of file operations.
+    /// Guarantees: `rows.written` accumulates correctly.
+    #[test]
+    fn row_metrics_track_written_rows() {
+        let pipeline = pipeline_context();
+        let mut metrics = ParquetExporterMetrics::register(&pipeline);
+
+        metrics.rows.written.add(100);
+        metrics.rows.written.add(50);
+
+        assert_eq!(metrics.rows.written.get(), 150);
+    }
+
+    /// Scenario: Terminal snapshots expose touched file and row metric buckets.
+    /// Guarantees: Snapshots contain the correct descriptors and are cleared after handoff.
+    #[test]
+    fn terminal_snapshots_expose_parquet_schema_and_clear() {
+        let pipeline = pipeline_context();
+        let mut metrics = ParquetExporterMetrics::register(&pipeline);
+
+        metrics
+            .files
+            .with(ParquetExporterFileAttributes {
+                operation: FileOperation::Created,
+            })
+            .operations
+            .inc();
+        metrics.rows.written.add(42);
+
+        let snapshots = metrics.terminal_snapshots();
+        // Should have at least one file snapshot and one row snapshot.
+        assert!(snapshots.len() >= 2);
+
+        let file_snapshot = snapshots
+            .iter()
+            .find(|s| s.descriptor().name == "exporter.parquet.file")
+            .expect("expected file metrics snapshot");
+        assert_eq!(file_snapshot.descriptor().metrics[0].name, "operations");
+        assert_eq!(file_snapshot.descriptor().metrics[0].unit, "{operation}");
+        assert_eq!(
+            file_snapshot.measurement_attribute_value("operation"),
+            Some("created")
+        );
+
+        let row_snapshot = snapshots
+            .iter()
+            .find(|s| s.descriptor().name == "exporter.parquet.rows")
+            .expect("expected row metrics snapshot");
+        assert_eq!(row_snapshot.descriptor().metrics[0].name, "written");
+        assert_eq!(row_snapshot.descriptor().metrics[0].unit, "{row}");
+
+        // Second call should return empty since buckets were already taken.
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: FileOperation enum values are rendered for telemetry consumption.
+    /// Guarantees: Every variant has a stable lowercase telemetry value.
+    #[test]
+    fn file_operation_attribute_values_are_stable() {
+        assert_eq!(FileOperation::Created.as_str(), "created");
+        assert_eq!(FileOperation::Closed.as_str(), "closed");
+        assert_eq!(
+            FileOperation::FlushScheduledMaxRows.as_str(),
+            "flush_scheduled_max_rows"
+        );
+        assert_eq!(
+            FileOperation::FlushScheduledMaxAge.as_str(),
+            "flush_scheduled_max_age"
+        );
+        assert_eq!(FileOperation::FlushAttempts.as_str(), "flush_attempts");
+        assert_eq!(FileOperation::FlushSuccesses.as_str(), "flush_successes");
+        assert_eq!(FileOperation::FlushFailures.as_str(), "flush_failures");
+    }
 }

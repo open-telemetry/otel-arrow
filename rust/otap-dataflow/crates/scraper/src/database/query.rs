@@ -12,7 +12,8 @@ use super::scalar::{CursorError, ScalarValue};
 use std::fmt;
 use std::time::Duration;
 
-const MAX_QUERY_BYTES: usize = 16 * 1024;
+/// Maximum SQL byte length accepted by shared query plans and vendor preparation.
+pub const MAX_QUERY_BYTES: usize = 16 * 1024;
 
 /// Cursor binds and columns required by composite watermark mode.
 #[derive(Clone, Debug)]
