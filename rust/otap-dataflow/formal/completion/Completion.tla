@@ -8,7 +8,7 @@
 (* commit 298846b57.                                                      *)
 (*                                                                         *)
 (* Nodes are strings: "R" receiver, "P" generic processor (T1), "F"      *)
-(* fanout, "Y" retry, "D" debug, "A" and "B" exporters. A message is a   *)
+(* fanout, "Y" retry, "D" debug, "A" "B" "C" exporters. A message is a  *)
 (* record [units, lin, pay, stack]: the data units it carries, its ghost *)
 (* lineage (set of requests), whether it carries a payload, and its      *)
 (* frame stack (top = last element).                                     *)
@@ -33,7 +33,11 @@ CONSTANTS
     MaxRetries,     \* T3, T4: retry limit (retry_limit)
     MetricsFrames,  \* push metrics-only entry frames on receive?
     AllowCancel,    \* may a client cancel its request (SlotGuard drop)?
-    AllowExit       \* may the dispatcher exit its run loop?
+    AllowExit,      \* may the dispatcher exit its run loop?
+    Cap,            \* capacity of every pdata channel
+    CtrlCap,        \* capacity of every node control channel
+    ComplCap,       \* capacity of the pipeline completion channel
+    NumDests        \* T2, T4, T5: number of exporters after fanout/debug
 
 ASSUME Topo \in {"T1", "T2", "T3", "T4", "T5"}
 ASSUME NumRequests \in Nat \ {0}
@@ -41,16 +45,15 @@ ASSUME Behaviors \subseteq
          {"forward", "fwdsub", "ackLocal", "refuse", "consume", "fail",
           "split"}
 ASSUME FanoutModes \subseteq {"none", "primary", "all"}
-ASSUME DebugPorts \subseteq 0..2
+ASSUME NumDests \in 1..3
+ASSUME DebugPorts \subseteq 0..NumDests
 ASSUME DebugDetailed \subseteq BOOLEAN
 ASSUME MaxRetries \in Nat
 ASSUME MetricsFrames \in BOOLEAN /\ AllowCancel \in BOOLEAN
 ASSUME AllowExit \in BOOLEAN
+ASSUME {Cap, CtrlCap, ComplCap} \subseteq Nat \ {0}
 
 Requests == 1..NumRequests
-Cap == 1         \* capacity of every pdata channel
-CtrlCap == 1     \* capacity of every node control channel
-ComplCap == 1    \* capacity of the pipeline completion channel
 NoCd == <<0, 0>> \* empty calldata
 
 -----------------------------------------------------------------------------
@@ -76,7 +79,9 @@ Mid ==
       [] Topo = "T4" -> <<"Y", "F">>
       [] Topo = "T5" -> <<"D">>
 Procs == Range(Mid)
-Exporters == IF Topo \in {"T1", "T3"} THEN {"A"} ELSE {"A", "B"}
+(* Destinations after fanout or debug, in port-name order; A is primary. *)
+Dests == SubSeq(<<"A", "B", "C">>, 1, NumDests)
+Exporters == IF Topo \in {"T1", "T3"} THEN {"A"} ELSE Range(Dests)
 Nodes == {"R"} \cup Procs \cup Exporters
 
 (* Permanent Nacks only matter where a retry processor reads them. *)
@@ -120,13 +125,13 @@ Required ==
     CASE Topo = "T1" -> IF cfg.beh = "ackLocal" THEN {} ELSE {"A"}
       [] Topo = "T2" -> (CASE cfg.fmode = "none" -> {}
                            [] cfg.fmode = "primary" -> {"A"}
-                           [] OTHER -> {"A", "B"})
+                           [] OTHER -> Range(Dests))
       [] Topo = "T3" -> {"A"}
       [] Topo = "T4" -> {}
       [] Topo = "T5" -> IF cfg.ports = 0 THEN {} ELSE {"A"}  \* spec.md D2
 
 (* Debug main ports: connected ports minus debug outports (debug 211). *)
-Ports == SubSeq(<<"A", "B">>, 1, cfg.ports)
+Ports == SubSeq(Dests, 1, cfg.ports)
 
 (* Next hop of the retry processor. *)
 RetryOut == IF Topo = "T4" THEN "F" ELSE "A"
@@ -452,8 +457,8 @@ P_ProcessControl ==
     /\ PUnchanged
 
 -----------------------------------------------------------------------------
-(* Fanout processor, parallel mode, two destinations, A is primary, no   *)
-(* fallback, no timeout (fanout 1066-1160).                               *)
+(* Fanout processor, parallel mode, NumDests destinations, A is primary, *)
+(* no fallback, no timeout (fanout 1066-1160).                            *)
 
 FUnchanged ==
     UNCHANGED <<cfg, pending, rtodo, parked, admitted, waiting,
@@ -468,29 +473,30 @@ F_ProcessPData ==
            d0 == [data EXCEPT !["F"] = Tail(@)]
            id == nkey
            Copy(i) == Subscribe(m, "F", TRUE, TRUE, FALSE, <<id, i>>, f + i - 1)
+           Copies == [i \in 1..NumDests |-> Send(Dests[i], Copy(i))]
        IN CASE cfg.fmode = "none" ->
                  \* process_fire_and_forget (fanout 932-952): the copies
                  \* are clone_without_context(), fanout Acks upstream
-                 /\ Exec("F", d0, <<Send("A", CloneWithoutContext(m)),
-                                    Send("B", CloneWithoutContext(m)),
-                                    Report("ack", FALSE, m)>>)
+                 /\ Exec("F", d0, SendAll(Dests, CloneWithoutContext(m))
+                                 \o <<Report("ack", FALSE, m)>>)
                  /\ nfid' = f
                  /\ ffUp' = ffUp \cup ({TopFid(m.stack, "ack")} \ {0})
                  /\ UNCHANGED <<nkey, slim, inflight>>
             [] cfg.fmode = "primary" ->
                  \* process_slim_primary (fanout 968-994)
-                 /\ Exec("F", d0, <<Send("A", Copy(1)), Send("B", Copy(2))>>)
-                 /\ nfid' = f + 2
+                 /\ Exec("F", d0, Copies)
+                 /\ nfid' = f + NumDests
                  /\ nkey' = nkey + 1
                  /\ slim' = Put(slim, id, m)
                  /\ UNCHANGED <<inflight, ffUp>>
             [] cfg.fmode = "all" ->
                  \* register_inflight + dispatch_ready (fanout 486-600)
-                 /\ Exec("F", d0, <<Send("A", Copy(1)), Send("B", Copy(2))>>)
-                 /\ nfid' = f + 2
+                 /\ Exec("F", d0, Copies)
+                 /\ nfid' = f + NumDests
                  /\ nkey' = nkey + 1
                  /\ inflight' = Put(inflight, id,
-                                    [orig |-> m, st |-> <<"in", "in">>])
+                                    [orig |-> m,
+                                     st |-> [i \in 1..NumDests |-> "in"]])
                  /\ UNCHANGED <<slim, ffUp>>
     /\ UNCHANGED ctrl
     /\ FUnchanged
@@ -516,7 +522,7 @@ F_ProcessControl ==
                     /\ IF id \in DOMAIN inflight /\
                           inflight[id].st[idx] # "nacked"
                        THEN LET st2 == [inflight[id].st EXCEPT ![idx] = "acked"]
-                            IN IF \A j \in 1..2 : st2[j] = "acked"
+                            IN IF \A j \in 1..NumDests : st2[j] = "acked"
                                THEN /\ inflight' = Remove(inflight, id)
                                     /\ Exec("F", data,
                                             <<Report("ack", FALSE,

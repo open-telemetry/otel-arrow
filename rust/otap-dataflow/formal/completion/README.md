@@ -22,6 +22,7 @@ the fixes listed in spec.md "Findings".
 | `T4.cfg` | receiver -> retry -> fanout `none` -> 2 exporters, up to 2 retries. |
 | `T5.cfg` | receiver -> debug processor -> 0, 1 or 2 main ports, Detailed off and on. |
 | `T1_exit.cfg` | T1 with the dispatcher exit. Expected to fail (spec.md D3). |
+| `T1_large.cfg` to `T5_large.cfg` | The same topologies at larger bounds (see "Bounds"). |
 | `Coverage.tla`, `coverage.sh` | Vacuity check: every path the properties are about is reachable. |
 
 ## What is checked
@@ -83,13 +84,33 @@ Abstractions:
   the debug processor's zero-port path before its fix. It stays in the model
   for experiments but is not in `T1.cfg`.
 
-Bounds: 2 requests, capacity 1 on every data channel, control channel, and
-the completion channel; up to 2 retries.
+## Bounds
+
+The constants `Cap`, `CtrlCap` and `ComplCap` set the capacity of every
+pdata channel, node control channel, and the completion channel. `NumDests`
+sets the number of exporters after a fanout or debug processor (A, B, C, in
+port-name order; A is the fanout primary and the debug processor's first
+main port).
+
+| Configs | Requests | Capacity (all channels) | Destinations | Retries |
+| --- | --- | --- | --- | --- |
+| `T1.cfg` to `T5.cfg` | 2 | 1 | 2 (T5: 0-2 main ports) | up to 2 |
+| `T1_large.cfg`, `T3_large.cfg`, `T4_large.cfg`, `T5_large.cfg` | 3 | 2 | 3 (T5: 0-3 main ports) | up to 2 |
+| `T2_large.cfg` | 2 | 2 | 3 | - |
+
+Capacity 1 is the most adversarial setting for blocked sends, which is how
+the Nack-before-Ack race was found. Capacity 2 adds interleavings where
+several messages queue for one node.
 
 ## Known limits
 
 - The results hold within the bounds above. They are exhaustive there, but
   they are not a proof for more requests or larger channels.
+- T2 with 3 requests and 3 destinations did not finish in 30 minutes, with
+  capacity 2 (stopped at 166M distinct states) or capacity 1 (173M), and no
+  violation was found before the stop. `T2_large.cfg` therefore uses 2
+  requests. `T4_large.cfg` covers 3 requests with 3 fanout destinations
+  (`await_ack: none`).
 - Q6 is only reachable through the dispatcher exit, which needs every node
   to have stopped (shutdown, Part 3). A failed node never subscribes in this
   model, so the closed-channel drop is not reached, and the missing-sender
@@ -115,7 +136,18 @@ All properties hold in `T1.cfg` to `T5.cfg` with the fixes applied.
 | `T5.cfg` | 3,110 | 18 | 1s |
 | `T1_exit.cfg` | 49 (violation) | 12 | 0s |
 
-Times are for 10 workers on a 10-core Apple silicon laptop.
+All properties also hold at the larger bounds:
+
+| Config | Distinct states | Depth | Time |
+| --- | --- | --- | --- |
+| `T1_large.cfg` | 876,302 | 35 | 9s |
+| `T2_large.cfg` | 2,818,122 | 27 | 27s |
+| `T3_large.cfg` | 14,254,215 | 47 | 1m28s |
+| `T4_large.cfg` | 10,077,856 | 33 | 2m09s |
+| `T5_large.cfg` | 1,302,234 | 29 | 13s |
+
+Times are for 10 workers on a 10-core Apple silicon laptop, with `-Xmx8g`
+for the large configs.
 
 Two further checks guard against a vacuous pass:
 
@@ -145,8 +177,10 @@ java -XX:+UseParallelGC -cp /path/to/tla2tools.jar tlc2.TLC \
 ```
 
 Run it once per `T*.cfg` file. Expected output ends with `Model checking
-completed. No error has been found.`, except for `T1_exit.cfg`. TLC writes
-its working files under `states/`, which is ignored by git.
+completed. No error has been found.`, except for `T1_exit.cfg`. For the
+`*_large.cfg` files, add `-Xmx8g`. TLC writes its working files under
+`states/`, which is ignored by git; the large configs can leave several GB
+there.
 
 To check coverage:
 

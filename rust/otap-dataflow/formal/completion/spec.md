@@ -108,8 +108,10 @@ Here it is represented only by the detached split pattern.
 | T4 | receiver -> retry -> fanout(`none`) -> exporters A, B | at most 2 retries |
 | T5 | receiver -> debug -> exporters | debug main ports in {0, 1, 2}, Detailed in {off, on} |
 
-Bounds: 2 requests, every channel has capacity 1, the completion channel has
-capacity 1, every node control channel has capacity 1.
+Bounds: 2 requests, and capacity 1 on every pdata channel, every node
+control channel, and the completion channel. The `*_large.cfg` configs raise
+this to 3 requests, capacity 2, and 3 destinations or debug main ports (T2:
+2 requests); see the README for the exact bounds and results.
 
 ## Ground truth
 

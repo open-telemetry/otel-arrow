@@ -93,7 +93,7 @@ CovNext ==
             /\ cfg.fmode = "primary"
             /\ ctrl["F"] # <<>>
             /\ ctrl'["F"] = Tail(ctrl["F"])
-            /\ Head(ctrl["F"]).cd[2] = 2
+            /\ Head(ctrl["F"]).cd[2] # 1
 
 CovSpec == CovInit /\ [][CovNext]_covVars
 
