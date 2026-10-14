@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792011340235,
+  "lastUpdate": 1792018742191,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -62059,6 +62059,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 112.04,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "68784651ba43ea28a6a91055bde9803ecaebc4eb",
+          "message": "feat(context): materialize constant and randomness members (#4341)\n\n# Change summary\n\nImplement runtime materialization for selected composite context entries\ncontaining constant and randomness members.\n\nThis is part 3 of #4202, following the constant foundation in #4288 and\nthe randomness foundation in #4326.\n\nThis change:\n\n- compiles per-pipeline materialization plans for selected composites;\n- materializes configured constants and UUID v7 values at receiver\noutput;\n- generates each random value once per composite declaration and pdata\ncontext;\n- preserves materialized values across detached context clones when\ndestination declarations are identical;\n- treats same-named entries with different declaration provenance as\nabsent and evaluates the destination presence gate before\nrematerializing;\n- evaluates required fields and conditions before materializing a\ncomposite;\n- retains text, binary, scalar, and multi-valued source semantics;\n- resolves materialized values through existing `ContextProjection`\nvalues; and\n- returns configuration errors when plans cannot be compiled or the\npdata type lacks materialization support.\n\nProjection reads are intentionally a minimal runtime resolver for the\nexisting `ContextProjection` model. This PR does not introduce a general\nconsumer-binding framework or optimized context lookup system; those\nremain within #3925 and #3931.\n\nOutbound header propagation is also outside this PR and will be\nimplemented separately as part 4.\n\n## Related issue\n\n* Part of #4202\n\n## Validation\n\nPassed:\n\nPassed:\n\n- `cargo test -p otel-arrow-dfe-engine --lib` - 765 passed\n- `cargo test -p otel-arrow-dfe-otap --lib` - 379 passed\n- `cargo clippy -p otel-arrow-dfe-engine-macros -p otel-arrow-dfe-engine\n-p otel-arrow-dfe-otap --all-targets -- -D warnings`\n- `cargo fmt --all -- --check`\n- `git diff --check`\n- ASCII validation for all changed Rust source files\n- Changelog field, component, issue, and length validation\n\n`cargo xtask check` passed project structure, component inventory, and\nformatting, but the workspace clippy phase could not complete because\nthe local Windows environment does not have OpenSSL or vcpkg configured.\nNo dependency manifests or lockfiles are changed by this PR.\n\n## User-facing changes\n\nSelected constant and UUID v7 context members are now materialized at\nruntime and remain stable for the lifetime of their pdata context.\nDestination pipelines retain cloned values only when their composite\ndeclarations are identical; otherwise, the destination presence gate is\nevaluated before rematerialization.\n\nA changelog entry is included.",
+          "timestamp": "2026-10-14T21:56:53Z",
+          "tree_id": "40ead8d356e92675f6a719cee3c8d0ec47725488",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/68784651ba43ea28a6a91055bde9803ecaebc4eb"
+        },
+        "date": 1792018727543,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
             "unit": "MB"
           }
         ]
