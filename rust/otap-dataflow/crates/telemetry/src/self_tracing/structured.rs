@@ -138,7 +138,7 @@ impl fmt::Debug for Structured {
 
 impl fmt::Display for Structured {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<structured>")
+        fmt::Debug::fmt(self, f)
     }
 }
 

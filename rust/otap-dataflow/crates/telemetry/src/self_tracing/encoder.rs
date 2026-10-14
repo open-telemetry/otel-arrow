@@ -125,6 +125,18 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         self.write_value_attribute(key, |w| value.value().write(w));
     }
 
+    /// Encodes the field as an attribute; scalar values of the `message`
+    /// field have no body representation and are ignored.
+    fn record_attribute(
+        &mut self,
+        field: &tracing::field::Field,
+        f: impl FnMut(&mut dyn ValueWriter),
+    ) {
+        if field.name() != "message" {
+            self.write_value_attribute(field.name(), f);
+        }
+    }
+
     /// Encodes one attribute whose value is written by `f`.
     fn write_value_attribute(&mut self, key: &str, mut f: impl FnMut(&mut dyn ValueWriter)) {
         self.write_attribute(|buf| write_key_value(buf, LOG_RECORD_ATTRIBUTES, key, 0, &mut f));
@@ -496,15 +508,11 @@ impl<B: BoundedBuf> ArrayWriter for ArrayEncoder<'_, B> {
 
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        if field.name() != "message" {
-            self.write_value_attribute(field.name(), |w| w.write_f64(value));
-        }
+        self.record_attribute(field, |w| w.write_f64(value));
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        if field.name() != "message" {
-            self.write_value_attribute(field.name(), |w| w.write_i64(value));
-        }
+        self.record_attribute(field, |w| w.write_i64(value));
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
@@ -512,9 +520,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        if field.name() != "message" {
-            self.write_value_attribute(field.name(), |w| w.write_bool(value));
-        }
+        self.record_attribute(field, |w| w.write_bool(value));
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
