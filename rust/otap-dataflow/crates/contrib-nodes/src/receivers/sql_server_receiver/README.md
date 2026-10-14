@@ -227,14 +227,21 @@ Metadata validation and each metadata-plus-fetch operation have an absolute
 query timeout. Driver timeout defaults are disabled in favor of these budgets.
 
 Cancellation handles are generation-specific: an old handle cannot cancel a
-later operation. For an interrupted or partial query, the adapter attempts
-ATTENTION under a one-second cap and discards the session. Unconfirmed cleanup
-blocks subsequent operations and causes shutdown to fail so the shared runtime
-retains ownership, including when an outer deadline drops the cancellation
-future before ATTENTION is acknowledged. A connector must cancel on future drop
-and confirm any owned connection work has stopped in `shutdown`; the default
-no-op shutdown is only appropriate for connectors with no outstanding off-core
-work.
+later operation. Response-completion state is retained by the adapter from
+submission through exhaustion, including early metadata and conversion failures.
+For an unfinished response, the adapter attempts ATTENTION under a one-second
+cap and discards the session. Unconfirmed cleanup blocks subsequent operations
+and causes shutdown to fail so the shared runtime retains ownership, including
+when an outer deadline drops submission, streaming, or cancellation. Errors
+before submission or after confirmed completion do not cancel an idle session.
+A connector must cancel on future drop and confirm any owned connection work
+has stopped in `shutdown`; the default no-op shutdown is only appropriate for
+connectors with no outstanding off-core work.
+
+The pinned driver's [token stream][tiberius-token-stream] defers server errors
+until response EOF, so a returned server error also confirms completion.
+Metadata-reported errors and conversion failures do not provide this guarantee.
+Recheck this assumption when updating Tiberius.
 
 Only allowlisted transient transport failures and server codes are retried by
 the shared controller. SQL, metadata, authorization, conversion, TLS, and
@@ -311,3 +318,4 @@ Part 3, not these tests.
 [part-3]: https://github.com/open-telemetry/otel-arrow/issues/4361
 [rfc]: https://github.com/open-telemetry/otel-arrow/issues/3918
 [tiberius-pr]: https://github.com/tiberius-rs/tiberius/pull/456
+[tiberius-token-stream]: https://github.com/juanjosalco/tiberius/blob/8bbd59fe9e01a74b6f790756077c8b0e09605c68/src/tds/stream/token.rs

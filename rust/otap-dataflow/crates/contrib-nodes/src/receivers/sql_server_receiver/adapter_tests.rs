@@ -405,6 +405,15 @@ fn metadata_response() -> Vec<u8> {
 }
 
 fn metadata_response_with(nullable: bool, error_number: Option<i32>) -> Vec<u8> {
+    metadata_response_with_type(nullable, error_number, 127, "bigint")
+}
+
+fn metadata_response_with_type(
+    nullable: bool,
+    error_number: Option<i32>,
+    system_type_id: i32,
+    system_type_name: &str,
+) -> Vec<u8> {
     let columns = [
         ("column_ordinal", 0x26, 4),
         ("name", 0xe7, 0),
@@ -433,8 +442,9 @@ fn metadata_response_with(nullable: bool, error_number: Option<i32>) -> Vec<u8> 
     body.push(0xd1);
     body.extend([4, 1, 0, 0, 0]);
     nvarchar(&mut body, Some("ID"));
-    body.extend([1, u8::from(nullable), 4, 127, 0, 0, 0]);
-    nvarchar(&mut body, Some("bigint"));
+    body.extend([1, u8::from(nullable), 4]);
+    body.extend(system_type_id.to_le_bytes());
+    nvarchar(&mut body, Some(system_type_name));
     body.extend([2, 8, 0, 1, 19, 1, 0]);
     nvarchar(&mut body, None);
     if let Some(code) = error_number {
@@ -718,7 +728,12 @@ async fn executed_result_type_drift_fails_closed() {
     response[17] = 0x3e; // Float8 has the same fixed width as the previous BigInt.
     let (mut adapter, query) = adapter(
         false,
-        vec![metadata_response(), metadata_response(), response],
+        vec![
+            metadata_response(),
+            metadata_response(),
+            response,
+            attention_done(),
+        ],
     );
     _ = adapter.begin_operation().unwrap();
     _ = adapter.validate_query(&query).await.unwrap();
@@ -728,6 +743,191 @@ async fn executed_result_type_drift_fails_closed() {
         Err(Error::Metadata)
     );
     adapter.shutdown().await.unwrap();
+}
+
+struct EarlyResponseFailure {
+    validating: bool,
+    responses: Vec<Vec<u8>>,
+    error: Error,
+}
+
+fn early_response_failures() -> [EarlyResponseFailure; 5] {
+    let unsupported = || metadata_response_with_type(false, None, 241, "xml");
+    let float_metadata = || metadata_response_with_type(false, None, 62, "float");
+    let mut drift = rows_response(&[1, 2]);
+    drift[17] = 0x3e;
+    let mut nonfinite = rows_response(&[0, 1]);
+    nonfinite[17] = 0x3e;
+    nonfinite[24..32].copy_from_slice(&f64::NAN.to_le_bytes());
+    [
+        EarlyResponseFailure {
+            validating: true,
+            responses: vec![unsupported()],
+            error: Error::Metadata,
+        },
+        EarlyResponseFailure {
+            validating: true,
+            responses: vec![metadata_response_with(false, Some(11509))],
+            error: Error::Metadata,
+        },
+        EarlyResponseFailure {
+            validating: false,
+            responses: vec![metadata_response(), unsupported()],
+            error: Error::Metadata,
+        },
+        EarlyResponseFailure {
+            validating: false,
+            responses: vec![metadata_response(), metadata_response(), drift],
+            error: Error::Metadata,
+        },
+        EarlyResponseFailure {
+            validating: false,
+            responses: vec![float_metadata(), float_metadata(), nonfinite],
+            error: Error::Conversion,
+        },
+    ]
+}
+
+/// Scenario: Describe or fetch rejects an unread response and ATTENTION is acknowledged, stalled, or dropped.
+/// Guarantees: Only confirmed cleanup permits reuse and successful shutdown; failures never yield a page.
+#[tokio::test(start_paused = true)]
+async fn early_response_failures_require_confirmed_cleanup() {
+    #[derive(Clone, Copy)]
+    enum Cleanup {
+        Acknowledged,
+        Stalled,
+        Dropped,
+    }
+    for cleanup in [Cleanup::Acknowledged, Cleanup::Stalled, Cleanup::Dropped] {
+        for case in early_response_failures() {
+            let mut responses = case.responses;
+            responses.push(if matches!(cleanup, Cleanup::Acknowledged) {
+                attention_done()
+            } else {
+                vec![]
+            });
+            let expected_requests = responses.len() + 2;
+            let config = config(true);
+            let query = config.query().clone();
+            let connector = FixtureConnector::new([responses, vec![metadata_response()]]);
+            let calls = Arc::clone(&connector.calls);
+            let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+            if !case.validating {
+                _ = adapter.begin_operation().unwrap();
+                _ = adapter.validate_query(&query).await.unwrap();
+            }
+            _ = adapter.begin_operation().unwrap();
+            let operation = async {
+                if case.validating {
+                    adapter.validate_query(&query).await.map(|_| ())
+                } else {
+                    adapter.execute(&query, &Cursor::Snapshot).await.map(|_| ())
+                }
+            };
+            if matches!(cleanup, Cleanup::Dropped) {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), operation)
+                        .await
+                        .is_err()
+                );
+            } else {
+                assert_eq!(
+                    operation.await,
+                    Err(if matches!(cleanup, Cleanup::Acknowledged) {
+                        case.error
+                    } else {
+                        Error::Driver
+                    })
+                );
+            }
+            assert_eq!(calls.requests.load(Ordering::Relaxed), expected_requests);
+            if matches!(cleanup, Cleanup::Acknowledged) {
+                _ = adapter.begin_operation().unwrap();
+                _ = adapter.validate_query(&query).await.unwrap();
+                assert_eq!(calls.connections.load(Ordering::Relaxed), 2);
+                adapter.shutdown().await.unwrap();
+            } else {
+                assert!(adapter.begin_operation().is_err());
+                assert_eq!(adapter.reconnect(&query).await, Err(Error::NotValidated));
+                assert_eq!(
+                    adapter.validate_query(&query).await,
+                    Err(Error::NotValidated)
+                );
+                assert_eq!(
+                    adapter.execute(&query, &Cursor::Snapshot).await,
+                    Err(Error::NotValidated)
+                );
+                assert_eq!(adapter.shutdown().await, Err(Error::Driver));
+                assert_eq!(calls.connections.load(Ordering::Relaxed), 1);
+                assert_eq!(calls.requests.load(Ordering::Relaxed), expected_requests);
+            }
+        }
+    }
+}
+
+/// Scenario: An outer timeout drops submission of a describe or fetch before a response arrives.
+/// Guarantees: Unconfirmed work stays latched even when the adapter never enters its cancellation branch.
+#[tokio::test(start_paused = true)]
+async fn unfinished_submission_survives_outer_timeout() {
+    for validating in [true, false] {
+        let responses = if validating {
+            vec![vec![]]
+        } else {
+            vec![metadata_response(), metadata_response(), vec![]]
+        };
+        let (mut adapter, query) = adapter(false, responses);
+        if !validating {
+            _ = adapter.begin_operation().unwrap();
+            _ = adapter.validate_query(&query).await.unwrap();
+        }
+        _ = adapter.begin_operation().unwrap();
+        let operation = async {
+            if validating {
+                adapter.validate_query(&query).await.map(|_| ())
+            } else {
+                adapter
+                    .execute(&query, &query.watermark().initial())
+                    .await
+                    .map(|_| ())
+            }
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), operation)
+                .await
+                .is_err()
+        );
+        assert!(adapter.begin_operation().is_err());
+        assert_eq!(adapter.shutdown().await, Err(Error::Driver));
+    }
+}
+
+/// Scenario: A completed describe changes the plan, or cursor binding fails before fetch submission.
+/// Guarantees: Local validation errors do not send ATTENTION to an idle session or poison shutdown.
+#[tokio::test]
+async fn completed_response_errors_do_not_cancel_idle_sessions() {
+    for snapshot in [true, false] {
+        let responses = vec![
+            metadata_response(),
+            if snapshot {
+                metadata_response_with_type(false, None, 62, "float")
+            } else {
+                metadata_response()
+            },
+        ];
+        let (mut adapter, query) = adapter(snapshot, responses);
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        _ = adapter.begin_operation().unwrap();
+        assert_eq!(
+            adapter.execute(&query, &Cursor::Snapshot).await,
+            Err(if snapshot {
+                Error::Metadata
+            } else {
+                Error::Cursor
+            })
+        );
+        adapter.shutdown().await.unwrap();
+    }
 }
 
 /// Scenario: TDS represents an offset timestamp as a UTC date/time plus its offset.
@@ -1218,7 +1418,7 @@ impl local::Receiver<OtapPdata> for ValidationFailureProbe {
 
 fn run_validation_failure(
     config: SqlServerReceiverConfig,
-    rejection: Vec<u8>,
+    rejection: Vec<Vec<u8>>,
     expected: Error,
     after_reconnect: bool,
 ) {
@@ -1260,7 +1460,8 @@ fn run_validation_failure(
             error_response(1205, "transient fixture deadlock"),
         ]);
     }
-    sessions.push(vec![rejection]);
+    let expected_requests = if after_reconnect { 7 } else { 2 } + rejection.len();
+    sessions.push(rejection);
     let connector = FixtureConnector::new(sessions);
     let calls = Arc::clone(&connector.calls);
     let receiver = DatabaseReceiver::new(
@@ -1304,7 +1505,7 @@ fn run_validation_failure(
     );
     assert_eq!(
         calls.requests.load(Ordering::Relaxed),
-        if after_reconnect { 8 } else { 3 },
+        expected_requests,
         "no fetch or extra reconnect after failed validation",
     );
     drop(SourceBinding::acquire(store).expect("confirmed cleanup releases ownership"));
@@ -1319,7 +1520,7 @@ fn shared_controller_stops_on_initial_database_validation_errors() {
         raw["query"]["statement"] = json!(statement);
         run_validation_failure(
             serde_json::from_value(raw).unwrap(),
-            error_response(code, "SENSITIVE database validation"),
+            vec![error_response(code, "SENSITIVE database validation")],
             Error::Server(code),
             false,
         );
@@ -1333,7 +1534,7 @@ fn shared_controller_revalidates_database_after_reconnect() {
     for code in [147, 4145, 208, 229] {
         run_validation_failure(
             config(false),
-            error_response(code, "SENSITIVE changed database"),
+            vec![error_response(code, "SENSITIVE changed database")],
             Error::Server(code),
             true,
         );
@@ -1346,8 +1547,8 @@ fn shared_controller_revalidates_database_after_reconnect() {
 fn shared_controller_rejects_invalid_metadata_before_polling() {
     for reconnect in [false, true] {
         for response in [
-            metadata_response_with(true, None),
-            metadata_response_with(false, Some(11509)),
+            vec![metadata_response_with(true, None)],
+            vec![metadata_response_with(false, Some(11509)), attention_done()],
         ] {
             run_validation_failure(config(false), response, Error::Metadata, reconnect);
         }

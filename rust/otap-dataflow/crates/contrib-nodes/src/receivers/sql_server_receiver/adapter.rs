@@ -55,7 +55,7 @@ pub struct SqlServerAdapter<C: SqlServerConnector> {
     plan: Option<ResultPlan>,
     cancellation: SqlServerCancellation,
     stopping: bool,
-    cleanup_failed: bool,
+    response_pending: bool,
 }
 
 #[derive(Default)]
@@ -103,7 +103,7 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
             plan: None,
             cancellation: SqlServerCancellation::default(),
             stopping: false,
-            cleanup_failed: false,
+            response_pending: false,
         }
     }
 
@@ -140,7 +140,7 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
                 _ => false,
             }
         }
-        if self.stopping || self.cleanup_failed {
+        if self.stopping || self.response_pending {
             return Err(Error::NotValidated);
         }
         Ok(())
@@ -189,11 +189,11 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
     async fn cancel_client(&mut self, client: &mut Client<C::Stream>) -> Result<(), Error> {
         // A partial stream is not assumed reusable. Cap ATTENTION and discard the client.
         // An outer deadline may drop this future before the acknowledgement arrives.
-        self.cleanup_failed = true;
+        self.response_pending = true;
         match tokio::time::timeout(Duration::from_secs(1), driver_call(client.cancel_query())).await
         {
             Ok(Ok(())) => {
-                self.cleanup_failed = false;
+                self.response_pending = false;
                 Ok(())
             }
             _ => Err(Error::Driver),
@@ -212,7 +212,9 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
             biased;
             () = cancel.cancelled() => Err(Error::Cancelled),
             () = tokio::time::sleep_until(deadline) => Err(Error::Deadline),
-            result = driver_call(session::describe(&mut client, self.config.statement(), query)) => result,
+            result = driver_call(session::describe(
+                &mut client, self.config.statement(), query, &mut self.response_pending,
+            )) => result,
         };
         match result {
             Ok(plan) => {
@@ -222,7 +224,7 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
                 Ok(columns)
             }
             Err(error) => {
-                if matches!(error, Error::Cancelled | Error::Deadline) {
+                if self.response_pending {
                     self.cancel_client(&mut client).await?;
                 }
                 Err(error)
@@ -241,7 +243,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
     }
 
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Error> {
-        if self.stopping || self.cleanup_failed {
+        if self.stopping || self.response_pending {
             return Err(Error::NotValidated);
         }
         self.cancellation = SqlServerCancellation::default();
@@ -297,11 +299,25 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
         let cancel = self.cancellation.clone();
         let deadline = Instant::now() + query.timeout();
         let work = async {
-            let current = session::describe(&mut client, self.config.statement(), query).await?;
+            let current = session::describe(
+                &mut client,
+                self.config.statement(),
+                query,
+                &mut self.response_pending,
+            )
+            .await?;
             if current.columns != plan.columns {
                 return Err(Error::Metadata);
             }
-            session::fetch(&mut client, self.config.statement(), &plan, query, cursor).await
+            session::fetch(
+                &mut client,
+                self.config.statement(),
+                &plan,
+                query,
+                cursor,
+                &mut self.response_pending,
+            )
+            .await
         };
         let result = tokio::select! {
             biased;
@@ -310,21 +326,18 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
             result = driver_call(work) => result,
         };
         match result {
-            Ok(result) => {
-                if result.unfinished {
+            Ok(page) => {
+                if self.response_pending {
                     self.cancel_client(&mut client).await?;
                     // Acknowledged prefixes continue on a fresh, revalidated session.
                 } else {
                     self.client = Some(client);
                 }
                 self.plan = Some(plan);
-                Ok(result.page)
+                Ok(page)
             }
             Err(error) => {
-                if matches!(
-                    error,
-                    Error::Cancelled | Error::Deadline | Error::SnapshotLimit | Error::OversizeRow
-                ) {
+                if self.response_pending {
                     self.cancel_client(&mut client).await?;
                 }
                 Err(error)
@@ -347,7 +360,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
         let connector = self.connector.shutdown().await;
         close?;
         connector?;
-        if self.cleanup_failed {
+        if self.response_pending {
             Err(Error::Driver)
         } else {
             Ok(())

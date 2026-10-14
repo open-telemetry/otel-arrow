@@ -21,10 +21,26 @@ const DESCRIBE: &str = "SELECT column_ordinal, name, is_nullable, system_type_id
     system_type_name, max_length, precision, scale, user_type_name, error_number \
     FROM sys.dm_exec_describe_first_result_set(@P1, @P2, 0) ORDER BY column_ordinal";
 
+fn response_result<T>(
+    result: Result<T, tiberius::error::Error>,
+    response_pending: &mut bool,
+) -> Result<T, Error> {
+    result.map_err(|error| {
+        // In the pinned Tiberius revision, Query::query and QueryStream defer
+        // server errors until TokenStream::try_unfold reaches connection EOF.
+        // Other driver errors do not certify response completion.
+        if matches!(&error, tiberius::error::Error::Server(_)) {
+            *response_pending = false;
+        }
+        Error::from(error)
+    })
+}
+
 pub(super) async fn describe<S>(
     client: &mut Client<S>,
     statement: &SqlServerStatement,
     query: &CompiledQuery,
+    response_pending: &mut bool,
 ) -> Result<ResultPlan, Error>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -45,10 +61,12 @@ where
     let mut request = tiberius::Query::new(DESCRIBE);
     request.bind(statement.driver_sql());
     request.bind(declarations);
-    let mut stream = request.query(client).await.map_err(Error::from)?;
+    // Adapter-owned state survives an outer timeout dropping even the submission future.
+    *response_pending = true;
+    let mut stream = response_result(request.query(client).await, response_pending)?;
     let mut columns = Vec::new();
     let mut bytes = 0usize;
-    while let Some(item) = stream.try_next().await.map_err(Error::from)? {
+    while let Some(item) = response_result(stream.try_next().await, response_pending)? {
         match item {
             QueryItem::Metadata(metadata) if metadata.result_index() == 0 => {}
             QueryItem::Row(row) if row.result_index() == 0 => {
@@ -125,13 +143,8 @@ where
             _ => return Err(Error::Metadata),
         }
     }
+    *response_pending = false;
     ResultPlan::new(columns, query)
-}
-
-pub(super) struct FetchedPage {
-    pub page: QueryPage,
-    /// A byte-limited prefix left unread results; cancel before returning or reusing a connection.
-    pub unfinished: bool,
 }
 
 pub(super) async fn fetch<S>(
@@ -140,17 +153,22 @@ pub(super) async fn fetch<S>(
     plan: &ResultPlan,
     query: &CompiledQuery,
     cursor: &Cursor,
-) -> Result<FetchedPage, Error>
+    response_pending: &mut bool,
+) -> Result<QueryPage, Error>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let request = plan.request(statement, query, cursor)?;
-    let mut stream = request.query(client).await.map_err(Error::from)?;
+    *response_pending = true;
+    let mut stream = response_result(request.query(client).await, response_pending)?;
     let mut rows = Vec::new();
     let mut bytes = 0u64;
     let snapshot = matches!(cursor, Cursor::Snapshot);
-    let mut unfinished = false;
-    while let Some(item) = stream.try_next().await.map_err(Error::from)? {
+    loop {
+        let Some(item) = response_result(stream.try_next().await, response_pending)? else {
+            *response_pending = false;
+            break;
+        };
         match item {
             QueryItem::Metadata(metadata) if metadata.result_index() == 0 => {
                 plan.check_columns(metadata.columns())?
@@ -194,7 +212,6 @@ where
                     if rows.is_empty() {
                         return Err(Error::OversizeRow);
                     }
-                    unfinished = true;
                     break;
                 }
                 if future_capacity > rows.capacity() {
@@ -217,12 +234,9 @@ where
             _ => return Err(Error::Metadata),
         }
     }
-    Ok(FetchedPage {
-        page: QueryPage {
-            columns: plan.metadata(),
-            rows,
-        },
-        unfinished,
+    Ok(QueryPage {
+        columns: plan.metadata(),
+        rows,
     })
 }
 
