@@ -123,9 +123,18 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         self.dropped_count
     }
 
+    /// Encodes one attribute within the per-attribute budget, counting a hard
+    /// failure or a truncation as one dropped attribute. A hard failure rolls
+    /// back any partial bytes; `Ok(true)` from `encode` reports truncation.
+    fn write_attribute(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
+        if bounded(self.buf, encode).unwrap_or(true) {
+            self.dropped_count += 1;
+        }
+    }
+
     /// Encodes a structured value as one attribute within the per-attribute budget.
     pub fn write_structured(&mut self, key: &str, value: &Structured) {
-        let dropped = bounded(self.buf, |buf| {
+        self.write_attribute(|buf| {
             let mut lost = false;
             buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
                 buf.encode_string(KEY_VALUE_KEY, key)?;
@@ -135,11 +144,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
                 })
             })?;
             Ok(lost)
-        })
-        .unwrap_or(true);
-        if dropped {
-            self.dropped_count += 1;
-        }
+        });
     }
 
     /// Encode a string attribute, truncating the value if it doesn't fit.
@@ -599,117 +604,48 @@ impl<B: BoundedBuf> ArrayWriter for ArrayEncoder<'_, B> {
 
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value)
-            })
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_attribute(|buf| {
+                Self::encode_double_attribute_to(buf, field.name(), value).map(|()| false)
+            });
         }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value))
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_attribute(|buf| {
+                Self::encode_int_attribute_to(buf, field.name(), value).map(|()| false)
+            });
         }
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
-            })
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
-        }
+        self.record_i64(field, value as i64);
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value))
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        if field.name() != "message" {
+            self.write_attribute(|buf| {
+                Self::encode_bool_attribute_to(buf, field.name(), value).map(|()| false)
+            });
         }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             self.encode_body_string(value);
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let key = field.name();
-        let mut truncated = false;
-        // Attempt the encoding (with truncation as needed) within the scoped
-        // budget, transactionally so a hard failure rolls back any partial
-        // KeyValue bytes. Truncation status is reported via the captured
-        // `truncated` flag rather than via Err, so the transaction commits.
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                truncated =
-                    DirectFieldVisitor::encode_string_attribute_truncating_to(b, key, value)?;
-                Ok::<(), EncodeFailure>(())
-            })
-        });
-        match (fit, truncated) {
-            (Ok(()), false) => {} // Fully encoded.
-            (Ok(()), true) => {
-                // Truncated; bytes were preserved.
-                self.dropped_count += 1;
-            }
-            (Err(_), _) => {
-                // Hard failure; everything rolled back.
-                self.dropped_count += 1;
-            }
+        } else {
+            self.write_attribute(|buf| {
+                Self::encode_string_attribute_truncating_to(buf, field.name(), value)
+            });
         }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.encode_body_debug(value);
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let key = field.name();
-        let mut truncated = false;
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                truncated = DirectFieldVisitor::encode_debug_attribute_to(b, key, value)?;
-                Ok::<(), EncodeFailure>(())
-            })
-        });
-        match (fit, truncated) {
-            (Ok(()), false) => {} // Fully encoded.
-            (Ok(()), true) => {
-                // Truncated; bytes were preserved with [...] suffix.
-                self.dropped_count += 1;
-            }
-            (Err(_), _) => {
-                // Hard failure; everything rolled back.
-                self.dropped_count += 1;
-            }
+        } else {
+            self.write_attribute(|buf| Self::encode_debug_attribute_to(buf, field.name(), value));
         }
     }
 
