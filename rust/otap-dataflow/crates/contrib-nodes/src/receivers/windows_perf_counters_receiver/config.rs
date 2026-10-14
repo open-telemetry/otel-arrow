@@ -5,6 +5,8 @@
 //!
 //! Metric kind defaults to Gauge. Sum requires explicit aggregation and defaults
 //! to non-monotonic. Only cumulative, non-monotonic Sum is supported.
+//! Omitted or blank units default to "1"; descriptions default to empty.
+//! Unused metric definitions are allowed and produce no metric records.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -87,7 +89,9 @@ struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MetricConfig {
+    #[serde(default)]
     description: String,
+    #[serde(default)]
     unit: String,
     #[serde(default, deserialize_with = "present_marker")]
     gauge: Option<EmptyConfig>,
@@ -301,7 +305,9 @@ fn validate_metric_name(name: &str) -> Result<&str, Error> {
 fn validate_metric_unit<'a>(name: &str, unit: &'a str) -> Result<&'a str, Error> {
     let unit = unit.trim();
     let field = format!("metrics.{name}.unit");
-    require_name(&field, unit)?;
+    if unit.is_empty() {
+        return Ok("1");
+    }
     if unit.len() > MAX_METRIC_UNIT_LEN || !unit.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
     {
         return Err(invalid(format!(
@@ -362,7 +368,7 @@ impl RuntimeConfig {
     pub(super) fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
         let user: Config =
             serde_json::from_value(value.clone()).map_err(|err| invalid(err.to_string()))?;
-        // Every metric must be referenced, so the counter cap also bounds metric definitions.
+        // Bound configuration size even when metric definitions are unused.
         if user.metrics.len() > MAX_COUNTERS {
             return Err(invalid(format!(
                 "metrics must contain at most {MAX_COUNTERS} entries"
@@ -399,7 +405,6 @@ impl RuntimeConfig {
                 return Err(invalid(format!("metrics contains duplicate {name:?}")));
             }
             let description = metric.description.trim();
-            require_name(&format!("metrics.{name}.description"), description)?;
             let unit = validate_metric_unit(name, &metric.unit)?;
             let kind = metric.kind(name)?;
             let _ = metrics.insert(
@@ -414,7 +419,6 @@ impl RuntimeConfig {
 
         let expanded_count = expanded_counter_count(&user.perf_counters)?;
         let mut counters = Vec::with_capacity(expanded_count);
-        let mut referenced_metrics = HashSet::new();
         for (object_index, object) in user.perf_counters.iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
             let object_name =
@@ -459,7 +463,6 @@ impl RuntimeConfig {
                         "{counter_field}.metric references undefined metric {metric_name:?}"
                     ))
                 })?;
-                let _ = referenced_metrics.insert(metric_name);
                 let attributes =
                     Arc::new(normalize_attributes(&counter_field, &mapping.attributes)?);
                 for instance in &instances {
@@ -487,17 +490,6 @@ impl RuntimeConfig {
             if !paths.insert(counter.path.to_lowercase()) {
                 return Err(invalid(format!("duplicate counter path: {}", counter.path)));
             }
-        }
-        let unused = metrics
-            .keys()
-            .filter(|name| !referenced_metrics.contains(*name))
-            .copied()
-            .collect::<Vec<_>>();
-        if !unused.is_empty() {
-            return Err(invalid(format!(
-                "unreferenced metric definitions: {}",
-                unused.join(", ")
-            )));
         }
         Ok(Self {
             counters,
@@ -664,20 +656,88 @@ mod tests {
         );
     }
 
-    /// Scenario: A metric definition is not referenced by any configured counter.
-    /// Guarantees: Validation rejects metadata that cannot produce telemetry.
+    /// Scenario: Metric metadata fields are omitted and another definition is unused.
+    /// Guarantees: Referenced metadata receives defaults and unused definitions are allowed.
     #[test]
-    fn rejects_unreferenced_metric_definition() {
-        assert_config_error(
-            json!({
-                "metrics": metrics(),
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "available"}]
-                }]
-            }),
-            "unreferenced metric definitions: private",
+    fn defaults_optional_metric_metadata_and_allows_unused_definitions() {
+        let config = RuntimeConfig::from_json(&json!({
+            "metrics": {
+                "used": {"gauge": {}},
+                "unused": {}
+            },
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [{"name": "Available Bytes", "metric": "used"}]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(config.counters.len(), 1);
+        let counter = &config.counters[0];
+        assert_eq!(counter.name, "used");
+        assert_eq!(counter.unit, "1");
+        assert!(counter.description.is_empty());
+        assert_eq!(counter.kind, MetricKind::Gauge);
+    }
+
+    /// Scenario: A referenced metric omits its unit but provides a description.
+    /// Guarantees: The unit defaults to "1" without changing the supplied description.
+    #[test]
+    fn defaults_omitted_metric_unit() {
+        let mut value = config_with_timing("30s", "1s");
+        let _ = value["metrics"]["available"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unit");
+        let config = RuntimeConfig::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].unit, "1");
+        assert_eq!(
+            config.counters[0].description.as_ref(),
+            "Available physical memory."
         );
+    }
+
+    /// Scenario: A referenced metric supplies an empty or whitespace-only unit.
+    /// Guarantees: Blank units receive the same "1" default as an omitted unit.
+    #[test]
+    fn defaults_empty_metric_unit() {
+        for unit in ["", " \t "] {
+            let mut value = config_with_timing("30s", "1s");
+            value["metrics"]["available"]["unit"] = json!(unit);
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert_eq!(config.counters[0].unit, "1");
+        }
+    }
+
+    /// Scenario: A referenced metric omits or supplies a blank description.
+    /// Guarantees: Descriptions normalize to empty without changing the supplied unit.
+    #[test]
+    fn defaults_optional_metric_description() {
+        for description in [None, Some(""), Some(" \t ")] {
+            let mut value = config_with_timing("30s", "1s");
+            match description {
+                None => {
+                    let _ = value["metrics"]["available"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("description");
+                }
+                Some(description) => {
+                    value["metrics"]["available"]["description"] = json!(description)
+                }
+            }
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert!(config.counters[0].description.is_empty());
+            assert_eq!(config.counters[0].unit, "By");
+        }
+    }
+
+    /// Scenario: An unused definition selects an unsupported metric kind.
+    /// Guarantees: All definitions are validated even when no mapping references them.
+    #[test]
+    fn validates_unused_metric_definitions() {
+        let mut value = config_with_timing("30s", "1s");
+        value["metrics"]["unused"] = json!({"sum": {"aggregation": "delta"}});
+        assert_config_error(value, "metrics.unused: delta Sum is not supported yet");
     }
 
     /// Scenario: A counter mapping names a metric that is not defined.
@@ -827,8 +887,8 @@ mod tests {
         assert_config_error(value, "unknown field `unknown`");
     }
 
-    /// Scenario: More metric definitions are configured than counters can reference.
-    /// Guarantees: Validation rejects the count up front instead of listing every unreferenced metric.
+    /// Scenario: Metric definitions exceed the configuration's entry limit.
+    /// Guarantees: The definition bound applies even when most definitions are unused.
     #[test]
     fn rejects_too_many_metric_definitions() {
         let metrics = (0..=MAX_COUNTERS)
@@ -1295,25 +1355,6 @@ mod tests {
     /// Guarantees: Validation identifies each blank field instead of emitting unnamed telemetry.
     #[test]
     fn rejects_blank_required_values() {
-        let counter = json!([{"name": "Available Bytes", "metric": "m"}]);
-        for (metric, expected) in [
-            (
-                json!({"description": " ", "unit": "By", "gauge": {}}),
-                "metrics.m.description must not be empty",
-            ),
-            (
-                json!({"description": "Value.", "unit": "", "gauge": {}}),
-                "metrics.m.unit must not be empty",
-            ),
-        ] {
-            assert_config_error(
-                json!({
-                    "metrics": {"m": metric},
-                    "perfcounters": [{"object": "Memory", "counters": counter}]
-                }),
-                expected,
-            );
-        }
         assert_config_error(
             json!({
                 "metrics": {" ": {"description": "Value.", "unit": "By", "gauge": {}}},
