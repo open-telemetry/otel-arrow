@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792018742191,
+  "lastUpdate": 1792019978875,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -62158,6 +62158,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "68d51c99296eab330fe3846702b2b6791068d386",
+          "message": "chore: allow optional Windows performance counter metric metadata (#4388)\n\n# Chore Summary\n\nRelax metric metadata validation for the Windows performance counters\nreceiver\n(not yet registered):\n\n- Omitted, empty, or whitespace-only `unit` defaults to `\"1\"`.\n- `description` is optional and defaults to empty.\n- Unused metric definitions are accepted, so Go configurations that\ndefine metrics no counter references still load. They are fully\nvalidated but emit no metric records.\n\n`metrics` and `counters[].metric` remain required. Naming, mapping,\ntiming, size limits, and native collection are unchanged.\n\n## Differences from Go\n\n- **Unit default:** Go intends `\"1\"`, but its default is applied to a\nloop copy and never stored, so defined metrics emit an empty unit. This\nreceiver stores `\"1\"`.\n- **No empty metrics:** Go emits a zero-point metric for every\ndefinition on every scrape. This receiver emits a metric only when it\nhas points.\n- **Unused definitions are validated:** for example, an unused delta Sum\nis rejected until delta support lands. Go accepts it.\n- **Definition limit:** at most 256 metric definitions. Go has no limit.\n\n## Related issue\n\nRelated to #4074. Follow-up to #4377.\n\nCopilot-Session: 6fc928d8-f505-4605-89e9-18ec07e7d58a",
+          "timestamp": "2026-10-14T22:07:12Z",
+          "tree_id": "93f92806cdd7cc5f2a1c55d33ae7a2549e8f3555",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/68d51c99296eab330fe3846702b2b6791068d386"
+        },
+        "date": 1792019956135,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.63,
             "unit": "MB"
           },
           {
