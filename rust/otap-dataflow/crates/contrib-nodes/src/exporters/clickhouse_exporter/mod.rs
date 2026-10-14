@@ -35,9 +35,9 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -50,12 +50,12 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtlpProtoBytes, PayloadData, TryIntoWithOptions,
-};
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataFormat};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -208,12 +208,11 @@ fn transform_raw_otlp_logs(
     payload: &OtapPayload,
     transformer: &mut OtlpLogsTransformer,
 ) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
-    match payload.data() {
-        PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
-            Some(transformer.transform(bytes))
-        }
-        _ => None,
+    let view = payload.encoded_view()?;
+    if view.signal_type() != SignalType::Logs || view.encoding() != &PdataEncoding::OTLP {
+        return None;
     }
+    Some(transformer.transform(view.bytes()))
 }
 
 fn is_invalid_protobuf(error: &error::ClickhouseExporterError) -> bool {
@@ -359,7 +358,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                 Message::PData(pdata) => {
                     let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
-                    let signal_format = pdata.signal_format();
+                    let input_was_native = pdata.payload_ref().format() == PdataFormat::OTAP;
 
                     if is_unsupported_non_empty_signal(&pdata) {
                         let reason =
@@ -429,13 +428,14 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_batches = if let Some(batches) = direct_otlp_batches {
                         batches
                     } else {
-                        let mut arrow_records: OtapArrowRecords = match payload
-                            .try_into_with_default()
+                        let mut arrow_records = match effect_handler
+                            .materialize_otap_payload(payload)
+                            .await
                         {
                             Ok(arrow_records) => arrow_records,
                             Err(e) => {
                                 let reason =
-                                    format!("Failed to convert payload to OtapArrowRecords: {e:?}");
+                                    format!("Failed to convert payload to OtapArrowRecords: {e}");
                                 self.pdata_metrics
                                     .with(SignalOutcomeAttributes {
                                         signal: signal_type,
@@ -471,26 +471,25 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             continue;
                         }
 
-                        let transform_result = if signal_type == SignalType::Logs
-                            && signal_format == SignalFormat::OtapRecords
-                        {
-                            match logs_fast_transformer.try_apply(&arrow_records) {
-                                Ok(LogsFastTransform::Applied(batch)) => {
-                                    self.ch_metrics.record_log_fast_path();
-                                    Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+                        let transform_result =
+                            if signal_type == SignalType::Logs && input_was_native {
+                                match logs_fast_transformer.try_apply(&arrow_records) {
+                                    Ok(LogsFastTransform::Applied(batch)) => {
+                                        self.ch_metrics.record_log_fast_path();
+                                        Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+                                    }
+                                    Ok(LogsFastTransform::NotApplicable(_)) => {
+                                        self.ch_metrics.record_log_transform_fallback();
+                                        batch_transformer.apply_plan(arrow_records)
+                                    }
+                                    Err(error) => Err(error),
                                 }
-                                Ok(LogsFastTransform::NotApplicable(_)) => {
+                            } else {
+                                if signal_type == SignalType::Logs {
                                     self.ch_metrics.record_log_transform_fallback();
-                                    batch_transformer.apply_plan(arrow_records)
                                 }
-                                Err(error) => Err(error),
-                            }
-                        } else {
-                            if signal_type == SignalType::Logs {
-                                self.ch_metrics.record_log_transform_fallback();
-                            }
-                            batch_transformer.apply_plan(arrow_records)
-                        };
+                                batch_transformer.apply_plan(arrow_records)
+                            };
 
                         match transform_result {
                             Ok(batches) => batches,
@@ -541,10 +540,12 @@ mod tests {
     use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata};
+    use otel_arrow_dfe_pdata::OtapArrowRecords;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, ResourceMetrics, ScopeMetrics,
     };
+    use otel_arrow_dfe_pdata_codec::CodecRegistry;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use prost::Message as _;
@@ -618,31 +619,50 @@ mod tests {
         assert_eq!(CLICKHOUSE_EXPORTER_URN, "urn:otel:exporter:clickhouse");
     }
 
-    /// Scenario: the exporter receives serialized OTLP logs or another payload representation.
-    /// Guarantees: only serialized OTLP log requests are selected for direct transformation.
+    /// Scenario: the exporter receives legacy or generalized OTLP of each signal, or native logs.
+    /// Guarantees: only encoded OTLP logs select direct transformation; native and other signals
+    /// remain fallback candidates.
     #[test]
     fn raw_otlp_log_routing_is_signal_and_format_specific() {
-        let logs = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::new()));
-        let traces = OtapPayload::from(OtlpProtoBytes::ExportTracesRequest(Bytes::new()));
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
         let mut transformer = OtlpLogsTransformer::default();
-
-        assert!(transform_raw_otlp_logs(&logs, &mut transformer).is_some());
-        assert!(transform_raw_otlp_logs(&traces, &mut transformer).is_none());
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            for payload in [
+                OtapPayload::from(OtlpProtoBytes::new_from_bytes(signal, Bytes::new())),
+                OtapPayload::from(codec.admit(signal, Bytes::new()).unwrap()),
+            ] {
+                assert_eq!(
+                    transform_raw_otlp_logs(&payload, &mut transformer).is_some(),
+                    signal == SignalType::Logs,
+                );
+            }
+        }
+        let native = OtapPayload::from(OtapArrowRecords::Logs(Default::default()));
+        assert!(transform_raw_otlp_logs(&native, &mut transformer).is_none());
     }
 
-    /// Scenario: a raw OTLP logs request has malformed top-level protobuf framing.
+    /// Scenario: legacy and generalized OTLP logs have malformed top-level protobuf framing.
     /// Guarantees: the routing layer classifies it as invalid instead of using legacy fallback.
     #[test]
     fn malformed_raw_otlp_logs_are_not_fallback_candidates() {
-        let logs = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(
-            b"\xff",
-        )));
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let bytes = Bytes::from_static(b"\xff");
         let mut transformer = OtlpLogsTransformer::default();
-        let error = transform_raw_otlp_logs(&logs, &mut transformer)
-            .expect("raw logs should select direct transformation")
-            .expect_err("malformed top-level protobuf must fail");
-
-        assert!(is_invalid_protobuf(&error));
+        for logs in [
+            OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(bytes.clone())),
+            OtapPayload::from(codec.admit(SignalType::Logs, bytes).unwrap()),
+        ] {
+            let error = transform_raw_otlp_logs(&logs, &mut transformer)
+                .expect("raw logs should select direct transformation")
+                .expect_err("malformed top-level protobuf must fail");
+            assert!(is_invalid_protobuf(&error));
+        }
     }
 
     /// Scenario: the exporter classifies non-empty metrics, empty metrics, and logs before

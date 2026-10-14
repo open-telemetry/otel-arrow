@@ -3,34 +3,30 @@
 
 //! `OtapPdata` <-> OTAP records bridge at the node boundary.
 //!
-//! The bridge converts payloads to [`OtapArrowRecords`], hands them to the
-//! WASM host via a caller-provided closure, and reconstructs an [`OtapPdata`]
-//! from the result. The pdata [`Context`] (Ack/Nack routing and transport
+//! The bridge accepts already-materialized [`OtapArrowPdata`], hands its records
+//! to the WASM host via a caller-provided async closure, and reconstructs an
+//! [`OtapPdata`] from the result. The pdata
+//! [`Context`](otel_arrow_dfe_otap::pdata::Context) (Ack/Nack routing and transport
 //! headers) is preserved so plugin-modified batches keep the same downstream
 //! delivery semantics as unmodified data.
 
 use otel_arrow_dfe_engine::error::Error as EngineError;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapArrowPdata, OtapPdata};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use std::future::Future;
 
-/// Run `run` asynchronously on `pdata` converted to OTAP records, preserving
-/// the pdata context.
-///
-/// TODO: `OtlpBytes` payloads still flow through default conversion to
-/// OTAP records; add native OTLP handling and explicit per-`ArrowPayloadType`
-/// processing paths.
+/// Run `run` asynchronously on already-materialized OTAP records, preserving
+/// the pdata context. The caller handles recoverable codec failures before
+/// entering the guest; no codec state is borrowed across the guest await.
 pub(crate) async fn run_on_otap_records_async<F, Fut>(
-    pdata: OtapPdata,
+    pdata: OtapArrowPdata,
     run: F,
 ) -> Result<Option<OtapPdata>, EngineError>
 where
     F: FnOnce(OtapArrowRecords) -> Fut,
     Fut: Future<Output = Result<Option<OtapArrowRecords>, EngineError>>,
 {
-    let (context, payload) = pdata.into_parts();
-    let records: OtapArrowRecords = payload.try_into_with_default()?;
+    let (context, records) = pdata.into_parts();
     if records.root_record_batch().is_none() {
         return Ok(Some(OtapPdata::new(context, records.into())));
     }
@@ -54,7 +50,7 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
     use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
 
-    fn logs_pdata_with_severities(severities: &[&str]) -> OtapPdata {
+    fn logs_pdata_with_severities(severities: &[&str]) -> OtapArrowPdata {
         let records = to_otap_logs(
             severities
                 .iter()
@@ -70,14 +66,14 @@ mod tests {
                 })
                 .collect(),
         );
-        OtapPdata::new(Context::default(), records.into())
+        OtapArrowPdata::new(Context::default(), records)
     }
 
     fn severities_of(pdata: OtapPdata) -> Vec<String> {
-        let (_ctx, payload) = pdata.into_parts();
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
-            .expect("convert payload to otap records");
+        let records = pdata
+            .payload_ref()
+            .otap_ref()
+            .expect("native bridge output");
         let batch = records
             .get(ArrowPayloadType::Logs)
             .expect("logs root record batch");
@@ -99,10 +95,8 @@ mod tests {
     /// Guarantees: The bridge forwards the payload unchanged and does not call the guest closure.
     #[test]
     fn skips_guest_call_when_root_batch_is_missing() {
-        let input = OtapPdata::new(
-            Context::default(),
-            OtapArrowRecords::Logs(Logs::default()).into(),
-        );
+        let input =
+            OtapArrowPdata::new(Context::default(), OtapArrowRecords::Logs(Logs::default()));
         let output =
             futures::executor::block_on(run_on_otap_records_async(input, |_records| async {
                 panic!("closure should not be called for empty/rootless payload")
@@ -110,10 +104,10 @@ mod tests {
             .expect("run_on_otap_records_async should pass through empty payloads")
             .expect("empty payload should be forwarded, not dropped");
 
-        let (_ctx, payload) = output.into_parts();
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
-            .expect("convert payload to otap records");
+        let records = output
+            .payload_ref()
+            .otap_ref()
+            .expect("native bridge output");
         assert!(
             records.get(ArrowPayloadType::Logs).is_none(),
             "empty logs payload should remain empty"
@@ -190,11 +184,11 @@ mod tests {
             .expect("bridge run succeeds")
             .expect("payload is not dropped");
 
-        let (_ctx, payload) = output.into_parts();
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
-            .expect("convert payload to otap records");
-        let otlp = otap_to_otlp(&records);
+        let records = output
+            .payload_ref()
+            .otap_ref()
+            .expect("native bridge output");
+        let otlp = otap_to_otlp(records);
 
         let OtlpProtoMessage::Logs(logs) = otlp else {
             panic!("expected logs payload");

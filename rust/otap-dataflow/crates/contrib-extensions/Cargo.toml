@@ -50,6 +50,7 @@ sha2 = { workspace = true, optional = true }
 contrib-extensions = [
     "azure-identity-auth",
     "flat-file-api-key-auth",
+    "flat-file-sasl-auth",
     "flat-file-user-pass-auth",
     "k8s-service-account-token-auth",
     "oauth2-client-auth",
@@ -58,6 +59,8 @@ contrib-extensions = [
 azure-identity-auth = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Flat file API key authentication extension (ApiKeyProvider capability).
 flat-file-api-key-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
+# Flat file SASL authentication extension (SaslCredentialProvider capability).
+flat-file-sasl-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
 flat-file-user-pass-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
