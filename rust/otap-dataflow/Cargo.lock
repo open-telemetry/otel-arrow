@@ -183,15 +183,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ar_archive_writer"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
-dependencies = [
- "object 0.39.1",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -816,7 +807,7 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "percent-encoding",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "time",
  "tracing",
 ]
@@ -2948,7 +2939,7 @@ dependencies = [
  "num-traits",
  "rand 0.9.5",
  "regex",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "uuid",
 ]
 
@@ -7014,15 +7005,6 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "object"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
@@ -7352,7 +7334,7 @@ dependencies = [
  "otel-arrow-contrib-data-engine-expressions",
  "regex",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
 ]
 
@@ -7519,7 +7501,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -7874,7 +7856,7 @@ dependencies = [
  "crc",
  "dhat",
  "hex",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
 ]
 
@@ -7927,7 +7909,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "slotmap",
  "smallvec",
  "socket2",
@@ -7980,7 +7962,7 @@ dependencies = [
  "serde",
  "serde_cbor",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "simdutf8",
  "smallvec",
  "thiserror 2.0.21",
@@ -10385,9 +10367,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
@@ -13248,7 +13230,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "syn 2.0.119",
  "toml",
  "tonic-prost-build",
