@@ -586,7 +586,7 @@ jobs:
           # still separate incompatible Linux and Windows artifacts.
           shared-key: build_required
           # Bump in both Windows cache steps when the synchronized feature set changes.
-          key: windows-features-v3
+          key: windows-features-v4
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: false
@@ -607,7 +607,7 @@ jobs:
         # build; including its dev-dependencies here would pull Kafka and OpenSSL
         # into this reduced-feature SymCrypt build. The wasm feature is included
         # so Windows runs the WASM host tests as well as the portable test suite.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,sql-server,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

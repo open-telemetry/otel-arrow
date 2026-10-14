@@ -1214,7 +1214,8 @@ mod tests {
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
     use serde_json::{Value, json};
     use std::collections::HashMap;
