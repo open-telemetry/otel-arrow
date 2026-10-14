@@ -332,16 +332,10 @@ fn write_value<B: BoundedBuf>(
         let mut writer = ValueEncoder {
             buf,
             depth,
-            lost: false,
-            failed: false,
+            outcome: Ok(false),
         };
         f(&mut writer);
-        lost = writer.lost;
-        if writer.failed {
-            Err(EncodeFailure::Dropped)
-        } else {
-            Ok(())
-        }
+        writer.outcome.map(|writer_lost| lost = writer_lost)
     })?;
     Ok(lost)
 }
@@ -367,16 +361,14 @@ fn write_key_value<B: BoundedBuf>(
 struct ValueEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
     depth: usize,
-    lost: bool,
-    failed: bool,
+    /// `Ok(true)` once any part of the value was lost; a sticky `Err` once
+    /// part of it could not be written.
+    outcome: Result<bool, EncodeFailure>,
 }
 
 impl<B: BoundedBuf> ValueEncoder<'_, B> {
     fn put(&mut self, result: Result<bool, EncodeFailure>) {
-        match result {
-            Ok(truncated) => self.lost |= truncated,
-            Err(_) => self.failed = true,
-        }
+        self.outcome = self.outcome.and_then(|lost| Ok(lost | result?));
     }
 
     /// Writes a length-delimited container at the next depth; `body` returns
@@ -384,7 +376,7 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
     /// are dropped.
     fn nested(&mut self, field: u64, body: impl FnOnce(&mut B, usize) -> bool) {
         if self.depth >= MAX_DEPTH {
-            self.lost = true;
+            self.put(Ok(true));
             return;
         }
         let depth = self.depth + 1;
