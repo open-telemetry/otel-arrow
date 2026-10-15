@@ -230,7 +230,7 @@ impl PartialEq<&TransportHeader> for TransportHeaderRef<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PackedTransportHeaders {
     bytes: Box<[u8]>,
     count: usize,
@@ -243,7 +243,7 @@ pub(crate) struct CapturedTransportHeader<'name, 'value> {
     pub(crate) value: Cow<'value, [u8]>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TransportHeadersStorage {
     Owned(Vec<TransportHeader>),
     Packed(PackedTransportHeaders),
@@ -251,6 +251,25 @@ enum TransportHeadersStorage {
         base: Arc<TransportHeadersStorage>,
         appended: Vec<TransportHeader>,
     },
+}
+
+/// Arc-free packed transport-header data owned by a pdata context store.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportHeadersData {
+    storage: TransportHeadersStorage,
+}
+
+/// Borrowed iteration over either mutable capture storage or packed pdata storage.
+#[doc(hidden)]
+pub trait TransportHeaderSource {
+    /// Iterator over borrowed headers.
+    type Iter<'a>: Iterator<Item = TransportHeaderRef<'a>>
+    where
+        Self: 'a;
+
+    /// Iterates over headers in capture order.
+    fn transport_headers(&self) -> Self::Iter<'_>;
 }
 
 impl TransportHeadersStorage {
@@ -452,6 +471,114 @@ impl TransportHeaders {
             name,
             index: 0,
         }
+    }
+
+    /// Converts this collection into Arc-free packed context data.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_data(self) -> Option<TransportHeadersData> {
+        let storage = self.storage?;
+        match Arc::try_unwrap(storage) {
+            Ok(TransportHeadersStorage::Packed(packed)) => Some(TransportHeadersData {
+                storage: TransportHeadersStorage::Packed(packed),
+            }),
+            Ok(storage) => pack_transport_headers(&storage),
+            Err(storage) => pack_transport_headers(&storage),
+        }
+    }
+
+    /// Reconstructs a shared collection from Arc-free packed context data.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_data(data: TransportHeadersData) -> Self {
+        Self {
+            storage: Some(Arc::new(data.storage)),
+        }
+    }
+}
+
+fn pack_transport_headers(storage: &TransportHeadersStorage) -> Option<TransportHeadersData> {
+    let headers = TransportHeadersIter {
+        storage: Some(storage),
+        index: 0,
+    }
+    .map(TransportHeader::from)
+    .collect();
+    PackedTransportHeaders::build(headers).map(|packed| TransportHeadersData {
+        storage: TransportHeadersStorage::Packed(packed),
+    })
+}
+
+impl TransportHeadersData {
+    /// Returns the number of headers.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    /// Returns whether no headers are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterates over headers in capture order.
+    #[must_use]
+    pub fn iter(&self) -> TransportHeadersIter<'_> {
+        TransportHeadersIter {
+            storage: Some(&self.storage),
+            index: 0,
+        }
+    }
+
+    /// Returns the header at `index`.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
+        self.storage.get(index)
+    }
+
+    /// Finds headers by exact stored name.
+    #[must_use]
+    pub fn find_by_name<'a>(&'a self, name: &'a str) -> TransportHeadersFindIter<'a> {
+        TransportHeadersFindIter {
+            storage: Some(&self.storage),
+            name,
+            index: 0,
+        }
+    }
+
+    /// Reconstructs the public copy-on-write collection.
+    #[must_use]
+    pub fn to_transport_headers(&self) -> TransportHeaders {
+        TransportHeaders::from_data(self.clone())
+    }
+}
+
+impl TransportHeaderSource for TransportHeaders {
+    type Iter<'a> = TransportHeadersIter<'a>;
+
+    fn transport_headers(&self) -> Self::Iter<'_> {
+        self.iter()
+    }
+}
+
+impl TransportHeaderSource for TransportHeadersData {
+    type Iter<'a> = TransportHeadersIter<'a>;
+
+    fn transport_headers(&self) -> Self::Iter<'_> {
+        self.iter()
+    }
+}
+
+impl PartialEq<TransportHeaders> for TransportHeadersData {
+    fn eq(&self, other: &TransportHeaders) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl PartialEq<TransportHeadersData> for TransportHeaders {
+    fn eq(&self, other: &TransportHeadersData) -> bool {
+        other == self
     }
 }
 

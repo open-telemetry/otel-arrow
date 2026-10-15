@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
+use otel_arrow_dfe_config::transport_headers::{TransportHeaders, TransportHeadersData};
 use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
@@ -390,8 +390,8 @@ fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
 /// - **Authorized identity**: Verified claims selected by policy and kept
 ///   separate from untrusted transport headers. Preserved across transport
 ///   boundaries.
-/// - **Materialized entries**: Selected constant/randomness composites whose
-///   values are fixed for this context's lifetime.
+/// - **Materialized entries**: Selected composite snapshots whose values are
+///   fixed for this context's lifetime.
 /// - **Peer address**: Optional socket address observed by the receiving
 ///   socket at request acceptance time. Populated by receivers that have a
 ///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
@@ -400,14 +400,9 @@ fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
-    /// Transport headers captured from inbound protocol metadata.
-    ///
-    /// Empty when no headers have been captured (the common case, zero
-    /// additional allocation).
-    transport_headers: TransportHeaders,
     /// Verified authorization claims selected by policy.
     authorized_identity: AuthorizedIdentityEntries,
-    /// Selected constant/randomness composites materialized for this request.
+    /// Captured transport headers and selected materialized composites.
     materialized: MaterializedContext,
     /// Peer address observed by the receiving socket at request acceptance
     /// time. `None` for receivers without a real socket.
@@ -438,7 +433,6 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
-            transport_headers: TransportHeaders::default(),
             authorized_identity: AuthorizedIdentityEntries::default(),
             materialized: MaterializedContext::default(),
             peer_addr: None,
@@ -764,19 +758,19 @@ impl Context {
 
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
-        (!self.transport_headers.is_empty()).then_some(&self.transport_headers)
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
+        self.materialized.transport_headers()
     }
 
     /// Takes and returns the captured transport headers, if any.
     #[must_use]
     pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
-        (!self.transport_headers.is_empty()).then(|| std::mem::take(&mut self.transport_headers))
+        self.materialized.take_transport_headers()
     }
 
     /// Set the transport headers for this context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.transport_headers = headers;
+        self.materialized.set_transport_headers(headers);
     }
 
     /// Returns the authorization-derived context entries, if any.
@@ -794,16 +788,16 @@ impl Context {
             AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
     }
 
-    /// Materializes selected constant/randomness composites exactly once.
+    /// Materializes selected composite snapshots exactly once.
     pub fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
         let source = PdataContextValueSource {
-            transport_headers: &self.transport_headers,
             authorized_identity: &self.authorized_identity,
         };
-        self.materialized.materialize(plan, &source);
+        self.materialized
+            .materialize_with_stored_transport(plan, &source);
     }
 
-    /// Returns the materialized constant/randomness composites, if any.
+    /// Returns the materialized composite snapshots, if any.
     #[must_use]
     pub fn materialized_context(&self) -> Option<&MaterializedContext> {
         (!self.materialized.is_empty()).then_some(&self.materialized)
@@ -882,7 +876,6 @@ impl Context {
     pub fn clone_detached(&self) -> Self {
         Self {
             stack: Vec::new(),
-            transport_headers: self.transport_headers.clone(),
             authorized_identity: self.authorized_identity.clone(),
             materialized: self.materialized.clone(),
             peer_addr: self.peer_addr,
@@ -893,44 +886,13 @@ impl Context {
 }
 
 struct PdataContextValueSource<'a> {
-    transport_headers: &'a TransportHeaders,
     authorized_identity: &'a AuthorizedIdentityEntries,
 }
 
 impl ContextValueSource for PdataContextValueSource<'_> {
     fn values(&self, field: &ContextFieldLayout) -> Option<MaterializedContextValues> {
         match field.domain {
-            ContextDomain::TransportHeader => {
-                let values = self
-                    .transport_headers
-                    .iter()
-                    .filter(|header| {
-                        header
-                            .name
-                            .as_str()
-                            .eq_ignore_ascii_case(field.name.as_str())
-                    })
-                    .map(|header| {
-                        MaterializedContextValue::new(
-                            header.value.original_name.map(Box::from),
-                            match header.value.value_kind {
-                                ValueKind::Text => ContextValueKind::Text,
-                                ValueKind::Binary => ContextValueKind::Binary,
-                            },
-                            header.value.bytes,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                if values.is_empty() {
-                    return None;
-                }
-                let cardinality = if values.len() == 1 {
-                    ContextValueCardinality::One
-                } else {
-                    ContextValueCardinality::Many
-                };
-                MaterializedContextValues::new(cardinality, values.into_boxed_slice())
-            }
+            ContextDomain::TransportHeader => None,
             ContextDomain::AuthorizedIdentity => {
                 let entry = self.authorized_identity.get(field.name.as_str())?;
                 let claim = entry.value();
@@ -1070,7 +1032,7 @@ impl FlowMetricAccumulation for OtapPdata {
 }
 
 impl OtapPdata {
-    /// Materializes selected constant/randomness composites.
+    /// Materializes selected composites.
     pub(crate) fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
         self.context.materialize_context(plan);
     }
@@ -1420,7 +1382,7 @@ impl OtapPdata {
 
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
         self.context.transport_headers()
     }
 
@@ -1430,7 +1392,7 @@ impl OtapPdata {
         self.context.authorized_identity_entries()
     }
 
-    /// Returns selected constant/randomness composites materialized for this pdata.
+    /// Returns selected composite snapshots materialized for this pdata.
     #[must_use]
     pub fn materialized_context(&self) -> Option<&MaterializedContext> {
         self.context.materialized_context()
@@ -2159,11 +2121,11 @@ mod test {
     }
 
     /// Scenario: Queued and native-capability pdata are built for a 64-bit target.
-    /// Guarantees: Transitional encoded storage plus materialized context remains compact.
+    /// Guarantees: Unified transport and materialized context storage keeps pdata compact.
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn legacy_otap_pdata_layout_is_stable() {
-        assert_eq!(size_of::<OtapPdata>(), 160);
+        assert_eq!(size_of::<OtapPdata>(), 152);
         assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
         assert_eq!(size_of::<PdataDelivery>(), size_of::<OtapPdata>());
     }
@@ -4145,7 +4107,12 @@ mod test {
 
         let detached = context.clone_detached();
 
-        assert_eq!(detached.transport_headers(), Some(&headers));
+        assert_eq!(
+            detached
+                .transport_headers()
+                .expect("transport headers retained"),
+            &headers
+        );
         let authorized = detached
             .authorized_identity_entries()
             .expect("authorized identity retained");
