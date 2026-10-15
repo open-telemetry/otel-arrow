@@ -411,6 +411,113 @@ impl<
         }
     }
 
+    fn reconcile_topic_start_order(
+        config: &OtelDataflowSpec,
+        preferred_order: &[PipelineKey],
+    ) -> Result<HashMap<PipelineKey, usize>, ControlPlaneError> {
+        let (global_names, group_names) =
+            Controller::<PData>::build_declared_topic_name_maps(config).map_err(|error| {
+                ControlPlaneError::InvalidRequest {
+                    message: error.to_string(),
+                }
+            })?;
+        let preferred_position: HashMap<_, _> = preferred_order
+            .iter()
+            .enumerate()
+            .map(|(position, key)| (key.clone(), position))
+            .collect();
+        let desired_keys: HashSet<_> = preferred_order.iter().cloned().collect();
+
+        let mut dependents = HashMap::<PipelineKey, HashSet<PipelineKey>>::new();
+        let mut dependency_count = HashMap::<PipelineKey, usize>::new();
+        for pipeline_key in preferred_order {
+            let _ = dependents.insert(pipeline_key.clone(), HashSet::new());
+            let _ = dependency_count.insert(pipeline_key.clone(), 0);
+        }
+        let mut producers_by_topic = HashMap::<TopicName, HashSet<PipelineKey>>::new();
+        let mut consumers_by_topic = HashMap::<TopicName, HashSet<PipelineKey>>::new();
+        Controller::<PData>::visit_topic_nodes(
+            config,
+            &global_names,
+            &group_names,
+            |node, node_config, topic| {
+                let pipeline_key = node.pipeline_key();
+                if !desired_keys.contains(&pipeline_key) {
+                    return;
+                }
+                match node_config.kind() {
+                    NodeKind::Exporter => {
+                        let _ = producers_by_topic
+                            .entry(topic)
+                            .or_default()
+                            .insert(pipeline_key);
+                    }
+                    NodeKind::Receiver => {
+                        let _ = consumers_by_topic
+                            .entry(topic)
+                            .or_default()
+                            .insert(pipeline_key);
+                    }
+                    _ => {}
+                }
+            },
+        );
+        for (topic, consumers) in consumers_by_topic {
+            let Some(producers) = producers_by_topic.get(&topic) else {
+                continue;
+            };
+            for consumer in consumers {
+                for producer in producers {
+                    if consumer == *producer {
+                        continue;
+                    }
+                    if dependents
+                        .get_mut(&consumer)
+                        .expect("desired pipeline must have a dependency entry")
+                        .insert(producer.clone())
+                    {
+                        *dependency_count
+                            .get_mut(producer)
+                            .expect("desired pipeline must have a dependency count") += 1;
+                    }
+                }
+            }
+        }
+
+        let mut ready = dependency_count
+            .iter()
+            .filter_map(|(pipeline_key, count)| (*count == 0).then_some(pipeline_key.clone()))
+            .collect::<Vec<_>>();
+        let mut ordered = Vec::with_capacity(preferred_order.len());
+        while !ready.is_empty() {
+            ready.sort_by_key(|pipeline_key| preferred_position[pipeline_key]);
+            let pipeline_key = ready.remove(0);
+            for dependent in dependents
+                .get(&pipeline_key)
+                .expect("desired pipeline must have dependents")
+            {
+                let count = dependency_count
+                    .get_mut(dependent)
+                    .expect("dependent pipeline must have a dependency count");
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(dependent.clone());
+                }
+            }
+            ordered.push(pipeline_key);
+        }
+        if ordered.len() != preferred_order.len() {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "topic pipeline startup dependencies contain a cycle".to_owned(),
+            });
+        }
+        Ok(ordered
+            .into_iter()
+            .enumerate()
+            .map(|(position, pipeline_key)| (pipeline_key, position))
+            .collect())
+    }
+
     /// Reports which active cores still belong to the current committed generation.
     pub(super) fn active_runtime_core_state(
         &self,
@@ -1063,6 +1170,7 @@ impl<
             .collect();
         let step_timeout_secs = request.step_timeout_secs.max(1);
         let drain_timeout_secs = request.drain_timeout_secs.max(1);
+        let rollback_failed_candidate = true;
         let rollout = RolloutRecord::new(
             rollout_id,
             pipeline_group_id.clone(),
@@ -1073,6 +1181,7 @@ impl<
                 .as_ref()
                 .map(|record| record.baseline_generation),
             drain_timeout_secs,
+            rollback_failed_candidate,
             target_deployment
                 .resolved
                 .policies
@@ -1103,6 +1212,7 @@ impl<
             rollout,
             step_timeout_secs,
             drain_timeout_secs,
+            rollback_failed_candidate: true,
         })
     }
 
@@ -2109,9 +2219,37 @@ impl<
     }
 
     /// Reconciles live controller state to a complete desired engine config.
-    pub(super) fn reconcile_engine_config(
+    pub(crate) fn reconcile_engine_config(
         self: &Arc<Self>,
         request: EngineConfigReconcileRequest,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.reconcile_engine_config_core(
+            request.config,
+            request.step_timeout_secs,
+            request.drain_timeout_secs,
+            request.delete_timeout_secs,
+            request.delete_missing,
+            true,
+        )
+    }
+
+    /// Reconciles initial startup state while deferring failed candidates to global shutdown.
+    pub(crate) fn reconcile_engine_config_startup(
+        self: &Arc<Self>,
+        config: OtelDataflowSpec,
+        step_timeout_secs: u64,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.reconcile_engine_config_core(config, step_timeout_secs, 0, 0, true, false)
+    }
+
+    fn reconcile_engine_config_core(
+        self: &Arc<Self>,
+        desired_config: OtelDataflowSpec,
+        step_timeout_secs: u64,
+        drain_timeout_secs: u64,
+        delete_timeout_secs: u64,
+        delete_missing: bool,
+        rollback_failed_candidate: bool,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
         let (reconcile_id, guard) = self.begin_reconcile_operation()?;
         let started_at = timestamp_now();
@@ -2123,13 +2261,8 @@ impl<
         );
 
         let live_config = self.engine_config_snapshot();
-        let desired_config = request.config;
         let mut candidate_config = live_config.clone();
-        Self::merge_reconcile_config(
-            &mut candidate_config,
-            &desired_config,
-            request.delete_missing,
-        );
+        Self::merge_reconcile_config(&mut candidate_config, &desired_config, delete_missing);
         Self::validate_live_state_dir_unchanged(&live_config, &candidate_config)?;
         candidate_config
             .validate()
@@ -2232,18 +2365,33 @@ impl<
         for (pipeline_key, pipeline) in desired_keys {
             let reconfigure_request = ReconfigureRequest {
                 pipeline,
-                step_timeout_secs: request.step_timeout_secs,
-                drain_timeout_secs: request.drain_timeout_secs,
+                step_timeout_secs,
+                drain_timeout_secs,
             };
-            let plan = self.prepare_rollout_plan_for_engine_operation(
-                pipeline_key.pipeline_group_id(),
-                pipeline_key.pipeline_id(),
-                &reconfigure_request,
-                Some(&candidate_config),
-                Some(Arc::clone(&candidate_context_bindings)),
-                Some(guard.operation_id()),
-                Some(&projected_exclusive_core_ids),
-            )?;
+            let mut plan = self
+                .prepare_rollout_plan_for_engine_operation(
+                    pipeline_key.pipeline_group_id(),
+                    pipeline_key.pipeline_id(),
+                    &reconfigure_request,
+                    Some(&candidate_config),
+                    Some(Arc::clone(&candidate_context_bindings)),
+                    Some(guard.operation_id()),
+                    Some(&projected_exclusive_core_ids),
+                )
+                .map_err(|error| match error {
+                    ControlPlaneError::InvalidRequest { message } => {
+                        ControlPlaneError::InvalidRequest {
+                            message: format!(
+                                "pipeline '{}:{}': {message}",
+                                pipeline_key.pipeline_group_id().as_ref(),
+                                pipeline_key.pipeline_id().as_ref()
+                            ),
+                        }
+                    }
+                    other => other,
+                })?;
+            plan.rollback_failed_candidate = rollback_failed_candidate;
+            plan.rollout.rollback_failed_candidate = rollback_failed_candidate;
             let action = Self::rollout_change_action(plan.action);
             let current_conflicting_core_ids =
                 self.current_reserved_conflicting_core_ids(&pipeline_key, &plan.rollout);
@@ -2280,6 +2428,19 @@ impl<
             rollout_plans.push((pipeline_key, action, plan));
         }
 
+        let preferred_order = rollout_plans
+            .iter()
+            .map(|(pipeline_key, _, _)| pipeline_key.clone())
+            .collect::<Vec<_>>();
+        let startup_position_by_key =
+            Self::reconcile_topic_start_order(&candidate_config, &preferred_order)?;
+        rollout_plans.sort_by_key(|(pipeline_key, _, _)| {
+            startup_position_by_key
+                .get(pipeline_key)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+
         for (pipeline_key, action, plan) in rollout_plans {
             let initial_rollout =
                 self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
@@ -2302,13 +2463,18 @@ impl<
             status.updated_at = timestamp_now();
             if !succeeded {
                 status.state = EngineConfigReconcileState::Failed;
-                status.failure_reason = failure_reason
-                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
+                let reason = failure_reason
+                    .unwrap_or_else(|| "pipeline rollout did not complete successfully".to_owned());
+                status.failure_reason = Some(format!(
+                    "pipeline '{}:{}': {reason}",
+                    pipeline_key.pipeline_group_id().as_ref(),
+                    pipeline_key.pipeline_id().as_ref()
+                ));
                 return Ok(status);
             }
         }
 
-        if request.delete_missing {
+        if delete_missing {
             for pipeline_key in self.live_pipeline_keys() {
                 if desired_key_set.contains(&pipeline_key) {
                     continue;
@@ -2316,7 +2482,7 @@ impl<
                 let delete = self.request_delete_pipeline_for_engine_operation(
                     pipeline_key.pipeline_group_id(),
                     pipeline_key.pipeline_id(),
-                    request.delete_timeout_secs,
+                    delete_timeout_secs,
                     Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";
@@ -2346,7 +2512,7 @@ impl<
                 }
                 let delete = self.request_delete_group_for_engine_operation(
                     &pipeline_group_id,
-                    request.delete_timeout_secs,
+                    delete_timeout_secs,
                     Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";
@@ -2370,7 +2536,7 @@ impl<
             }
         }
 
-        self.apply_reconcile_success(&desired_config, request.delete_missing);
+        self.apply_reconcile_success(&desired_config, delete_missing);
         status.state = EngineConfigReconcileState::Succeeded;
         status.updated_at = timestamp_now();
         Ok(status)

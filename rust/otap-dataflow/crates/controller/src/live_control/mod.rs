@@ -157,6 +157,14 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
     /// Compiled context bindings used by this runtime instance.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Write-once cross-thread startup linearization marker.
+    ///
+    /// The asynchronous lifecycle event channel remains the observable source of
+    /// pipeline state, but an immediate runtime exit can be observed before its
+    /// preceding ready event is reduced. The runtime stores this marker with
+    /// `Release` before publishing `EngineEvent::ready`; rollout waits load it
+    /// with `Acquire` so crossing readiness wins over any later exit.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,
 }
@@ -236,35 +244,6 @@ impl<
             }),
             state_changed: Condvar::new(),
         }
-    }
-
-    /// Seeds the runtime registry with a pipeline already committed at startup.
-    pub(super) fn register_committed_pipeline(&self, deployment: &LogicalPipelineDeployment) {
-        let pipeline_key = PipelineKey::new(
-            deployment.resolved.pipeline_group_id.clone(),
-            deployment.resolved.pipeline_id.clone(),
-        );
-        self.observed_state_store.set_pipeline_active_cores(
-            pipeline_key.clone(),
-            deployment
-                .placement
-                .cores
-                .iter()
-                .map(|core| core.core_id.id),
-        );
-        self.observed_state_store
-            .set_pipeline_active_generation(pipeline_key.clone(), deployment.baseline_generation);
-
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        _ = state
-            .generation_counters
-            .insert(pipeline_key.clone(), deployment.baseline_generation + 1);
-        _ = state
-            .logical_pipelines
-            .insert(pipeline_key, deployment.clone());
     }
 
     /// Allocates the next controller-local logical thread identifier.

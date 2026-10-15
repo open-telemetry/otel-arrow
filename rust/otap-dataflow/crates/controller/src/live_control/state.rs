@@ -241,6 +241,8 @@ pub(super) struct RolloutRecord {
     pub(super) previous_generation: Option<u64>,
     /// Drain timeout requested with the rollout, reused for panic cleanup.
     pub(super) drain_timeout_secs: u64,
+    /// Whether failure handling cleans up candidates and restores the previous deployment.
+    pub(super) rollback_failed_candidate: bool,
     /// Target core-allocation strategy, used to mirror startup reservation semantics.
     pub(super) target_core_allocation_strategy: CoreAllocationStrategy,
     pub(super) started_at: String,
@@ -262,6 +264,7 @@ impl RolloutRecord {
         target_generation: u64,
         previous_generation: Option<u64>,
         drain_timeout_secs: u64,
+        rollback_failed_candidate: bool,
         target_core_allocation_strategy: CoreAllocationStrategy,
         target_placement: PipelinePlacement,
         cores: Vec<RolloutCoreProgress>,
@@ -276,6 +279,7 @@ impl RolloutRecord {
             target_generation,
             previous_generation,
             drain_timeout_secs,
+            rollback_failed_candidate,
             target_core_allocation_strategy,
             started_at: now.clone(),
             updated_at: now,
@@ -421,6 +425,11 @@ pub(super) struct RuntimeInstanceRecord {
     pub(super) control_sender: Option<Arc<dyn PipelineAdminSender>>,
     /// Compiled context bindings used by this runtime instance.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Write-once marker that synchronously linearizes readiness before later runtime exit.
+    ///
+    /// This is controller/runtime lifecycle coordination only, not shared data-path state.
+    /// See [`LaunchedPipelineThread::startup_ready`] for the event-channel ordering rationale.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     pub(super) lifecycle: RuntimeInstanceLifecycle,
 }
 
@@ -686,6 +695,8 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) step_timeout_secs: u64,
     /// Drain timeout in seconds for old instances.
     pub(super) drain_timeout_secs: u64,
+    /// Whether failure handling cleans up candidates and restores the previous deployment.
+    pub(super) rollback_failed_candidate: bool,
 }
 
 #[derive(Debug)]
