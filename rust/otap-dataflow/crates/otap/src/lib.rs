@@ -86,5 +86,5 @@ pub mod tls_utils;
 pub(crate) mod client_tls_reload;
 
 /// Factory for OTAP-based pipeline
-#[pipeline_factory(OTAP, OtapPdata)]
+#[pipeline_factory(OTAP, OtapPdata, pdata::materialize_context)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();

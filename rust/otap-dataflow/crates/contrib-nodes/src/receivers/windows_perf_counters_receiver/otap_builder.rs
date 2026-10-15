@@ -426,6 +426,104 @@ mod tests {
         }
     }
 
+    /// Scenario: Referenced Gauge and Sum definitions omit metadata while other definitions have no observations.
+    /// Guarantees: Decoded output retains default metadata and values, with no empty records for unused or omitted metrics.
+    #[test]
+    fn projects_optional_metric_metadata_without_empty_records() {
+        let config = RuntimeConfig::from_json(&serde_json::json!({
+            "metrics": {
+                "gauge": {},
+                "sum": {"unit": "", "sum": {"aggregation": "cumulative"}},
+                "unobserved": {},
+                "unused": {"sum": {"aggregation": "cumulative"}}
+            },
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [
+                    {"name": "Available Bytes", "metric": "gauge", "attributes": {"state": "free"}},
+                    {"name": "Committed Bytes", "metric": "sum", "attributes": {"state": "used"}},
+                    {"name": "Cache Bytes", "metric": "unobserved"}
+                ]
+            }]
+        }))
+        .unwrap();
+        let decoded = decode(
+            into_otap(
+                &config.counters,
+                sample(
+                    5,
+                    10,
+                    vec![
+                        point(0, SampleValue::Value(Number::Integer(42))),
+                        point(1, SampleValue::Value(Number::Double(12.5))),
+                        point(2, SampleValue::NoObservation),
+                    ],
+                ),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 2);
+        for (metric, name, path, state, value) in [
+            (
+                &metrics[0],
+                "gauge",
+                r"\Memory\Available Bytes",
+                "free",
+                number_data_point::Value::AsInt(42),
+            ),
+            (
+                &metrics[1],
+                "sum",
+                r"\Memory\Committed Bytes",
+                "used",
+                number_data_point::Value::AsDouble(12.5),
+            ),
+        ] {
+            assert_eq!(metric.name, name);
+            assert_eq!(metric.unit, "1");
+            assert!(metric.description.is_empty());
+            let points = match metric.data.as_ref().unwrap() {
+                metric::Data::Gauge(gauge) if name == "gauge" => &gauge.data_points,
+                metric::Data::Sum(sum) if name == "sum" => {
+                    assert_eq!(
+                        sum.aggregation_temporality,
+                        AggregationTemporality::Cumulative as i32
+                    );
+                    assert!(!sum.is_monotonic);
+                    &sum.data_points
+                }
+                _ => panic!("unexpected metric kind"),
+            };
+            assert_eq!(points.len(), 1);
+            assert_eq!(points[0].value, Some(value));
+            assert_eq!(points[0].time_unix_nano, 10);
+            assert_eq!(
+                points[0].start_time_unix_nano,
+                if name == "gauge" { 0 } else { 5 }
+            );
+            assert_eq!(
+                attributes(&points[0].attributes),
+                BTreeMap::from([("state", state), ("windows.perf_counter.path", path),])
+            );
+        }
+        assert!(
+            into_otap(
+                &config.counters,
+                sample(
+                    5,
+                    10,
+                    (0..config.counters.len())
+                        .map(|index| point(index, SampleValue::NoObservation))
+                        .collect()
+                ),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
     /// Scenario: A cumulative non-monotonic Sum has integer and scaled-double points from two instances.
     /// Guarantees: Decoded output preserves Sum semantics, metadata, values, attributes and timestamps.
     #[test]
