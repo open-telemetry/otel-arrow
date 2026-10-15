@@ -54,7 +54,7 @@ use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata_codec::PdataFormat;
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataFormat};
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use std::collections::HashMap;
 use std::rc::Rc;
