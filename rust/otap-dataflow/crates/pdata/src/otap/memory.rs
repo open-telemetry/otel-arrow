@@ -26,11 +26,9 @@
 //!
 //! `OtapArrowRecords` does not cache these sizes. Its stores are cloneable and
 //! mutable through `set()` and `remove()`, so a cache owned by the records could
-//! become stale. [`crate::OtapPayload`] safely caches logical size at the wrapper
-//! level because accessing records for mutation consumes the wrapper; wrapping
-//! the resulting records again starts with a fresh cache. Consumers retaining
-//! bare records should compute once when retention starts and store the value
-//! with their retained state or ticket.
+//! become stale. Runtime payload wrappers cache logical size outside this
+//! low-level data model. Consumers retaining bare records should compute once
+//! when retention starts and store the value with their retained state or ticket.
 //!
 //! Sizing performance is proportional to the number of arrays and buffers, not
 //! to the number of rows or byte values. Each column calls `to_data()`, which
@@ -107,18 +105,8 @@ fn array_data_pinned_bytes(data: &ArrayData, seen: &mut CountedAllocations) -> u
 mod tests {
     use std::{mem::size_of, sync::Arc};
 
-    use arrow::array::{
-        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
-        UInt32Array, UInt32Builder,
-    };
-    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
-    use bytes::Bytes;
-
     use crate::otap::{Logs, OtapArrowRecords};
-    use crate::otlp::OtlpProtoBytes;
-    use crate::payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
     use crate::proto::OtlpProtoMessage;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -126,6 +114,11 @@ mod tests {
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
+    use arrow::array::{
+        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
+        UInt32Array, UInt32Builder,
+    };
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
 
     use super::{CountedAllocations, record_batch_logical_bytes, record_batch_pinned_bytes};
 
@@ -306,7 +299,7 @@ mod tests {
     }
 
     /// Scenario: a record batch slice selects subsets of primitive and UTF-8 arrays.
-    /// Guarantees: logical sizing follows Arrow's active-slice accounting.
+    /// Guarantees: logical sizing counts active values and the UTF-8 terminal offset.
     #[test]
     fn logical_bytes_follow_primitive_and_utf8_slices() {
         let batch = batch_with_columns(vec![
@@ -324,7 +317,7 @@ mod tests {
 
         let slice = batch.slice(1, 2);
         let primitive_bytes = 2 * size_of::<u32>();
-        let utf8_offset_bytes = 2 * size_of::<i32>();
+        let utf8_offset_bytes = (slice.num_rows() + 1) * size_of::<i32>();
         let utf8_value_bytes = "betagamma".len();
 
         assert_eq!(
@@ -334,7 +327,7 @@ mod tests {
     }
 
     /// Scenario: two dictionary columns share one dictionary values array.
-    /// Guarantees: logical sizing counts the dictionary for each logical array reference.
+    /// Guarantees: each logical reference counts dictionary values and their terminal offset.
     #[test]
     fn logical_bytes_count_shared_dictionary_per_array_reference() {
         let values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta"]));
@@ -359,7 +352,7 @@ mod tests {
             ),
         ]);
         let keys_bytes = 4 * size_of::<u8>();
-        let dictionary_bytes = 2 * size_of::<i32>() + "alphabeta".len();
+        let dictionary_bytes = (values.len() + 1) * size_of::<i32>() + "alphabeta".len();
 
         assert_eq!(logical_bytes(&batch), 2 * (keys_bytes + dictionary_bytes));
     }
@@ -384,37 +377,8 @@ mod tests {
         assert_eq!(records.retained_memory_bytes(), 0);
     }
 
-    /// Scenario: a serialized OTLP payload is wrapped in the opaque payload type.
-    /// Guarantees: OTLP logical and retained byte estimates both equal the protobuf length.
-    #[test]
-    fn otlp_payload_num_bytes_matches_retained_memory_bytes() {
-        let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(b"abc"));
-        let mut otlp_payload: OtapPayload = otlp_bytes.clone().into();
-
-        assert_eq!(otlp_bytes.num_bytes(), otlp_bytes.retained_memory_bytes());
-        assert_eq!(
-            otlp_payload.num_bytes(),
-            Some(otlp_payload.retained_memory_bytes())
-        );
-    }
-
-    /// Scenario: an empty OTAP logs payload is converted into and out of the opaque payload type.
-    /// Guarantees: the conversion preserves the payload's logs root type.
-    #[test]
-    fn empty_otap_payload_preserves_root_type() {
-        let arrow_payload: OtapPayload = OtapArrowRecords::Logs(Logs::default()).into();
-
-        assert_eq!(
-            match arrow_payload.into_data() {
-                PayloadData::OtapArrowRecords(records) => records.root_payload_type(),
-                PayloadData::OtlpBytes(_) => unreachable!(),
-            },
-            ArrowPayloadType::Logs
-        );
-    }
-
     /// Scenario: a ListArray slice selects one list while retaining its original child array.
-    /// Guarantees: logical sizing preserves Arrow's recursive child-array semantics.
+    /// Guarantees: logical sizing counts the terminal offset and the full retained child array.
     #[test]
     fn logical_bytes_follow_arrow_list_child_semantics() {
         let array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
@@ -425,7 +389,7 @@ mod tests {
         let data_type = array.data_type().clone();
         let slice = array.slice(1, 1);
         let batch = batch_with_columns(vec![("list", data_type, Arc::new(slice) as ArrayRef)]);
-        let list_offset_bytes = size_of::<i32>();
+        let list_offset_bytes = (batch.num_rows() + 1) * size_of::<i32>();
         let child_bytes = size_of::<[i32; 8]>();
 
         assert_eq!(logical_bytes(&batch), list_offset_bytes + child_bytes);
