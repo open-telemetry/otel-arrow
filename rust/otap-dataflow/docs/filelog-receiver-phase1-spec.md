@@ -3197,11 +3197,12 @@ file or an older generation to bypass a missing or corrupt authoritative file.
 
 A failed synchronization barrier poisons the store and fails the receiver;
 no protected work or sync-only retry is admitted afterward. Reopening is not
-an escape from a known sync failure. The Task 11 library enforces this only
+an escape from a known sync failure. The checkpoint store enforces this only
 within an instance; it has no durable or process-wide poison history.
-Tasks 17 and 24 must preserve the terminal condition outside that instance
-and block automatic reopen, including after startup errors, reconfiguration,
-and supervisor-driven restart. This remains a required integration gate.
+The receiver and lifecycle supervisor must preserve the terminal condition
+outside that instance and block automatic reopen, including after startup
+errors, reconfiguration, and supervisor-driven restart. This remains a
+required integration gate.
 Ordinary recovery after process interruption repeats validation and the barrier, but cannot prove that an
 earlier process never observed a writeback error during the same boot. The
 [terminal sync-failure contract](filelog-checkpoint-format.md#wal-append-failure-and-repair)

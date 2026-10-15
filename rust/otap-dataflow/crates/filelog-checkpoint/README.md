@@ -46,9 +46,9 @@ namespace storage. The [Linux store](docs/store.md) adds exclusive ownership,
 first publication, bounded recovery, WAL append, and synchronization. It accepts
 a borrowed engine-provisioned directory handle without depending on the engine.
 
-Compaction, retention, receiver wiring, and administrative workflows remain
-separate tasks. Reaching a WAL limit returns `CompactionRequired`; Task 13 must
-provide compaction before further appends can proceed.
+Compaction, retention, receiver integration, and administrative workflows are
+outside this implementation. Reaching a WAL limit returns
+`CompactionRequired`; further appends require a compaction implementation.
 
 ## Decoding and replay
 

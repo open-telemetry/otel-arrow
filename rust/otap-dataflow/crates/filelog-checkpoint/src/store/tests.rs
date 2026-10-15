@@ -287,7 +287,10 @@ fn complete_corruption_is_unchanged() {
         frame[index] ^= 1;
         append_bytes(&path, &frame);
         let before = fs::read(&path).unwrap();
-        assert!(CheckpointStore::open(root.as_fd(), ID, config()).is_err());
+        assert!(matches!(
+            CheckpointStore::open(root.as_fd(), ID, config()),
+            Err(StoreError::Decode(_) | StoreError::Replay(ReplayError::Decode(_)))
+        ));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
@@ -679,7 +682,12 @@ fn namespace_digest_mismatch_is_preserved() {
     let path = namespace(dir.path()).join(DB);
     let wrong = encode_checkpoint(0, "other", &[]).unwrap();
     fs::write(&path, &wrong).unwrap();
-    assert!(CheckpointStore::open(root.as_fd(), ID, config()).is_err());
+    assert!(matches!(
+        CheckpointStore::open(root.as_fd(), ID, config()),
+        Err(StoreError::Replay(ReplayError::Decode(
+            DecodeError::NamespaceMismatch { .. }
+        )))
+    ));
     assert_eq!(fs::read(path).unwrap(), wrong);
 }
 
@@ -770,10 +778,10 @@ fn existing_ancestors_repeat_parent_barriers() {
     );
 }
 
-/// Scenario: A failed pending append is followed by an unexpected earlier WAL boundary change.
-/// Guarantees: Live recovery cannot truncate or accept a prefix earlier than its saved accepted boundary.
+/// Scenario: The snapshot generation changes while an append remains pending.
+/// Guarantees: Resolution rejects the changed generation without repairing or rewriting the file.
 #[test]
-fn pending_recovery_preserves_known_boundary() {
+fn pending_recovery_rejects_changed_generation() {
     let (dir, root) = root();
     let mut store = store(&root);
     let _ = store
@@ -1229,4 +1237,205 @@ fn interacting_wal_bound_preserves_combined_limits() {
         too_small.validate(),
         Err(StoreError::InvalidLimits { .. })
     ));
+}
+
+/// Scenario: A pending append's file shrinks below the accepted boundary or grows beyond its retained frame.
+/// Guarantees: Resolution latches authority failure before any barrier, repair, or durable-sequence advancement.
+#[test]
+fn pending_recovery_rejects_out_of_range_file_size() {
+    for grow in [false, true] {
+        let (dir, root) = root();
+        let mut store = store(&root);
+        let _ = store
+            .append(vec![registration()], Durability::Sync)
+            .unwrap();
+        store.io.fail_write_after = Some(4);
+        assert!(matches!(
+            store.append(vec![progress(0, 10)], Durability::Sync),
+            Err(StoreError::Io { .. })
+        ));
+        let pending = store.pending.as_ref().unwrap();
+        let length = if grow {
+            pending.boundary + pending.frame.len() as u64 + 1
+        } else {
+            pending.boundary - 1
+        };
+        let path = namespace(dir.path()).join(DB);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(length)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let barriers = store.io.events.len();
+        assert!(matches!(
+            store.resolve_pending(),
+            Err(StoreError::AuthorityChanged)
+        ));
+        assert_eq!(store.io.events.len(), barriers);
+        assert_eq!(store.synced_sequence(), 1);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(matches!(store.state(), Err(StoreError::AuthorityChanged)));
+        assert!(matches!(
+            store.resolve_pending(),
+            Err(StoreError::AuthorityChanged)
+        ));
+        assert_eq!(store.io.events.len(), barriers);
+    }
+}
+
+/// Scenario: Re-appending a retained attempt fails again with no bytes, a partial frame, or a complete frame written.
+/// Guarantees: The attempt and lock survive the second error; another resolution commits exactly once and survives restart.
+#[test]
+fn repeated_pending_write_failures_retain_attempt_and_lock() {
+    for second_write in [0, 4, TX_HEADER_BYTES, usize::MAX] {
+        let (dir, root) = root();
+        let mut store = store(&root);
+        let _ = store
+            .append(vec![registration()], Durability::Sync)
+            .unwrap();
+        let path = namespace(dir.path()).join(DB);
+        let prefix = fs::read(&path).unwrap();
+        store.io.fail_write_after = Some(4);
+        assert!(matches!(
+            store.append(vec![progress(0, 10)], Durability::Sync),
+            Err(StoreError::Io { .. })
+        ));
+        let frame = store.pending.as_ref().unwrap().frame.clone();
+        store.io.fail_write_after = Some(second_write);
+        assert!(matches!(
+            store.resolve_pending(),
+            Err(StoreError::Io {
+                operation: "write checkpoint",
+                ..
+            })
+        ));
+        assert!(
+            store.io.fail_write_after.is_none(),
+            "the second write was attempted"
+        );
+        let retained = store.pending.as_ref().unwrap();
+        assert_eq!(retained.frame, frame);
+        assert_eq!(retained.boundary, prefix.len() as u64);
+        assert_eq!(retained.sequence, 2);
+        assert_eq!(store.synced_sequence(), 1);
+        assert!(matches!(store.state(), Err(StoreError::RecoveryRequired)));
+        assert!(matches!(
+            store.append(vec![progress(0, 10)], Durability::Sync),
+            Err(StoreError::RecoveryRequired)
+        ));
+        assert!(matches!(store.sync(), Err(StoreError::RecoveryRequired)));
+        assert!(matches!(
+            CheckpointStore::open(root.as_fd(), ID, config()),
+            Err(StoreError::Locked)
+        ));
+        let mut partial = prefix.clone();
+        partial.extend_from_slice(&frame[..second_write.min(frame.len())]);
+        assert_eq!(fs::read(&path).unwrap(), partial);
+        assert_eq!(
+            store.resolve_pending().unwrap(),
+            AppendReceipt {
+                sequence: 2,
+                synced: true
+            }
+        );
+        let mut complete = prefix;
+        complete.extend_from_slice(&frame);
+        assert_eq!(fs::read(&path).unwrap(), complete);
+        assert_eq!(store.state().unwrap().last_sequence(), 2);
+        assert_eq!(store.synced_sequence(), 2);
+        drop(store);
+        let recovered = self::store(&root);
+        assert_eq!(recovered.state().unwrap().last_sequence(), 2);
+        assert_eq!(
+            recovered
+                .state()
+                .unwrap()
+                .get(&FileId::from_bytes([1; 16]))
+                .unwrap()
+                .committed_offset,
+            10
+        );
+    }
+}
+
+/// Scenario: An opened namespace's filelog or layout-version parent is renamed and replaced with a private directory.
+/// Guarantees: Pending recovery rejects the substituted ancestor before synchronization and leaves both trees untouched.
+#[test]
+fn pending_recovery_rejects_parent_directory_replacement() {
+    for parent_name in ["filelog", "filelog/@v1"] {
+        let (dir, root) = root();
+        let mut store = store(&root);
+        let _ = store
+            .append(vec![registration()], Durability::Sync)
+            .unwrap();
+        store.io.fail_write_after = Some(4);
+        assert!(matches!(
+            store.append(vec![progress(0, 10)], Durability::Sync),
+            Err(StoreError::Io { .. })
+        ));
+        let path = namespace(dir.path()).join(DB);
+        let before = fs::read(&path).unwrap();
+        let parent = dir.path().join(parent_name);
+        let relative_file = path.strip_prefix(&parent).unwrap().to_owned();
+        let displaced = dir.path().join("displaced");
+        fs::rename(&parent, &displaced).unwrap();
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let barriers = store.io.events.len();
+        assert!(matches!(
+            store.resolve_pending(),
+            Err(StoreError::AuthorityChanged)
+        ));
+        assert_eq!(store.io.events.len(), barriers);
+        assert_eq!(store.synced_sequence(), 1);
+        assert_eq!(fs::read(displaced.join(relative_file)).unwrap(), before);
+        assert_eq!(fs::read_dir(parent).unwrap().count(), 0);
+        assert!(matches!(store.state(), Err(StoreError::AuthorityChanged)));
+        assert!(matches!(
+            store.append(vec![progress(0, 10)], Durability::Sync),
+            Err(StoreError::AuthorityChanged)
+        ));
+    }
+}
+
+/// Scenario: An accepted WAL frame's header is changed to declare a body beyond EOF before pending recovery.
+/// Guarantees: A mechanically incomplete frame before the saved boundary never authorizes rolling back accepted progress.
+#[test]
+fn pending_recovery_rejects_incomplete_accepted_prefix() {
+    let (dir, root) = root();
+    let mut store = store(&root);
+    let _ = store
+        .append(vec![registration()], Durability::Sync)
+        .unwrap();
+    let second_frame = usize::try_from(store.recovered.end).unwrap();
+    let _ = store
+        .append(vec![progress(0, 10)], Durability::Sync)
+        .unwrap();
+    store.io.fail_write_after = Some(4);
+    assert!(matches!(
+        store.append(vec![progress(10, 20)], Durability::Sync),
+        Err(StoreError::Io { .. })
+    ));
+    let path = namespace(dir.path()).join(DB);
+    let mut bytes = fs::read(&path).unwrap();
+    // Keep the file length in the pending range and preserve a valid envelope.
+    // Its longer body is incomplete, so replay stops before the saved boundary.
+    let body_len = u32::try_from(bytes.len() - second_frame).unwrap();
+    let header = &mut bytes[second_frame..second_frame + TX_HEADER_BYTES];
+    header[20..24].copy_from_slice(&body_len.to_be_bytes());
+    header[24..28].copy_from_slice(&(!body_len).to_be_bytes());
+    let crc = crate::crc32c(&header[..32]);
+    header[32..36].copy_from_slice(&crc.to_be_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let barriers = store.io.events.len();
+    assert!(matches!(
+        store.resolve_pending(),
+        Err(StoreError::AuthorityChanged)
+    ));
+    assert_eq!(&store.io.events[barriers..], &["pre-resolution file sync"]);
+    assert_eq!(store.synced_sequence(), 2);
+    assert_eq!(fs::read(path).unwrap(), bytes);
+    assert!(matches!(store.state(), Err(StoreError::AuthorityChanged)));
 }

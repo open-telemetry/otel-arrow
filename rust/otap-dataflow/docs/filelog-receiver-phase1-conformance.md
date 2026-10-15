@@ -546,6 +546,7 @@ while their semantic and format definitions remain normative from version 1.
 | --- | --- | --- |
 | Configuration | Empty includes | Rejected before startup |
 | Configuration | Unknown field | Rejected |
+| Configuration | Invalid checkpoint setting or failed resource-admission calculation | Diagnostics name the setting or budget, distinguish arithmetic overflow from exceeding a ceiling, and report contributing values; grouped store rejection reasons alone do not meet this requirement |
 | Configuration | Pattern-count/length/aggregate boundary | Exact bound accepted; next value rejected |
 | Configuration | Direct checkpoint self-include | Rejected |
 | Configuration | Reconciliation interval outside `100ms..=24h` | Rejected |
@@ -862,8 +863,8 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Compaction byte or transaction threshold is lowered below a valid stored WAL | Recovery succeeds within the hard file and replay bounds; next append requires compaction without changing accepted state |
 | Checkpoint | Periodic sync fails after several deferred transactions | No portion of that unsynced suffix is certified by a later fsync; store remains poisoned |
 | Checkpoint | A prior process observed a writeback failure during the same boot | Reopen-and-sync is not a durability proof; caller requires explicit storage incident recovery |
-| Lifecycle integration (Tasks 17/24) | SyncFailed during open or operation is followed by teardown, retry, or reconfiguration | Supervisor retains the terminal condition outside the store and blocks a fresh open; instance-local poisoning alone is insufficient |
-| Recovery administration (Task 22a) | An operator requests clearance after a known synchronization failure | Approved incident recovery establishes trusted state; deleting a marker or restarting alone is not remediation |
+| Lifecycle integration | SyncFailed during open or operation is followed by teardown, retry, or reconfiguration | Supervisor retains the terminal condition outside the store and blocks a fresh open; instance-local poisoning alone is insufficient |
+| Recovery administration | An operator requests clearance after a known synchronization failure | Approved incident recovery establishes trusted state; deleting a marker or restarting alone is not remediation |
 | Checkpoint | WAL append succeeds and sync fails once; later fsync would succeed | Store remains poisoned; no receipt, state use, sync retry, or reopen-based resolution can certify the failed writes |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
 | Checkpoint | Container header offset below 108, excessive for configured snapshot budget, or arithmetically unrepresentable | Rejected before reading/allocating the declared snapshot |
@@ -976,8 +977,9 @@ while their semantic and format definitions remain normative from version 1.
 | Failure | Per-file read error | Other eligible files continue |
 | Failure | `EAGAIN`, temporary permission/sharing, retryable I/O, or mount outage | Bounded environmental reprobe; no durable quarantine |
 | Failure | Source-side `ENOSPC` | Bounded environmental reprobe; no durable quarantine |
-| Failure | Checkpoint-side `ENOSPC` | Receiver-level store failure budget, then terminal |
-| Failure | Store failure | Receiver-wide bounded retry then terminal |
+| Failure | Recoverable checkpoint-side `ENOSPC` without a failed sync | Receiver-level store failure budget, then terminal |
+| Failure | Other recoverable store I/O failure without a failed sync | Receiver-wide bounded retry then terminal |
+| Failure | Required checkpoint file or directory sync fails, including with `ENOSPC` | Poison the store and fail immediately; no retry or automatic reopen |
 | Telemetry | Many unique paths/file IDs | No metric-cardinality growth |
 | Telemetry | Repeated identical failure | Event sampling/rate limit bounds output |
 | Retention | Removed state later returns with `start_at: end` | Existing contents may be intentionally excluded; prior removal and loss of association are diagnosable without claiming same-source proof |

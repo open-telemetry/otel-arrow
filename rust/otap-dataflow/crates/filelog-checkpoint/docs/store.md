@@ -1,194 +1,137 @@
 # Linux checkpoint store
 
-Task 11 adds blocking storage to the existing codec and replay crate. The
-wire format is unchanged. This is an internal foundation for the receiver and
-future administration; it does not register a runnable Filelog receiver.
+`CheckpointStore` provides blocking filesystem storage for Filelog checkpoints.
+It combines the version 1 codec and transactional replay with namespace
+ownership, publication, WAL appends, synchronization, and startup recovery.
 
-## Ownership and integration
+## Usage and ownership
 
-`CheckpointStore::open` takes the borrowed descriptor of the engine's
-provisioned `StateDirectory`, the exact checkpoint ID, and `StoreConfig`.
-The engine must already have validated and synchronized the root and its
-ancestors. A random directory descriptor is not an alternative provisioning
-contract. The store checks root ownership and mode but cannot prove how the
-caller established that capability. No engine dependency or pathname fallback
-is introduced.
+`open` takes a borrowed directory descriptor from the engine's provisioned
+`StateDirectory`, the exact checkpoint ID, and `StoreConfig`. The caller must
+have validated and synchronized the root and its ancestors. The store uses
+relative directory operations, never a pathname fallback.
 
-Use the dedicated read/checkpoint worker. All filesystem calls are blocking.
-The store performs no automatic retry loop and does not spawn threads. The
-worker owns lock acquisition deadlines, recoverable-I/O failure limits,
-cancellation, periodic sync deadlines, and graceful drain. A failed file or
-directory sync is terminal and must not enter an automatic receiver/store
-replacement loop. Linux filesystem calls can still block inside the kernel.
+Run the store on the dedicated read/checkpoint worker. It creates no threads
+and performs no automatic retries. The caller owns bounded lock acquisition
+and recoverable-I/O retries, cancellation, idle sync deadlines, drain, and
+telemetry. Filesystem calls can block inside the kernel.
 
-The poison latch belongs to one store instance. Task 11 does not persist a
-poison marker or keep a process-wide history, and a fresh `open` cannot detect
-a failure reported to an earlier instance. Tasks 17 and 24 must enforce the
-no-automatic-reopen policy in the lifecycle/supervision layer, including sync
-failures returned by `open` before it constructs a store. That integration
-must retain the known failure beyond instance teardown and prevent retry,
-reconfiguration, or process supervision from automatically reopening the
-affected namespace. It is a required integration gate, not enforcement
-already supplied by this library. The storage incident recovery procedure and
-any persistent marker/clearance protocol belong to Task 22a; deleting a marker
-alone would not restore lost writes.
+The namespace is `filelog/@v1/<checkpoint-id-hex>`, using lowercase hex of the
+exact ID bytes. Every parent is synced, including existing directories.
+Directories must be owned by the effective UID and have access bits 0700;
+special mode bits are allowed on directories. Regular files require the same
+owner, mode 0600 without special bits, and one hard link. Symlinks, special
+files, identity substitution, and unexpected artifacts fail closed.
+Permissions are not repaired automatically; the root must be protected from
+untrusted writers.
 
-The exact ID is validated and mapped to lowercase hexadecimal bytes below
-`filelog/@v1`. Each descendant is opened relative to its held parent handle.
-Existing and newly created parents are synced unconditionally. Directories
-require effective-UID ownership and mode 0700; regular artifacts require the
-same owner, mode 0600, and one hard link. Directory special bits, including
-inherited setgid, are accepted consistently with engine provisioning; the
-low nine access bits must still be exactly 0700. Regular files retain the
-strict 0600 check including rejection of special bits. Symlinks, special files,
-identity substitution, and unknown artifact names fail closed. Permissions are
-never silently repaired. The trusted service identity and privileged local users
-remain outside the filesystem substitution threat boundary.
+A separate `ownership.lock` uses nonblocking `flock` to exclude independent
+opens in the same process and other processes on supported local filesystems.
+The lock outlives data handles and pending recovery. Drop releases ownership
+but does not perform a drain sync; drop only after worker access has ceased.
 
-The separate `ownership.lock` uses nonblocking Linux `flock`. Independent
-opens in one process and different processes exclude each other. Namespace
-ownership survives data-file reopening and all failed append retries. Drop
-releases handles, but does not perform or certify drain synchronization.
+## Publication and recovery
 
-## Recovery and publication
-
-Only `checkpoint.db` is authoritative. First publication exclusively creates
+Only `checkpoint.db` is authoritative. Initial publication exclusively creates
 `checkpoint.db.create.tmp`, writes and validates an empty generation-zero
-container, syncs the file, publishes with `RENAME_NOREPLACE`, and syncs the
-namespace directory. No replacement fallback is used if the filesystem does
-not support that operation.
+container, syncs it, publishes with `RENAME_NOREPLACE`, and syncs the directory.
+There is no fallback if the filesystem lacks no-replace rename or a required
+sync.
 
-Missing authority is accepted only with the exact interrupted-creation
-inventory. A creation temporary is discarded, never promoted as saved state.
-A compaction temporary or unexpected artifact with missing authority fails
-closed. With valid authority, either recognized leftover temporary can be
-cleaned after recovery and the directory barrier. Two temporaries fail closed.
+Recovery follows the [publication protocol][publication]:
 
-Recovery validates the fixed container header and configured byte cap before
-allocating the snapshot prefix. It releases that input before reading the WAL,
-then validates and applies one bounded frame at a time. A complete invalid
-frame or impossible transition fails the namespace closed. Only a mechanically
-incomplete final frame at the observed physical EOF can be removed. Repair
-truncates at an absolute offset at or beyond `wal_offset`, preserving every
-header and snapshot byte.
+1. Validate the fixed header and snapshot byte budget before allocation, then
+   validate the snapshot and replay one bounded WAL frame at a time.
+2. Reject complete corruption and impossible transitions. Only a mechanically
+   incomplete final frame at physical EOF may be discarded.
+3. Sync the namespace directory before repair or temporary cleanup. Truncate
+   only at or beyond `wal_offset`, preserving the header and snapshot.
+4. Sync the data file, even if no repair was needed. Remove recognized leftover
+   temporaries, sync their directory, and install the recovered state.
 
-The namespace directory is synced after replay and before repair or cleanup.
-The recovered data file is synced even when no repair was needed. That barrier
-covers ordinary recovery, but cannot prove durability after a prior process's
-writeback failure during the same boot. Kernel error reporting can forget an
-already-observed error while affected bytes have not reached disk. The caller
-must require explicit storage incident recovery before reopening a namespace
-with a known failed sync; dropping the store, repeating fsync, or restarting
-the process is not a repair. Temporary cleanup has its own directory sync.
-`RecoveryReport` exposes interrupted creation, repaired byte count, and cleanup
-for future bounded health reporting; this crate does not emit telemetry.
+Missing authority is accepted only for recognized interrupted creation.
+Creation and compaction temporaries are never promoted as saved state. A
+compaction temporary without authority, both temporaries together, or unknown
+artifacts fail closed. `RecoveryReport` exposes interrupted creation, repaired
+byte count, and cleanup for caller-owned health reporting.
 
-## Live transactions and durability
+## Writes, synchronization, and failures
 
-`append` owns a vector of operations and assigns the next sequence. The complete
-frame is encoded, wire-validated, and semantically prepared before any write.
-Preparation reuses replay's touched-record overlay and distinct-file progress
-validation. It does not clone the full table. Commit follows successful append;
-no operation prefix becomes live on a partial write.
+`append` encodes and preflights the entire transaction before writing, then
+commits its state only after the complete write succeeds. Preparation stages
+only touched records; ordinary progress copies no stored fingerprint or path
+buffers. The caller must establish source identity/continuity, compatible
+framing, Ack or explicit-loss authorization, and unresolved-delta ordering.
 
-The caller establishes downstream Ack or explicit-loss authorization, source
-proof, compatible framing state, and unresolved-delta ordering. Storage does
-not infer any of these from valid checkpoint bytes.
+`Durability::Sync` synchronizes before returning success. `Deferred` applies
+only to ordinary progress; all other operations, including rotation
+finalization, still force sync. Drive explicit `sync()` while idle and on drain.
+Append and ordinary sync verify that physical EOF matches the accepted append
+boundary. A failed authority or length check latches failure in this instance.
 
-`Durability::Sync` syncs before returning a successful receipt.
-`Durability::Deferred` is allowed only for ordinary progress; registration,
-metadata, fingerprint, reset, quarantine, removal, and rotation finalization
-still force sync. This conservative policy is stronger than required for
-metadata and fingerprint updates. The worker must drive explicit `sync` while
-idle as well as on drain. Before ordinary sync, the store checks that physical
-EOF still equals its accepted append boundary; a mismatch or failed metadata
-check latches an authority failure without advancing the synced sequence.
-A successful sync covers all prior applied sequences.
-Any failed sync returns `SyncFailed` and permanently poisons the store.
-Subsequent state access, append, sync, and pending resolution return
-`SyncPoisoned` without attempting another barrier. This includes a sync failure
-inside recovery of a pending write. Previously unsynced progress is never
-certified by a later fsync-only success. Namespace ownership remains held
-until the store is dropped after worker quiescence. The
-[format failure contract](../../../docs/filelog-checkpoint-format.md#wal-append-failure-and-repair)
-explains the storage-remediation requirement. Fresh-generation repair from
-trusted state requires a separately approved implementation; Task 11 does not
-supply it or claim that merely retrying Task 13 compaction repairs storage.
+A recoverable write error retains the exact attempt and blocks state access,
+new appends, and ordinary `sync()`. A successful drain requires resolution.
+Call `resolve_pending` under the held lock, even if no bytes were written:
 
-A recoverable append error retains the exact encoded attempt and blocks state
-access and new appends. If no sync failure occurred, call `resolve_pending`
-under the same held lock. Resolution first checks store health, the presence
-of a pending attempt, file identity, and the expected file-size range. It then
-syncs the original open handle before reopening for recovery, preserving that
-handle's writeback-error history for earlier deferred progress and the failed
-attempt. Failure at this barrier poisons the store before repair or re-append.
-After that barrier:
+1. Check store health, the pending attempt, file identity, and expected size.
+2. Sync the original handle before reopening, preserving its writeback-error
+   history for deferred progress and the failed attempt.
+3. Validate recovery against the saved generation and append boundary. Sync a
+   complete matching frame without duplication, or repair a proven torn suffix
+   matching the retained frame's prefix, then append, apply, and sync once.
 
-- A complete valid matching transaction is synced without appending it again.
-- A proven incomplete suffix matching the beginning of the retained frame at
-  the saved boundary is repaired and synced, then the retained transaction is
-  appended, applied, and synced.
-- A changed generation, section boundary, earlier accepted boundary, or
-  complete mismatching transaction fails closed before repair.
+The returned receipt belongs to the original attempt: do not resubmit it.
+Repeated recoverable failures retain the attempt and lock. Dropping the store
+leaves startup recovery to inspect surviving state; it does not prove that
+an attempted transaction was absent.
 
-Even a no-write error follows this conservative reopening path. Resolution
-returns the receipt for the original attempt, so the caller releases that
-attempt instead of resubmitting it. Repeated failures retain the frame and lock.
-Dropping the store after a recoverable write error leaves ordinary startup
-recovery responsible for surviving state; it does not promise the attempt was
-absent. Dropping a sync-poisoned store never authorizes automatic reopening.
+Any required file or directory sync failure returns `SyncFailed` and poisons
+the instance. Subsequent state access, append, sync, and resolution return
+`SyncPoisoned` without another barrier. This includes sync failures during
+pending recovery. See the [failure contract][failures].
 
-A failed authority check is also latched: a replaced inode, changed file
-length, or invalid namespace must not leave stale state readable. Ownership is
-declared last in the store so it outlives every data handle during drop.
+Poison is instance-local: there is no persistent marker or process-wide
+history. A fresh handle may miss a writeback error reported to an earlier
+instance or process, so reopen-and-sync cannot prove those bytes durable.
+The lifecycle supervisor must preserve known terminal failures beyond teardown
+and prevent automatic retry, reconfiguration, or restart from reopening the
+namespace. This includes failures returned by `open` before a store exists.
+Explicit storage incident recovery is required; restarting, deleting a marker,
+or ordinary compaction does not restore lost writes. This library provides
+no operational repair or clearance procedure.
 
-## Bounds and remaining work
+## Resource bounds and limitations
 
-The caller derives `ReplayConfig`'s snapshot and record budgets from receiver
-configuration. `StoreConfig` additionally caps WAL bytes and transaction count
-and checks the documented conservative file, snapshot-recovery, and WAL-recovery
-formulas against 1 GiB with checked arithmetic. Admission uses the
-[interacting WAL bound](../../../docs/filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery):
+The caller supplies snapshot and record budgets through `ReplayConfig` and
+admits total receiver memory, including live recovery staging: the old table,
+recovered state, and retained attempt can coexist. Snapshot input is released
+before WAL scanning, which retains one frame rather than the whole WAL.
+Allocation failure may abort the process; allocation is not fallibly reserved.
+
+`StoreConfig` uses the [interacting WAL bound][publication]:
 `min(max_wal_bytes, max_wal_transactions * WAL_MAX_TX_FRAME_BYTES)`.
-The capped product uses saturating multiplication before taking the minimum:
-if the product exceeds `u64::MAX`, the representable byte threshold must be
-the smaller bound. File and recovery sums still use checked arithmetic and
-must fit the ceiling. Raw thresholds remain unchanged for append enforcement,
-including the requirement that the byte threshold fits one maximum frame.
-Rejections retain the four
-configured record, snapshot, WAL-byte, and transaction limits in the error.
-Recovery applies the fixed 1 GiB file ceiling independently of the current
-append thresholds, so lowering those thresholds still permits opening a valid
-older WAL. Snapshot, record, and transaction validation remain bounded. The
-receiver still admits the combined reader, checkpoint, worker, batch, and
-framing memory budget.
+The capped product uses saturating multiplication; subsequent file and
+recovery sums use checked arithmetic and must fit 1 GiB. Raw thresholds remain
+unchanged, and the byte threshold must fit one maximum-size frame.
+`InvalidLimits` reports all four configured record, snapshot, WAL-byte, and
+transaction limits. Some parameter checks share a reason, and budget errors
+do not distinguish overflow from exceeding the ceiling. Receiver configuration
+validation must provide those distinctions to satisfy the
+[diagnostic contract](../../../docs/filelog-receiver-phase1-conformance.md#checkpoint-recovery).
 
-Snapshot input is bounded before allocation. WAL input retains only one frame,
-not the entire WAL. A failed append retains one encoded frame; resolution also
-holds the previous live table while reconstructing recovery state. Caller
-admission must include live recovery staging as well as ordinary preparation.
-Progress preparation copies no stored fingerprint or advisory-path buffers.
-Standard Rust allocation failure may abort; allocation is not fallibly reserved.
+WAL limits exclude the immutable prefix and allow equality. Recovery accepts
+an older WAL above lowered thresholds within the hard 1 GiB file ceiling and
+replay bounds. An append exceeding either threshold returns
+`CompactionRequired` without writing. Compaction and retention are not
+implemented, so further appends require a compaction implementation.
 
-WAL limits exclude the immutable prefix. Equality is allowed; an append that
-would exceed a limit returns `CompactionRequired` without writing. This also
-applies after recovery of a WAL larger than a lowered threshold. Task 13 must
-publish a compacted generation before retrying that logical transaction. This
-module does not implement compaction or retention, and a store that reaches
-its threshold cannot make further append progress through this API yet.
-Receiver deadlines, retries, Ack integration, and telemetry remain later tasks.
+The store is Linux-only. Tests cover restart, locks, path safety, corruption,
+tail preservation, admission, and injected I/O failures. They verify ordering
+and failure latching, not kernel page-cache loss or power-loss durability;
+integrated crash qualification is still required.
 
-Linux tests cover restart, nonempty-snapshot preservation, every truncation
-position in a progress frame, corruption, locks, namespace/path safety,
-preflight rejection, threshold changes, admission, and injected write/sync
-failures. The sync tests prove the terminal latch prevents a successful retry;
-they do not emulate kernel page-cache loss or demonstrate recovery from a
-real writeback failure. Fault injection and ordinary filesystem restart tests
-do not establish power-loss
-qualification. Integrated Linux crash qualification remains Task 26; macOS
-and Windows storage remain Task 28.
+`nix` supplies descriptor-relative access. `rustix` supplies no-replace rename
+on Linux GNU and musl, plus flock without raising the workspace MSRV.
 
-The syscall wrappers have different portability roles: `nix` supplies the
-existing descriptor-relative access patterns, while `rustix` supplies
-no-replace rename on both Linux GNU and musl and flock without requiring a
-standard-library API newer than the workspace MSRV.
+[publication]: ../../../docs/filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery
+[failures]: ../../../docs/filelog-checkpoint-format.md#wal-append-failure-and-repair

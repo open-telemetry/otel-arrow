@@ -1481,17 +1481,17 @@ store, or restarting the process does not remediate a known synchronization
 failure. The caller must require explicit storage incident recovery before
 resuming that namespace; reboot alone does not reconstruct lost writes.
 
-Enforcement beyond a store instance belongs to receiver/lifecycle integration
-(Tasks 17 and 24). Task 11's latch is instance-local: constructing a fresh
-store does not consult durable or process-wide failure history. Integration
-must retain a known terminal failure beyond teardown, propagate startup sync
-errors as terminal too, and prevent automatic reopen during retry,
-reconfiguration, and process supervision. Tests must verify that this gate
-blocks a fresh open, rather than infer cross-instance enforcement from the
-store's `SyncPoisoned` response. Task 22a must define the incident-recovery
-and clearance protocol before an operator is offered a reset action. A
-best-effort marker on failing storage cannot by itself guarantee enforcement,
-and removing one would not reconstruct lost checkpoint data.
+Enforcement beyond a store instance is a receiver and lifecycle-supervisor
+responsibility. The store's poison latch is instance-local: constructing a
+fresh store does not consult durable or process-wide failure history. The
+supervisor must retain a known terminal failure beyond teardown, propagate
+startup sync errors as terminal too, and prevent automatic reopen during
+retry, reconfiguration, and process supervision. Integration tests must verify
+that this gate blocks a fresh open; an instance-local poison response alone
+does not establish that guarantee. The administrative recovery design must
+define the incident-recovery and clearance protocol before exposing a reset
+action. A best-effort marker on failing storage cannot by itself guarantee
+enforcement, and removing one would not reconstruct lost checkpoint data.
 
 A future approved repair may durably publish a fresh generation rebuilt from
 trusted complete state after storage remediation. Rewriting just the most
