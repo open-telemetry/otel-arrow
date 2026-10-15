@@ -264,7 +264,12 @@ WAL phase =
 The combined recovery model also must not exceed 1 GiB. Recovery validates declared
 counts and lengths before allocation, reads only the immutable prefix first,
 drops its input buffer before loading the WAL, and decodes/applies one
-transaction at a time.
+transaction at a time. The `maximum WAL bytes` term is a conservative
+configuration allowance, not a buffer sized to the physical WAL. Lowering
+compaction thresholds permits streaming recovery of an older, larger WAL
+under the fixed 1 GiB complete-file ceiling; snapshot, tracked-record, and
+per-transaction admission remain enforced. Such a store must compact before
+its next append. No old-WAL-sized allocation is permitted.
 
 The 16 MiB transaction cap contributes up to four transaction buffers, roughly
 64 MiB, to the conservative WAL phase. A rejection identifies whether the
@@ -844,10 +849,17 @@ while their semantic and format definitions remain normative from version 1.
 | Recovery output | Acked idle-flushed record released with nonzero sync interval; fault leaves a permitted missing/torn WAL suffix | Reprocess from recovered progress with the same reframing limits; complete corruption still fails closed |
 | Recovery output | Identical source body is reconstructed after restart | Observed time is reassigned; identical metadata is not promised |
 | Checkpoint | Artifacts exist without valid `checkpoint.db` | Repair only recognized interrupted first publication; otherwise fail closed |
+| Checkpoint | Deferred progress precedes a recoverable write failure | Check identity and size, then sync the original handle before recovery reopens `checkpoint.db`; original-handle sync failure blocks all repair and re-append |
+| Checkpoint | Same-inode truncation or extension occurs before periodic/drain sync | Expected-length check latches authority failure before synchronization; synced sequence stays unchanged |
 | Checkpoint | WAL append writes no bytes | Retry from known boundary |
 | Checkpoint | WAL append is partial | Validate, truncate/sync exact torn suffix, then retry |
 | Checkpoint | WAL append result is ambiguous | Accept complete valid expected sequence, repair exact torn suffix, otherwise fail |
-| Checkpoint | WAL append succeeds and sync fails | Validate transaction and retry sync without duplicate append |
+| Checkpoint | Compaction byte or transaction threshold is lowered below a valid stored WAL | Recovery succeeds within the hard file and replay bounds; next append requires compaction without changing accepted state |
+| Checkpoint | Periodic sync fails after several deferred transactions | No portion of that unsynced suffix is certified by a later fsync; store remains poisoned |
+| Checkpoint | A prior process observed a writeback failure during the same boot | Reopen-and-sync is not a durability proof; caller requires explicit storage incident recovery |
+| Lifecycle integration (Tasks 17/24) | SyncFailed during open or operation is followed by teardown, retry, or reconfiguration | Supervisor retains the terminal condition outside the store and blocks a fresh open; instance-local poisoning alone is insufficient |
+| Recovery administration (Task 22a) | An operator requests clearance after a known synchronization failure | Approved incident recovery establishes trusted state; deleting a marker or restarting alone is not remediation |
+| Checkpoint | WAL append succeeds and sync fails once; later fsync would succeed | Store remains poisoned; no receipt, state use, sync retry, or reopen-based resolution can certify the failed writes |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
 | Checkpoint | Container header offset below 108, excessive for configured snapshot budget, or arithmetically unrepresentable | Rejected before reading/allocating the declared snapshot |
 | Checkpoint | CRC-valid WAL offset cuts a snapshot footer or includes WAL bytes in the snapshot | Exact snapshot section validation rejects it |
@@ -860,9 +872,10 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Next transaction would exceed byte or transaction compaction threshold | Current state compacts before append; resulting WAL plus transaction remains within both configured maxima |
 | Checkpoint | Transaction lands exactly on compaction threshold | Append is accepted without overshoot; compaction occurs before the next append or at an earlier retention deadline |
 | Checkpoint | Byte threshold binds before transaction threshold, or transaction threshold binds first | Recovery admission uses the checked interacting conservative bounds rather than claiming both configured thresholds are simultaneously reachable |
+| Checkpoint | Transaction-byte product exceeds u64 but the byte threshold and combined budgets fit | Saturating product followed by minimum admits the configuration; raw append thresholds remain unchanged |
 | Checkpoint | Compaction crash during `checkpoint.db` replacement | Complete old or complete new container under qualified filesystem guarantees; never mixed sections |
 | Checkpoint | Process exits after first-publication or compaction file rename but before directory sync; restart sees the new valid container | Validate selected generation, then sync namespace directory before source reads, appends/progress acceptance, deletion, or another publication |
-| Checkpoint | Recovery publication barrier fails, including with nonzero checkpoint sync interval | Protected operations remain blocked through bounded retries; exhaustion fails receiver; no fallback or deletion |
+| Checkpoint | Recovery publication barrier fails, including with nonzero checkpoint sync interval | Store is poisoned and receiver fails; no barrier retry, fallback, or deletion |
 | Checkpoint | Power loss after successful recovery barrier and later synced progress/temporary cleanup | Active container and its synced progress remain recoverable; cleanup never deletes it |
 | Checkpoint | Process exits again before recovery barrier succeeds | No new source work, append, publication, or cleanup was admitted; next recovery validates visible authority and repeats the barrier |
 | Checkpoint | Abandoned creation or compaction temporary with valid active container | Never authoritative; exact temporary removed and directory-synced before another publication |
@@ -872,8 +885,10 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Temporary cleanup interruption | Resumable, bounded temporary names; active file is protected |
 | Checkpoint | Cleanup encounters active file or lock | Neither `checkpoint.db` nor `ownership.lock` is removed |
 | Checkpoint | Missing active file with only a compaction temporary | Fails closed; never mistaken for interrupted first creation |
-| Checkpoint | Recognized temporary deletion or its directory sync fails during recovery | Recovery remains blocked under bounded store retries; no next publication |
-| Checkpoint | Replacement or directory sync fails ambiguously | Store unavailable until reopen/recovery; no append through old inode, rollback assumption, or duplicate publication |
+| Checkpoint | Recognized temporary deletion fails during recovery | Recovery remains blocked under bounded store retries; no next publication |
+| Checkpoint | Temporary-cleanup directory sync fails | Store is poisoned; no next publication or sync-only retry |
+| Checkpoint | Replacement fails ambiguously without a failed sync | Store unavailable until reopen/recovery; no append through old inode, rollback assumption, or duplicate publication |
+| Checkpoint | Replacement directory sync fails | Store is poisoned; reopening does not establish durability of the failed publication |
 | Checkpoint | Retention age without runtime absence | Not removed |
 | Checkpoint | Quarantined retention candidate | Not removed |
 | Checkpoint | Administrative removal wrong namespace | Fail closed |
@@ -1377,8 +1392,11 @@ Under exclusive ownership, recovery validates the container, its snapshot and
 recoverable WAL suffix. It syncs the namespace directory before source reads,
 new appends/progress acceptance, tail repair, temporary deletion, or another
 publication. Inject barrier-sync failure and verify all protected operations
-remain blocked. The active file is never deleted, and no temporary or backup
-is selected. An interrupted retry repeats validation and the barrier.
+remain blocked and the store remains poisoned even if a later fsync would
+succeed. The active file is never deleted, and no temporary or backup is
+selected. Separately test process interruption before a barrier was attempted;
+ordinary recovery in that case repeats validation and the barrier. Do not
+confuse an interrupted operation with an observed synchronization error.
 
 After successful recovery, append and sync progress through the active file
 handle. Inject a later power loss: that progress must remain recoverable.
