@@ -7956,6 +7956,7 @@ dependencies = [
  "pretty_assertions",
  "prost 0.14.4",
  "rand 0.10.3",
+ "regex",
  "replace_with",
  "roaring",
  "serde",
@@ -11968,6 +11969,7 @@ dependencies = [
  "atomic",
  "getrandom 0.4.3",
  "js-sys",
+ "rand 0.10.3",
  "wasm-bindgen",
 ]
 

@@ -181,6 +181,7 @@ etw = ["dep:one_collect", "dep:humantime-serde"]
 windows-event-forwarding = [
     "dep:quick-xml",
     "dep:chrono",
+    "dep:serde_cbor",
 ]
 user-events = [
     "dep:base64",
@@ -205,8 +206,12 @@ resource-validator = []
 
 # Exporters.
 azure-data-explorer = [
+    "dep:chrono",
     "dep:humantime-serde",
+    "dep:itoa",
     "dep:reqwest",
+    "dep:ryu",
+    "dep:sysinfo",
 ]
 azure-monitor = [
     "dep:opentelemetry-proto",
