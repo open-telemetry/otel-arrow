@@ -80,7 +80,6 @@ config:
       severity_number: null
       bodies:
         - checkout started
-    log_record: []
   traces:
     include:
       match_type: strict
