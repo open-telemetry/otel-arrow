@@ -91,18 +91,15 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 ///
 /// The registry source can be overridden via the `OTAP_SEMCONV_REGISTRY`
 /// env var (any `VirtualDirectoryPath`-parseable value, e.g. a local path).
-/// When unset, the upstream Git repo is used.
+/// When unset, the upstream Git repo pinned via [`config::default_registry_path`]
+/// is used.
 fn load_semconv_registry() -> ResolvedRegistry {
     let registry_path = std::env::var("OTAP_SEMCONV_REGISTRY")
         .map(|path| {
             path.parse::<VirtualDirectoryPath>()
                 .expect("valid OTAP_SEMCONV_REGISTRY")
         })
-        .unwrap_or_else(|_| VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
-        });
+        .unwrap_or_else(|_| super::config::default_registry_path());
 
     let mut semconv_errors = Vec::new();
     let registry_repo = RegistryRepo::try_new(None, &registry_path, &mut semconv_errors)
