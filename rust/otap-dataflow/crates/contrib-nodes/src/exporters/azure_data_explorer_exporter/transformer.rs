@@ -485,6 +485,7 @@ impl Transformer {
                 Self::write_json_string(version, &mut writer)?;
             }
             for attr in s.attributes() {
+                traversal.visit(0)?;
                 if let Some(attr_value) = attr.value() {
                     has_event_name |= attr.key() == b"event.name";
                     Self::write_object_separator(&mut writer, &mut first)?;
@@ -511,6 +512,7 @@ impl Transformer {
         writer.push(b'{')?;
         let mut first = true;
         for attr in attrs {
+            traversal.visit(0)?;
             if let Some(val) = attr.value() {
                 Self::write_object_separator(&mut writer, &mut first)?;
                 Self::write_json_string(attr.key(), &mut writer)?;
@@ -543,6 +545,7 @@ impl Transformer {
         }
 
         for attr in attrs {
+            traversal.visit(0)?;
             let key = attr.key();
             if let Some(val) = attr.value() {
                 has_event_name |= key == b"event.name";
@@ -1157,11 +1160,16 @@ impl Transformer {
         // boundary is -base^index after reversing the OTLP count array.
         let mut cumulative_count = 0_u64;
         for position in (0..validated.negative_counts.len()).rev() {
-            cumulative_count = cumulative_count
-                .checked_add(validated.negative_counts[position])
-                .ok_or(Error::InvalidMetricData {
-                    reason: "exponential histogram is malformed",
-                })?;
+            let count = validated.negative_counts[position];
+            cumulative_count =
+                cumulative_count
+                    .checked_add(count)
+                    .ok_or(Error::InvalidMetricData {
+                        reason: "exponential histogram is malformed",
+                    })?;
+            if count == 0 {
+                continue;
+            }
             let position = i64::try_from(position).map_err(|_| Error::InvalidMetricData {
                 reason: "exponential histogram is malformed",
             })?;
@@ -1215,6 +1223,9 @@ impl Transformer {
                     .ok_or(Error::InvalidMetricData {
                         reason: "exponential histogram is malformed",
                     })?;
+            if count == 0 {
+                continue;
+            }
             let position = i64::try_from(position).map_err(|_| Error::InvalidMetricData {
                 reason: "exponential histogram is malformed",
             })?;
@@ -1268,11 +1279,6 @@ impl Transformer {
         results: &RowOutput,
     ) -> Result<ValidatedExponentialHistogram, Error> {
         let scale = dp.scale();
-        if !(-10..=20).contains(&scale) {
-            return Err(Error::InvalidMetricData {
-                reason: "exponential histogram is malformed",
-            });
-        }
         let zero_threshold = dp.zero_threshold();
         if !zero_threshold.is_finite() || zero_threshold < 0.0 {
             return Err(Error::InvalidMetricData {
@@ -1285,14 +1291,22 @@ impl Transformer {
         let positive_offset = dp.positive().as_ref().map_or(0, BucketsView::offset);
         let mut negative_len = 0_usize;
         let mut positive_len = 0_usize;
+        let mut bucket_rows = 0_usize;
         let mut total = 0_u64;
         let mut previous_bound = f64::INFINITY;
         if let Some(buckets) = dp.negative() {
             for count in buckets.bucket_counts() {
+                total = total.checked_add(count).ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
                 let position =
                     i64::try_from(negative_len).map_err(|_| Error::InvalidMetricData {
                         reason: "exponential histogram is malformed",
                     })?;
+                negative_len = negative_len.saturating_add(1);
+                if count == 0 {
+                    continue;
+                }
                 let index = i64::from(negative_offset).checked_add(position).ok_or(
                     Error::InvalidMetricData {
                         reason: "exponential histogram is malformed",
@@ -1309,11 +1323,8 @@ impl Transformer {
                     });
                 }
                 previous_bound = bound;
-                negative_len = negative_len.saturating_add(1);
-                results.ensure_additional_rows(fixed_rows.saturating_add(negative_len))?;
-                total = total.checked_add(count).ok_or(Error::InvalidMetricData {
-                    reason: "exponential histogram is malformed",
-                })?;
+                bucket_rows = bucket_rows.saturating_add(1);
+                results.ensure_additional_rows(fixed_rows.saturating_add(bucket_rows))?;
             }
         }
         let zero_count = dp.zero_count();
@@ -1326,10 +1337,17 @@ impl Transformer {
         previous_bound = zero_threshold;
         if let Some(buckets) = dp.positive() {
             for count in buckets.bucket_counts() {
+                total = total.checked_add(count).ok_or(Error::InvalidMetricData {
+                    reason: "exponential histogram is malformed",
+                })?;
                 let position =
                     i64::try_from(positive_len).map_err(|_| Error::InvalidMetricData {
                         reason: "exponential histogram is malformed",
                     })?;
+                positive_len = positive_len.saturating_add(1);
+                if count == 0 {
+                    continue;
+                }
                 let index = i64::from(positive_offset)
                     .checked_add(position)
                     .and_then(|index| index.checked_add(1))
@@ -1347,15 +1365,8 @@ impl Transformer {
                     });
                 }
                 previous_bound = bound;
-                positive_len = positive_len.saturating_add(1);
-                results.ensure_additional_rows(
-                    fixed_rows
-                        .saturating_add(negative_len)
-                        .saturating_add(positive_len),
-                )?;
-                total = total.checked_add(count).ok_or(Error::InvalidMetricData {
-                    reason: "exponential histogram is malformed",
-                })?;
+                bucket_rows = bucket_rows.saturating_add(1);
+                results.ensure_additional_rows(fixed_rows.saturating_add(bucket_rows))?;
             }
         }
         if total != dp.count() {
@@ -2568,6 +2579,56 @@ mod tests {
         ));
     }
 
+    /// Scenario: resource, scope, and log records each contain more valueless attributes than the work limit.
+    /// Guarantees: every top-level attribute consumes traversal work even when it emits no JSON bytes.
+    #[test]
+    fn bounded_log_conversion_charges_valueless_attributes() {
+        let valueless_attributes = || vec![KeyValue::default(); MAX_ANY_VALUE_TRAVERSAL_WORK + 1];
+
+        let mut resource_request = log_request("", Vec::new());
+        resource_request.resource_logs[0]
+            .resource
+            .as_mut()
+            .expect("resource")
+            .attributes = valueless_attributes();
+
+        let mut scope_request = log_request("", Vec::new());
+        scope_request.resource_logs[0].scope_logs[0]
+            .scope
+            .as_mut()
+            .expect("scope")
+            .attributes = valueless_attributes();
+
+        let log_request = log_request("", valueless_attributes());
+
+        for (surface, request) in [
+            ("resource", resource_request),
+            ("scope", scope_request),
+            ("log", log_request),
+        ] {
+            let bytes = request.encode_to_vec();
+            let error = Transformer::new()
+                .convert_logs(
+                    &RawLogsData::new(&bytes),
+                    MAX_STREAMING_REQUEST_ROWS,
+                    MAX_SAFE_ROW_BYTES,
+                    MAX_STREAMING_REQUEST_BYTES,
+                )
+                .expect_err("valueless attributes must consume traversal work");
+
+            assert!(
+                matches!(
+                    error,
+                    Error::TransformationWorkLimitExceeded {
+                        actual,
+                        limit: MAX_ANY_VALUE_TRAVERSAL_WORK
+                    } if actual == MAX_ANY_VALUE_TRAVERSAL_WORK + 1
+                ),
+                "{surface} attributes must be bounded"
+            );
+        }
+    }
+
     /// Scenario: top-level and attribute-level event-name output are configured independently.
     /// Guarantees: each option controls only its documented representation of the OTLP event name.
     #[test]
@@ -3245,11 +3306,11 @@ mod tests {
     #[test]
     fn exponential_histogram_cardinality_is_preflighted() {
         let request = exponential_histogram_request(ExponentialHistogramDataPoint {
-            count: 0,
+            count: 10_000,
             scale: 0,
             positive: Some(exponential_histogram_data_point::Buckets {
                 offset: 0,
-                bucket_counts: vec![0; 10_000],
+                bucket_counts: vec![1; 10_000],
             }),
             ..Default::default()
         });
@@ -3353,11 +3414,11 @@ mod tests {
         assert_eq!(rows[1]["Timestamp"], rows[2]["Timestamp"]);
     }
 
-    /// Scenario: public metric conversion receives a zero-only exponential histogram with an invalid scale.
-    /// Guarantees: conversion refuses the point even when it has no positive or negative buckets.
+    /// Scenario: a zero-only exponential histogram uses a scale outside the SDK-recommended range.
+    /// Guarantees: unrestricted OTLP scales are accepted when no bucket boundary needs representation.
     #[test]
-    fn zero_only_exponential_histogram_rejects_scale_21() {
-        let error = metric_error(exponential_histogram_request(
+    fn zero_only_exponential_histogram_accepts_scale_21() {
+        let rows = metric_rows(exponential_histogram_request(
             ExponentialHistogramDataPoint {
                 count: 3,
                 sum: Some(4.5),
@@ -3368,12 +3429,73 @@ mod tests {
             },
         ));
 
-        assert!(matches!(
-            error,
-            Error::InvalidMetricData {
-                reason: "exponential histogram is malformed"
-            }
+        assert_eq!(rows.len(), 4);
+    }
+
+    /// Scenario: an exponential histogram uses scale 21 with one finite, distinct positive bound.
+    /// Guarantees: scale is not rejected when every emitted bucket boundary is representable.
+    #[test]
+    fn exponential_histogram_accepts_representable_scale_21_boundary() {
+        let rows = metric_rows(exponential_histogram_request(
+            ExponentialHistogramDataPoint {
+                count: 1,
+                scale: 21,
+                positive: Some(exponential_histogram_data_point::Buckets {
+                    offset: 0,
+                    bucket_counts: vec![1],
+                }),
+                ..Default::default()
+            },
         ));
+
+        let positive_bound = rows
+            .iter()
+            .find_map(|row| {
+                (row["MetricName"] == "request.duration_bucket")
+                    .then(|| row["MetricAttributes"]["le"].as_str()?.parse::<f64>().ok())
+                    .flatten()
+                    .filter(|bound| *bound > 1.0)
+            })
+            .expect("positive bucket bound");
+        assert!(positive_bound.is_finite());
+    }
+
+    /// Scenario: empty positive buckets fall inside an exponential histogram's zero region.
+    /// Guarantees: empty buckets are skipped while the later populated bucket remains cumulative.
+    #[test]
+    fn exponential_histogram_skips_empty_buckets_covered_by_zero_region() {
+        let rows = metric_rows(exponential_histogram_request(
+            ExponentialHistogramDataPoint {
+                count: 2,
+                scale: 0,
+                zero_count: 1,
+                zero_threshold: 4.0,
+                positive: Some(exponential_histogram_data_point::Buckets {
+                    offset: 0,
+                    bucket_counts: vec![0, 0, 1],
+                }),
+                ..Default::default()
+            },
+        ));
+
+        let buckets = rows
+            .iter()
+            .filter(|row| row["MetricName"] == "request.duration_bucket")
+            .map(|row| {
+                (
+                    row["MetricAttributes"]["le"].clone(),
+                    row["MetricValue"].as_f64().expect("finite metric value"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            buckets,
+            vec![
+                (serde_json::json!("4"), 1.0),
+                (serde_json::json!("8"), 2.0),
+                (serde_json::json!("+Inf"), 2.0),
+            ]
+        );
     }
 
     /// Scenario: public metric conversion receives exponential histograms with invalid structure or totals.
