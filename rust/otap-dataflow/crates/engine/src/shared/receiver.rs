@@ -33,6 +33,7 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::Interests;
+use crate::context_declaration::ContextMaterializationPlan;
 use crate::control::{NodeControlMsg, RuntimeCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -40,6 +41,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::receiver::ReceiverContextMaterialization;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
@@ -112,6 +114,8 @@ pub struct EffectHandler<PData> {
     capture_policy: Option<Arc<CompiledHeaderCapturePolicy>>,
     /// Immutable authorized identity policy shared by request handlers.
     authorized_identity_policy: Option<Arc<AuthorizedIdentityPolicy>>,
+    /// Data-type-specific context materialization shared by request handlers.
+    context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -134,6 +138,7 @@ impl<PData> EffectHandler<PData> {
             router,
             capture_policy: None,
             authorized_identity_policy: None,
+            context_materialization_plan: None,
         }
     }
 
@@ -191,13 +196,39 @@ impl<PData> EffectHandler<PData> {
         self.authorized_identity_policy = policy.map(Arc::new);
     }
 
+    /// Materializes configured context entries before receiver output.
+    pub fn materialize_context(&self, data: &mut PData) {
+        if let Some(materialization) = &self.context_materialization_plan {
+            materialization.apply(data);
+        }
+    }
+
+    /// Sets the pipeline's data-type-specific context materialization.
+    pub(crate) fn set_context_materialization(
+        &mut self,
+        materialization: Option<ReceiverContextMaterialization<PData>>,
+    ) {
+        self.context_materialization_plan = materialization;
+    }
+
+    /// Installs a data-type-specific context materializer.
+    pub fn set_context_materializer(
+        &mut self,
+        plan: ContextMaterializationPlan,
+        materialize: fn(&mut PData, &ContextMaterializationPlan),
+    ) {
+        self.context_materialization_plan =
+            Some(ReceiverContextMaterialization::new(plan, materialize));
+    }
+
     /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
     /// Returns an [`Error::ReceiverError`] if the message could not be routed to a port.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+    pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+        self.materialize_context(&mut data);
         self.router.send_default(data).await
     }
 
@@ -212,16 +243,22 @@ impl<PData> EffectHandler<PData> {
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
-    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+    pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+        self.materialize_context(&mut data);
         self.router.try_send_default(data)
     }
 
     /// Sends a message to a specific named output port.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    pub async fn send_message_to<P>(
+        &self,
+        port: P,
+        mut data: PData,
+    ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
+        self.materialize_context(&mut data);
         self.router.send_to(port, data).await
     }
 
@@ -236,10 +273,11 @@ impl<PData> EffectHandler<PData> {
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
     #[inline]
-    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
+        self.materialize_context(&mut data);
         self.router.try_send_to(port, data)
     }
 
