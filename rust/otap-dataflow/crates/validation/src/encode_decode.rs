@@ -79,7 +79,8 @@ mod test {
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
             None,
-            &otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path(),
+            &otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path(
+            ),
             &mut semconv_errors,
         )
         .expect("all registries are definied under the model folder in semantic convention repo");
