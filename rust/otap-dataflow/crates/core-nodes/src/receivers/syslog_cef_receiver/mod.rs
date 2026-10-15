@@ -2117,7 +2117,7 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver)
-            .run_test(move |ctx| {
+            .run_test(move |_ctx| {
                 Box::pin(async move {
                     let mut stream = TcpStream::connect(listening_addr)
                         .await
@@ -2129,16 +2129,37 @@ mod tests {
                         )
                         .await
                         .expect("Failed to send multiline TCP payload");
-                    tokio::time::sleep(Duration::from_millis(150)).await;
                     drop(stream);
-                    ctx.send_shutdown(Instant::now(), "Test")
-                        .await
-                        .expect("Failed to send Shutdown");
                 })
             })
-            .run_validation(|mut ctx| async move {
+            .run_validation_concurrent(|mut ctx| async move {
                 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
                 use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut batches = Vec::new();
+                let received = timeout(Duration::from_secs(3), async {
+                    let mut count = 0;
+                    while count < 3 {
+                        let message = ctx.recv().await.map_err(|_| "Receiver output closed")?;
+                        let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                        else {
+                            return Err("Expected OtapArrowRecords variant");
+                        };
+                        count += arrow_records.num_items();
+                        batches.push(arrow_records);
+                    }
+                    Ok(())
+                })
+                .await;
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Test".to_owned(),
+                })
+                .await
+                .expect("Failed to send Shutdown");
+                received
+                    .expect("Timed out waiting for three TCP records")
+                    .expect("Failed to receive TCP records");
 
                 let mut records = Vec::new();
                 while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
@@ -2149,6 +2170,9 @@ mod tests {
                     else {
                         panic!("Expected OtapArrowRecords variant");
                     };
+                    batches.push(arrow_records);
+                }
+                for arrow_records in batches {
                     for resource in decode_logs(arrow_records).resource_logs {
                         for scope in resource.scope_logs {
                             records.extend(scope.log_records);
@@ -2196,7 +2220,7 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver)
-            .run_test(move |ctx| {
+            .run_test(move |_ctx| {
                 Box::pin(async move {
                     let socket = UdpSocket::bind("127.0.0.1:0")
                         .await
@@ -2211,15 +2235,36 @@ mod tests {
                             .expect("Failed to send UDP datagram");
                         assert_eq!(sent, payload.len());
                     }
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                    ctx.send_shutdown(Instant::now(), "Test")
-                        .await
-                        .expect("Failed to send Shutdown");
                 })
             })
-            .run_validation(|mut ctx| async move {
+            .run_validation_concurrent(|mut ctx| async move {
                 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
                 use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut batches = Vec::new();
+                let received = timeout(Duration::from_secs(3), async {
+                    let mut count = 0;
+                    while count < 2 {
+                        let message = ctx.recv().await.map_err(|_| "Receiver output closed")?;
+                        let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                        else {
+                            return Err("Expected OtapArrowRecords variant");
+                        };
+                        count += arrow_records.num_items();
+                        batches.push(arrow_records);
+                    }
+                    Ok(())
+                })
+                .await;
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Test".to_owned(),
+                })
+                .await
+                .expect("Failed to send Shutdown");
+                received
+                    .expect("Timed out waiting for two UDP records")
+                    .expect("Failed to receive UDP records");
 
                 let mut records = Vec::new();
                 while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
@@ -2230,6 +2275,9 @@ mod tests {
                     else {
                         panic!("Expected OtapArrowRecords variant");
                     };
+                    batches.push(arrow_records);
+                }
+                for arrow_records in batches {
                     for resource in decode_logs(arrow_records).resource_logs {
                         for scope in resource.scope_logs {
                             records.extend(scope.log_records);
