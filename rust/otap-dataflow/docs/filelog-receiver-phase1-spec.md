@@ -442,8 +442,13 @@ rotation:
 ### Structural and relationship validation
 
 Validation completes before threads start or a checkpoint namespace is opened.
-Arithmetic used for counts, byte sums, products, deadlines, and conversions is checked.
-Overflow rejects configuration; values are never wrapped or saturated.
+Arithmetic used for counts, byte sums, products, deadlines, and conversions is
+checked. Overflow rejects configuration; values are never wrapped. The sole
+saturation exception is the intermediate transaction-byte product in the
+[capped WAL bound](#publication-compaction-cleanup-and-recovery): saturation
+is permitted only before taking the minimum with the configured byte threshold.
+It preserves the exact mathematical bound and does not saturate configured
+values, prospective append increments, or subsequent file/recovery sums.
 
 The following relationships are enforced:
 

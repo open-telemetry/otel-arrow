@@ -17,7 +17,12 @@ representative measurements when implementation layout changes. They are not
 exact RSS, allocator-resident memory, universal throughput, or performance
 guarantees.
 
-Every sum, product, cast, and duration conversion uses checked arithmetic.
+Every sum, product, cast, and duration conversion uses checked arithmetic,
+except the intermediate transaction-byte product in the
+[capped WAL bound](filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery).
+That product may saturate only before taking the minimum with the configured
+byte threshold, preserving the exact mathematical result. All subsequent
+file/recovery sums and prospective append increments remain checked.
 
 ### Candidate and identity reconciliation
 
