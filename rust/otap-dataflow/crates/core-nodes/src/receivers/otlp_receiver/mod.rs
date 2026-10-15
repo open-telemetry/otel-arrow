@@ -616,8 +616,22 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             let server_layers = ServiceBuilder::new()
                 .layer(limit_layer)
                 .option_layer(authorization_layer);
-            let mut server =
-                common::apply_server_tuning(Server::builder(), grpc_config).layer(server_layers);
+            // Apply the HTTP/2 `max_concurrent_streams` limit here rather than in
+            // `common::apply_server_tuning`. OTLP uses unary RPCs (one short-lived HTTP/2 stream
+            // per request), so tracking the request limit is safe: the stream limit only throttles
+            // in-flight exports transiently. Streaming protocols (OTAP) need a different policy and
+            // apply their own limit.
+            let tuned = common::apply_server_tuning(Server::builder(), grpc_config);
+            let fallback_streams =
+                grpc_config.max_concurrent_requests.min(u32::MAX as usize) as u32;
+            let max_concurrent_streams = grpc_config
+                .max_concurrent_streams
+                .map(|value| if value == 0 { fallback_streams } else { value })
+                .unwrap_or(fallback_streams)
+                .max(1);
+            let mut server = tuned
+                .max_concurrent_streams(Some(max_concurrent_streams))
+                .layer(server_layers);
 
             if let Some(timeout) = grpc_config.timeout {
                 server = server.timeout(timeout);
@@ -1511,6 +1525,9 @@ mod tests {
         assert_eq!(grpc.max_decoding_message_size, Some(4 * 1024 * 1024));
         assert_eq!(grpc.http2_keepalive_interval, Some(Duration::from_secs(30)));
         assert_eq!(grpc.http2_keepalive_timeout, Some(Duration::from_secs(10)));
+        // Parsed config value only. When unset, the OTLP serve path derives the applied HTTP/2
+        // stream limit from `max_concurrent_requests` (unary RPCs make that safe); the OTAP
+        // receiver applies a different policy.
         assert_eq!(grpc.max_concurrent_streams, None);
 
         // Test gRPC with compression
