@@ -2203,6 +2203,114 @@ mod tests {
             });
     }
 
+    /// Scenario: A multiline RFC 5424 TCP frame is followed by another octet-counted frame.
+    /// Guarantees: Embedded and trailing LF bytes stay in one record, and the next frame stays separate.
+    #[test]
+    fn tcp_octet_counting_preserves_multiline_message() {
+        let test_runtime = TestRuntime::new();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
+        let receiver = ReceiverWrapper::local(
+            SyslogCefReceiver::new(Config::new_tcp_with_framing(
+                listening_addr,
+                TcpFraming::OctetCounting,
+            )),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |_ctx| {
+                Box::pin(async move {
+                    let mut stream = TcpStream::connect(listening_addr)
+                        .await
+                        .expect("Failed to connect to TCP receiver");
+                    let mut frames = Vec::new();
+                    for payload in [
+                        b"<34>1 - - - - - - first line\nsecond line\n".as_slice(),
+                        b"<34>1 - - - - - - next message".as_slice(),
+                    ] {
+                        frames.extend_from_slice(payload.len().to_string().as_bytes());
+                        frames.push(b' ');
+                        frames.extend_from_slice(payload);
+                    }
+                    stream
+                        .write_all(&frames)
+                        .await
+                        .expect("Failed to send octet-counted TCP frames");
+                    drop(stream);
+                })
+            })
+            .run_validation_concurrent(|mut ctx| async move {
+                use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut batches = Vec::new();
+                let received = timeout(Duration::from_secs(3), async {
+                    let mut count = 0;
+                    while count < 2 {
+                        let message = ctx.recv().await.map_err(|_| "Receiver output closed")?;
+                        let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                        else {
+                            return Err("Expected OtapArrowRecords variant");
+                        };
+                        count += arrow_records.num_items();
+                        batches.push(arrow_records);
+                    }
+                    Ok(())
+                })
+                .await;
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Test".to_owned(),
+                })
+                .await
+                .expect("Failed to send Shutdown");
+                received
+                    .expect("Timed out waiting for two octet-counted TCP records")
+                    .expect("Failed to receive octet-counted TCP records");
+
+                let mut records = Vec::new();
+                while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for receiver output to close")
+                {
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                    else {
+                        panic!("Expected OtapArrowRecords variant");
+                    };
+                    batches.push(arrow_records);
+                }
+                for arrow_records in batches {
+                    for resource in decode_logs(arrow_records).resource_logs {
+                        for scope in resource.scope_logs {
+                            records.extend(scope.log_records);
+                        }
+                    }
+                }
+
+                let expected = ["first line\nsecond line\n", "next message"];
+                assert_eq!(records.len(), expected.len());
+                for (record, value) in records.iter().zip(expected) {
+                    let attribute = record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == "syslog.message")
+                        .expect("Expected parsed RFC 5424 message attribute");
+                    assert_eq!(
+                        attribute
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.value.as_ref()),
+                        Some(&Value::StringValue(value.to_owned())),
+                    );
+                }
+            });
+    }
+
     /// Scenario: One UDP datagram contains a multiline RFC 5424 message, followed by another datagram.
     /// Guarantees: Embedded and trailing LF bytes survive in one record, with datagram boundaries intact.
     #[test]
