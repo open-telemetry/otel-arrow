@@ -56,7 +56,9 @@ fn bench_sanitize(criterion: &mut Criterion) {
                 &batch,
                 |benchmark, batch| {
                     benchmark.iter(|| {
-                        sanitize_record_batch(black_box(batch)).expect("unused dictionary values")
+                        sanitize_record_batch(black_box(batch))
+                            .expect("valid dictionary sanitization")
+                            .expect("unused dictionary values")
                     });
                 },
             );
@@ -71,6 +73,7 @@ fn bench_sanitize(criterion: &mut Criterion) {
                                 &mut CooperativeBudget::default(),
                             )
                             .await
+                            .expect("valid dictionary sanitization")
                             .expect("unused dictionary values")
                         })
                     });
