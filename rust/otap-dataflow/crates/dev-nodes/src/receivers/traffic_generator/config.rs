@@ -454,16 +454,9 @@ const fn default_weight() -> u32 {
 }
 
 /// Semantic conventions registry git tag used when `registry_path` is not set.
-///
-/// This MUST stay compatible with the `weaver_*` crate versions pinned in
-/// `Cargo.toml`. The semantic-conventions `main` branch tracks the newest
-/// weaver release and can adopt schema features (e.g. `unref`) that an older
-/// weaver cannot parse, which would fail registry resolution at startup.
-/// Bump this tag and the weaver crates together.
 pub const SEMCONV_REGISTRY_REFSPEC: &str = "v1.44.0";
 
-/// Default semantic conventions registry path: the upstream git repo pinned to
-/// [`SEMCONV_REGISTRY_REFSPEC`].
+/// Default semantic conventions registry path.
 #[must_use]
 pub fn default_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::GitRepo {

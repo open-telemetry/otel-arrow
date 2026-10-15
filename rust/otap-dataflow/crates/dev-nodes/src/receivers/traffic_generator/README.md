@@ -41,9 +41,6 @@ config:
   data_source: synthetic
 
   # Semantic convention registry path when data_source is semantic_conventions.
-  # When omitted, the upstream semantic-conventions Git repo is used, pinned to a
-  # fixed tag that is compatible with the bundled weaver version. Override only if
-  # you need a different registry (e.g. a local checkout).
   registry_path: ./semantic-conventions
 
   # Batch generation strategy: "fresh" or "pre_generated" (default: fresh).
