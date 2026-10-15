@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792034543342,
+  "lastUpdate": 1792043125965,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -62960,6 +62960,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0219542b98dc92343603aec21812aeef9311e8e0",
+          "message": "chore: support path-derived Windows performance counter metrics (#4399)\n\n# Chore Summary\n\nSimplify Windows performance counter configuration: a counter's path is\nnow its default metric name, and metric definitions are optional. The\nreceiver remains unregistered.\n\n- `metrics` is optional. A definition sets a metric's kind, unit, and\ndescription.\n- An explicit `metric` must name an existing definition.\n- If `metric` is omitted or blank, the metric name is the configured\ncounter path, such as `\\Memory\\Available Bytes`. A definition with that\nname is used if present; otherwise the metric is a Gauge with default\nmetadata.\n- Mapping attributes apply only with an explicit `metric` and are\notherwise ignored.\n- Metric names keep the configured instance spelling (`app#01`). Native\npaths and duplicate checks use the canonical spelling (`app#1`).\n\nValidation helpers are also consolidated and grouped. Native collection,\ntiming, and limits are unchanged.\n\n## Differences from Go\n\n- **Whitespace:** Path fields and metric references are trimmed; a\nwhitespace-only reference counts as omitted. Go keeps strings as written\nand treats only `\"\"` as omitted.\n- **Path-shaped definitions:** Not yet implemented; malformed paths and\npadded segments in definition names are rejected. Go accepts them as\nplain keys.\n- **Case-only duplicates:** Not yet implemented; definitions whose names\ndiffer only by case are rejected. Go accepts them as distinct.\n- **Wildcard instances:** Not yet implemented. Go supports them.**\n\n## Related issue\n\nRelated to #4074. Follow-up to #4388.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 6d885b23-37bb-4903-9b91-e7bedfb8631d",
+          "timestamp": "2026-10-15T04:46:07Z",
+          "tree_id": "42a88645ea7f1d3d4849ad58fd4dbf2e2b9454a7",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0219542b98dc92343603aec21812aeef9311e8e0"
+        },
+        "date": 1792043100620,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
             "unit": "MB"
           },
           {
