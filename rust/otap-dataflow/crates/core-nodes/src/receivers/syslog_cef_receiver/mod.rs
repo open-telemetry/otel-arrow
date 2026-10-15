@@ -2096,6 +2096,166 @@ mod tests {
             .run_validation(tcp_incomplete_validation_procedure());
     }
 
+    /// Scenario: A multiline RFC 5424 payload arrives over TCP with framing omitted.
+    /// Guarantees: Each LF ends a separate record, and the next syslog message remains intact.
+    #[test]
+    fn tcp_default_framing_splits_multiline_message() {
+        let test_runtime = TestRuntime::new();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let config = serde_json::from_value(serde_json::json!({
+            "protocol": { "tcp": { "listening_addr": listening_addr.to_string() } }
+        }))
+        .expect("TCP config should default to newline framing");
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
+        let receiver = ReceiverWrapper::local(
+            SyslogCefReceiver::new(config),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    let mut stream = TcpStream::connect(listening_addr)
+                        .await
+                        .expect("Failed to connect to TCP receiver");
+                    stream
+                        .write_all(
+                            b"<34>1 - - - - - - first line\nsecond line\n\
+                              <34>1 - - - - - - next message\n",
+                        )
+                        .await
+                        .expect("Failed to send multiline TCP payload");
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    drop(stream);
+                    ctx.send_shutdown(Instant::now(), "Test")
+                        .await
+                        .expect("Failed to send Shutdown");
+                })
+            })
+            .run_validation(|mut ctx| async move {
+                use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut records = Vec::new();
+                while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for receiver output to close")
+                {
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                    else {
+                        panic!("Expected OtapArrowRecords variant");
+                    };
+                    for resource in decode_logs(arrow_records).resource_logs {
+                        for scope in resource.scope_logs {
+                            records.extend(scope.log_records);
+                        }
+                    }
+                }
+
+                let expected = [
+                    ("syslog.message", "first line"),
+                    ("syslog.content", "second line"),
+                    ("syslog.message", "next message"),
+                ];
+                assert_eq!(records.len(), expected.len());
+                for (record, (key, value)) in records.iter().zip(expected) {
+                    let attribute = record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == key)
+                        .expect("Expected parsed syslog message attribute");
+                    assert_eq!(
+                        attribute
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.value.as_ref()),
+                        Some(&Value::StringValue(value.to_owned())),
+                    );
+                }
+            });
+    }
+
+    /// Scenario: One UDP datagram contains a multiline RFC 5424 message, followed by another datagram.
+    /// Guarantees: Embedded and trailing LF bytes survive in one record, with datagram boundaries intact.
+    #[test]
+    fn udp_preserves_multiline_message_in_single_datagram() {
+        let test_runtime = TestRuntime::new();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
+        let receiver = ReceiverWrapper::local(
+            SyslogCefReceiver::new(Config::new_udp(listening_addr)),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    let socket = UdpSocket::bind("127.0.0.1:0")
+                        .await
+                        .expect("Failed to bind UDP socket");
+                    for payload in [
+                        b"<34>1 - - - - - - first line\nsecond line\n".as_slice(),
+                        b"<34>1 - - - - - - next message".as_slice(),
+                    ] {
+                        let sent = socket
+                            .send_to(payload, listening_addr)
+                            .await
+                            .expect("Failed to send UDP datagram");
+                        assert_eq!(sent, payload.len());
+                    }
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    ctx.send_shutdown(Instant::now(), "Test")
+                        .await
+                        .expect("Failed to send Shutdown");
+                })
+            })
+            .run_validation(|mut ctx| async move {
+                use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut records = Vec::new();
+                while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for receiver output to close")
+                {
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                    else {
+                        panic!("Expected OtapArrowRecords variant");
+                    };
+                    for resource in decode_logs(arrow_records).resource_logs {
+                        for scope in resource.scope_logs {
+                            records.extend(scope.log_records);
+                        }
+                    }
+                }
+
+                let expected = ["first line\nsecond line\n", "next message"];
+                assert_eq!(records.len(), expected.len());
+                for (record, value) in records.iter().zip(expected) {
+                    let attribute = record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == "syslog.message")
+                        .expect("Expected parsed syslog message attribute");
+                    assert_eq!(
+                        attribute
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.value.as_ref()),
+                        Some(&Value::StringValue(value.to_owned())),
+                    );
+                }
+            });
+    }
+
     fn tcp_octet_counted_scenario(
         listening_addr: SocketAddr,
         payload: Vec<u8>,
