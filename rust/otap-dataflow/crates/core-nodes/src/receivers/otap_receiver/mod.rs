@@ -217,13 +217,10 @@ pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             let mut receiver = OTAPReceiver::from_config(pipeline, &node_config.config)?;
             // Clamp concurrency to the downstream channel capacity so backpressure flows upstream.
             receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
-            Ok(ReceiverWrapper::shared(
-                receiver,
-                node,
-                node_config,
-                receiver_config,
+            Ok(
+                ReceiverWrapper::shared(receiver, node, node_config, receiver_config)
+                    .with_startup_readiness(),
             )
-            .with_startup_readiness())
         },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
