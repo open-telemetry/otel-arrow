@@ -598,7 +598,7 @@ macro_rules! postgresql_module_tests {
 
 use super::{
     config::PostgreSqlReceiverConfig as Config,
-    query::{NativeColumn, Plan, Signature},
+    query::{NativeColumn, Plan, Signature, compatible_literal},
     value as convert,
 };
 use otel_arrow_dfe_engine::capability::{
@@ -607,6 +607,7 @@ use otel_arrow_dfe_engine::capability::{
 };
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use serde_json::{Value, json};
+use sqlparser::ast::Value as SqlValue;
 use tokio_postgres::types::Type;
 
 struct TestCredentials;
@@ -731,6 +732,27 @@ fn unsafe_and_unsupported_sql_rejected() {
         )),
     ] {
         assert!(validate(&config(&text)).is_err(), "{text}");
+    }
+}
+
+/// Scenario: Static date and timestamp filters use text literals across reconnects and restarts.
+/// Guarantees: Relative temporal literals are rejected so replay cannot silently skip unacknowledged rows.
+#[test]
+fn relative_temporal_literals_rejected() {
+    for (oid, literal, valid) in [
+        (Type::DATE.oid(), "2026-10-05", true),
+        (Type::DATE.oid(), "today", false),
+        (Type::TIMESTAMP.oid(), "2026-10-05 00:00:00", true),
+        (Type::TIMESTAMP.oid(), "2026-10-05T00:00:00.123456", true),
+        (Type::TIMESTAMP.oid(), "2026-10-05T00:00:00Z", true),
+        (Type::TIMESTAMP.oid(), "now", false),
+        (Type::TIMESTAMPTZ.oid(), "2026-10-05T00:00:00Z", true),
+        (Type::TIMESTAMPTZ.oid(), "2026-10-05T00:00:00-07:00", true),
+        (Type::TIMESTAMPTZ.oid(), "today", false),
+        (Type::TIMESTAMPTZ.oid(), "epoch", false),
+    ] {
+        let literal = SqlValue::SingleQuotedString(literal.into());
+        assert_eq!(compatible_literal(oid, &literal).is_ok(), valid);
     }
 }
 

@@ -174,7 +174,7 @@ are rejected. Tie-breakers use range-checked `int2`, `int4`, or `int8`.
 | Source relations | Schema-qualified, aliased, ordinary persistent tables outside `pg_*` and `information_schema`. |
 | Projection | Between 1 and 128 direct, qualified columns, optionally renamed with unique aliases. |
 | Cursor predicate | Exactly one supported composite keyset shown above, using both configured binds. |
-| Static filters | Qualified column compared to a numeric, Boolean, or single-quoted literal with `=`, `!=`, `>`, `<`, `>=`, or `<=`; `IS NULL` and `IS NOT NULL` are also accepted. Combine filters with `AND`. |
+| Static filters | Qualified column compared to a numeric, Boolean, or single-quoted literal with `=`, `!=`, `>`, `<`, `>=`, or `<=`; `IS NULL` and `IS NOT NULL` are also accepted. Combine filters with `AND`. For `date`/`timestamp`/`timestamptz` columns, single-quoted literals must be absolute values (for example `2026-10-05`, `2026-10-05 00:00:00`, or RFC 3339); relative values such as `today`, `now`, and `epoch` are rejected. |
 | Joins | Up to three `INNER JOIN ... ON` clauses. Join predicates are `AND` combinations of direct column equalities. The columns on each newly joined side must cover a catalog-proven unique key and have matching native types/collations. |
 | Ordering | Cursor timestamp followed by tie-breaker, both ascending. |
 | Rejected | Views, materialized/foreign/partitioned/temporary tables, RLS-enabled tables, system schemas, stars, expressions, casts, functions, aggregates, `DISTINCT`, outer/cross joins, subqueries, CTEs, `OR` outside the keyset, grouping, set operations, user `LIMIT`/`OFFSET`/`FETCH`, row locks, and multiple statements. |

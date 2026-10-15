@@ -14,6 +14,7 @@ use sqlparser::{
     parser::Parser,
     tokenizer::{Token, Tokenizer},
 };
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_postgres::{GenericClient, Transaction, types::Type};
 
@@ -802,7 +803,23 @@ impl Plan {
     }
 }
 
-fn compatible_literal(oid: u32, value: &Value) -> Result<()> {
+fn strict_absolute_date(text: &str) -> bool {
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .is_ok_and(|value| (1..=9999).contains(&value.year()))
+}
+
+fn strict_absolute_timestamp(text: &str) -> bool {
+    DateTime::parse_from_rfc3339(text)
+        .map(|value| value.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+                .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f"))
+                .map(|value| value.and_utc())
+        })
+        .is_ok_and(|value| (1..=9999).contains(&value.year()))
+}
+
+pub(crate) fn compatible_literal(oid: u32, value: &Value) -> Result<()> {
     let ty = Type::from_oid(oid).ok_or(Error::Metadata)?;
     let valid = match value {
         Value::Boolean(_) => ty == Type::BOOL,
@@ -815,16 +832,14 @@ fn compatible_literal(oid: u32, value: &Value) -> Result<()> {
             Type::FLOAT8 => n.parse::<f64>().is_ok_and(f64::is_finite),
             _ => false,
         },
-        Value::SingleQuotedString(_) => matches!(
-            ty,
-            Type::TEXT
-                | Type::VARCHAR
-                | Type::BPCHAR
-                | Type::TIMESTAMP
-                | Type::TIMESTAMPTZ
-                | Type::DATE
-                | Type::UUID
-        ),
+        Value::SingleQuotedString(text) => match ty {
+            Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::UUID => true,
+            Type::DATE => strict_absolute_date(text),
+            Type::TIMESTAMP | Type::TIMESTAMPTZ => {
+                strict_absolute_date(text) || strict_absolute_timestamp(text)
+            }
+            _ => false,
+        },
         _ => false,
     };
     if valid { Ok(()) } else { Err(Error::Metadata) }
