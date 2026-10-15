@@ -20,46 +20,6 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::Level;
 
-trait ValueWriter {
-    fn write_str(&mut self, value: &str);
-    fn write_debug(&mut self, value: &dyn std::fmt::Debug);
-    fn write_i64(&mut self, value: i64);
-    fn write_f64(&mut self, value: f64);
-    fn write_bool(&mut self, value: bool);
-    fn write_map(&mut self, f: &mut dyn FnMut(&mut dyn MapWriter));
-    fn write_array(&mut self, f: &mut dyn FnMut(&mut dyn ArrayWriter));
-}
-
-trait MapWriter {
-    fn write_entry(&mut self, key: &str, f: &mut dyn FnMut(&mut dyn ValueWriter));
-}
-
-trait ArrayWriter {
-    fn write_element(&mut self, f: &mut dyn FnMut(&mut dyn ValueWriter));
-}
-
-impl dyn ValueWriter + '_ {
-    fn map(&mut self, mut f: impl FnMut(&mut dyn MapWriter)) {
-        self.write_map(&mut f);
-    }
-
-    fn array(&mut self, mut f: impl FnMut(&mut dyn ArrayWriter)) {
-        self.write_array(&mut f);
-    }
-}
-
-impl dyn MapWriter + '_ {
-    fn entry(&mut self, key: &str, mut f: impl FnMut(&mut dyn ValueWriter)) {
-        self.write_entry(key, &mut f);
-    }
-}
-
-impl dyn ArrayWriter + '_ {
-    fn element(&mut self, mut f: impl FnMut(&mut dyn ValueWriter)) {
-        self.write_element(&mut f);
-    }
-}
-
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf, B: BoundedBuf> {
     buf: &'buf mut B,
@@ -175,23 +135,29 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     fn record_attribute(
         &mut self,
         field: &tracing::field::Field,
-        f: impl FnMut(&mut dyn ValueWriter),
+        encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
     ) {
         if field.name() != "message" {
-            self.write_value_attribute(field.name(), f);
+            self.write_value_attribute(field.name(), encode);
         }
     }
 
-    /// Encodes one attribute whose value is written by `f`.
-    fn write_value_attribute(&mut self, key: &str, mut f: impl FnMut(&mut dyn ValueWriter)) {
-        self.write_attribute(|buf| write_key_value(buf, LOG_RECORD_ATTRIBUTES, key, &mut f));
+    /// Encodes one attribute whose AnyValue payload is written by `encode`.
+    fn write_value_attribute(
+        &mut self,
+        key: &str,
+        encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+    ) {
+        self.write_attribute(|buf| {
+            write_encoded_key_value(buf, LOG_RECORD_ATTRIBUTES, key, encode)
+        });
     }
 
-    /// Encodes the body, written by `f`, rolling it back if it cannot fit.
-    fn write_body(&mut self, mut f: impl FnMut(&mut dyn ValueWriter)) {
+    /// Encodes a body payload, rolling it back if it cannot fit.
+    fn write_body(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
         let _ = self
             .buf
-            .try_encode(|buf| write_value(buf, LOG_RECORD_BODY, &mut f).map(drop));
+            .try_encode(|buf| write_encoded_value(buf, LOG_RECORD_BODY, encode).map(drop));
     }
 }
 
@@ -347,13 +313,52 @@ fn bounded<B: BoundedBuf>(
     Ok(truncated)
 }
 
+fn write_tagged<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    wire_type: u64,
+    encode: impl FnOnce(&mut B) -> EncodeResult,
+) -> Result<bool, EncodeFailure> {
+    buf.encode_field_tag(field, wire_type)
+        .and_then(|()| encode(buf))
+        .map(|()| false)
+}
+
+fn write_encoded_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited_partial(field, |buf| {
+        lost = encode(buf)?;
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(lost)
+}
+
+fn write_encoded_key_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    key: &str,
+    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited_partial(field, |buf| {
+        buf.encode_string(KEY_VALUE_KEY, key)?;
+        lost = write_encoded_value(buf, KEY_VALUE_VALUE, encode)?;
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(lost)
+}
+
 /// Encodes `f`'s value as a length-delimited `field`. `Ok(true)`
 /// means part of the value was lost; `Err` means it could not be written and
 /// must be rolled back.
 fn write_value<B: BoundedBuf>(
     buf: &mut B,
     field: u64,
-    f: &mut dyn FnMut(&mut dyn ValueWriter),
+    f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
 ) -> Result<bool, EncodeFailure> {
     let mut lost = false;
     buf.encode_len_delimited(field, |buf| {
@@ -373,7 +378,7 @@ fn write_key_value<B: BoundedBuf>(
     buf: &mut B,
     field: u64,
     key: &str,
-    f: &mut dyn FnMut(&mut dyn ValueWriter),
+    f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
 ) -> Result<bool, EncodeFailure> {
     let mut lost = false;
     buf.encode_len_delimited(field, |buf| {
@@ -397,7 +402,7 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
     fn put(&mut self, result: Result<bool, EncodeFailure>) {
         debug_assert!(
             !self.wrote_value,
-            "ValueWriter must write at most one AnyValue variant"
+            "value callback must write at most one AnyValue variant"
         );
         self.wrote_value = true;
         self.outcome = self.outcome.and_then(|lost| Ok(lost | result?));
@@ -413,22 +418,6 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
         self.put(result.map(|()| lost));
     }
 
-    fn put_tagged(
-        &mut self,
-        field: u64,
-        wire_type: u64,
-        body: impl FnOnce(&mut B) -> EncodeResult,
-    ) {
-        let result = self
-            .buf
-            .encode_field_tag(field, wire_type)
-            .and_then(|()| body(self.buf))
-            .map(|()| false);
-        self.put(result);
-    }
-}
-
-impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
     fn write_str(&mut self, value: &str) {
         let result = self
             .buf
@@ -436,30 +425,31 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
         self.put(result);
     }
 
-    fn write_debug(&mut self, value: &dyn std::fmt::Debug) {
-        let result = encode_debug_string(self.buf, value);
+    fn write_i64(&mut self, value: i64) {
+        let result = write_tagged(self.buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
+            buf.encode_varint(value as u64)
+        });
         self.put(result);
     }
 
-    fn write_i64(&mut self, value: i64) {
-        self.put_tagged(ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
-            buf.encode_varint(value as u64)
-        });
-    }
-
     fn write_f64(&mut self, value: f64) {
-        self.put_tagged(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, |buf| {
-            buf.extend_from_slice(&value.to_le_bytes())
-        });
+        let result = write_tagged(
+            self.buf,
+            ANY_VALUE_DOUBLE_VALUE,
+            wire_types::FIXED64,
+            |buf| buf.extend_from_slice(&value.to_le_bytes()),
+        );
+        self.put(result);
     }
 
     fn write_bool(&mut self, value: bool) {
-        self.put_tagged(ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
+        let result = write_tagged(self.buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
             buf.encode_varint(u64::from(value))
         });
+        self.put(result);
     }
 
-    fn write_map(&mut self, f: &mut dyn FnMut(&mut dyn MapWriter)) {
+    fn map(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
         self.nested(ANY_VALUE_KVLIST_VALUE, |buf| {
             let mut writer = NestedEncoder {
                 buf,
@@ -470,7 +460,7 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
         });
     }
 
-    fn write_array(&mut self, f: &mut dyn FnMut(&mut dyn ArrayWriter)) {
+    fn array(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
         self.nested(ANY_VALUE_ARRAY_VALUE, |buf| {
             let mut writer = NestedEncoder {
                 buf,
@@ -488,29 +478,35 @@ struct NestedEncoder<'a, B: BoundedBuf> {
     outcome: Result<bool, EncodeFailure>,
 }
 
-impl<B: BoundedBuf> MapWriter for NestedEncoder<'_, B> {
-    fn write_entry(&mut self, key: &str, f: &mut dyn FnMut(&mut dyn ValueWriter)) {
+impl<B: BoundedBuf> NestedEncoder<'_, B> {
+    fn entry(&mut self, key: &str, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
         self.outcome = self.outcome.and_then(|lost| {
-            write_key_value(self.buf, KEY_VALUE_LIST_VALUES, key, f).map(|v| lost | v)
+            write_key_value(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f).map(|v| lost | v)
         });
     }
-}
 
-impl<B: BoundedBuf> ArrayWriter for NestedEncoder<'_, B> {
-    fn write_element(&mut self, f: &mut dyn FnMut(&mut dyn ValueWriter)) {
+    fn element(&mut self, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
         self.outcome = self
             .outcome
-            .and_then(|lost| write_value(self.buf, ARRAY_VALUE_VALUES, f).map(|v| lost | v));
+            .and_then(|lost| write_value(self.buf, ARRAY_VALUE_VALUES, &mut f).map(|v| lost | v));
     }
 }
 
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        self.record_attribute(field, |w| w.write_f64(value));
+        self.record_attribute(field, |buf| {
+            write_tagged(buf, ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, |buf| {
+                buf.extend_from_slice(&value.to_le_bytes())
+            })
+        });
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.record_attribute(field, |w| w.write_i64(value));
+        self.record_attribute(field, |buf| {
+            write_tagged(buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
+                buf.encode_varint(value as u64)
+            })
+        });
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
@@ -518,22 +514,28 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.record_attribute(field, |w| w.write_bool(value));
+        self.record_attribute(field, |buf| {
+            write_tagged(buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
+                buf.encode_varint(u64::from(value))
+            })
+        });
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() != "message" {
-            self.write_value_attribute(field.name(), |w| w.write_str(value));
+            self.write_value_attribute(field.name(), |buf| {
+                buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value)
+            });
         } else if !value.is_empty() {
-            self.write_body(|w| w.write_str(value));
+            self.write_body(|buf| buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value));
         }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() != "message" {
-            self.write_value_attribute(field.name(), |w| w.write_debug(value));
+            self.write_value_attribute(field.name(), |buf| encode_debug_string(buf, value));
         } else {
-            self.write_body(|w| w.write_debug(value));
+            self.write_body(|buf| encode_debug_string(buf, value));
         }
     }
 
@@ -584,7 +586,7 @@ pub(crate) fn encode_config_resource_field(
 }
 
 /// Writes one configured resource value.
-fn write_config_value(w: &mut dyn ValueWriter, value: &ConfigAttributeValue) {
+fn write_config_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &ConfigAttributeValue) {
     match value {
         ConfigAttributeValue::String(v) => w.write_str(v),
         ConfigAttributeValue::Bool(v) => w.write_bool(*v),
@@ -600,7 +602,11 @@ fn write_config_value(w: &mut dyn ValueWriter, value: &ConfigAttributeValue) {
 }
 
 /// Writes a homogeneous slice as array elements.
-fn elements<T>(a: &mut dyn ArrayWriter, values: &[T], write: impl Fn(&mut dyn ValueWriter, &T)) {
+fn elements<B: BoundedBuf, T>(
+    a: &mut NestedEncoder<'_, B>,
+    values: &[T],
+    write: impl Fn(&mut ValueEncoder<'_, B>, &T),
+) {
     for value in values {
         a.element(|w| write(w, value));
     }
@@ -611,7 +617,7 @@ fn encode_attribute(
     buf: &mut ProtoBuffer,
     field: u64,
     key: &str,
-    mut f: impl FnMut(&mut dyn ValueWriter),
+    mut f: impl FnMut(&mut ValueEncoder<'_, ProtoBuffer>),
 ) -> EncodeResult {
     buf.try_encode(|buf| match write_key_value(buf, field, key, &mut f)? {
         false => Ok(()),
@@ -696,7 +702,7 @@ fn encode_scope_attributes<'k, 'v>(
 }
 
 /// Writes an `AttributeValue`; maps become kvlists.
-fn write_attribute_value(w: &mut dyn ValueWriter, value: &AttributeValue) {
+fn write_attribute_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &AttributeValue) {
     match value {
         AttributeValue::String(v) => w.write_str(v),
         AttributeValue::Boolean(v) => w.write_bool(*v),
@@ -1243,10 +1249,10 @@ mod tests {
     /// Guarantees: debug builds reject ambiguous oneof encodings.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "ValueWriter must write at most one AnyValue variant")]
-    fn value_writer_rejects_multiple_variants() {
+    #[should_panic(expected = "value callback must write at most one AnyValue variant")]
+    fn value_encoder_rejects_multiple_variants() {
         let mut buf = ProtoBuffer::with_capacity(32);
-        let mut write = |writer: &mut dyn ValueWriter| {
+        let mut write = |writer: &mut ValueEncoder<'_, ProtoBuffer>| {
             writer.write_i64(1);
             writer.write_bool(true);
         };
