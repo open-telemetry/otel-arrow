@@ -360,6 +360,7 @@ fn write_value<B: BoundedBuf>(
         let mut writer = ValueEncoder {
             buf,
             outcome: Ok(false),
+            wrote_value: false,
         };
         f(&mut writer);
         writer.outcome.map(|writer_lost| lost = writer_lost)
@@ -389,10 +390,16 @@ struct ValueEncoder<'a, B: BoundedBuf> {
     /// `Ok(true)` once any part of the value was lost; a sticky `Err` once
     /// part of it could not be written.
     outcome: Result<bool, EncodeFailure>,
+    wrote_value: bool,
 }
 
 impl<B: BoundedBuf> ValueEncoder<'_, B> {
     fn put(&mut self, result: Result<bool, EncodeFailure>) {
+        debug_assert!(
+            !self.wrote_value,
+            "ValueWriter must write at most one AnyValue variant"
+        );
+        self.wrote_value = true;
         self.outcome = self.outcome.and_then(|lost| Ok(lost | result?));
     }
 
@@ -1230,6 +1237,21 @@ mod tests {
         )]);
 
         assert_eq!(expected, decoded);
+    }
+
+    /// Scenario: one value callback writes two AnyValue variants.
+    /// Guarantees: debug builds reject ambiguous oneof encodings.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ValueWriter must write at most one AnyValue variant")]
+    fn value_writer_rejects_multiple_variants() {
+        let mut buf = ProtoBuffer::with_capacity(32);
+        let mut write = |writer: &mut dyn ValueWriter| {
+            writer.write_i64(1);
+            writer.write_bool(true);
+        };
+
+        let _ = write_value(&mut buf, LOG_RECORD_BODY, &mut write);
     }
 
     /// Scenario: four large string attributes compete for a 256-byte buffer.
