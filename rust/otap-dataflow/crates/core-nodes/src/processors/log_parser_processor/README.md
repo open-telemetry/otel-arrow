@@ -174,6 +174,8 @@ errors, without partial output. They are not a configurable batch memory quota.
 Staging, column rebuilding and default dictionary sanitization cooperate with
 other local tasks after 128 items or 256 KiB of accounted work. No partial output
 is sent, and record counters are published only after these phases finish.
+Sanitization errors abort the operation before output is sent or record counters
+are published.
 Cancellation while those phases are pending emits no partial result or early Ack.
 This is a work quantum, not a wall-clock deadline: one record or dictionary value,
 payload conversion, transport-ID decoding, Arrow constructors and allocator calls
@@ -304,7 +306,8 @@ provides traffic, channel send failures, and downstream completion outcomes.
 `signal` is `logs`; non-log pass-through does not record a parsing operation.
 `outcome` is `success` or `failure`. Success means the immediate output send or
 local completion notification succeeded, not that a downstream exporter Acked.
-`error.type` is `payload_conversion`, `id_decode`, `output_send`, or `internal`.
+`error.type` is `payload_conversion`, `id_decode`, `output_send`, `internal`, or
+`sanitization`.
 
 `format` is `regex`, `json`, or `csv`. Record `reason` is `limit`, `extraction`,
 `body`, `timestamp`, `severity`, `unsupported_body`, or `observed_fallback`.

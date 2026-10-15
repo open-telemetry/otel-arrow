@@ -28,12 +28,15 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 /// Configuration types for the Azure Data Explorer Exporter.
 pub mod config;
+mod encoding;
 mod error;
 mod exporter;
+mod transformer;
 
 pub use config::Config;
 pub use error::Error;
 pub use exporter::AzureDataExplorerExporter;
+pub use transformer::Transformer;
 
 /// URN identifying the Azure Data Explorer Exporter in configuration pipelines.
 pub const AZURE_DATA_EXPLORER_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_data_explorer";

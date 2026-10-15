@@ -12,7 +12,7 @@
 
 The Kafka receiver consumes OpenTelemetry traces, metrics, and logs from
 Apache Kafka topics. It supports OTLP and OTAP protobuf encodings for all
-signals and Syslog encoding for logs,
+signals and plaintext and Syslog encodings for logs,
 per-signal topic routing, SASL authentication (PLAIN, SCRAM, AWS MSK IAM),
 TLS, manual and automatic offset commit modes, and Kafka message header
 extraction into resource attributes or pipeline transport headers.
@@ -62,7 +62,7 @@ config:
 | `resource_attrs_from_headers` | map | `{}` | Rules for extracting Kafka message headers into resource attributes. |
 | `enable_idempotency` | bool | `false` | Skip duplicate messages by offset (manual commit mode only). |
 | `rebalance_strategy` | string | *none* | Partition assignment strategy: `range`, `round_robin`, or `cooperative_sticky`. When omitted, librdkafka uses its default (`range,roundrobin`). |
-| `message_format_header` | string | `"MessageFormat"` | Kafka header key for per-message format detection. The receiver checks each message for a header with this key and value `otlp`, `otap`, or `syslog` to override the per-signal encoding. Syslog is valid only for logs. |
+| `message_format_header` | string | `"MessageFormat"` | Kafka header key for per-message format detection. The receiver checks each message for a header with this key and value `otlp`, `otap`, `plaintext`, or `syslog` to override the per-signal encoding. Plaintext and Syslog are valid only for logs. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
 | `log_level` | string | *none* | Librdkafka log level: `emerg`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, `debug`. When omitted, inferred from the application's log configuration. |
 | `consumer_config` | map | `{}` | Additional librdkafka consumer settings as key-value string pairs. |
@@ -75,7 +75,7 @@ Each signal type (`traces`, `metrics`, `logs`) accepts a nested configuration:
 | --- | --- | --- | --- |
 | `topics` | list | `[]` | Topics to subscribe to. Entries starting with `^` are regex patterns. |
 | `exclude_topics` | list | `[]` | Regex patterns for topics to exclude (requires at least one regex in `topics`). |
-| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, or `syslog`. Syslog is valid only for logs. |
+| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, `plaintext`, or `syslog`. Plaintext and Syslog are valid only for logs. |
 
 At least one signal must have non-empty `topics` for the receiver to consume any data. Topic names must be **disjoint across signal types** -- the receiver rejects configurations where the same topic appears in more than one signal type.
 
@@ -130,6 +130,7 @@ Each signal can specify its own encoding format via the `encoding` field:
 | --- | --- |
 | `otlp_proto` | OTLP protobuf encoding (default). |
 | `otap_proto` | OTAP Arrow protobuf encoding. |
+| `plaintext` | One UTF-8 text payload per Kafka record. The complete payload becomes the string body of one OpenTelemetry log record (logs only). |
 | `syslog` | One RFC 3164 or RFC 5424 message per Kafka record (logs only). CEF in the message body is decoded using the Syslog/CEF receiver mapping. |
 
 Encoding can differ per signal:
@@ -144,7 +145,36 @@ config:
     encoding: otap_proto
 ```
 
-Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otap`, or `syslog`, that encoding is used instead of the per-signal default. Syslog overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
+Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otap`, `plaintext`, or `syslog`, that encoding is used instead of the per-signal default. Plaintext and Syslog overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
+
+##### Transforming plaintext JSON with KQL
+
+Plaintext is useful when Kafka contains structured text that should enter the
+pipeline before it is parsed. For example, given this Kafka record:
+
+```json
+{ "message": "Hello world", "level": "Info" }
+```
+
+Configure the logs signal to preserve the complete document as the log body:
+
+```yaml
+logs:
+  topics:
+    - "application-logs"
+  encoding: plaintext
+```
+
+The receiver emits one log record whose `Body` is the string
+`{ "message": "Hello world", "level": "Info" }`. A downstream
+[`recordset_kql` processor](../../processors/recordset_kql_processor/README.md)
+can then parse and project the document:
+
+```kql
+source
+| extend json = parse_json(Body)
+| project SeverityText = json.level, Body = json.message
+```
 
 ### Commit Configuration
 
@@ -164,6 +194,8 @@ The receiver supports two offset commit modes controlled by `commit.mode`.
 The receiver tracks each consumed message individually per partition. Offsets are only committed up to the lowest un-acknowledged message, preventing offset skipping when downstream acknowledgements arrive out of order.
 
 The `commit.interval_ms` value controls a periodic safety-net timer for offset commits. If `commit.interval_ms` is not set, the safety-net timer is disabled and offsets are committed through terminal downstream feedback. A transient NACK configured for replay remains unresolved and cannot be committed past by this timer.
+
+During a consumer-group rebalance the receiver commits owned offsets before its partitions are revoked (commit-before-revoke). This commit is asynchronous, so if it loses the race with reassignment or is rejected by the broker, the new owner redelivers the un-committed records. Delivery remains at-least-once.
 
 ```yaml
 config:
@@ -290,7 +322,7 @@ The Go receiver also consumes a `profiles` signal. This receiver supports
 | `otlp_json` | yes | no |
 | `jaeger_proto` / `jaeger_json` (traces) | yes | no |
 | `zipkin_proto` / `zipkin_json` / `zipkin_thrift` (traces) | yes | no |
-| `raw` / `text` / `text_<encoding>` / `json` (logs) | yes | no |
+| `raw` / `text` / `text_<encoding>` / `json` (logs) | yes | partial (`plaintext`) |
 | `azure_resource_logs` (logs) | yes (deprecated) | no |
 | encoding extensions | yes | no |
 
@@ -391,8 +423,9 @@ the Go Kafka receiver:
 
 Out of scope for error handling, but worth noting as general differences: the Go
 receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
-`raw`, `text`, `json`) whereas this receiver supports `otlp_proto` and
-`otap_proto`; available authentication mechanisms may also differ.
+`raw`, `text`, `json`) whereas this receiver supports `otlp_proto`,
+`otap_proto`, `plaintext`, and `syslog`; available authentication mechanisms
+may also differ.
 
 #### Auto Mode (`commit.mode: auto`)
 
@@ -1037,7 +1070,7 @@ commit mode because librdkafka owns offset management in auto-commit mode.
 | `receiver.kafka.consumer.group.partitions` | `{partition}` | Current partitions owned by this consumer. |
 | `receiver.kafka.consumer.group.partition.assignments` | `{partition}` | Partitions newly acquired across rebalances. |
 | `receiver.kafka.consumer.group.partition.revocations` | `{partition}` | Owned partitions revoked across rebalances. |
-| `receiver.kafka.consumer.group.rebalance.commit_failures` | `{error}` | Synchronous commit calls that failed while partitions were being revoked. |
+| `receiver.kafka.consumer.group.rebalance.commit_enqueue_failures` | `{error}` | Async commit-before-revoke calls that failed to enqueue locally during revocation. Broker rejections of that commit are counted by `offset_commits` with `outcome="failure"`. |
 | `receiver.kafka.consumer.group.rebalance.resume_failures` | `{error}` | Partition resume operations that failed while clearing rebalance pause state. |
 | `receiver.kafka.consumer.group.lag` | `{message}` | Mean broker-committed consumer-group lag across every owned partition. |
 | `receiver.kafka.consumer.group.feedback.after_revocation` | `{response}` | Ack or nack responses ignored because their partition ownership was stale. |
@@ -1080,7 +1113,7 @@ an empty assignment resets it to zero.
 | `receiver.kafka.rebalances_total` | `receiver.kafka.consumer.group.rebalances`. |
 | `receiver.kafka.partitions_assigned` | `receiver.kafka.consumer.group.partitions`. |
 | `receiver.kafka.partition_assignments`, `partition_revocations` | `receiver.kafka.consumer.group.partition.assignments` and `receiver.kafka.consumer.group.partition.revocations`. |
-| `receiver.kafka.rebalance_commit_errors` | `receiver.kafka.consumer.group.rebalance.commit_failures`. |
+| `receiver.kafka.rebalance_commit_errors` | `receiver.kafka.consumer.group.rebalance.commit_enqueue_failures` (local async-enqueue failures only; broker rejections during revoke are now in `offset_commits{outcome="failure"}`). |
 | `receiver.kafka.consumer_lag` | `receiver.kafka.consumer.group.lag`. |
 | `receiver.kafka.acks_for_revoked_partition` | `receiver.kafka.consumer.group.feedback.after_revocation`. |
 
@@ -1104,7 +1137,7 @@ an empty assignment resets it to zero.
 | `kafka.commit.async_failed` | `error` | An asynchronous offset commit was rejected by the broker (observed on the commit callback). |
 | `kafka.rebalance.partitions_assigned` | `info` | Partitions newly assigned during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.partitions_revoked` | `info` | Owned partitions revoked during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
-| `kafka.rebalance.commit_failed` | `error` | Commit-before-revoke failed during a rebalance. |
+| `kafka.rebalance.commit_enqueue_failed` | `error` | Async commit-before-revoke failed to enqueue during a rebalance. A broker rejection of the commit is reported by `kafka.commit.async_failed` instead. |
 | `kafka.rebalance.resume.fail` | `error` | Clearing persistent client-side pause state failed during `revoke` or `assign`; assignment failures are retried off the callback thread with capped backoff. |
 | `kafka.rebalance.resume.recovered` | `info` | A receive-loop retry cleared persistent pause state after an assignment resume failure. |
 | `kafka.rebalance.assignment_query_failed` | `warn` | Querying the full assignment after a rebalance failed; the receiver fell back to merging the reported delta. |
