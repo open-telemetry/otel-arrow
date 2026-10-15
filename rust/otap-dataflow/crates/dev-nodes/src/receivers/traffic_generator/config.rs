@@ -453,11 +453,16 @@ const fn default_weight() -> u32 {
     0
 }
 
-fn default_registry_path() -> VirtualDirectoryPath {
+/// Semantic conventions registry git tag used when `registry_path` is not set.
+pub const SEMCONV_REGISTRY_REFSPEC: &str = "v1.44.0";
+
+/// Default semantic conventions registry path.
+#[must_use]
+pub fn default_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::GitRepo {
         url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
         sub_folder: Some("model".to_owned()),
-        refspec: None,
+        refspec: Some(SEMCONV_REGISTRY_REFSPEC.to_owned()),
     }
 }
 
