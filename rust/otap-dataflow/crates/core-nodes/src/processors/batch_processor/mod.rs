@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTAP batch processor.  Batches OtapPdata by item count or timer,
-//! uses the lower-level otel_arrow_dfe_pdata::otap::groups module for
-//! merging and splitting batches.
+//! Representation-aware batch processor. Batches OtapPdata by a codec-supported
+//! size or timer. BatchPlan owns conversion and merge/split operations; this
+//! node owns scheduling and delivery completion through explicit input ranges.
 //!
 //! # Configuration
 //!
@@ -80,6 +80,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -533,27 +534,20 @@ struct SignalBatches {
 struct BatchContext {
     /// Original request context.
     ctx: Context,
-    /// Number of outbounds
+    /// Pending work plus emitted outputs that must finish before Ack.
     outbound: usize,
 }
 
-/// Portion of input wait context
+/// Delivery owner of one buffered input, independent of its measured size.
+#[derive(Clone, Copy)]
 struct BatchPortion {
-    /// The number of these matches Signalbuffer.inbound[inkey]
+    /// Slot identifying the original input whose completion must wait for this work.
     inkey: Option<SlotKey>,
     /// Peer address observed by the receiving socket for the input that this
     /// portion came from. Retained on every portion (whether or not the input
     /// requested ack/nack) so that a merged output batch's `peer_addr` can be
     /// computed even when the contributing inputs had no subscribers.
     peer_addr: Option<SocketAddr>,
-    /// Weight of this portion in the active sizer's unit.
-    weight: usize,
-    /// True if this portion is a residual retained by a size flush. A
-    /// retained portion holds one `outbound` reference on its inbound slot
-    /// so the input cannot complete while its data is buffered. The
-    /// reference is handed to the first output that carries the portion
-    /// (see [`SignalBuffer::drain_context`]).
-    retained: bool,
 }
 
 #[derive(Default)]
@@ -564,13 +558,8 @@ struct Inputs {
     /// Waiter context
     context: Vec<BatchPortion>,
 
-    /// Total weight across all pending portions, in the active sizer's unit.
-    weight: usize,
-}
-
-struct MultiContext {
-    inputs: Vec<BatchPortion>,
-    pos: usize,
+    /// Sum of exact input measurements used only to trigger flushing.
+    size: usize,
 }
 
 /// Per-signal buffer state
@@ -624,6 +613,13 @@ struct BatchProcessorSignal<'a> {
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
 
+/// Failure classification retained while unwinding all contributing input owners.
+/// Codec conversion failures are permanent; downstream Nacks keep their classification.
+enum BatchFailure {
+    Retryable(String),
+    Permanent(String),
+}
+
 /// There are three reasons to flush.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum FlushReason {
@@ -660,10 +656,11 @@ pub struct BatchProcessorMetrics {
     /// Delay between scheduled timer wakeup and actual timer flush start
     #[metric(unit = "ns")]
     flush_timer_lateness_duration: Mmsc,
-    /// Number of output batches emitted by each flush
+    /// Number of output batches successfully handed downstream by each flush
     #[metric(unit = "{batch}")]
     flush_output_batches: Mmsc,
-    /// Number of bytes emitted by each flush when byte size is known
+    /// Final-representation bytes successfully handed downstream by each flush,
+    /// when all output sizes are known; excludes transport compression and framing
     #[metric(unit = "By")]
     flush_output_bytes: Mmsc,
 
@@ -876,8 +873,8 @@ impl<'a> BatchProcessorSignal<'a> {
         ctx: Context,
         payload: OtapPayload,
     ) -> Result<(), EngineError> {
-        let weight = self.fmtcfg.sizer.batch_size(&payload)?;
-        if weight == 0 {
+        let size = self.fmtcfg.sizer.batch_size(&payload)?;
+        if size == 0 {
             // Note: we do not check for empty envelopes, e.g., logs
             // requests with only a resource and no log records. We do
             // not count these.
@@ -889,7 +886,7 @@ impl<'a> BatchProcessorSignal<'a> {
 
         // Pass-through: an input that is already an acceptable batch is
         // forwarded as-is with its original context.
-        if self.fmtcfg.in_passthrough_range(weight) {
+        if self.fmtcfg.in_passthrough_range(size) {
             return self.forward_as_is(effect, ctx, payload).await;
         }
 
@@ -904,7 +901,7 @@ impl<'a> BatchProcessorSignal<'a> {
             let slot = self
                 .buffer
                 .inbound
-                .allocate_with_data(BatchContext { ctx, outbound: 0 });
+                .allocate_with_data(BatchContext { ctx, outbound: 1 });
 
             match slot {
                 Err(bctx) => {
@@ -937,7 +934,7 @@ impl<'a> BatchProcessorSignal<'a> {
 
         self.buffer
             .inputs
-            .accept(payload, BatchPortion::new(inkey, peer_addr, weight));
+            .accept(payload, BatchPortion::new(inkey, peer_addr), size);
 
         let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
@@ -990,8 +987,9 @@ impl<'a> BatchProcessorSignal<'a> {
     ///
     /// - If Timer and it is arriving early, ignore. This happens because
     ///   timers are not canceled.
-    /// - If Size and the final output is smaller than the lower bound, it
-    ///   will be retained as first-in-line.
+    /// - If Size, a nonempty final output below the lower bound can be retained
+    ///   as first-in-line when it belongs only to the last buffered input.
+    ///   Multi-input tails are sent now to preserve unambiguous ownership.
     async fn flush_signal_impl(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
@@ -1059,14 +1057,14 @@ impl<'a> BatchProcessorSignal<'a> {
 
         let BatchingOutput {
             batches: mut output_batches,
+            completed_inputs: _,
             budget_fallbacks,
         } = match effect.batch(self.plan, self.signal, pending).await {
             Ok(v) => v,
             Err(e) => {
                 self.metrics.batching_errors.add(count as u64);
                 log_batching_failed(effect, self.signal, &e).await;
-                let str = e.to_string();
-                let res = Err(str.clone());
+                let res = Err(BatchFailure::Retryable(e.to_string()));
                 // In this case, we are sending failure to all the pending inputs.
                 self.buffer
                     .handle_partial_responses(self.signal, effect, &res, inputs.context)
@@ -1079,136 +1077,136 @@ impl<'a> BatchProcessorSignal<'a> {
             self.metrics.split_budget_fallbacks.add(budget_fallbacks);
         }
 
-        // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
-        // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-        let mut retained_partial = false;
+        // Establish every output reference before releasing any pending input
+        // or awaiting an operation that can complete/fail. Ranges, not sizes,
+        // determine which original requests must wait for each output.
+        for (_, range) in &output_batches {
+            for part in &inputs.context[range.clone()] {
+                if let Some(key) = part.inkey
+                    && let Some(input) = self.buffer.inbound.get_mut(key)
+                {
+                    input.outbound += 1;
+                }
+            }
+        }
 
+        // Retain only a remainder with one original delivery owner. A range
+        // spanning inputs is sent now through normal multi-owner tracking;
+        // retaining and re-splitting it would require finer provenance. Require
+        // the last input so older residuals cannot repeatedly reset their timer.
+        let mut retained_partial = false;
         if self.config.max_batch_duration != Duration::ZERO
             && reason == FlushReason::Size
             && self.fmtcfg.max_size.is_some()
             && output_batches.len() > 1
         {
-            let num_output = output_batches.len();
-            let sizer = self.fmtcfg.sizer;
-            match sizer {
-                Sizer::Items => {
-                    // This property holds because item-based batches never batches
-                    // short of min_size.
-                    debug_assert!(
-                        sizer
-                            .batch_size(&output_batches[0].0)
-                            .expect("first over lower_limit")
-                            >= self.fmtcfg.lower_limit()
-                    );
+            // SAFETY: the length check above guarantees a last output.
+            let (last_payload, range) = output_batches.last().expect("last output");
+            if range.start() == range.end() && *range.end() == inputs.context.len() - 1 {
+                let size = self.fmtcfg.sizer.batch_size(last_payload)?;
+                if size > 0 && size < self.fmtcfg.lower_limit() {
+                    self.buffer
+                        .take_remaining(size, &inputs, &mut output_batches);
+                    self.buffer
+                        .set_arrival(self.signal, now, self.config.max_batch_duration, effect)
+                        .await?;
+                    retained_partial = true;
                 }
-                Sizer::Requests => unreachable!("requests sizer not implemented"),
-                Sizer::Bytes => {
-                    // All batches can be under or over. We know byte size.
-                    debug_assert!(sizer.batch_size(&output_batches[num_output - 1].0).is_ok());
-                }
-            };
-
-            let (last_payload, last_ownership) = &output_batches[num_output - 1];
-            // The retention threshold uses the batch's *real* encoded size, not
-            // its ownership weight.
-            let last_batch_size = self.fmtcfg.sizer.batch_size(last_payload)?;
-
-            // Only retain (re-buffer) the last output when it represents a whole
-            // input (ownership weight == real size). A split fragment has an
-            // ownership weight smaller than its real size (wrapper headers are
-            // duplicated); re-buffering it would let its re-batched real size
-            // exceed the ownership it carries, over-draining a later input's
-            // Ack/Nack context. Such a trailing fragment is instead emitted as
-            // is. For the items sizer ownership always equals real size, so this
-            // guard never changes OTAP behavior.
-            if last_batch_size < self.fmtcfg.lower_limit() && *last_ownership == last_batch_size {
-                self.buffer
-                    .take_remaining(self.fmtcfg.sizer, &mut inputs, &mut output_batches);
-
-                // We use the latest arrival time as the new arrival for timeout purposes.
-                self.buffer
-                    .set_arrival(self.signal, now, self.config.max_batch_duration, effect)
-                    .await?;
-                retained_partial = true;
             }
         }
+
+        // Each buffered input owns one pending reference. Outputs (including
+        // a retained remainder) now hold their own references. Inputs explicitly
+        // completed without output have no other reference and Ack here.
+        self.buffer
+            .handle_partial_responses(self.signal, effect, &Ok(()), inputs.context.iter().copied())
+            .await?;
+
+        let mut emitted_batches = 0usize;
+        let mut emitted_bytes = Some(0usize);
+
+        // Record one observation per flush, including any successful outputs
+        // before an encoding, completion, or downstream handoff failure.
+        let result: Result<(), EngineError> = async {
+            for (mut records, range) in output_batches {
+                let (routed_ctxs, merged_peer) = self.buffer.output_context(range, &inputs.context);
+                if let Err(error) = effect.finish_batch(self.plan, &mut records).await {
+                    self.metrics.dropped_conversion.inc();
+                    if let Some(parts) = routed_ctxs {
+                        self.buffer
+                            .handle_partial_responses(
+                                self.signal,
+                                effect,
+                                &Err(BatchFailure::Permanent(error.to_string())),
+                                parts,
+                            )
+                            .await?;
+                    }
+                    continue;
+                }
+                let bytes = records.measured_bytes();
+                let mut pdata = OtapPdata::new(Context::default(), records);
+
+                // Forward the receiver-observed peer address only when every
+                // input merged into this output batch came from the same peer
+                // (see Context::merge_peer_addr). Mixed-peer batches leave
+                // peer_addr as None to avoid misattribution.
+                if let Some(addr) = merged_peer {
+                    pdata.set_peer_addr(addr);
+                }
+                if let Some(ctxs) = routed_ctxs {
+                    match self.buffer.outbound.allocate_with_data(ctxs) {
+                        Err(ctxs) => {
+                            for bp in ctxs {
+                                if let Some(inkey) = bp.inkey
+                                    && let Some(batch) = self.buffer.inbound.take(inkey)
+                                {
+                                    self.metrics.nacked_outbound_slots.inc();
+                                    // Note: Failure to Ack/Nack is an engine-level error.
+                                    effect
+                                        .notify_nack(NackMsg::new(
+                                            "outbound routes exhausted",
+                                            OtapPdata::new(
+                                                batch.ctx,
+                                                OtapPayload::empty(self.signal),
+                                            ),
+                                        ))
+                                        .await?;
+                                    // Note: failure to get an outbound slot does not
+                                    // stop the outbound request, since it can contain data
+                                    // that did not request Ack/Nack.
+                                }
+                            }
+                        }
+                        Ok(outkey) => {
+                            let mut calldata: CallData = outkey.into();
+                            calldata.push((self.buffer.slot.0 as u64).into());
+                            effect.subscribe_to(
+                                Interests::NACKS | Interests::ACKS,
+                                calldata,
+                                &mut pdata,
+                            );
+                        }
+                    };
+                }
+
+                effect.send_message_with_source_node(pdata).await?;
+                emitted_batches += 1;
+                emitted_bytes = emitted_bytes
+                    .zip(bytes)
+                    .and_then(|(total, bytes)| total.checked_add(bytes));
+            }
+            Ok(())
+        }
+        .await;
 
         self.metrics
             .flush_output_batches
-            .record(output_batches.len() as f64);
-        if let Some(bytes) = known_total_output_bytes(&output_batches) {
+            .record(emitted_batches as f64);
+        if let Some(bytes) = emitted_bytes {
             self.metrics.flush_output_bytes.record(bytes as f64);
         }
-
-        let mut input_context = inputs.take_context();
-
-        for (mut records, ownership) in output_batches {
-            // Apportion ack/nack subscribers by the batch's ownership weight
-            // (input units it represents), not its own encoded size, so every
-            // fragment of a split input is attributed back to that input.
-            let weight = ownership;
-
-            // If any inputs require completion tracking, get an outbound slot
-            // and subscribe so their contexts can unwind after this output.
-            let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
-            if let Err(error) = effect.finish_batch(self.plan, &mut records).await {
-                self.metrics.dropped_conversion.inc();
-                if let Some(parts) = routed_ctxs {
-                    self.buffer
-                        .handle_partial_responses(
-                            self.signal,
-                            effect,
-                            &Err(error.to_string()),
-                            parts,
-                        )
-                        .await?;
-                }
-                continue;
-            }
-            let mut pdata = OtapPdata::new(Context::default(), records);
-
-            // Forward the receiver-observed peer address only when every
-            // input merged into this output batch came from the same peer
-            // (see Context::merge_peer_addr). Mixed-peer batches leave
-            // peer_addr as None to avoid misattribution.
-            if let Some(addr) = merged_peer {
-                pdata.set_peer_addr(addr);
-            }
-            if let Some(ctxs) = routed_ctxs {
-                match self.buffer.outbound.allocate_with_data(ctxs) {
-                    Err(ctxs) => {
-                        for bp in ctxs {
-                            if let Some(inkey) = bp.inkey
-                                && let Some(batch) = self.buffer.inbound.take(inkey)
-                            {
-                                self.metrics.nacked_outbound_slots.inc();
-                                // Note: Failure to Ack/Nack is an engine-level error.
-                                effect
-                                    .notify_nack(NackMsg::new(
-                                        "outbound routes exhausted",
-                                        OtapPdata::new(batch.ctx, OtapPayload::empty(self.signal)),
-                                    ))
-                                    .await?;
-                                // Note: failure to get an outbound slot does not
-                                // stop the outbound request, since it can contain data
-                                // that did not request Ack/Nack.
-                            }
-                        }
-                    }
-                    Ok(outkey) => {
-                        let mut calldata: CallData = outkey.into();
-                        calldata.push((self.buffer.slot.0 as u64).into());
-                        effect.subscribe_to(
-                            Interests::NACKS | Interests::ACKS,
-                            calldata,
-                            &mut pdata,
-                        );
-                    }
-                };
-            }
-
-            effect.send_message_with_source_node(pdata).await?;
-        }
+        result?;
 
         if !retained_partial {
             self.buffer.arrival = None;
@@ -1223,7 +1221,7 @@ impl<'a> BatchProcessorSignal<'a> {
         signal: SignalType,
         calldata: CallData,
         effect: &mut local::EffectHandler<OtapPdata>,
-        res: &Result<(), String>,
+        res: &Result<(), BatchFailure>,
     ) -> Result<(), EngineError> {
         let outkey: SlotKey = calldata.try_into()?;
 
@@ -1252,7 +1250,11 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         nack: NackMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
-        let res = Err(nack.reason);
+        let res = Err(if nack.permanent {
+            BatchFailure::Permanent(nack.reason)
+        } else {
+            BatchFailure::Retryable(nack.reason)
+        });
         self.handle_response(*nack.refused, nack.unwind.route.calldata, effect, &res)
             .await
     }
@@ -1262,7 +1264,7 @@ impl BatchProcessor {
         retdata: OtapPdata,
         calldata: CallData,
         effect: &mut local::EffectHandler<OtapPdata>,
-        res: &Result<(), String>,
+        res: &Result<(), BatchFailure>,
     ) -> Result<(), EngineError> {
         if calldata.is_empty() {
             return Ok(());
@@ -1388,19 +1390,8 @@ impl SignalBatches {
 }
 
 impl BatchPortion {
-    const fn new(inkey: Option<SlotKey>, peer_addr: Option<SocketAddr>, weight: usize) -> Self {
-        Self {
-            inkey,
-            peer_addr,
-            weight,
-            retained: false,
-        }
-    }
-}
-
-impl MultiContext {
-    const fn new(inputs: Vec<BatchPortion>) -> Self {
-        Self { inputs, pos: 0 }
+    const fn new(inkey: Option<SlotKey>, peer_addr: Option<SocketAddr>) -> Self {
+        Self { inkey, peer_addr }
     }
 }
 
@@ -1409,12 +1400,12 @@ impl Inputs {
         Self {
             pending: std::mem::take(&mut self.pending),
             context: std::mem::take(&mut self.context),
-            weight: std::mem::take(&mut self.weight),
+            size: std::mem::take(&mut self.size),
         }
     }
 
     const fn is_empty(&self) -> bool {
-        self.weight == 0
+        self.pending.is_empty()
     }
 
     const fn requests(&self) -> usize {
@@ -1428,14 +1419,13 @@ impl Inputs {
     fn size_by(&self, sizer: Sizer) -> Result<usize, CodecError> {
         match sizer {
             Sizer::Requests => Ok(self.requests()),
-            // For Sizer::Items / Sizer::Bytes, `weight` was accumulated in
-            // the active sizer's unit at accept() time, so this is exact.
-            Sizer::Items | Sizer::Bytes => Ok(self.weight),
+            // These measurements trigger flushing; they never assign ownership.
+            Sizer::Items | Sizer::Bytes => Ok(self.size),
         }
     }
 
-    fn accept(&mut self, batch: OtapPayload, part: BatchPortion) {
-        self.weight += part.weight;
+    fn accept(&mut self, batch: OtapPayload, part: BatchPortion, size: usize) {
+        self.size += size;
         self.pending.push(batch);
         self.context.push(part);
     }
@@ -1443,22 +1433,10 @@ impl Inputs {
     fn take_pending(&mut self) -> Vec<OtapPayload> {
         std::mem::take(&mut self.pending)
     }
-
-    fn take_context(&mut self) -> MultiContext {
-        MultiContext::new(std::mem::take(&mut self.context))
-    }
 }
 
 fn known_total_bytes(payloads: &[OtapPayload]) -> Option<usize> {
     payloads.iter().try_fold(0usize, |total, payload| {
-        payload.measured_bytes().map(|bytes| total + bytes)
-    })
-}
-
-/// Like [`known_total_bytes`] but over output batches paired with ownership
-/// weights (the weight is ignored; only the real encoded size is summed).
-fn known_total_output_bytes(payloads: &[(OtapPayload, usize)]) -> Option<usize> {
-    payloads.iter().try_fold(0usize, |total, (payload, _own)| {
         payload.measured_bytes().map(|bytes| total + bytes)
     })
 }
@@ -1475,116 +1453,39 @@ impl SignalBuffer {
         }
     }
 
-    /// Takes the residual batch, used in case the final output is less than
-    /// the lower bound. This removes the last output btach, the corresponding
-    /// context, and places it back in the pending buffer as the first in line.
+    /// Moves a single-owner remainder back into pending storage. Its output
+    /// reference becomes the pending reference for the next flush.
     fn take_remaining(
         &mut self,
-        sizer: Sizer,
-        from_inputs: &mut Inputs,
-        output_batches: &mut Vec<(OtapPayload, usize)>,
+        size: usize,
+        from_inputs: &Inputs,
+        output_batches: &mut Vec<(OtapPayload, RangeInclusive<usize>)>,
     ) {
-        // SAFETY: protected by output_batches.len() > 1. The caller only retains
-        // a whole-input partial (ownership weight == real size), so recomputing
-        // the weight from the payload here matches the ownership it carried.
-        let (remaining, _ownership) = output_batches.pop().expect("has last");
-        let last_input = from_inputs.context.last().expect("has last");
-        let last_weight = sizer.batch_size(&remaining).expect("known size");
-        // Compute the retained portion's peer_addr from the input portions
-        // that actually contributed to this output batch. Inputs are emitted
-        // in order, so the contributing portions are the tail of
-        // `from_inputs.context` covering the last `last_weight` units.
-        // Walking from the back and folding each contributor's peer_addr
-        // through PeerAddrMerger yields the correct merge: single-peer
-        // remainders keep the address, mixed-peer or peerless remainders
-        // settle on `None`.
-        let mut peer_merger = PeerAddrMerger::new();
-        let mut covered = 0usize;
-        for bp in from_inputs.context.iter().rev() {
-            peer_merger.push(bp.peer_addr);
-            covered = covered.saturating_add(bp.weight);
-            if covered >= last_weight {
-                break;
-            }
-        }
-        // A size flush is triggered by the input that arrives last, and every
-        // earlier pending input totals less than `lower_limit <= max_size`,
-        // so they all pack into the first output. With more than one output,
-        // the retained last output therefore comes entirely from the last
-        // input, and attributing it to `last_input.inkey` is exact.
-        debug_assert!(
-            last_weight <= last_input.weight,
-            "retained residual must come from the last input only"
-        );
-        let mut new_part = BatchPortion::new(last_input.inkey, peer_merger.finish(), last_weight);
-
-        // Hold the input open while its residual is buffered: take one
-        // outbound reference now, which is handed to the output that carries
-        // the residual on a later flush (see `drain_context`).
-        if let Some(inkey) = new_part.inkey
-            && let Some(batch) = self.inbound.get_mut(inkey)
-        {
-            batch.outbound += 1;
-            new_part.retained = true;
-        }
-
-        from_inputs.weight -= last_weight;
-
-        self.inputs.accept(remaining, new_part);
+        // SAFETY: the caller checked that the last output exists and references
+        // exactly one input; BatchPlan validated that this index is in bounds.
+        let (remaining, range) = output_batches.pop().expect("checked remainder");
+        let part = from_inputs.context[*range.start()];
+        self.inputs.accept(remaining, part, size);
     }
 
-    /// Using a multi-context corresponding with the input pending
-    /// data, and considering an output weight for a single output
-    /// batch, this determines the set of (maybe partial) pending
-    /// batches that correspond. When merging only (not splitting),
-    /// this will return the entire set of pending contexts; when
-    /// splitting, this will return all except the portion that was
-    /// retained as first-in-line.
-    fn drain_context(
+    /// Resolves a validated input range into delivery owners and a merged peer.
+    /// Reference counts were established for all outputs before any completion.
+    fn output_context(
         &mut self,
-        mut weight: usize,
-        contexts: &mut MultiContext,
+        range: RangeInclusive<usize>,
+        contexts: &[BatchPortion],
     ) -> (Option<Vec<BatchPortion>>, Option<SocketAddr>) {
         let mut out = Vec::new();
-        // Track every contributing portion's peer_addr, even ones that do not
-        // route ack/nack, so the merged output `peer_addr` is correct when
-        // some (or all) inputs had no subscribers. Folded incrementally to
-        // avoid allocating a `Vec` on every flush.
         let mut peer_merger = PeerAddrMerger::new();
-
-        while weight > 0 && contexts.pos < contexts.inputs.len() {
-            let bp = contexts.inputs.get_mut(contexts.pos).expect("valid");
-
-            let take = bp.weight.min(weight);
-            bp.weight -= take;
-            weight -= take;
-            let peer_addr = bp.peer_addr;
-            peer_merger.push(peer_addr);
-
-            if bp.weight == 0 {
-                contexts.pos += 1;
-            }
-
-            // A retained residual already holds one outbound reference on
-            // its input so we hand it to this output instead of taking another.
-            // Any later output carrying more of the same portion takes its
-            // own reference as usual.
-            let handed_over = std::mem::take(&mut bp.retained);
-
-            if let Some(inkey) = bp.inkey
-                && let Some(batch) = self.inbound.get_mut(inkey)
+        for part in &contexts[range] {
+            peer_merger.push(part.peer_addr);
+            if let Some(key) = part.inkey
+                && self.inbound.get_mut(key).is_some()
             {
-                if !handed_over {
-                    batch.outbound += 1;
-                }
-
-                out.push(BatchPortion::new(Some(inkey), peer_addr, take));
+                out.push(*part);
             }
         }
-
-        let merged_peer = peer_merger.finish();
-        let routed = (!out.is_empty()).then_some(out);
-        (routed, merged_peer)
+        ((!out.is_empty()).then_some(out), peer_merger.finish())
     }
 
     /// Handles a response, returning an Ack or Nack conditionally when
@@ -1595,8 +1496,8 @@ impl SignalBuffer {
         &mut self,
         signal: SignalType,
         effect: &mut local::EffectHandler<OtapPdata>,
-        res: &Result<(), String>,
-        parts: Vec<BatchPortion>,
+        res: &Result<(), BatchFailure>,
+        parts: impl IntoIterator<Item = BatchPortion>,
     ) -> Result<(), EngineError> {
         for part in parts {
             if let Some(inkey) = part.inkey {
@@ -1615,7 +1516,13 @@ impl SignalBuffer {
                         OtapPdata::new(std::mem::take(&mut batch.ctx), OtapPayload::empty(signal));
 
                     if let Err(err) = res {
-                        effect.notify_nack(NackMsg::new(err, rdata)).await?;
+                        let nack = match err {
+                            BatchFailure::Retryable(reason) => NackMsg::new(reason, rdata),
+                            BatchFailure::Permanent(reason) => {
+                                NackMsg::new_permanent(reason, rdata)
+                            }
+                        };
+                        effect.notify_nack(nack).await?;
                     } else {
                         effect.notify_ack(AckMsg::new(rdata)).await?;
                     }
@@ -1709,6 +1616,218 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    const FAILING_OUTPUT_ENCODING: PdataEncoding = PdataEncoding::new("test-failing-output");
+    static FAILING_OUTPUT_METADATA: otel_arrow_dfe_pdata_codec::CodecMetadata =
+        otel_arrow_dfe_pdata_codec::CodecMetadata::new(
+            FAILING_OUTPUT_ENCODING,
+            &[SignalType::Logs],
+        );
+
+    struct FailingOutputEncoder;
+
+    impl otel_arrow_dfe_pdata_codec::PdataEncoder for FailingOutputEncoder {
+        fn encode(
+            &mut self,
+            records: otel_arrow_dfe_pdata::OtapArrowRecords,
+        ) -> Result<Bytes, CodecError> {
+            // A one-record output succeeds so tests can exercise a flush with
+            // both rejected and successfully encoded batches.
+            if records.num_items() == 1 {
+                return Ok(Bytes::from_static(b"encoded log"));
+            }
+            Err(CodecError::operation(
+                &FAILING_OUTPUT_ENCODING,
+                otel_arrow_dfe_pdata_codec::CodecOperation::Encode,
+                std::io::Error::other("unencodable test payload"),
+            ))
+        }
+    }
+
+    otel_arrow_dfe_pdata_codec::register_pdata_codec!(
+        FAILING_OUTPUT_CODEC,
+        otel_arrow_dfe_pdata_codec::CodecRegistration::new(&FAILING_OUTPUT_METADATA)
+            .with_encoder(|_| Ok(Box::new(FailingOutputEncoder))),
+    );
+
+    const PAGE_ENCODING: PdataEncoding = PdataEncoding::new("test-six-byte-pages");
+    static PAGE_METADATA: otel_arrow_dfe_pdata_codec::CodecMetadata =
+        otel_arrow_dfe_pdata_codec::CodecMetadata::new(PAGE_ENCODING, &[SignalType::Logs]);
+    static PAGE_SUPPORT: otel_arrow_dfe_pdata_codec::BatchingSupport =
+        otel_arrow_dfe_pdata_codec::BatchingSupport {
+            sizers: &[Sizer::Bytes],
+            default_profile: BatchProfile::otlp(),
+        };
+    struct PageCodec;
+    impl otel_arrow_dfe_pdata_codec::PdataDecoder for PageCodec {
+        fn decode(
+            &mut self,
+            _: SignalType,
+            _: &Bytes,
+        ) -> Result<otel_arrow_dfe_pdata::OtapArrowRecords, CodecError> {
+            panic!("encoded batching must not decode pages")
+        }
+    }
+    impl otel_arrow_dfe_pdata_codec::PdataBatcher for PageCodec {
+        fn batch(
+            &mut self,
+            _: SignalType,
+            profile: &BatchProfile,
+            inputs: Vec<Bytes>,
+        ) -> Result<otel_arrow_dfe_pdata_codec::CodecBatches, CodecError> {
+            let rows: Vec<_> = inputs
+                .iter()
+                .enumerate()
+                .flat_map(|(index, bytes)| {
+                    bytes
+                        .iter()
+                        .filter(|byte| **byte != 0)
+                        .map(move |byte| (*byte, index))
+                })
+                .collect();
+            let size = profile.max_size.map_or(6, |size| size.get().min(6));
+            let batches: Vec<_> = rows
+                .chunks(size)
+                .map(|rows| {
+                    (
+                        Bytes::from(rows.iter().map(|(byte, _)| *byte).collect::<Vec<_>>()),
+                        rows.first().unwrap().1..=rows.last().unwrap().1,
+                    )
+                })
+                .collect();
+            let completed_inputs = (0..inputs.len())
+                .filter(|index| !batches.iter().any(|(_, range)| range.contains(index)))
+                .collect();
+            Ok(otel_arrow_dfe_pdata_codec::CodecBatches {
+                batches,
+                completed_inputs,
+                budget_fallbacks: 0,
+            })
+        }
+    }
+    otel_arrow_dfe_pdata_codec::register_pdata_codec!(
+        PAGE_CODEC,
+        otel_arrow_dfe_pdata_codec::CodecRegistration::new(&PAGE_METADATA)
+            .with_decoder(|_| Box::new(PageCodec))
+            .with_item_counter(|_, bytes| Some(bytes.len()))
+            .with_batcher(otel_arrow_dfe_pdata_codec::CodecBatcherRegistration::new(
+                &PAGE_SUPPORT,
+                || Box::new(PageCodec)
+            )),
+    );
+
+    /// Scenario: A native codec packs inputs [9, 2] into [6, 5], with the tail spanning both owners.
+    /// Guarantees: Both outputs are sent, each input waits for all its outputs in either
+    /// response order, and a tail Nack reaches both owners exactly once.
+    #[test]
+    fn codec_ranges_route_multi_owner_tail() {
+        for reverse in [false, true] {
+            for nack_tail in [false, true] {
+                let (_, _, phase) = setup_test_runtime(json!({
+                    "format": "preserve", "max_batch_duration": "1s",
+                    "codecs": {"test-six-byte-pages": {"sizer": "bytes", "min_size": 10, "max_size": 10}}
+                }));
+                phase
+                    .run_test(move |mut ctx| async move {
+                        let (tx, mut rx) = pipeline_completion_msg_channel(16);
+                        ctx.set_pipeline_completion_sender(tx);
+                        let mut done = Completions::new(2);
+                        let codec = CodecRegistry::global()
+                            .unwrap()
+                            .resolve(&PAGE_ENCODING)
+                            .unwrap();
+                        for (i, bytes) in
+                            [Bytes::from_static(b"123456789"), Bytes::from_static(b"ab")]
+                                .into_iter()
+                                .enumerate()
+                        {
+                            let input = OtapPdata::new_default(
+                                codec.admit(SignalType::Logs, bytes).unwrap().into(),
+                            )
+                            .test_subscribe_to(
+                                Interests::ACKS | Interests::NACKS,
+                                TestCallData::new_with(i as u64, 0).into(),
+                                1,
+                            );
+                            ctx.process(Message::PData(input)).await.unwrap();
+                        }
+                        let mut outputs = ctx.drain_pdata().await;
+                        assert_eq!(outputs.len(), 2, "a multi-owner tail must not be retained");
+                        assert_eq!(
+                            outputs[0].payload_ref().encoded_bytes().unwrap().as_ref(),
+                            b"123456"
+                        );
+                        assert_eq!(
+                            outputs[1].payload_ref().encoded_bytes().unwrap().as_ref(),
+                            b"789ab"
+                        );
+                        let tail = outputs.pop().unwrap();
+                        let first = outputs.pop().unwrap();
+                        let policy = if nack_tail {
+                            AckPolicy::Nack("tail failed")
+                        } else {
+                            AckPolicy::Ack
+                        };
+                        if reverse {
+                            respond(&mut ctx, tail, &policy).await;
+                            done.drain(&mut rx);
+                            assert_eq!(done.acks, if nack_tail { vec![0, 0] } else { vec![0, 1] });
+                            respond(&mut ctx, first, &AckPolicy::Ack).await;
+                        } else {
+                            respond(&mut ctx, first, &AckPolicy::Ack).await;
+                            done.drain(&mut rx);
+                            assert_eq!(done.acks, vec![0, 0]);
+                            respond(&mut ctx, tail, &policy).await;
+                        }
+                        done.drain(&mut rx);
+                        assert_eq!(done.acks, if nack_tail { vec![0, 0] } else { vec![1, 1] });
+                        assert_eq!(done.nacks, if nack_tail { vec![1, 1] } else { vec![0, 0] });
+                        flush_timer(&mut ctx).await;
+                        assert!(ctx.drain_pdata().await.is_empty());
+                    })
+                    .validate(|_| async {});
+            }
+        }
+    }
+
+    /// Scenario: A codec consumes nonempty encoded inputs but produces no surviving rows.
+    /// Guarantees: Explicit no-output completions Ack each input once without sending data.
+    #[test]
+    fn codec_ranges_complete_inputs_without_output() {
+        let (_, _, phase) = setup_test_runtime(json!({
+            "format": "preserve", "max_batch_duration": "1s",
+            "codecs": {"test-six-byte-pages": {"sizer": "bytes", "min_size": 10, "max_size": 10}}
+        }));
+        phase
+            .run_test(|mut ctx| async move {
+                let (tx, mut rx) = pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(tx);
+                let mut done = Completions::new(2);
+                let codec = CodecRegistry::global()
+                    .unwrap()
+                    .resolve(&PAGE_ENCODING)
+                    .unwrap();
+                for i in 0..2 {
+                    let input = OtapPdata::new_default(
+                        codec
+                            .admit(SignalType::Logs, Bytes::from_static(&[0; 6]))
+                            .unwrap()
+                            .into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::new_with(i as u64, 0).into(),
+                        1,
+                    );
+                    ctx.process(Message::PData(input)).await.unwrap();
+                }
+                assert!(ctx.drain_pdata().await.is_empty());
+                done.drain(&mut rx);
+                assert_eq!(done.acks, [1, 1]);
+                assert_eq!(done.nacks, [0, 0]);
+            })
+            .validate(|_| async {});
+    }
+
     fn otlp_format() -> PdataFormat {
         let registry = CodecRegistry::global().unwrap();
         PdataFormat::encoded(registry.resolve(&PdataEncoding::OTLP).unwrap())
@@ -1764,7 +1883,15 @@ mod tests {
         set_name: &str,
         metric_name: &str,
     ) -> u64 {
-        let mut count = 0u64;
+        mmsc_metric_summary(telemetry_registry, set_name, metric_name).0
+    }
+
+    fn mmsc_metric_summary(
+        telemetry_registry: &TelemetryRegistryHandle,
+        set_name: &str,
+        metric_name: &str,
+    ) -> (u64, f64) {
+        let mut summary = (0, 0.0);
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
@@ -1773,12 +1900,50 @@ mod tests {
                             distribution,
                         ) = metric_value
                     {
-                        count = distribution.count();
+                        let (count, sum, _, _) = distribution.summary();
+                        summary = (count, sum);
                     }
                 }
             }
         });
-        count
+        summary
+    }
+
+    async fn assert_flush_output_metrics(
+        registry: &TelemetryRegistryHandle,
+        batches: usize,
+        bytes: usize,
+    ) {
+        otel_arrow_dfe_engine::testing::liveness::completes_within(
+            Duration::from_secs(5),
+            "flush output metrics",
+            async {
+                loop {
+                    let count = mmsc_metric_summary(
+                        registry,
+                        "otap.processor.batch",
+                        "flush.output.batches",
+                    );
+                    let size =
+                        mmsc_metric_summary(registry, "otap.processor.batch", "flush.output.bytes");
+                    if count.0 != 0 && size.0 != 0 {
+                        assert_eq!(
+                            count,
+                            (1, batches as f64),
+                            "one batch-count observation per flush"
+                        );
+                        assert_eq!(
+                            size,
+                            (1, bytes as f64),
+                            "one final-byte-size observation per flush"
+                        );
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            },
+        )
+        .await;
     }
 
     #[test]
@@ -1882,7 +2047,8 @@ mod tests {
     /// Scenario: preserve mode receives a native-batching extension and a
     /// decoder-only extension, and downstream changes their output representation.
     /// Guarantees: native output retains its codec, fallback emits OTAP, and both
-    /// Ack and Nack reach the correct input through explicit completion tokens.
+    /// Ack and Nack reach the correct input through explicit completion tokens,
+    /// preserving both retryable and permanent downstream failures.
     #[test]
     fn codec_batches_route_completions_after_downstream_conversion() {
         use otel_arrow_dfe_pdata_codec::{CodecService, EncodedPdata, PdataEncoding};
@@ -1897,9 +2063,13 @@ mod tests {
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(10);
                 ctx.set_pipeline_completion_sender(completion_tx);
                 let mut generator = DataGenerator::new(1);
-                for (index, name) in ["test-native-otlp", "test-otlp-decode-only"]
-                    .into_iter()
-                    .enumerate()
+                for (index, name) in [
+                    "test-native-otlp",
+                    "test-otlp-decode-only",
+                    "test-otlp-decode-only",
+                ]
+                .into_iter()
+                .enumerate()
                 {
                     let logs: OtlpProtoMessage = generator.generate_logs().into();
                     let bytes = otlp_message_to_bytes(&logs).clone_bytes();
@@ -1951,8 +2121,12 @@ mod tests {
                             .await
                             .unwrap();
                     } else {
-                        let (_, nack) =
-                            next_nack(NackMsg::new("test rejection", returned)).unwrap();
+                        let nack = if index == 2 {
+                            NackMsg::new_permanent("test rejection", returned)
+                        } else {
+                            NackMsg::new("test rejection", returned)
+                        };
+                        let (_, nack) = next_nack(nack).unwrap();
                         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
                             .await
                             .unwrap();
@@ -1968,7 +2142,9 @@ mod tests {
                             let (node, ack) = next_ack(ack).unwrap();
                             (node, ack.unwind.route.calldata)
                         }
-                        PipelineCompletionMsg::DeliverNack { nack } if index == 1 => {
+                        PipelineCompletionMsg::DeliverNack { nack } if index != 0 => {
+                            assert_eq!(nack.permanent, index == 2);
+                            assert_eq!(nack.reason, "test rejection");
                             let (node, nack) = next_nack(nack).unwrap();
                             (node, nack.unwind.route.calldata)
                         }
@@ -3873,9 +4049,9 @@ mod tests {
     /// immediately (max_batch_duration = 0), splitting into multiple fragments;
     /// every fragment except the last is Acked and the last fragment is Nacked.
     ///
-    /// Guarantees: Ack/Nack ownership is apportioned by input-byte weight (which
-    /// sums to the input total even though header duplication inflates the
-    /// fragments' encoded size), so the final fragment is subscribed and
+    /// Guarantees: Ack/Nack ownership follows the original input ranges even
+    /// when header duplication inflates the fragments' encoded size, so the
+    /// final fragment is subscribed and
     /// attributed back to the input. The input therefore receives exactly one
     /// Nack and is never Acked -- no fragment escapes tracking.
     #[test]
@@ -4990,6 +5166,112 @@ mod tests {
     fn test_otlp_in_range_input_nack_routes_upstream() {
         for fmt in [ResidualFormat::Otlp, ResidualFormat::EncodedOtlp] {
             test_in_range_input_passes_through(fmt, AckPolicy::Nack("failed"));
+        }
+    }
+
+    /// Scenario: An encoder rejects two inputs, either separately in passthrough or merged on a timer flush.
+    /// Guarantees: Each original owner receives exactly one permanent Nack with its own route;
+    /// buffering cannot turn the same conversion failure into a retryable rejection,
+    /// and a flush with no emitted batches records zero output bytes and batches.
+    #[test]
+    fn output_conversion_failures_permanently_nack_every_input() {
+        for min_size in [0, 8] {
+            let (registry, reporter, phase) = setup_test_runtime(json!({
+                "format": "test-failing-output",
+                "codecs": { "test-failing-output": { "min_size": min_size, "sizer": "items" } },
+                "max_batch_duration": "1s"
+            }));
+            phase
+                .run_test(move |mut ctx| async move {
+                    let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(10);
+                    ctx.set_pipeline_completion_sender(completion_tx);
+                    for index in 0..2 {
+                        let input =
+                            residual_pdata(ResidualFormat::Otap, &residual_logs(index, 2), index);
+                        ctx.process(Message::PData(input)).await.unwrap();
+                    }
+                    if min_size > 0 {
+                        assert!(ctx.fire_wakeup().await.unwrap());
+                    }
+                    assert!(ctx.drain_pdata().await.is_empty());
+                    for index in 0..2 {
+                        let completion = next_completion(
+                            &mut completion_rx,
+                            Duration::from_secs(1),
+                            "output conversion rejection",
+                        )
+                        .await;
+                        let PipelineCompletionMsg::DeliverNack { nack } = completion else {
+                            panic!("expected permanent Nack, got {completion:?}");
+                        };
+                        assert!(nack.permanent, "min_size={min_size}");
+                        assert!(nack.reason.contains("unencodable test payload"));
+                        let (node, nack) = next_nack(nack).unwrap();
+                        assert_eq!(node, 1);
+                        assert_eq!(
+                            TestCallData::try_from(nack.unwind.route.calldata).unwrap(),
+                            TestCallData::new_with(index, 0),
+                        );
+                    }
+                    assert!(completion_rx.try_recv().is_err());
+                    if min_size > 0 {
+                        ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: reporter,
+                        }))
+                        .await
+                        .unwrap();
+                        assert_flush_output_metrics(&registry, 0, 0).await;
+                    }
+                })
+                .validate(|_| async {});
+        }
+    }
+
+    /// Scenario: One native input is split into native, OTLP, extension, or partially rejected outputs.
+    /// Guarantees: Each flush records one observation containing only successfully emitted batches
+    /// and their final-representation bytes, excluding intermediate Arrow sizes and rejected outputs.
+    #[test]
+    fn flush_output_metrics_measure_final_successful_outputs() {
+        for format in ["otap", "otlp", "test-otlp-codec", "test-failing-output"] {
+            let (registry, reporter, phase) = setup_test_runtime(json!({
+                "format": format,
+                "codecs": { (format): { "min_size": 0, "max_size": 4, "sizer": "items" } },
+                "max_batch_duration": "0s"
+            }));
+            phase
+                .run_test(move |mut ctx| async move {
+                    let records = encode_logs_otap_batch(&residual_logs(0, 9)).unwrap();
+                    ctx.process(Message::PData(OtapPdata::new_default(records.into())))
+                        .await
+                        .unwrap();
+                    let outputs = ctx.drain_pdata().await;
+                    // The failing encoder rejects the two four-record batches,
+                    // but still emits the final one-record batch.
+                    let batches = if format == "test-failing-output" {
+                        1
+                    } else {
+                        3
+                    };
+                    assert_eq!(outputs.len(), batches, "{format}");
+                    let bytes = outputs
+                        .iter()
+                        .map(|output| {
+                            let payload = output.payload_ref();
+                            if format == "otap" {
+                                payload.measured_bytes().unwrap()
+                            } else {
+                                payload.encoded_bytes().unwrap().len()
+                            }
+                        })
+                        .sum();
+                    ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter: reporter,
+                    }))
+                    .await
+                    .unwrap();
+                    assert_flush_output_metrics(&registry, batches, bytes).await;
+                })
+                .validate(|_| async {});
         }
     }
 

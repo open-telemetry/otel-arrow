@@ -79,3 +79,22 @@ fn downstream_registration_needs_no_linkme_import() {
     assert_eq!(codec.metadata().format_version(), Some("1"));
     assert_eq!(codec.metadata().compression(), Some("zstd"));
 }
+
+/// Scenario: A downstream crate enables codec helpers without opting into fixture registrations.
+/// Guarantees: The testing feature does not add sample codec identities to the process registry.
+#[cfg(not(feature = "test-codecs"))]
+#[test]
+fn testing_helpers_do_not_register_fixture_codecs() {
+    let registry = CodecRegistry::global().expect("linked codec registrations must be valid");
+    for name in [
+        "test-otlp-codec",
+        "test-otlp-decode-only",
+        "test-native-otlp",
+        "test-otlp-encode-only",
+    ] {
+        assert!(
+            registry.resolve(&PdataEncoding::new(name)).is_err(),
+            "{name}"
+        );
+    }
+}

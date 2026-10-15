@@ -258,7 +258,8 @@ rejects duplicate identities independently of link order.
 An item counter is required for every decoder registration and must be
 stateless. Return `None` when malformed bytes cannot be counted; zero means the
 payload was inspected and contains no primary-signal items. Payloads cache
-successful counts, keeping an unavailable count distinct from zero.
+successful counts, keeping an unavailable count distinct from zero. Count caches
+are codec-owned; receivers and processors cannot inject arbitrary counts.
 
 ## Add native batching
 
@@ -273,19 +274,40 @@ decodable outputs. This does not promise global processor ordering: an in-range
 input can bypass previously buffered input. A batcher must understand its format's
 boundaries; arbitrary byte concatenation or splitting is not generally valid.
 
-Output ownership weights must partition the measured input total even when
-splitting duplicates representation wrappers. These weights route completion to
-input owners; they are not necessarily the output's encoded size. Byte sizing
-includes encoding wrappers and intrinsic compression but excludes transport
-framing and compression. Split targets are best effort for indivisible entries
-or exhausted amplification budgets.
+Each output reports an inclusive range of indices into that batching call's
+input vector. Capture these ranges while planning or executing the batch, before
+integrity repair or encoding can change counts and sizes. Outputs are ordered;
+only a shared boundary input may occur in consecutive ranges when it is split.
+List inputs consumed successfully without any output in `completed_inputs`.
+Ranges and completed indices must account for every input without overlap
+between those two categories. A failed call must return an error instead.
+
+For example, outputs with ranges `0..=0` and `0..=1` both hold input 0 open;
+input 1 waits only for the second output. The processor validates these ranges
+and owns the completion references. It retains a small final output only when
+it belongs solely to the last buffered input. A remainder spanning several
+inputs is sent immediately, avoiding ambiguous ownership if later split again.
+
+Measurements control flush thresholds and splitting, not delivery ownership.
+Byte sizing includes encoding wrappers and intrinsic compression but excludes
+transport framing and compression. Split targets are best effort for indivisible
+entries or exhausted amplification budgets. Size estimation is a separate future
+optimization; this API currently uses exact measurements.
 
 `BatchPlan` selects a working representation and an output representation before
 buffering starts. In preserve mode, codecs without matching native batching use
 OTAP fallback with item sizing and emit OTAP. An explicit output codec instead
 requires an encoder; an encode-only codec can therefore be an output target.
+`prepare` converts its mutable payload argument to the working representation
+in place; `finish` converts it to the output representation. Matching formats
+are untouched, and failed conversions preserve the original payload for recovery.
+`PdataPayload` can hold bytes or native records; `OtapPayload` is its transitional
+alias, not a guarantee of Arrow storage.
+
 This is local capability validation, not graph-wide representation negotiation
-or a node-signature system.
+or a node-signature system. OTLP is a built-in encoded codec. Its dedicated
+`OtlpBytes` storage is temporary and is removed by PR4; native OTAP alone is the
+special mutable processing representation.
 
 ## Test a codec
 
@@ -302,7 +324,7 @@ Add codec-specific tests for:
 - Independent decoding of every encoded output.
 - Bounded scratch, allocation, and decompression behavior.
 - Encoder recovery after limits or other failures.
-- Native batching order, ownership weights, split limits, and output decoding.
+- Native batching ranges, no-output completion, split limits, and output decoding.
 
 From `rust/otap-dataflow`, validate changes with:
 

@@ -27,6 +27,8 @@ otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]
 testing = []
+# Registers fixture codecs. Enable only from dev-dependencies, never runtime dependencies.
+test-codecs = ["testing"]
 
 [lints]
 workspace = true

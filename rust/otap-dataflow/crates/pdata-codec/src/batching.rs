@@ -13,8 +13,8 @@ use otel_arrow_dfe_config::SignalType;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CodecError, CodecRegistry, CodecService, EncodePolicy, EncodedPdata, EncodingPlan, OtapPayload,
-    PdataEncoding, PdataFormat,
+    CodecError, CodecRegistry, CodecService, EncodePolicy, EncodedPdata, EncodingPlan,
+    PdataEncoding, PdataFormat, PdataPayload,
 };
 
 /// Reusable encoded batching implementation owned by one pipeline runtime.
@@ -30,6 +30,10 @@ use crate::{
 /// budgets may produce outputs above the best-effort maximum. Return their count
 /// in [`CodecBatches::budget_fallbacks`]. A failure must leave the batcher usable
 /// for the next call. Delivery contexts and Ack/Nack routing remain in the node.
+///
+/// Report the inclusive original input range for each output and explicitly list
+/// inputs consumed without output, as specified by [`CodecBatches`]. Capture
+/// provenance while batching; never reconstruct it from output measurements.
 pub trait PdataBatcher: Send {
     /// Re-batches complete encoded inputs in order.
     fn batch(
@@ -40,7 +44,7 @@ pub trait PdataBatcher: Send {
     ) -> Result<CodecBatches, CodecError>;
 }
 
-/// Unit used for flush thresholds, splitting, and input ownership attribution.
+/// Measurement unit for flush thresholds and splitting, never completion ownership.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BatchSizer {
@@ -55,7 +59,7 @@ pub enum BatchSizer {
 
 impl BatchSizer {
     /// Measures an input already prepared by its batching plan.
-    pub fn batch_size(&self, payload: &OtapPayload) -> Result<usize, CodecError> {
+    pub fn batch_size(&self, payload: &PdataPayload) -> Result<usize, CodecError> {
         match self {
             Self::Items => payload.known_item_count().ok_or_else(|| {
                 format_error("item count is unavailable; prepare the input before batching")
@@ -175,14 +179,9 @@ pub struct BatchingSupport {
     pub default_profile: BatchProfile,
 }
 
-/// Codec-native outputs paired with input ownership weights, in input order.
-/// Weights must sum to the measured input total, even if wrapper bytes duplicate.
-pub struct CodecBatches {
-    /// Encoded independent output batches and their input-unit ownership.
-    pub batches: Vec<(Bytes, usize)>,
-    /// Entries emitted whole because of split amplification limits.
-    pub budget_fallbacks: u64,
-}
+/// Independently decodable outputs with inclusive input ranges and explicit
+/// successful completions without output. See [`otel_arrow_dfe_pdata::batching::BatchingResult`].
+pub type CodecBatches = otel_arrow_dfe_pdata::batching::BatchingResult<Bytes>;
 
 impl PdataFormat {
     /// Resolves a canonical format name or the legacy OTLP alias.
@@ -232,10 +231,16 @@ impl PdataFormat {
         self.codec().is_none_or(|codec| codec.can_batch())
     }
 
-    /// Converts only when necessary and retains the original payload on failure.
-    pub fn materialize(
+    /// Replaces `payload` in place with this destination representation.
+    ///
+    /// `payload` is both input and output; `Ok(())` means it now has `self`'s
+    /// format. Matching formats are untouched. Native conversion moves records
+    /// or decodes bytes, while encoded conversion uses the startup encoding plan.
+    /// Failure leaves the original payload, bytes and caches available for recovery.
+    /// This is an internal implementation detail of `BatchPlan::prepare/finish`.
+    fn materialize(
         self,
-        payload: &mut OtapPayload,
+        payload: &mut PdataPayload,
         service: &CodecService,
         encoding: Option<&EncodingPlan>,
     ) -> Result<(), CodecError> {
@@ -244,7 +249,7 @@ impl PdataFormat {
         }
         match self.codec() {
             None => {
-                let empty = OtapPayload::empty(payload.signal_type());
+                let empty = PdataPayload::empty(payload.signal_type());
                 let original = std::mem::replace(payload, empty);
                 match original.try_into_otap(service) {
                     Ok(records) => {
@@ -275,7 +280,7 @@ impl PdataFormat {
                 // The encoding plan validates the output capability and signal;
                 // output-only codecs need not support receiver admission.
                 let encoded = EncodedPdata::from_resolved(codec, signal, bytes);
-                *payload = OtapPayload::from_encoded(encoded);
+                *payload = PdataPayload::from_encoded(encoded);
                 Ok(())
             }
         }
@@ -361,7 +366,7 @@ impl BatchPlan {
     /// Prepares one input before its measurement and delivery context are buffered.
     pub fn prepare(
         &self,
-        payload: &mut OtapPayload,
+        payload: &mut PdataPayload,
         service: &CodecService,
     ) -> Result<(), CodecError> {
         if !self.output.signals().contains(&payload.signal_type()) {
@@ -390,32 +395,31 @@ impl BatchPlan {
         Ok(())
     }
 
-    /// Finishes a flushed output. Retained tails stay in the working format so
-    /// their ownership units and measured sizes do not change between flushes.
+    /// Converts a flushed output to its requested representation in place.
+    /// Retained tails stay in the working format; provenance does not depend on size.
     pub fn finish(
         &self,
-        payload: &mut OtapPayload,
+        payload: &mut PdataPayload,
         service: &CodecService,
     ) -> Result<(), CodecError> {
         self.output
             .materialize(payload, service, self.encoding.as_ref())
     }
 
-    /// Merges/splits prepared inputs while preserving their in-line ownership.
+    /// Merges/splits prepared inputs and validates their explicit input provenance.
     pub fn batch(
         &self,
         signal: SignalType,
-        inputs: Vec<OtapPayload>,
+        inputs: Vec<PdataPayload>,
         service: &CodecService,
     ) -> Result<BatchingOutput, CodecError> {
-        let total = inputs.iter().try_fold(0usize, |total, input| {
-            if input.format() != self.working || input.signal_type() != signal {
-                return Err(format_error("batch input was not prepared for this plan"));
-            }
-            total
-                .checked_add(self.profile.sizer.batch_size(input)?)
-                .ok_or_else(|| format_error("batch ownership overflow"))
-        })?;
+        let input_count = inputs.len();
+        if inputs
+            .iter()
+            .any(|input| input.format() != self.working || input.signal_type() != signal)
+        {
+            return Err(format_error("batch input was not prepared for this plan"));
+        }
         let result = match self.working.codec() {
             None => {
                 let records = inputs
@@ -431,18 +435,18 @@ impl BatchPlan {
                     // so widening preserves a nonzero value.
                     NonZeroU64::new(size.get() as u64).expect("nonzero size")
                 });
-                let batches =
-                    otel_arrow_dfe_pdata::otap::batching::make_item_batches(signal, limit, records)
-                        .map_err(|error| format_error(error.to_string()))?;
+                let result = otel_arrow_dfe_pdata::otap::batching::make_item_batches_with_ranges(
+                    signal, limit, records,
+                )
+                .map_err(|error| format_error(error.to_string()))?;
                 BatchingOutput {
-                    batches: batches
+                    batches: result
+                        .batches
                         .into_iter()
-                        .map(|records| {
-                            let weight = records.num_items();
-                            (records.into(), weight)
-                        })
+                        .map(|(records, inputs)| (records.into(), inputs))
                         .collect(),
-                    budget_fallbacks: 0,
+                    completed_inputs: result.completed_inputs,
+                    budget_fallbacks: result.budget_fallbacks,
                 }
             }
             Some(codec) => {
@@ -459,40 +463,78 @@ impl BatchPlan {
                     batches: result
                         .batches
                         .into_iter()
-                        .map(|(bytes, weight)| {
-                            let encoded = EncodedPdata::from_resolved(codec, signal, bytes);
-                            let payload = OtapPayload::from_encoded(encoded);
-                            let payload = if self.profile.sizer == BatchSizer::Items {
-                                payload.with_item_count(weight)
+                        .map(|(bytes, inputs)| {
+                            let count = if self.profile.sizer == BatchSizer::Items {
+                                Some(codec.count_items(signal, &bytes).ok_or_else(|| {
+                                    format_error(
+                                        "native item batching requires an exact output item count",
+                                    )
+                                })?)
                             } else {
-                                payload
+                                None
                             };
-                            (payload, weight)
+                            let encoded = EncodedPdata::from_resolved(codec, signal, bytes);
+                            let mut payload = PdataPayload::from_encoded(encoded);
+                            if let Some(count) = count {
+                                payload = payload.with_item_count(count);
+                            }
+                            Ok((payload, inputs))
                         })
-                        .collect(),
+                        .collect::<Result<Vec<_>, CodecError>>()?,
+                    completed_inputs: result.completed_inputs,
                     budget_fallbacks: result.budget_fallbacks,
                 }
             }
         };
-        let output_total = result
-            .batches
-            .iter()
-            .try_fold(0usize, |total, (_, weight)| total.checked_add(*weight));
-        if output_total != Some(total) || result.batches.iter().any(|(_, weight)| *weight == 0) {
-            return Err(format_error(
-                "batcher did not partition input ownership exactly",
-            ));
-        }
+        validate_input_ranges(&result, input_count)?;
         Ok(result)
     }
 }
 
-/// Re-batched working payloads and input ownership, not delivery contexts.
-pub struct BatchingOutput {
-    /// Outputs in input order, each paired with its input-unit ownership weight.
-    pub batches: Vec<(OtapPayload, usize)>,
-    /// Entries emitted whole after reaching split amplification budgets.
-    pub budget_fallbacks: u64,
+/// Re-batched working payloads and their input provenance, never delivery contexts.
+pub type BatchingOutput = otel_arrow_dfe_pdata::batching::BatchingResult<PdataPayload>;
+
+/// Validate coverage without allocating a per-input bitmap. Output ranges may
+/// share only a boundary input; completed indices must be disjoint and sorted.
+fn validate_input_ranges<T>(
+    result: &otel_arrow_dfe_pdata::batching::BatchingResult<T>,
+    input_count: usize,
+) -> Result<(), CodecError> {
+    let mut outputs = result.batches.iter().map(|(_, range)| range).peekable();
+    let mut completed = result.completed_inputs.iter().copied().peekable();
+    let mut covered = 0usize;
+    let mut previous_output = false;
+    while outputs.peek().is_some() || completed.peek().is_some() {
+        let is_output = match (outputs.peek(), completed.peek()) {
+            (Some(range), Some(index)) => *range.start() <= *index,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let (start, end) = if is_output {
+            // SAFETY: is_output is true only when the output iterator is nonempty.
+            let range = outputs.next().expect("peeked output");
+            if range.is_empty() {
+                return Err(format_error("batcher returned an empty input range"));
+            }
+            (*range.start(), *range.end())
+        } else {
+            // SAFETY: the loop guarantees a remaining completed input here.
+            let index = completed.next().expect("peeked completed input");
+            (index, index)
+        };
+        let shared_boundary = is_output && previous_output && covered.checked_sub(1) == Some(start);
+        if start > end || end >= input_count || (start != covered && !shared_boundary) {
+            return Err(format_error(
+                "batcher returned invalid or incomplete input ranges",
+            ));
+        }
+        covered = end + 1;
+        previous_output = is_output;
+    }
+    if covered != input_count {
+        return Err(format_error("batcher did not account for every input"));
+    }
+    Ok(())
 }
 
 fn format_error(error: impl Into<String>) -> CodecError {
@@ -519,7 +561,7 @@ mod tests {
     }
 
     /// Scenario: Repeated OTLP byte batching processes multiple logs, metrics, and traces requests.
-    /// Guarantees: Each output independently decodes, counts and ownership are conserved,
+    /// Guarantees: Each output independently decodes, item counts and input provenance are preserved,
     /// and native batching reuses one batcher without instantiating a decoder.
     #[test]
     fn native_batches_decode_independently_and_reuse_state() {
@@ -557,21 +599,16 @@ mod tests {
             .unwrap();
             for _ in 0..2 {
                 let mut input =
-                    OtapPayload::from_encoded(codec.admit(signal, bytes.clone()).unwrap());
+                    PdataPayload::from_encoded(codec.admit(signal, bytes.clone()).unwrap());
                 plan.prepare(&mut input, &service).unwrap();
                 assert_eq!(input.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
                 let result = plan
                     .batch(signal, vec![input.clone(), input], &service)
                     .unwrap();
                 assert!(result.batches.len() > 1);
-                assert_eq!(
-                    result
-                        .batches
-                        .iter()
-                        .map(|(_, weight)| *weight)
-                        .sum::<usize>(),
-                    2 * bytes.len()
-                );
+                assert_eq!(*result.batches.first().unwrap().1.start(), 0);
+                assert_eq!(*result.batches.last().unwrap().1.end(), 1);
+                assert!(result.completed_inputs.is_empty());
                 let mut decoded_items = 0;
                 for (output, _) in result.batches {
                     assert_eq!(output.format(), PdataFormat::encoded(codec));
@@ -607,7 +644,7 @@ mod tests {
             )
             .is_err()
         );
-        let mut input = OtapPayload::from_encoded(
+        let mut input = PdataPayload::from_encoded(
             input_codec
                 .admit(
                     SignalType::Logs,
@@ -653,7 +690,7 @@ mod tests {
         let plan = BatchPlan::new(PdataFormat::encoded(codec), BatchProfile::otap(), true).unwrap();
         let bytes = Bytes::from_static(&[0x0a, 0x01, 0xff]);
         let mut input =
-            OtapPayload::from_encoded(codec.admit(SignalType::Logs, bytes.clone()).unwrap())
+            PdataPayload::from_encoded(codec.admit(SignalType::Logs, bytes.clone()).unwrap())
                 .with_item_count(7);
         for _ in 0..2 {
             assert!(plan.prepare(&mut input, &service).is_err());
@@ -663,7 +700,7 @@ mod tests {
             assert_eq!(input.encoded_bytes().unwrap(), &bytes);
             assert_eq!(input.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
         }
-        let mut valid = OtapPayload::from_encoded(
+        let mut valid = PdataPayload::from_encoded(
             codec
                 .admit(
                     SignalType::Logs,
@@ -674,5 +711,121 @@ mod tests {
         plan.prepare(&mut valid, &service).unwrap();
         assert_eq!(valid.known_item_count(), Some(4));
         assert_eq!(service.test_instance_count().unwrap(), 1);
+    }
+    /// Scenario: Batchers report merges, splits, empty completions, or malformed input ranges.
+    /// Guarantees: All inputs are accounted for exactly by ordered provenance, with only
+    /// split boundary overlap allowed; invalid indices never reach the processor.
+    #[test]
+    #[allow(
+        clippy::single_range_in_vec_init,
+        reason = "Each element describes one output's inclusive input range, not its individual indices."
+    )]
+    fn input_ranges_validate_coverage_without_sizes() {
+        let check = |ranges: Vec<std::ops::RangeInclusive<usize>>, completed_inputs, count| {
+            validate_input_ranges(
+                &otel_arrow_dfe_pdata::batching::BatchingResult {
+                    batches: ranges.into_iter().map(|range| ((), range)).collect(),
+                    completed_inputs,
+                    budget_fallbacks: 0,
+                },
+                count,
+            )
+        };
+        for (ranges, completed, count) in [
+            (vec![], vec![], 0),
+            (vec![0..=0, 0..=1, 1..=2], vec![], 3),
+            (vec![1..=2, 2..=2], vec![0, 3], 4),
+            (vec![], vec![0, 1], 2),
+        ] {
+            assert!(check(ranges, completed, count).is_ok());
+        }
+        // A consumed inclusive iterator still exposes its last endpoints, but
+        // indexes an empty slice. It must not bypass completion tracking.
+        let mut exhausted = 0..=0;
+        assert_eq!(exhausted.next(), Some(0));
+        assert!(check(vec![exhausted], vec![], 1).is_err());
+        for (ranges, completed, count) in [
+            (vec![0..=0], vec![], 2),
+            (vec![0..=2], vec![], 2),
+            (vec![1..=1], vec![], 2),
+            (vec![0..=1, 0..=1], vec![], 2),
+            (vec![0..=0], vec![0], 1),
+            (vec![], vec![1, 0], 2),
+            (vec![], vec![0, 0], 1),
+            (vec![usize::MAX..=usize::MAX], vec![], 1),
+            (vec![std::ops::RangeInclusive::new(1, 0)], vec![], 2),
+        ] {
+            assert!(check(ranges, completed, count).is_err());
+        }
+    }
+
+    /// Scenario: OTAP concatenation removes dangling metric data points from two inputs.
+    /// Guarantees: Reduced item counts preserve both input owners; wholly redacted inputs
+    /// explicitly complete without output instead of failing count conservation.
+    #[test]
+    fn native_ranges_survive_integrity_redaction() {
+        use otel_arrow_dfe_pdata::OtapArrowRecords;
+        use otel_arrow_dfe_pdata::arrow::array::{
+            ArrayRef, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
+        };
+        use otel_arrow_dfe_pdata::otap::{Metrics, OtapBatchStore};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        use std::sync::Arc;
+        let service = strict_service();
+        let plan = BatchPlan::new(PdataFormat::OTAP, BatchProfile::otap(), true).unwrap();
+        for surviving in [true, false] {
+            let make = || {
+                let mut metrics = Metrics::default();
+                metrics
+                    .set(
+                        ArrowPayloadType::UnivariateMetrics,
+                        RecordBatch::try_from_iter([
+                            ("id", Arc::new(UInt16Array::from(vec![0])) as ArrayRef),
+                            (
+                                "metric_type",
+                                Arc::new(UInt8Array::from(vec![
+                                    otel_arrow_dfe_pdata::otlp::metrics::MetricType::Gauge as u8,
+                                ])) as ArrayRef,
+                            ),
+                            (
+                                "name",
+                                Arc::new(StringArray::from(vec!["test.gauge"])) as ArrayRef,
+                            ),
+                        ])
+                        .unwrap(),
+                    )
+                    .unwrap();
+                metrics
+                    .set(
+                        ArrowPayloadType::NumberDataPoints,
+                        RecordBatch::try_from_iter([
+                            ("id", Arc::new(UInt32Array::from(vec![0, 1])) as ArrayRef),
+                            (
+                                "parent_id",
+                                Arc::new(UInt16Array::from(if surviving {
+                                    vec![0, 7]
+                                } else {
+                                    vec![7, 7]
+                                })) as ArrayRef,
+                            ),
+                        ])
+                        .unwrap(),
+                    )
+                    .unwrap();
+                PdataPayload::from(OtapArrowRecords::Metrics(metrics))
+            };
+            let result = plan
+                .batch(SignalType::Metrics, vec![make(), make()], &service)
+                .unwrap();
+            if surviving {
+                assert_eq!(result.batches.len(), 1);
+                assert_eq!(result.batches[0].1, 0..=1);
+                assert_eq!(result.batches[0].0.known_item_count(), Some(2));
+                assert!(result.completed_inputs.is_empty());
+            } else {
+                assert!(result.batches.is_empty());
+                assert_eq!(result.completed_inputs, [0, 1]);
+            }
+        }
     }
 }

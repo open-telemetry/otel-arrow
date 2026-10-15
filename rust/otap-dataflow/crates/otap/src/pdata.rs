@@ -2040,8 +2040,8 @@ mod test {
             codec
                 .admit(SignalType::Logs, bytes)
                 .expect("lazy admission"),
-        )
-        .with_item_count(9);
+        );
+        let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9);
         let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
 
         let error = handler
@@ -2280,9 +2280,11 @@ mod test {
                 OtapPayload::from(legacy),
                 codec.admit(signal, bytes.clone()).unwrap().into(),
             ] {
-                let pdata = OtapPdata::new_default(payload.with_item_count(9))
-                    .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
-                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let pdata = OtapPdata::new_default(
+                    otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9),
+                )
+                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
+                .with_peer_addr("127.0.0.1:1234".parse().unwrap());
                 let context = pdata.context.clone();
                 let format = pdata.payload_ref().format();
                 let error = handler

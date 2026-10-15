@@ -19,7 +19,11 @@ use crate::{
 /// Concrete inline storage used during the transition from specialized OTLP bytes.
 #[derive(Clone, Debug)]
 pub enum PayloadStorage {
-    /// Compatibility storage for serialized OTLP service requests.
+    /// Temporary compatibility storage for existing OTLP receivers during the
+    /// staged codec rollout. PR4 removes it when receivers switch to `Encoded`.
+    /// OTLP is a built-in byte codec, not a second native processing format;
+    /// native OTAP alone remains special. Both OTLP storage forms already expose
+    /// the same encoded identity through `PdataPayload::format`.
     OtlpBytes(OtlpProtoBytes),
     /// Independently decodable bytes and their resolved codec identity.
     Encoded(EncodedPdata),
@@ -201,9 +205,10 @@ impl PdataPayload {
         Self::from_storage(PayloadStorage::Encoded(encoded))
     }
 
-    /// Supplies a receiver-known item count without parsing encoded bytes.
+    /// Caches a count established by codec-owned counting or batching logic.
+    /// Incorrect counts can cause premature completion, so nodes cannot set this.
     #[must_use]
-    pub fn with_item_count(mut self, item_count: usize) -> Self {
+    pub(crate) fn with_item_count(mut self, item_count: usize) -> Self {
         self.item_count.set(item_count);
         self
     }

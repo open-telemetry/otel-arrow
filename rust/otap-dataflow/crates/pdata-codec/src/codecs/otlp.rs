@@ -284,8 +284,9 @@ impl PdataBatcher for OtlpBatcher {
             batches: result
                 .batches
                 .into_iter()
-                .map(|(mut bytes, weight)| (bytes.replace_bytes(Bytes::new()), weight))
+                .map(|(mut bytes, inputs)| (bytes.replace_bytes(Bytes::new()), inputs))
                 .collect(),
+            completed_inputs: result.completed_inputs,
             budget_fallbacks: result.budget_fallbacks,
         })
     }
