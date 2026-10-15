@@ -95,6 +95,11 @@ func NewFieldFrom(prototype *arrow.Field, transformNode *TransformNode) *arrow.F
 	case *arrow.ListType:
 		elemField := dt.ElemField()
 		newField := NewFieldFrom(&elemField, transformNode.Children[0])
+		if newField == nil {
+			// The element field is dropped, so the list field must be dropped
+			// entirely, like a map with a dropped key or item field (see below).
+			return nil
+		}
 		return &arrow.Field{Name: field.Name, Type: arrow.ListOf(newField.Type), Nullable: field.Nullable, Metadata: metadata}
 	case arrow.UnionType:
 		oldFields := dt.Fields()
