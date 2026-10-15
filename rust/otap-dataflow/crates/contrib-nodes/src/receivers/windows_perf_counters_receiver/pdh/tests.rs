@@ -42,7 +42,7 @@ fn config(path: &str) -> CounterConfig {
         name: path.to_owned(),
         unit: "1".to_owned(),
         description: Arc::from("Test counter"),
-        kind: MetricKind::UpDownCounter,
+        kind: MetricKind::Sum,
         attributes: Arc::new(BTreeMap::new()),
         scale_power10: 0,
     }

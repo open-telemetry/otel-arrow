@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Configuration parsing, validation, and exact-path normalization.
+//!
+//! Metric kind defaults to Gauge. Sum requires explicit aggregation and defaults
+//! to non-monotonic. Only cumulative, non-monotonic Sum is supported.
+//! Omitted or blank units default to "1"; descriptions default to empty.
+//! Unused metric definitions are allowed and produce no metric records.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -26,8 +31,16 @@ const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
 pub(super) enum MetricKind {
     /// A point-in-time Gauge.
     Gauge,
-    /// A cumulative, non-monotonic Sum representing an UpDownCounter.
-    UpDownCounter,
+    /// A cumulative, non-monotonic Sum.
+    Sum,
+}
+
+/// OTel Sum aggregation temporality.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Aggregation {
+    Cumulative,
+    Delta,
 }
 
 /// One normalized exact counter path and its metric mapping.
@@ -76,12 +89,14 @@ struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MetricConfig {
+    #[serde(default)]
     description: String,
+    #[serde(default)]
     unit: String,
     #[serde(default, deserialize_with = "present_marker")]
     gauge: Option<EmptyConfig>,
-    #[serde(default, deserialize_with = "present_marker")]
-    up_down_counter: Option<EmptyConfig>,
+    #[serde(default, deserialize_with = "present_sum")]
+    sum: Option<SumConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -98,15 +113,48 @@ where
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SumConfig {
+    aggregation: Aggregation,
+    #[serde(default)]
+    monotonic: bool,
+}
+
+fn present_sum<'de, D>(deserializer: D) -> Result<Option<SumConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SumConfig>::deserialize(deserializer)?
+        .ok_or_else(|| {
+            serde::de::Error::custom(
+                "sum must be a mapping with explicit aggregation: cumulative; null Sum is invalid",
+            )
+        })
+        .map(Some)
+}
+
 impl MetricConfig {
     fn kind(&self, name: &str) -> Result<MetricKind, Error> {
-        match (self.gauge.is_some(), self.up_down_counter.is_some()) {
-            (true, false) => Ok(MetricKind::Gauge),
-            (false, true) => Ok(MetricKind::UpDownCounter),
-            _ => Err(invalid(format!(
-                "metrics.{name} must contain exactly one of gauge or up_down_counter"
-            ))),
+        if self.gauge.is_some() && self.sum.is_some() {
+            return Err(invalid(format!(
+                "metrics.{name} must not contain both gauge and sum"
+            )));
         }
+        let Some(sum) = &self.sum else {
+            return Ok(MetricKind::Gauge);
+        };
+        if sum.aggregation == Aggregation::Delta {
+            return Err(invalid(format!(
+                "metrics.{name}: delta Sum is not supported yet; use gauge or sum with aggregation: cumulative and monotonic: false"
+            )));
+        }
+        if sum.monotonic {
+            return Err(invalid(format!(
+                "metrics.{name}: monotonic Sum (monotonic: true) is not supported yet; use gauge or sum with aggregation: cumulative and monotonic: false"
+            )));
+        }
+        Ok(MetricKind::Sum)
     }
 }
 
@@ -257,7 +305,9 @@ fn validate_metric_name(name: &str) -> Result<&str, Error> {
 fn validate_metric_unit<'a>(name: &str, unit: &'a str) -> Result<&'a str, Error> {
     let unit = unit.trim();
     let field = format!("metrics.{name}.unit");
-    require_name(&field, unit)?;
+    if unit.is_empty() {
+        return Ok("1");
+    }
     if unit.len() > MAX_METRIC_UNIT_LEN || !unit.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
     {
         return Err(invalid(format!(
@@ -318,7 +368,7 @@ impl RuntimeConfig {
     pub(super) fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
         let user: Config =
             serde_json::from_value(value.clone()).map_err(|err| invalid(err.to_string()))?;
-        // Every metric must be referenced, so the counter cap also bounds metric definitions.
+        // Bound configuration size even when metric definitions are unused.
         if user.metrics.len() > MAX_COUNTERS {
             return Err(invalid(format!(
                 "metrics must contain at most {MAX_COUNTERS} entries"
@@ -355,7 +405,6 @@ impl RuntimeConfig {
                 return Err(invalid(format!("metrics contains duplicate {name:?}")));
             }
             let description = metric.description.trim();
-            require_name(&format!("metrics.{name}.description"), description)?;
             let unit = validate_metric_unit(name, &metric.unit)?;
             let kind = metric.kind(name)?;
             let _ = metrics.insert(
@@ -370,7 +419,6 @@ impl RuntimeConfig {
 
         let expanded_count = expanded_counter_count(&user.perf_counters)?;
         let mut counters = Vec::with_capacity(expanded_count);
-        let mut referenced_metrics = HashSet::new();
         for (object_index, object) in user.perf_counters.iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
             let object_name =
@@ -415,7 +463,6 @@ impl RuntimeConfig {
                         "{counter_field}.metric references undefined metric {metric_name:?}"
                     ))
                 })?;
-                let _ = referenced_metrics.insert(metric_name);
                 let attributes =
                     Arc::new(normalize_attributes(&counter_field, &mapping.attributes)?);
                 for instance in &instances {
@@ -444,17 +491,6 @@ impl RuntimeConfig {
                 return Err(invalid(format!("duplicate counter path: {}", counter.path)));
             }
         }
-        let unused = metrics
-            .keys()
-            .filter(|name| !referenced_metrics.contains(*name))
-            .copied()
-            .collect::<Vec<_>>();
-        if !unused.is_empty() {
-            return Err(invalid(format!(
-                "unreferenced metric definitions: {}",
-                unused.join(", ")
-            )));
-        }
         Ok(Self {
             counters,
             collection_interval: user.collection_interval,
@@ -478,7 +514,7 @@ mod tests {
             "private": {
                 "description": "Committed private memory.",
                 "unit": "By",
-                "up_down_counter": {}
+                "sum": {"aggregation": "cumulative", "monotonic": false}
             }
         })
     }
@@ -540,7 +576,7 @@ mod tests {
         assert_eq!(config.counters[0].path, r"\Memory\Available Bytes");
         assert_eq!(config.counters[0].kind, MetricKind::Gauge);
         assert_eq!(config.counters[1].path, r"\Process(app)\Private Bytes");
-        assert_eq!(config.counters[1].kind, MetricKind::UpDownCounter);
+        assert_eq!(config.counters[1].kind, MetricKind::Sum);
         assert_eq!(config.collection_interval, Duration::from_secs(30));
         assert_eq!(config.initial_delay, Duration::from_secs(1));
     }
@@ -553,7 +589,7 @@ mod tests {
             "metrics": {"private": {
                 "description": "Committed private memory.",
                 "unit": "By",
-                "up_down_counter": {}
+                "sum": {"aggregation": "cumulative", "monotonic": false}
             }},
             "perfcounters": [{
                 "object": "Process",
@@ -609,31 +645,99 @@ mod tests {
                     "description": "Value.",
                     "unit": "1",
                     "gauge": {},
-                    "up_down_counter": {}
+                    "sum": {"aggregation": "cumulative"}
                 }},
                 "perfcounters": [{
                     "object": "Memory",
                     "counters": [{"name": "Available Bytes", "metric": "value"}]
                 }]
             }),
-            "metrics.value must contain exactly one of gauge or up_down_counter",
+            "metrics.value must not contain both gauge and sum",
         );
     }
 
-    /// Scenario: A metric definition is not referenced by any configured counter.
-    /// Guarantees: Validation rejects metadata that cannot produce telemetry.
+    /// Scenario: Metric metadata fields are omitted and another definition is unused.
+    /// Guarantees: Referenced metadata receives defaults and unused definitions are allowed.
     #[test]
-    fn rejects_unreferenced_metric_definition() {
-        assert_config_error(
-            json!({
-                "metrics": metrics(),
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "available"}]
-                }]
-            }),
-            "unreferenced metric definitions: private",
+    fn defaults_optional_metric_metadata_and_allows_unused_definitions() {
+        let config = RuntimeConfig::from_json(&json!({
+            "metrics": {
+                "used": {"gauge": {}},
+                "unused": {}
+            },
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [{"name": "Available Bytes", "metric": "used"}]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(config.counters.len(), 1);
+        let counter = &config.counters[0];
+        assert_eq!(counter.name, "used");
+        assert_eq!(counter.unit, "1");
+        assert!(counter.description.is_empty());
+        assert_eq!(counter.kind, MetricKind::Gauge);
+    }
+
+    /// Scenario: A referenced metric omits its unit but provides a description.
+    /// Guarantees: The unit defaults to "1" without changing the supplied description.
+    #[test]
+    fn defaults_omitted_metric_unit() {
+        let mut value = config_with_timing("30s", "1s");
+        let _ = value["metrics"]["available"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unit");
+        let config = RuntimeConfig::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].unit, "1");
+        assert_eq!(
+            config.counters[0].description.as_ref(),
+            "Available physical memory."
         );
+    }
+
+    /// Scenario: A referenced metric supplies an empty or whitespace-only unit.
+    /// Guarantees: Blank units receive the same "1" default as an omitted unit.
+    #[test]
+    fn defaults_empty_metric_unit() {
+        for unit in ["", " \t "] {
+            let mut value = config_with_timing("30s", "1s");
+            value["metrics"]["available"]["unit"] = json!(unit);
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert_eq!(config.counters[0].unit, "1");
+        }
+    }
+
+    /// Scenario: A referenced metric omits or supplies a blank description.
+    /// Guarantees: Descriptions normalize to empty without changing the supplied unit.
+    #[test]
+    fn defaults_optional_metric_description() {
+        for description in [None, Some(""), Some(" \t ")] {
+            let mut value = config_with_timing("30s", "1s");
+            match description {
+                None => {
+                    let _ = value["metrics"]["available"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("description");
+                }
+                Some(description) => {
+                    value["metrics"]["available"]["description"] = json!(description)
+                }
+            }
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert!(config.counters[0].description.is_empty());
+            assert_eq!(config.counters[0].unit, "By");
+        }
+    }
+
+    /// Scenario: An unused definition selects an unsupported metric kind.
+    /// Guarantees: All definitions are validated even when no mapping references them.
+    #[test]
+    fn validates_unused_metric_definitions() {
+        let mut value = config_with_timing("30s", "1s");
+        value["metrics"]["unused"] = json!({"sum": {"aggregation": "delta"}});
+        assert_config_error(value, "metrics.unused: delta Sum is not supported yet");
     }
 
     /// Scenario: A counter mapping names a metric that is not defined.
@@ -783,8 +887,8 @@ mod tests {
         assert_config_error(value, "unknown field `unknown`");
     }
 
-    /// Scenario: More metric definitions are configured than counters can reference.
-    /// Guarantees: Validation rejects the count up front instead of listing every unreferenced metric.
+    /// Scenario: Metric definitions exceed the configuration's entry limit.
+    /// Guarantees: The definition bound applies even when most definitions are unused.
     #[test]
     fn rejects_too_many_metric_definitions() {
         let metrics = (0..=MAX_COUNTERS)
@@ -1035,58 +1139,124 @@ mod tests {
         );
     }
 
-    /// Scenario: A metric kind is written as a bare YAML key (`gauge:`), which parses as null.
-    /// Guarantees: A present-but-null kind selects that kind, and still conflicts with the other.
+    /// Scenario: Gauge is written as a bare YAML key or an empty map.
+    /// Guarantees: Both shorthands select Gauge and still conflict with an explicit Sum.
     #[test]
     fn accepts_null_metric_kind_shorthand() {
+        for gauge in [json!(null), json!({})] {
+            let mut value = config_with_timing("30s", "1s");
+            value["metrics"]["available"]["gauge"] = gauge;
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert_eq!(config.counters[0].kind, MetricKind::Gauge);
+            value["metrics"]["available"]["sum"] = json!({"aggregation": "cumulative"});
+            assert_config_error(value, "must not contain both gauge and sum");
+        }
+    }
+
+    /// Scenario: A metric definition selects no metric kind.
+    /// Guarantees: Omission selects Gauge without overriding metric metadata or collection timing.
+    #[test]
+    fn defaults_missing_metric_kind_to_gauge() {
         let config = RuntimeConfig::from_json(&json!({
-            "metrics": {
-                "available": {"description": "Available.", "unit": "By", "gauge": null},
-                "private": {"description": "Private.", "unit": "By", "up_down_counter": null}
-            },
+            "metrics": {"value": {"description": "Value.", "unit": "1"}},
             "perfcounters": [{
                 "object": "Memory",
-                "counters": [
-                    {"name": "Available Bytes", "metric": "available"},
-                    {"name": "Committed Bytes", "metric": "private"}
-                ]
+                "counters": [{"name": "Available Bytes", "metric": "value"}]
             }]
         }))
         .unwrap();
         assert_eq!(config.counters[0].kind, MetricKind::Gauge);
-        assert_eq!(config.counters[1].kind, MetricKind::UpDownCounter);
-
-        assert_config_error(
-            json!({
-                "metrics": {"value": {
-                    "description": "Value.",
-                    "unit": "1",
-                    "gauge": {},
-                    "up_down_counter": null
-                }},
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "value"}]
-                }]
-            }),
-            "metrics.value must contain exactly one of gauge or up_down_counter",
-        );
+        assert_eq!(config.counters[0].unit, "1");
+        assert_eq!(config.counters[0].description.as_ref(), "Value.");
+        assert_eq!(config.collection_interval, Duration::from_secs(30));
     }
 
-    /// Scenario: A metric definition selects no metric kind.
-    /// Guarantees: Validation rejects a metric whose projection is unspecified.
+    /// Scenario: A cumulative Sum omits monotonicity or explicitly sets it to false.
+    /// Guarantees: Both forms normalize to the supported cumulative non-monotonic Sum.
     #[test]
-    fn rejects_missing_metric_kind() {
-        assert_config_error(
-            json!({
-                "metrics": {"value": {"description": "Value.", "unit": "1"}},
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "value"}]
-                }]
-            }),
-            "metrics.value must contain exactly one of gauge or up_down_counter",
-        );
+    fn defaults_sum_monotonicity_to_false() {
+        for sum in [
+            json!({"aggregation": "cumulative"}),
+            json!({"aggregation": "cumulative", "monotonic": false}),
+        ] {
+            let mut value = config_with_timing("45s", "2s");
+            let _ = value["metrics"]["available"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gauge");
+            value["metrics"]["available"]["sum"] = sum;
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            assert_eq!(config.counters[0].kind, MetricKind::Sum);
+            assert_eq!(config.collection_interval, Duration::from_secs(45));
+            assert_eq!(config.initial_delay, Duration::from_secs(2));
+        }
+    }
+
+    /// Scenario: Sum is null, empty, lacks aggregation or selects an invalid aggregation.
+    /// Guarantees: Sum never silently becomes Gauge or defaults its aggregation.
+    #[test]
+    fn rejects_missing_or_invalid_sum_aggregation() {
+        for (sum, expected) in [
+            (json!(null), "null Sum is invalid"),
+            (json!({}), "missing field `aggregation`"),
+            (json!({"monotonic": false}), "missing field `aggregation`"),
+            (json!({"aggregation": null}), "expected string or map"),
+            (json!({"aggregation": ""}), "unknown variant"),
+            (json!({"aggregation": "invalid"}), "unknown variant"),
+        ] {
+            let mut value = config_with_timing("30s", "1s");
+            let _ = value["metrics"]["available"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gauge");
+            value["metrics"]["available"]["sum"] = sum;
+            assert_config_error(value, expected);
+        }
+    }
+
+    /// Scenario: Sum selects delta temporality or monotonic execution.
+    /// Guarantees: Unsupported selections fail with supported alternatives in the error.
+    #[test]
+    fn rejects_unsupported_sum_execution() {
+        for (aggregation, monotonic, expected) in [
+            ("delta", false, "delta Sum is not supported yet"),
+            ("delta", true, "delta Sum is not supported yet"),
+            (
+                "cumulative",
+                true,
+                "monotonic Sum (monotonic: true) is not supported yet",
+            ),
+        ] {
+            let mut value = config_with_timing("30s", "1s");
+            let _ = value["metrics"]["available"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gauge");
+            value["metrics"]["available"]["sum"] = json!({
+                "aggregation": aggregation, "monotonic": monotonic
+            });
+            let error = RuntimeConfig::from_json(&value).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("metrics.available"), "{error}");
+            assert!(
+                error
+                    .contains("use gauge or sum with aggregation: cumulative and monotonic: false"),
+                "{error}"
+            );
+        }
+    }
+
+    /// Scenario: A metric definition uses an unrecognized up_down_counter field.
+    /// Guarantees: Only gauge and sum are accepted as metric-kind fields.
+    #[test]
+    fn rejects_removed_metric_kind_alias() {
+        let mut value = config_with_timing("30s", "1s");
+        let _ = value["metrics"]["available"]
+            .as_object_mut()
+            .unwrap()
+            .remove("gauge");
+        value["metrics"]["available"]["up_down_counter"] = json!({});
+        assert_config_error(value, "unknown field `up_down_counter`");
     }
 
     /// Scenario: Counter paths are at and beyond the PDH path limit, including non-BMP text.
@@ -1185,25 +1355,6 @@ mod tests {
     /// Guarantees: Validation identifies each blank field instead of emitting unnamed telemetry.
     #[test]
     fn rejects_blank_required_values() {
-        let counter = json!([{"name": "Available Bytes", "metric": "m"}]);
-        for (metric, expected) in [
-            (
-                json!({"description": " ", "unit": "By", "gauge": {}}),
-                "metrics.m.description must not be empty",
-            ),
-            (
-                json!({"description": "Value.", "unit": "", "gauge": {}}),
-                "metrics.m.unit must not be empty",
-            ),
-        ] {
-            assert_config_error(
-                json!({
-                    "metrics": {"m": metric},
-                    "perfcounters": [{"object": "Memory", "counters": counter}]
-                }),
-                expected,
-            );
-        }
         assert_config_error(
             json!({
                 "metrics": {" ": {"description": "Value.", "unit": "By", "gauge": {}}},

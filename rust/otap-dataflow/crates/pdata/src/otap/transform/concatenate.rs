@@ -1774,11 +1774,15 @@ fn write_fallback(target: &DataType, inputs: &[Input<'_>], rows: usize) -> Resul
         match inp.column {
             Some(_) => {
                 for r in inp.ranges() {
-                    mutable.extend(src_idx, r.start, r.end);
+                    mutable
+                        .try_extend(src_idx, r.start, r.end)
+                        .map_err(|source| Error::Batching { source })?;
                 }
                 src_idx += 1;
             }
-            None => mutable.extend_nulls(inp.selected_rows()),
+            None => mutable
+                .try_extend_nulls(inp.selected_rows())
+                .map_err(|source| Error::Batching { source })?,
         }
     }
 
