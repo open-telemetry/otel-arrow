@@ -320,10 +320,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         );
                     }
                     let _ = telemetry_cancel_handle.cancel().await;
-                    return Ok(Self::terminal_state(
-                        deadline,
-                        self.ch_metrics,
-                    ));
+                    return Ok(Self::terminal_state(deadline, self.ch_metrics));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
