@@ -4,6 +4,7 @@
 //! Bounded parameter compilation, AST allowlist, and fixed catalog queries.
 
 use super::adapter::{Error, Result, database};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use otel_arrow_dfe_scraper::database::{CompiledQuery, MAX_QUERY_BYTES};
 use sqlparser::{
     ast::{
@@ -14,7 +15,6 @@ use sqlparser::{
     parser::Parser,
     tokenizer::{Token, Tokenizer},
 };
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_postgres::{GenericClient, Transaction, types::Type};
 
