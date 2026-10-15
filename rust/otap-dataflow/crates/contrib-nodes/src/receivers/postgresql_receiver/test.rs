@@ -43,7 +43,11 @@ macro_rules! postgresql_module_tests {
                 }
             }
 
-            fn fragmented(bytes: Vec<u8>, fragment: usize) -> BoundedBackend<Fragmented> {
+            fn fragmented_limited(
+                bytes: Vec<u8>,
+                fragment: usize,
+                limits: FrameLimits,
+            ) -> BoundedBackend<Fragmented> {
                 BoundedBackend::new(
                     Fragmented {
                         bytes,
@@ -52,8 +56,39 @@ macro_rules! postgresql_module_tests {
                         pending: true,
                     },
                     ReceiveFailure::default(),
-                    frame_limits(),
+                    limits,
                 )
+            }
+
+            fn fragmented(bytes: Vec<u8>, fragment: usize) -> BoundedBackend<Fragmented> {
+                fragmented_limited(bytes, fragment, frame_limits())
+            }
+
+            /// Builds one backend frame: tag, big-endian length including the
+            /// length field itself, then the body.
+            fn frame(tag: u8, body: &[u8]) -> Vec<u8> {
+                let mut bytes = vec![tag];
+                bytes.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
+                bytes.extend_from_slice(body);
+                bytes
+            }
+
+            /// Drains the stream, recording the bytes returned by each
+            /// individual read so frame boundaries stay observable.
+            async fn read_chunks(
+                stream: &mut BoundedBackend<Fragmented>,
+                capacity: usize,
+            ) -> io::Result<Vec<Vec<u8>>> {
+                let mut chunks = Vec::new();
+                loop {
+                    let mut buffer = vec![0; capacity];
+                    let read = stream.read(&mut buffer).await?;
+                    if read == 0 {
+                        return Ok(chunks);
+                    }
+                    buffer.truncate(read);
+                    chunks.push(buffer);
+                }
             }
 
             /// Scenario: An oversized backend length arrives one byte at a time.
@@ -73,6 +108,126 @@ macro_rules! postgresql_module_tests {
                 assert!(!error.to_string().contains("private"));
                 assert!(stream.read(&mut output).await.is_err());
                 assert_eq!(stream.inner.consumed.get(), 5);
+            }
+
+            /// Scenario: Two complete backend frames reach a destination with room for both, delivered one byte at a time, in uneven pieces, and all at once.
+            /// Guarantees: Every byte is forwarded verbatim and no single read ever spans a frame boundary, whatever the socket hands over.
+            #[tokio::test]
+            async fn frames_never_coalesce_across_boundaries() {
+                let first = frame(b'D', b"first-row-payload");
+                let second = frame(b'D', b"second-row-payload-longer");
+                let mut bytes = first.clone();
+                bytes.extend_from_slice(&second);
+                let boundaries = [0, first.len(), bytes.len()];
+
+                // A large fragment lets the socket offer both frames in one
+                // read; only the frame bound can stop them from coalescing.
+                for fragment in [1, 7, bytes.len()] {
+                    let mut stream = fragmented(bytes.clone(), fragment);
+                    let chunks = read_chunks(&mut stream, 4096)
+                        .await
+                        .expect("both frames delivered");
+
+                    assert_eq!(chunks.concat(), bytes, "fragment {fragment}");
+                    let mut offset = 0;
+                    for chunk in &chunks {
+                        assert!(!chunk.is_empty());
+                        let end = offset + chunk.len();
+                        let frame_index = boundaries
+                            .iter()
+                            .rposition(|start| *start <= offset)
+                            .expect("enclosing frame");
+                        assert!(
+                            end <= boundaries[frame_index + 1],
+                            "fragment {fragment}: read {offset}..{end} crossed a frame boundary"
+                        );
+                        offset = end;
+                    }
+                    assert_eq!(offset, bytes.len(), "fragment {fragment}");
+                    assert_eq!(stream.failure.get(), None);
+                }
+            }
+
+            /// Scenario: A zero-body control frame precedes a normal data frame.
+            /// Guarantees: The empty frame completes on its own, resets framing state, and the next frame still arrives intact.
+            #[tokio::test]
+            async fn zero_body_frame_completes_and_resets_state() {
+                let empty = frame(b'C', b"");
+                let next = frame(b'D', b"payload");
+                let mut bytes = empty.clone();
+                bytes.extend_from_slice(&next);
+
+                for fragment in [1, bytes.len()] {
+                    let mut stream = fragmented(bytes.clone(), fragment);
+                    let chunks = read_chunks(&mut stream, 4096)
+                        .await
+                        .expect("both frames delivered");
+
+                    assert_eq!(chunks.concat(), bytes, "fragment {fragment}");
+                    // The empty frame is delivered alone, so the next frame's
+                    // header is never merged into the same read.
+                    assert_eq!(chunks[0], empty, "fragment {fragment}");
+                    assert_eq!(stream.failure.get(), None);
+                }
+            }
+
+            /// Scenario: The backend stops sending at a frame boundary, part-way through a header, and part-way through a body.
+            /// Guarantees: Only a boundary EOF is clean; both truncations fail closed as unavailable transport.
+            #[tokio::test]
+            async fn truncated_frames_fail_closed_but_boundary_eof_is_clean() {
+                let complete = frame(b'D', b"payload");
+
+                let mut stream = fragmented(complete.clone(), 1);
+                let chunks = read_chunks(&mut stream, 4096)
+                    .await
+                    .expect("complete frame");
+                assert_eq!(chunks.concat(), complete);
+                assert_eq!(stream.failure.get(), None);
+
+                let mut stream = fragmented(complete[..3].to_vec(), 1);
+                let mut output = [0; 64];
+                let error = stream
+                    .read(&mut output)
+                    .await
+                    .expect_err("truncated header");
+                assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+                assert_eq!(stream.failure.get(), Some(Error::Unavailable));
+
+                let mut stream = fragmented(complete[..complete.len() - 1].to_vec(), 1);
+                let error = read_chunks(&mut stream, 4096)
+                    .await
+                    .expect_err("truncated body");
+                assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+                assert_eq!(stream.failure.get(), Some(Error::Unavailable));
+            }
+
+            /// Scenario: Declared frame lengths sit exactly at the receive ceiling, one byte below it, and below the minimum legal length.
+            /// Guarantees: The ceiling itself is rejected, the largest legal frame is admitted verbatim, and malformed lengths fail closed.
+            #[tokio::test]
+            async fn frame_length_bounds_are_enforced_exactly() {
+                let limits = FrameLimits::new(1024).expect("configured receive budget");
+                let ceiling = limits.for_tag(b'D');
+                let mut output = [0; 64];
+
+                let mut at_ceiling = vec![b'D'];
+                at_ceiling.extend_from_slice(&(ceiling as i32).to_be_bytes());
+                let mut stream = fragmented_limited(at_ceiling, 1, limits);
+                assert!(stream.read(&mut output).await.is_err());
+                assert_eq!(stream.failure.get(), Some(Error::Limit));
+
+                let largest = frame(b'D', &vec![7; ceiling - 1 - 4]);
+                let mut stream = fragmented_limited(largest.clone(), 4096, limits);
+                let chunks = read_chunks(&mut stream, 8192)
+                    .await
+                    .expect("largest legal frame");
+                assert_eq!(chunks.concat(), largest);
+                assert_eq!(stream.failure.get(), None);
+
+                let mut malformed = vec![b'D'];
+                malformed.extend_from_slice(&3i32.to_be_bytes());
+                let mut stream = fragmented_limited(malformed, 1, limits);
+                assert!(stream.read(&mut output).await.is_err());
+                assert_eq!(stream.failure.get(), Some(Error::Database));
             }
         }
     };
@@ -208,6 +363,144 @@ macro_rules! postgresql_module_tests {
                             tokio::time::advance(Duration::from_secs(1)).await;
                             reconnect.await.expect("server query fenced");
                         }
+                        assert!(adapter.reconnect_not_before.is_none());
+                    })
+                    .await;
+            }
+
+            fn test_adapter() -> PostgreSqlAdapter {
+                PostgreSqlAdapter::new(
+                    super::super::tests::test_validated(),
+                    super::super::tests::test_provider(),
+                )
+                .expect("adapter")
+            }
+
+            /// Installs a session whose driver task has already finished with `result`.
+            async fn finished_session(adapter: &mut PostgreSqlAdapter, result: Result<()>) {
+                adapter.session = Some(Session {
+                    client: None,
+                    driver: tokio::task::spawn_local(async move { result }),
+                    statement: None,
+                    catalog: None,
+                    receive_failure: ReceiveFailure::default(),
+                });
+                // Let the driver task reach completion so the close path joins a
+                // finished task rather than racing its shutdown timeout.
+                tokio::task::yield_now().await;
+            }
+
+            /// Scenario: An in-flight operation is dropped without completing, then shutdown joins a driver that finished cleanly.
+            /// Guarantees: Shutdown reports unconfirmed cleanup, so the controller cannot clear abandonment and release source ownership.
+            #[tokio::test(start_paused = true)]
+            async fn shutdown_after_abandoned_operation_reports_unconfirmed_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        let guard =
+                            super::super::adapter::OperationGuard::start(adapter.operation.clone())
+                                .expect("operation started");
+                        // Dropping an active guard is exactly what happens when the
+                        // controller abandons a request whose join deadline expired.
+                        drop(guard);
+                        finished_session(&mut adapter, Ok(())).await;
+
+                        assert_eq!(adapter.shutdown().await, Err(Error::Cleanup));
+                        assert!(adapter.poisoned);
+                        // The terminal result is cached and ownership stays quarantined.
+                        assert_eq!(adapter.shutdown().await, Err(Error::Cleanup));
+                        assert!(adapter.begin_operation().is_err());
+                    })
+                    .await;
+            }
+
+            /// Scenario: A receiver with no abandoned operation shuts down while its driver finishes cleanly.
+            /// Guarantees: Confirmed cleanup still reports success, so ordinary stops release source ownership instead of quarantining it.
+            #[tokio::test(start_paused = true)]
+            async fn shutdown_without_abandonment_confirms_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        finished_session(&mut adapter, Ok(())).await;
+
+                        assert_eq!(adapter.shutdown().await, Ok(()));
+                        assert!(!adapter.poisoned);
+                        assert!(adapter.session.is_none());
+                    })
+                    .await;
+            }
+
+            /// Scenario: A connection driver fails with a transport error while a statement is in flight.
+            /// Guarantees: The failed driver closes as aborted and fences reconnect for the full statement timeout instead of looking graceful.
+            #[tokio::test(start_paused = true)]
+            async fn failed_driver_during_operation_installs_server_query_fence() {
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        finished_session(&mut adapter, Err(Error::Unavailable)).await;
+
+                        let close = adapter
+                            .close_session(CloseReason::OperationInFlight)
+                            .await
+                            .expect("session closed");
+                        assert_eq!(close, SessionClose::Aborted);
+                        assert!(!adapter.poisoned);
+                        assert!(adapter.reconnect_not_before.is_some());
+
+                        // A replacement session waits out the server statement timeout.
+                        let operation = Operation::default();
+                        {
+                            let fence = adapter.await_reconnect_fence(&operation);
+                            tokio::pin!(fence);
+                            assert!(futures::poll!(&mut fence).is_pending());
+                            tokio::time::advance(Duration::from_secs(29)).await;
+                            assert!(futures::poll!(&mut fence).is_pending());
+                            tokio::time::advance(Duration::from_secs(1)).await;
+                            fence.await.expect("server query fenced");
+                        }
+                        assert!(adapter.reconnect_not_before.is_none());
+                    })
+                    .await;
+            }
+
+            /// Scenario: An idle session's driver reports a transport failure during teardown.
+            /// Guarantees: No statement can outlive an idle driver, so reconnect is not delayed by an unnecessary fence.
+            #[tokio::test(start_paused = true)]
+            async fn failed_driver_while_idle_does_not_fence() {
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        finished_session(&mut adapter, Err(Error::Unavailable)).await;
+
+                        let close = adapter
+                            .close_session(CloseReason::Idle)
+                            .await
+                            .expect("session closed");
+                        assert_eq!(close, SessionClose::Graceful);
+                        assert!(!adapter.poisoned);
+                        assert!(adapter.reconnect_not_before.is_none());
+                    })
+                    .await;
+            }
+
+            /// Scenario: A driver ends without error while closing an in-flight operation's session.
+            /// Guarantees: A clean driver exit stays graceful and installs no fence, keeping routine retries prompt.
+            #[tokio::test(start_paused = true)]
+            async fn clean_driver_exit_stays_graceful_during_operation() {
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        finished_session(&mut adapter, Ok(())).await;
+
+                        let close = adapter
+                            .close_session(CloseReason::OperationInFlight)
+                            .await
+                            .expect("session closed");
+                        assert_eq!(close, SessionClose::Graceful);
                         assert!(adapter.reconnect_not_before.is_none());
                     })
                     .await;

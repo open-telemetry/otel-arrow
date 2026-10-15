@@ -48,13 +48,14 @@ impl Operation {
     }
 }
 
-struct OperationGuard {
+/// Tracks one in-flight adapter operation so a dropped request is observable.
+pub(crate) struct OperationGuard {
     operation: Rc<Operation>,
     completed: bool,
 }
 
 impl OperationGuard {
-    fn start(operation: Rc<Operation>) -> Result<Self> {
+    pub(crate) fn start(operation: Rc<Operation>) -> Result<Self> {
         operation.check()?;
         if operation.active.replace(true) {
             return Err(Error::Cleanup);
@@ -246,6 +247,14 @@ impl DriverAdapter for PostgreSqlAdapter {
         }
         self.stopped = true;
         self.operation.cancel();
+        let abandoned = self.operation.abandoned.get();
+        if abandoned {
+            // A dropped operation never observed its own completion, so no later
+            // local join can prove PostgreSQL stopped the abandoned statement.
+            // Report unconfirmed cleanup instead of letting the controller clear
+            // provisional abandonment and release source ownership.
+            self.poisoned = true;
+        }
         if self
             .reconnect_not_before
             .is_some_and(|deadline| deadline > Instant::now())
@@ -254,7 +263,12 @@ impl DriverAdapter for PostgreSqlAdapter {
             // may still be running. Process shutdown remains the escape hatch.
             self.poisoned = true;
         }
-        let result = match self.close_session().await {
+        let reason = if abandoned {
+            worker::CloseReason::OperationInFlight
+        } else {
+            worker::CloseReason::Idle
+        };
+        let result = match self.close_session(reason).await {
             Ok(SessionClose::Graceful) if !self.poisoned => Ok(()),
             Ok(SessionClose::Graceful | SessionClose::Aborted) | Err(_) => Err(Error::Cleanup),
         };

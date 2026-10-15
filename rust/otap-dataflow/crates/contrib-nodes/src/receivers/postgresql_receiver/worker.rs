@@ -320,6 +320,27 @@ pub(crate) enum SessionClose {
     Aborted,
 }
 
+/// Whether a statement could still be executing on the server when a session
+/// closes. A joined driver only proves the local task stopped, so this decides
+/// if an unexplained driver failure needs a server-query fence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CloseReason {
+    /// An operation was in flight. A transport failure may have interrupted the
+    /// client without stopping the backend statement.
+    OperationInFlight,
+    /// No statement was running, so nothing can outlive the local driver.
+    Idle,
+}
+
+/// Classifies a joined driver result. A driver error proves local completion
+/// only; during an active statement it cannot prove the server stopped.
+fn driver_outcome(result: Result<()>, reason: CloseReason) -> SessionClose {
+    match (result, reason) {
+        (Ok(()), _) | (Err(_), CloseReason::Idle) => SessionClose::Graceful,
+        (Err(_), CloseReason::OperationInFlight) => SessionClose::Aborted,
+    }
+}
+
 async fn cancel_native(slot: &CancelSlot) {
     let token = slot.borrow().clone();
     if let Some((token, address)) = token {
@@ -414,7 +435,13 @@ impl PostgreSqlAdapter {
         }
         if result.is_err() {
             operation.cancel();
-            if self.close_session().await.is_err() {
+            // The failed operation may have left the backend executing, so a
+            // driver error here must fence rather than look graceful.
+            if self
+                .close_session(CloseReason::OperationInFlight)
+                .await
+                .is_err()
+            {
                 self.poisoned = true;
                 result = Err(Error::Cleanup);
             }
@@ -424,7 +451,7 @@ impl PostgreSqlAdapter {
 
     async fn recover_incomplete_operation(&mut self, error: Error) -> Error {
         let had_session = self.session.is_some();
-        let close = match self.close_session().await {
+        let close = match self.close_session(CloseReason::OperationInFlight).await {
             Ok(close) => close,
             Err(_) => {
                 self.poisoned = true;
@@ -465,7 +492,7 @@ impl PostgreSqlAdapter {
         Ok(())
     }
 
-    pub(crate) async fn close_session(&mut self) -> Result<SessionClose> {
+    pub(crate) async fn close_session(&mut self, reason: CloseReason) -> Result<SessionClose> {
         let _ = self.cancel.borrow_mut().take();
         if let Some(session) = self.session.as_mut() {
             let _ = session.statement.take();
@@ -477,9 +504,10 @@ impl PostgreSqlAdapter {
             )
             .await
             {
-                // Either task result confirms the driver stopped. A panic-style
-                // JoinError means cleanup itself was not observed completing.
-                Ok(Ok(_)) => Ok(SessionClose::Graceful),
+                // A joined task confirms the driver stopped, but only a driver
+                // that ended without error rules out interrupted server work.
+                // A panic-style JoinError means cleanup itself was not observed.
+                Ok(Ok(result)) => Ok(driver_outcome(result, reason)),
                 Ok(Err(_)) => Err(Error::Cleanup),
                 Err(_) => {
                     // Aborting and then observing a cancellation-style JoinError
@@ -488,7 +516,7 @@ impl PostgreSqlAdapter {
                     session.driver.abort();
                     match (&mut session.driver).await {
                         Err(error) if error.is_cancelled() => Ok(SessionClose::Aborted),
-                        Ok(_) => Ok(SessionClose::Graceful),
+                        Ok(result) => Ok(driver_outcome(result, reason)),
                         Err(_) => Err(Error::Cleanup),
                     }
                 }
@@ -595,7 +623,9 @@ impl PostgreSqlAdapter {
             return Err(Error::Cleanup);
         }
         if matches!(action, Action::Reconnect) {
-            _ = self.close_session().await?;
+            // Any session reaching reconnect is idle: a failed operation already
+            // closed its own session before the controller retried.
+            _ = self.close_session(CloseReason::Idle).await?;
             self.connect(op, credential).await?;
             return Ok(Reply::Done);
         }
