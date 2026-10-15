@@ -1021,6 +1021,7 @@ pub async fn serve(
     let tracker = TaskTracker::new();
 
     let maybe_tls_acceptor = build_tls_acceptor(settings.tls.as_ref()).await?;
+    effect_handler.signal_ready();
 
     loop {
         tokio::select! {

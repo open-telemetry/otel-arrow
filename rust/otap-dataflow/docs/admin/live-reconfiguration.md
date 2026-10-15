@@ -194,9 +194,15 @@ The query string also supports an overall client wait timeout:
 - `resize`: if added or removed cores fail during the operation, the controller
   rolls the resize back by draining newly added cores and relaunching retired
   cores when possible.
-- If rollback cannot restore a healthy serving set, the rollout ends in
-  `rollback_failed` and the mixed state remains visible through status
-  endpoints.
+- Rollback succeeds when every restored runtime reaches readiness before its
+  startup deadline and every undesired runtime thread is confirmed stopped by
+  the end of its shutdown completion window. That window includes the
+  configured drain timeout followed by an additional grace period after forced
+  shutdown begins. A runtime error after either boundary does not retroactively
+  fail rollback.
+- If rollback cannot reach that target state within the readiness deadline or
+  shutdown completion window, the rollout ends in `rollback_failed`. Remaining
+  instances may be in a mixed state visible through status endpoints.
 
 ### Runtime Recovery Flow
 
