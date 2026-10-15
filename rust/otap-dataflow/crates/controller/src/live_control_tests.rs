@@ -4060,9 +4060,14 @@ connections:
 /// uncommitted until global shutdown cleans it up.
 #[test]
 fn startup_create_rollout_failure_defers_candidate_rollback() {
+    let _delayed_lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_delayed_ready_receiver();
+
     let desired = engine_config_with_pipeline(simple_pipeline_yaml());
     let runtime =
-        test_runtime_with_factory(&empty_engine_config(), &RECOVERY_TEST_PIPELINE_FACTORY);
+        test_runtime_with_factory(&empty_engine_config(), &DELAYED_READY_PIPELINE_FACTORY);
 
     let status = runtime
         .reconcile_engine_config_startup(desired, 1)
@@ -4102,6 +4107,7 @@ fn startup_create_rollout_failure_defers_candidate_rollback() {
         );
     }
 
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
     runtime
         .request_shutdown_all(1)
         .expect("global cleanup should accept candidate shutdown");
