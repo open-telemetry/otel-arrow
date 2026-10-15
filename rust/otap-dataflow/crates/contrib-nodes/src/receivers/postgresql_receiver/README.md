@@ -92,6 +92,7 @@ INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, acto
 | `connection.database` | Yes | Database name, 1-63 UTF-8 bytes. |
 | `query.statement` | Yes | One read-only `SELECT`, at most 16 KiB. |
 | `query.interval` | No | `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
+| `query.timeout` | N/A | Fixed at default `30s` and not configurable for v1. |
 | `query.max_rows_per_poll` | Yes | Page ceiling, `1`-`10000`; no default or whole-cycle row cap. |
 | `query.max_batch_bytes` | Yes | Separate normalized-page and encoded-OTLP ceilings, `1` byte-`256 MiB`; integer bytes or strings such as `10 MiB`. |
 | `query.fetch_size_rows` | No | `300`; `1`-`10000`, no greater than the page ceiling. The largest of the last 32 rows may reduce a fetch; sustained smaller rows let it grow again. |
@@ -101,6 +102,9 @@ INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, acto
 | `checkpoint.directory` | Yes | Persistent writable state directory. |
 
 Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backoff: 1s`, `max_consecutive_failures: 5`.
+
+Explicit `null` values are rejected for PostgreSQL receiver fields. Omit optional
+fields to use defaults.
 
 ### Authentication and source identity
 
