@@ -66,7 +66,7 @@ mod test {
     };
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
     use weaver_common::result::WResult;
-    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_forge::v1::registry::ResolvedRegistry;
     use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
     use weaver_semconv::registry_repo::RegistryRepo;
 
@@ -76,6 +76,9 @@ mod test {
     const ITERATIONS: usize = 10;
 
     fn get_registry() -> ResolvedRegistry {
+        // weaver fetches remote registries over rustls without choosing a crypto
+        // provider. Production installs one at startup; tests must do it here.
+        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
             None,
