@@ -282,7 +282,9 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let time_elapsed = time.elapsed();
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();
-                    let transport_headers = context.transport_headers().cloned();
+                    let transport_headers = context
+                        .transport_headers()
+                        .map(|headers| headers.to_transport_headers());
                     let msg = OtlpProtoBytes::try_from_with_default(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());

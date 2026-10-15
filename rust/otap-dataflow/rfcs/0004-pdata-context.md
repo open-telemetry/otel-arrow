@@ -281,8 +281,10 @@ destination plan retains an existing composite only when that declaration is
 identical. A same-named composite with different provenance is treated as
 absent, so the destination presence gate is evaluated before its value is
 materialized. Runtime projection reads use the existing logical projection
-model; general consumer bindings, optimized lookups, projector transforms, and
-propagation remain separate integration work.
+model. Qualified outbound transport-header selectors read these materialized
+snapshots, so transport-backed, constant, and random members share the same
+composite presence gate. General consumer bindings, optimized lookups, and
+projector transforms remain separate integration work.
 
 UUID v7 values expose their generation time and are not secrets. They must not
 be used as authentication tokens, secret values, or cryptographic anti-replay
@@ -307,6 +309,22 @@ determine whether a composite entry is present. Configuration values are not
 secret storage and must not contain credentials or other sensitive data.
 Selected constants are copied into the materialized context when the enclosing
 composite is present.
+
+#### Outbound transport-header propagation
+
+Outbound propagation resolves qualified `composite:member` selectors against
+the same compiled layout used for receiver-boundary materialization. Exporters
+therefore do not re-evaluate a composite's conditions against source values
+that may have changed later in the pipeline.
+
+Transport-header members retain their text or binary value kind and their
+original wire name when capture policy requires it. Constant and randomness
+members have no original wire name, so `name: preserve` falls back to the
+configured member name. Duplicate source values retain source order.
+
+Captured transport headers and materialized composites share one immutable
+context store per pdata message. Detached clones share that store until a
+processor explicitly takes or replaces transport headers.
 
 #### Composite context entry dimensions
 

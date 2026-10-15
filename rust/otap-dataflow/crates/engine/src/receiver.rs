@@ -98,7 +98,7 @@ pub enum ReceiverWrapper<PData> {
         capture_policy: Option<CompiledHeaderCapturePolicy>,
         /// Pre-resolved authorized identity claim projection policy.
         authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
-        /// Pipeline plan for materializing selected constant/randomness composites.
+        /// Pipeline plan for materializing selected composites.
         context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     },
     /// A receiver with a `Send` implementation.
@@ -128,7 +128,7 @@ pub enum ReceiverWrapper<PData> {
         capture_policy: Option<CompiledHeaderCapturePolicy>,
         /// Pre-resolved authorized identity claim projection policy.
         authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
-        /// Pipeline plan for materializing selected constant/randomness composites.
+        /// Pipeline plan for materializing selected composites.
         context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     },
 }

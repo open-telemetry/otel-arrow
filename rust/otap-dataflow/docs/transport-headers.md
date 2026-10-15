@@ -220,10 +220,10 @@ header_propagation:
         - x-request-id
 ```
 
-#### Conditional Composite Members
+#### Composite Members
 
-A named selector can refer to a transport-header member of a composite context
-entry using `composite:member` syntax:
+A named selector can refer to a transport-header, constant, or randomness
+member of a composite context entry using `composite:member` syntax:
 
 ```yaml
 policies:
@@ -261,7 +261,10 @@ The `transport_header_match` entry type supports exact-value matching
 over transport headers.
 
 Composite entry bindings (e.g., `product_user:workspace`) are valid only
-when all conditional entries match (i.e., when `environment=production`)
+when every value-bearing member is present and all conditional entries match
+(i.e., when `environment=production`). The composite is materialized at the
+receiver boundary, and exporters read that snapshot rather than re-evaluating
+conditions after in-pipeline source changes.
 
 Matching has these semantics:
 
@@ -270,6 +273,8 @@ Matching has these semantics:
 - When a condition header has duplicate values, any exact match satisfies that
   condition.
 - Every condition must be satisfied.
+- Constant and randomness members can be selected for propagation.
+- Authorized-identity members cannot be propagated as transport headers.
 - A qualified composite selector must not resolve to a primitive source also
   selected by another qualified or unqualified entry.
 - Repeated unqualified selectors, including ASCII case variants, are accepted
@@ -283,7 +288,7 @@ the primitive `workspace` header can propagate it independently even when
 
 | Value | Behavior |
 | --- | --- |
-| `preserve` | Use original wire name (default). |
+| `preserve` | Use the original wire name, or the configured member name when no original name exists (default). |
 | `stored_name` | Use the stored header name for unqualified selectors or the selected composite member name for qualified selectors. |
 
 For example, if a header was captured from `X-Tenant-Id` and stored

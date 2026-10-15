@@ -860,12 +860,14 @@ fn build_grpc_metadata(
     static_metadata: Option<&MetadataMap>,
     auth_header: Option<(HeaderName, HeaderValue)>,
 ) -> Option<MetadataMap> {
-    let propagation = effect_handler
-        .propagation_policy()
-        .zip(context.transport_headers());
+    let propagation_policy = effect_handler.propagation_policy();
+    let has_propagation = propagation_policy.is_some_and(|policy| {
+        context.transport_headers().is_some()
+            || (policy.has_materialized_selections() && context.materialized_context().is_some())
+    });
 
     // Zero-alloc fast path: nothing static configured, nothing to propagate, no auth.
-    if static_metadata.is_none() && propagation.is_none() && auth_header.is_none() {
+    if static_metadata.is_none() && !has_propagation && auth_header.is_none() {
         return None;
     }
 
@@ -874,63 +876,16 @@ fn build_grpc_metadata(
         None => MetadataMap::new(),
     };
 
-    if let Some((policy, transport_headers)) = propagation {
-        for header in policy.propagate(transport_headers) {
-            match header.value_kind {
-                ValueKind::Text => {
-                    // ASCII metadata: parse the header name and value.
-                    let Ok(key) = header
-                        .header_name
-                        .parse::<MetadataKey<tonic::metadata::Ascii>>()
-                    else {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "invalid ascii metadata key",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    };
-                    let Ok(value) = MetadataValue::try_from(header.value) else {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "invalid ascii metadata value",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    };
-                    // Static config wins: a statically configured header (e.g. an
-                    // `authorization` backend credential) must not be duplicated or
-                    // overridden by a propagated header with the same key. Static
-                    // metadata is ASCII-only, so only text headers can collide.
-                    if static_metadata.is_some_and(|s| s.contains_key(key.as_str())) {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "static header takes precedence over propagated header",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    }
-                    let _ = metadata.append(key, value);
-                }
-                ValueKind::Binary => {
-                    // Binary metadata: gRPC binary metadata keys must end with `-bin`.
-                    // Metadata map will error if attempting to insert key without `-bin`.
-                    let key_name = if header.header_name.ends_with("-bin") {
-                        header.header_name.to_string()
-                    } else {
-                        format!("{}-bin", header.header_name)
-                    };
-                    let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "invalid binary metadata key",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    };
-                    let value = MetadataValue::from_bytes(header.value);
-                    let _ = metadata.append_bin(key, value);
-                }
+    if let Some(policy) = propagation_policy {
+        if let Some(transport_headers) = context.transport_headers() {
+            for header in
+                policy.propagate_materialized(transport_headers, context.materialized_context())
+            {
+                append_propagated_grpc_header(&mut metadata, static_metadata, header);
+            }
+        } else {
+            for header in policy.propagate_materialized_only(context.materialized_context()) {
+                append_propagated_grpc_header(&mut metadata, static_metadata, header);
             }
         }
     }
@@ -949,6 +904,62 @@ fn build_grpc_metadata(
         None
     } else {
         Some(metadata)
+    }
+}
+
+fn append_propagated_grpc_header(
+    metadata: &mut MetadataMap,
+    static_metadata: Option<&MetadataMap>,
+    header: otel_arrow_dfe_config::transport_headers_policy::PropagatedHeader<'_>,
+) {
+    match header.value_kind {
+        ValueKind::Text => {
+            let Ok(key) = header
+                .header_name
+                .parse::<MetadataKey<tonic::metadata::Ascii>>()
+            else {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "invalid ascii metadata key",
+                    header_name = %header.header_name
+                );
+                return;
+            };
+            let Ok(value) = MetadataValue::try_from(header.value) else {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "invalid ascii metadata value",
+                    header_name = %header.header_name
+                );
+                return;
+            };
+            if static_metadata.is_some_and(|configured| configured.contains_key(key.as_str())) {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "static header takes precedence over propagated header",
+                    header_name = %header.header_name
+                );
+                return;
+            }
+            let _ = metadata.append(key, value);
+        }
+        ValueKind::Binary => {
+            let key_name = if header.header_name.ends_with("-bin") {
+                header.header_name.to_string()
+            } else {
+                format!("{}-bin", header.header_name)
+            };
+            let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "invalid binary metadata key",
+                    header_name = %header.header_name
+                );
+                return;
+            };
+            let value = MetadataValue::from_bytes(header.value);
+            let _ = metadata.append_bin(key, value);
+        }
     }
 }
 
@@ -2956,6 +2967,16 @@ mod tests {
         context
     }
 
+    /// Helper: Creates a [`Context`] and materializes the propagation policy's composites.
+    fn materialized_context_with_headers(
+        headers: TransportHeaders,
+        policy: &HeaderPropagationPolicy,
+    ) -> Context {
+        let mut context = context_with_headers(headers);
+        context.materialize_context(policy.materialization_plan());
+        context
+    }
+
     /// Helper: Creates a [`Context`] without any transport headers.
     fn context_without_headers() -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
@@ -3018,6 +3039,46 @@ mod tests {
         .expect("conditional propagation policy compiles")
     }
 
+    fn generated_member_policy() -> HeaderPropagationPolicy {
+        let context: ContextPolicy = serde_json::from_value(serde_json::json!({
+            "entries": {
+                "outbound": [
+                    {
+                        "type": "constant",
+                        "name": "route",
+                        "value": "otlp-grpc"
+                    },
+                    {
+                        "type": "randomness",
+                        "name": "correlation",
+                        "value": "uuid7"
+                    }
+                ]
+            }
+        }))
+        .expect("valid generated context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
+            "default": {
+                "selector": {
+                    "type": "named",
+                    "named": ["outbound:route", "outbound:correlation"]
+                },
+                "name": "stored_name"
+            }
+        }))
+        .expect("valid generated propagation policy");
+        HeaderPropagationPolicy::compile(
+            policy,
+            &[ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name,
+                definition,
+            }],
+        )
+        .expect("generated propagation policy compiles")
+    }
+
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
@@ -3068,18 +3129,19 @@ mod tests {
     /// Guarantees: failed conditions omit the header, while a match emits the original name and value.
     #[test]
     fn build_grpc_metadata_applies_conditional_composite_propagation() {
-        let handler = make_effect_handler_with_policy(Some(conditional_workspace_policy()));
+        let policy = conditional_workspace_policy();
+        let handler = make_effect_handler_with_policy(Some(policy.clone()));
         let mut failing_headers = TransportHeaders::new();
         failing_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
         failing_headers.push(text_header("environment", "environment", b"staging"));
-        let failing_context = context_with_headers(failing_headers);
+        let failing_context = materialized_context_with_headers(failing_headers, &policy);
 
         assert!(build_grpc_metadata(&handler, &failing_context, None, None).is_none());
 
         let mut matching_headers = TransportHeaders::new();
         matching_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
         matching_headers.push(text_header("environment", "environment", b"production"));
-        let matching_context = context_with_headers(matching_headers);
+        let matching_context = materialized_context_with_headers(matching_headers, &policy);
 
         let matching = build_grpc_metadata(&handler, &matching_context, None, None)
             .expect("matching composite produces metadata");
@@ -3093,6 +3155,34 @@ mod tests {
         );
         assert!(matching.get("workspace").is_none());
         assert!(matching.get("workspace_id").is_none());
+    }
+
+    /// Scenario: outbound propagation selects constant and UUID-v7 members without captured headers.
+    /// Guarantees: both materialized values are emitted using their configured member names.
+    #[test]
+    fn build_grpc_metadata_propagates_generated_members_without_captured_headers() {
+        let policy = generated_member_policy();
+        let handler = make_effect_handler_with_policy(Some(policy.clone()));
+        let mut context = context_without_headers();
+        context.materialize_context(policy.materialization_plan());
+
+        let metadata = build_grpc_metadata(&handler, &context, None, None)
+            .expect("generated members produce metadata");
+        assert_eq!(
+            metadata
+                .get("route")
+                .expect("constant header")
+                .to_str()
+                .expect("constant is text"),
+            "otlp-grpc"
+        );
+        let correlation = metadata
+            .get("correlation")
+            .expect("random header")
+            .to_str()
+            .expect("UUID is text");
+        assert_eq!(correlation.len(), 36);
+        assert_eq!(correlation.as_bytes()[14], b'7');
     }
 
     /// Scenario: propagation selects all captured headers with an authorization drop override.
