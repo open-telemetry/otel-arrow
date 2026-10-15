@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792033294550,
+  "lastUpdate": 1792034543342,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -62816,6 +62816,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "54870357+MSNev@users.noreply.github.com",
+            "name": "Nev",
+            "username": "MSNev"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "77c03d66881c755660dec0f0b517ab0aeb713aac",
+          "message": "chore(azure-data-explorer): Additional Skeleton for Azure Data Explorer exporter (#4382)\n\n# Change Summary\n\nThis is **PR 2 of the unified multi-signal Azure Data Explorer\nexporter**, building on the foundation merged in #4311\n\n`urn:microsoft:exporter:azure_data_explorer`\n\nThis phase should adds the  bounded transformation of logs, metrics, and\ntraces into JSON rows matching the ADX table layouts documented in phase\n1.\n\nThe exporter should remain explicitly non-operational after this phase.\nHTTP\ntransport, authentication execution, retries, batching, request\ncoalescing,\nexporter metrics, and pipeline ACK/NACK handling will be introduced in\nlater\nphases.\n\n## Signals Supported\n\n- Logs\n- Metrics\n- Traces\n\n## Includes\n\n- JSON string encoding with correct escaping of quotes, backslashes,\ncontrol\n  characters, Unicode, and malformed UTF-8 input\n- Lowercase hexadecimal encoding for byte arrays, trace IDs, and span\nIDs\n- Transformation from the shared pdata view interfaces so the\nimplementation\n  can support both OTLP protobuf and OTAP Arrow inputs\n- One ADX row per log record\n- Support for dynamic and legacy string log-body layouts\n- Configurable top-level `EventName` output\n- Optional `event.name` attribute fallback without overwriting an\nexisting\n  attribute\n- Resource and instrumentation-scope attribute preservation\n- Gauge and sum metric transformation\n- Explicit histogram expansion into sum, count, and cumulative bucket\nrows\n- Exponential histogram expansion into sum, count, and cumulative bucket\nrows\n- Summary expansion into sum, count, and quantile rows\n- Validation that rejects malformed or non-finite metric data rather\nthan\n  silently dropping or changing it\n- One ADX row per span, including status, kind, timestamps, attributes,\nevents,\n  and links\n- Bounded row count, per-row size, and total request size\n- Bounded recursive `AnyValue` nesting depth and traversal work\n- Explicit transformation errors that later runtime phases can classify\nas\n  permanent refusals\n- Focused unit tests for logs, metrics, traces, encoding, schema\nfidelity, and\n  every configured resource limit\n\n## Resource and Correctness Requirements\n\n- Transformation must not create unbounded buffers or collections.\n- Limits must be enforced while rows are emitted, not only after\nconstructing a\n  complete oversized payload.\n- Rows from one source message must not be silently truncated or\npartially\n  accepted when a configured limit is exceeded.\n- Malformed metric structures must fail the complete transformation\ninstead of\n  producing semantically incorrect rows.\n- Attribute precedence must remain deterministic when resource, scope,\nand\n  signal-level attributes are merged.\n- The implementation must remain local to a pipeline instance and must\nnot add\n  shared cross-core state.\n- Rust source must remain ASCII-only and every test must include the\nrequired\n  Scenario and Guarantees documentation.\n\n## Explicit Exclusions from this PR\n\nThese capabilities are intentionally deferred so phase 2 remains a\nfocused,\nreviewable change.\n\n- Sending requests to Azure Data Explorer\n- HTTP client construction or pooling\n- Azure Identity token acquisition or refresh behavior\n- Gzip request compression\n- Retry and `Retry-After` handling\n- Request batching or cross-message coalescing\n- Runtime backpressure and retained-message ownership\n- Pipeline ACK/NACK behavior\n- Exporter runtime metrics\n- Shutdown draining\n- ADX queued ingestion\n- Provisioning ADX databases, tables, or mappings\n- A standalone ADX client\n\n### Additional Context\n\nThis is phase 2 of #4159.\n\nPhase 1 introduced the component skeleton and documented the intended\ncomplete\nbehavior. Phase 2 adds functional signal transformation while\ndeliberately\nleaving the exporter non-operational. Later phases will add transport\nand\nruntime integration incrementally.\n\nRelevant design documentation:\n\n\n`rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/design.md`",
+          "timestamp": "2026-10-15T02:10:38Z",
+          "tree_id": "4cf9fe8e5c3ca53c06a59eabf41cdf47d9fa99b6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/77c03d66881c755660dec0f0b517ab0aeb713aac"
+        },
+        "date": 1792034525620,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.18,
             "unit": "MB"
           },
           {
