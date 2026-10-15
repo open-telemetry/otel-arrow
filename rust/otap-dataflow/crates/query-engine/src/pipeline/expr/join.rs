@@ -147,6 +147,16 @@ pub fn join<'a>(
             let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
+        // Child record (e.g. data point) joining to root record: broadcast parent values
+        // to each child row via child.parent_id -> root.id.
+        (
+            DataScope::Record(RecordScope::Child(_)),
+            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
+        ) => {
+            let join_exec = ChildRecordToRootJoin;
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_scope.clone()))
+        }
         (_, DataScope::StaticScalar) => {
             let join_exec = ScalarJoin {
                 left_is_scalar: false,
@@ -178,6 +188,16 @@ pub fn join<'a>(
                 let join_result = join_exec.join(left, right, otap_batch)?;
                 Ok((join_result, left.data_scope.clone()))
             }
+        }
+        // Child records (e.g. data points) joining to non-record attributes (resource/scope)
+        // require a two-hop join through the root batch.
+        (
+            DataScope::Record(RecordScope::Child(_)),
+            DataScope::Attribute(AttributesIdentifier::NonRecord(pt), _, _),
+        ) => {
+            let join_exec = ChildRecordToNonRecordAttrsJoin::new(*pt);
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_scope.clone()))
         }
         (DataScope::Record(_) | DataScope::RootParent(_), DataScope::Attribute(attr_id, _, _)) => {
             let join_exec = RecordToAttributesJoin::new(*attr_id);
@@ -1017,6 +1037,153 @@ impl JoinExec for RecordToAttributesJoin {
             .as_ref()
             .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
         let right_values = right.values.to_array(right_parent_ids.len())?;
+        let joined_arr = take(&right_values, &to_take, None)?;
+
+        to_join_result(left, joined_arr)
+    }
+}
+
+/// Joins a child record batch (e.g. metric data points) to a non-record attribute batch
+/// (resource or scope attributes) through a two-hop join via the root record batch.
+///
+/// The relationship is: `child.parent_id -> root.id -> root.{resource,scope}.id -> attrs.parent_id`
+///
+/// This is used when a data-point expression references resource or scope attributes, which are
+/// grandparents of the data point. The resulting row order is that of the left side (the child
+/// record).
+struct ChildRecordToNonRecordAttrsJoin {
+    attrs_payload_type: ArrowPayloadType,
+}
+
+impl ChildRecordToNonRecordAttrsJoin {
+    fn new(attrs_payload_type: ArrowPayloadType) -> Self {
+        Self { attrs_payload_type }
+    }
+}
+
+impl JoinExec for ChildRecordToNonRecordAttrsJoin {
+    fn rows_to_take(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array> {
+        let child_parent_ids = left
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+
+        let attrs_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+
+        let root_rb = otap_batch
+            .root_record_batch()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "ChildRecordToNonRecordAttrsJoin requires a root record batch".into(),
+            })?;
+
+        let parent_struct = match self.attrs_payload_type {
+            ArrowPayloadType::ResourceAttrs => consts::RESOURCE,
+            ArrowPayloadType::ScopeAttrs => consts::SCOPE,
+            other => {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "ChildRecordToNonRecordAttrsJoin received invalid payload type {other:?}"
+                    ),
+                });
+            }
+        };
+
+        // Two-hop join:
+        // 1. Build a lookup of attrs.parent_id -> attrs row index
+        // 2. For each root record, look up its {resource,scope}.id in the attrs lookup
+        // 3. Build a lookup of root.id -> root row index
+        // 4. For each child record, look up its parent_id in the root lookup, then
+        //    take from the root_to_attrs result
+
+        let root_ids = root_rb
+            .column_by_name(consts::ID)
+            .ok_or_else(|| missing_column_err(consts::ID))?;
+        let Some(root_struct_ids) = get_optional_array_from_struct_array_from_record_batch(
+            root_rb,
+            parent_struct,
+            consts::ID,
+        )?
+        else {
+            // Parent struct has no ID column -- return all nulls (no attribute matches)
+            return Ok(Int32Array::new_null(child_parent_ids.len()));
+        };
+
+        let attrs_lookup = U16IdJoinLookup::try_new_from_array(attrs_parent_ids)?;
+        let root_to_attrs_rows =
+            try_build_simple_join_ids(root_struct_ids.as_ref(), &attrs_lookup)?;
+
+        let root_lookup = U16IdJoinLookup::try_new_from_array(root_ids)?;
+        let child_to_root_rows =
+            try_build_simple_join_ids(child_parent_ids.as_ref(), &root_lookup)?;
+
+        Ok(take(&root_to_attrs_rows, &child_to_root_rows, None)?
+            .as_primitive::<arrow::datatypes::Int32Type>()
+            .clone())
+    }
+
+    fn join(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+        let right_values = right.values.to_array(right_parent_ids.len())?;
+        let joined_arr = take(&right_values, &to_take, None)?;
+
+        to_join_result(left, joined_arr)
+    }
+}
+
+/// Joins a child record batch (e.g. metric data points) to the root record batch (the parent)
+/// via `child.parent_id -> root.id`. Each child row gets the value from its parent root row.
+/// The resulting row order is that of the left side (the child record).
+struct ChildRecordToRootJoin;
+
+impl JoinExec for ChildRecordToRootJoin {
+    fn rows_to_take(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array> {
+        let child_parent_ids = left
+            .parent_ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::PARENT_ID))?;
+        let root_ids = right
+            .ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::ID))?;
+
+        let root_lookup = U16IdJoinLookup::try_new_from_array(root_ids)?;
+        try_build_simple_join_ids(child_parent_ids.as_ref(), &root_lookup)
+    }
+
+    fn join(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let to_take = self.rows_to_take(left, right, otap_batch)?;
+        let root_ids = right
+            .ids
+            .as_ref()
+            .ok_or_else(|| missing_column_err(consts::ID))?;
+        let right_values = right.values.to_array(root_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
 
         to_join_result(left, joined_arr)

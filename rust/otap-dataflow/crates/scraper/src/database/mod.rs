@@ -5,7 +5,7 @@
 //!
 //! Vendor adapters own native connectivity and normalize returned values into
 //! [`CellValue`]. Shared OTLP encoding preserves these normalized values.
-//! Scalar and composite watermarks share the same durable delivery runtime.
+//! Snapshot, scalar, and composite modes share the durable delivery runtime.
 
 mod config;
 mod driver;
@@ -24,7 +24,8 @@ pub(crate) use otap::OtlpPageEncoder;
 pub use otap::{EncodedPage, OtlpMappingError, encode_page, validate_mapping};
 pub use page::{CompositeCursor, Cursor, CursorRow, QueryPage};
 pub use query::{
-    CompiledQuery, CompiledWatermark, CompositeWatermark, QueryError, ScalarWatermark,
+    CompiledQuery, CompiledWatermark, CompositeWatermark, MAX_QUERY_BYTES, QueryError,
+    ScalarWatermark,
 };
 pub use row::{CellValue, ColumnMetadata, Row};
 
@@ -38,3 +39,6 @@ pub use scalar::{CursorError, ScalarValue};
 
 #[cfg(test)]
 mod scalar_tests;
+
+#[cfg(test)]
+mod snapshot_tests;

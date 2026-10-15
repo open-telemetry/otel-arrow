@@ -8,29 +8,33 @@
 # entry at release-prep time.
 #
 # Usage:
-#   generate-dependency-changelog.sh <tree-path> <language-label> <output-yaml>
+#   generate-dependency-changelog.sh <tree-path> <language-label> <output-yaml> <tag-pattern>
 #
 # Example:
-#   generate-dependency-changelog.sh go Go go/.chloggen/auto-dependency-updates.yaml
+#   generate-dependency-changelog.sh go Go \
+#     go/.chloggen/auto-dependency-updates.yaml \
+#     'go/v[0-9]*.[0-9]*.[0-9]*'
 #   generate-dependency-changelog.sh rust/otap-dataflow Rust \
-#     rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml
+#     rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml \
+#     'rust/otap-dataflow/v[0-9]*.[0-9]*.[0-9]*'
 #
 # Exits 0 with no file written when there are no qualifying commits.
 
 set -euo pipefail
 
-if [ $# -ne 3 ]; then
-    echo "Usage: $0 <tree-path> <language-label> <output-yaml>" >&2
+if [ $# -ne 4 ]; then
+    echo "Usage: $0 <tree-path> <language-label> <output-yaml> <tag-pattern>" >&2
     exit 2
 fi
 
 TREE_PATH="$1"
 LANGUAGE_LABEL="$2"
 OUTPUT_YAML="$3"
+TAG_PATTERN="$4"
 
-# Find the most recent release tag (matches `vX.Y.Z`). If none exists,
-# walk the entire history.
-LAST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1 || true)
+# Find the most recent component release tag. If none exists, walk the entire
+# history.
+LAST_TAG=$(git tag --list "$TAG_PATTERN" --sort=-version:refname | head -n1 || true)
 
 if [ -n "$LAST_TAG" ]; then
     RANGE="${LAST_TAG}..HEAD"

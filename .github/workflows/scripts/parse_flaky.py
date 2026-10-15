@@ -225,12 +225,15 @@ def identify_flaky_tests(test_results):
 
 
 def _find_job_url(job_url_map, run_id, meta):
-    """Find a job URL by checking that all metadata values appear in the name.
+    """Find a job URL using the metadata values present in its display name.
 
-    This avoids depending on the exact display-name format that GitHub
-    Actions generates for matrix jobs.
+    Required Linux/Windows jobs have only partition in their matrix; their
+    OS and folder metadata are fixed and absent from the display name.
     """
-    components = [str(v) for v in meta.values()]
+    if meta.get("job") in {"test_required_linux", "test_required_windows"}:
+        components = [f"{meta['job']} ({meta.get('partition')})"]
+    else:
+        components = [str(v) for v in meta.values()]
     for (rid, job_name), url in job_url_map.items():
         if rid != run_id:
             continue
@@ -242,10 +245,9 @@ def _find_job_url(job_url_map, run_id, meta):
 def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
     """For each flaky test, resolve fail_artifacts to job HTML URLs.
 
-    Matches jobs by checking that all metadata field values (job key,
-    os, partition, folder) appear somewhere in the GitHub API job name.
-    Artifacts from older runs that lack metadata fall back to a plain
-    run-level link.
+    Matches job keys and matrix values from artifact metadata against the
+    GitHub API job name. Missing metadata, unmatched jobs, and failed job
+    lookups fall back to a plain run-level link.
 
     Makes one API call per unique run_id that contains flaky tests.
     Populates a "fail_job_links" list of (label, url) on each entry.
@@ -269,13 +271,13 @@ def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
                     "--paginate",
                     "--jq", '.jobs[] | "\\(.name)\t\\(.html_url)"',
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, check=True,
             )
             for line in result.stdout.strip().splitlines():
                 if "\t" in line:
                     name, url = line.split("\t", 1)
                     job_url_map[(run_id, name)] = url
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(
                 f"Warning: Could not fetch jobs for run {run_id}: {e}",
                 file=sys.stderr,
@@ -287,19 +289,23 @@ def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
         seen_run_ids = set()
         for run_id, artifact_name in t["fail_artifacts"][:MAX_JOB_LINKS]:
             meta = artifact_metadata.get((run_id, artifact_name))
-            if not meta:
-                # No metadata — fall back to a run-level link (once per run)
+            url = _find_job_url(job_url_map, run_id, meta) if meta else None
+            if url:
+                label = artifact_name.removeprefix("junit-xml-")
+                links.append((label, url))
+            else:
+                if meta:
+                    print(
+                        f"Warning: Could not match {artifact_name} to a job "
+                        f"in run {run_id}; using a run-level link",
+                        file=sys.stderr,
+                    )
                 if run_id not in seen_run_ids and run_id != "unknown":
                     seen_run_ids.add(run_id)
                     links.append((
                         f"run #{run_id[-4:]}",
                         f"https://github.com/{repo_slug}/actions/runs/{run_id}",
                     ))
-                continue
-            url = _find_job_url(job_url_map, run_id, meta)
-            if url:
-                label = artifact_name.removeprefix("junit-xml-")
-                links.append((label, url))
         t["fail_job_links"] = links
 
 
@@ -322,7 +328,7 @@ def encode_flaky_history(history):
 
 
 def parse_flaky_history(body, fallback_date):
-    """Parse last-seen history, migrating reports that predate the marker."""
+    """Read diagnostics and last-seen dates, accepting older date-only history."""
     marker = HISTORY_MARKER_RE.search(body)
     if marker:
         try:
@@ -334,10 +340,30 @@ def parse_flaky_history(body, fallback_date):
             raise ValueError("Flaky-history marker must contain an object")
 
         history = {}
-        for name, last_seen in raw_history.items():
-            if not isinstance(name, str) or not isinstance(last_seen, str):
+        for name, entry in raw_history.items():
+            if isinstance(entry, str):
+                entry = {"last_seen": entry}
+            if (
+                not isinstance(name, str)
+                or not isinstance(entry, dict)
+                or not all(
+                    isinstance(entry.get(field, "n/a"), str)
+                    for field in ("last_seen", "platform", "jobs")
+                )
+                or "last_seen" not in entry
+            ):
                 raise ValueError("Invalid flaky-history entry")
-            history[name] = date.fromisoformat(last_seen)
+            messages = entry.get("fail_messages", [])
+            if not isinstance(messages, list) or not all(
+                isinstance(message, str) for message in messages
+            ):
+                raise ValueError("Invalid flaky-history fail_messages")
+            history[name] = {
+                "last_seen": date.fromisoformat(entry["last_seen"]),
+                "platform": entry.get("platform", "n/a"),
+                "jobs": entry.get("jobs", "n/a"),
+                "fail_messages": messages,
+            }
         return history
 
     # Migrate both the HTML form and the earlier backtick form. Treat tests
@@ -348,7 +374,13 @@ def parse_flaky_history(body, fallback_date):
         for name in re.findall(r"\|\s*<code>(.*?)</code>\s*\|", body)
     }
     names.update(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
-    return {name: fallback_date for name in names}
+    return {
+        name: {
+            "last_seen": fallback_date, "platform": "n/a",
+            "jobs": "n/a", "fail_messages": [],
+        }
+        for name in names
+    }
 
 
 def get_previous_flaky_history(issue_number, fallback_date):
@@ -439,27 +471,30 @@ def format_issue_body(
     retained_history = dict(
         sorted(
             (
-                (name, last_seen)
-                for name, last_seen in previous_history.items()
+                (name, entry)
+                for name, entry in previous_history.items()
                 if name not in current_names
-                and 0 <= (report_date - last_seen).days <= retention_days
+                and 0 <= (report_date - entry["last_seen"]).days
+                <= retention_days
             ),
-            key=lambda item: (-item[1].toordinal(), item[0]),
+            key=lambda item: (-item[1]["last_seen"].toordinal(), item[0]),
         )
     )
     new_names = current_names - set(previous_history)
 
     history = {
-        t["name"]: current_last_seen[t["name"]].isoformat()
+        t["name"]: {
+            "last_seen": current_last_seen[t["name"]].isoformat(),
+            "fail_messages": t["fail_messages"][:3],
+        }
         for t in flaky_tests
     }
     history.update(
         {
-            name: last_seen.isoformat()
-            for name, last_seen in retained_history.items()
+            name: {**entry, "last_seen": entry["last_seen"].isoformat()}
+            for name, entry in retained_history.items()
         }
     )
-    encoded_history = encode_flaky_history(history)
 
     current_tests = flaky_tests[:MAX_REPORT_TESTS]
     retained_tests = dict(
@@ -496,7 +531,7 @@ def format_issue_body(
             " if flaky tests are detected in future runs."
         )
         lines.append("")
-        lines.append(f"<!-- flaky-history: {encoded_history} -->")
+        lines.append(f"<!-- flaky-history: {encode_flaky_history(history)} -->")
         return "\n".join(lines)
 
     lines.append(
@@ -518,9 +553,11 @@ def format_issue_body(
         )
     lines.append("")
     lines.append(
-        ":hourglass_flowing_sand: means the test was not observed in the "
+        ":hourglass_flowing_sand: means the test was not observed flaky in the "
         "current sample but remains listed until its last-seen date is more "
-        f"than {retention_days} days old."
+        f"than {retention_days} days old. Its platform, job links, and failure "
+        "messages are from its last observation; current-sample counts "
+        "are unavailable."
     )
     lines.append("")
 
@@ -533,7 +570,7 @@ def format_issue_body(
         "|--------|------|----------|-----------|-----------|--------|----------|-------------|"
     )
 
-    for t in current_tests:
+    for index, t in enumerate(flaky_tests):
         name = t["name"]
         display_name = format_test_name(name)
 
@@ -553,12 +590,16 @@ def format_issue_body(
         job_links = t.get("fail_job_links", [])
         if job_links:
             run_links = ", ".join(
-                f"[{label}]({url})" for label, url in job_links[:5]
+                f"[{label}]({url})" for label, url in job_links[:MAX_JOB_LINKS]
             )
             if len(job_links) > MAX_JOB_LINKS:
                 run_links += f" (+{len(job_links) - MAX_JOB_LINKS} more)"
         else:
             run_links = "n/a"
+
+        history[name].update(platform=platform, jobs=run_links)
+        if index >= MAX_REPORT_TESTS:
+            continue
 
         lines.append(
             f"| {status} | <code>{display_name}</code> | {platform}"
@@ -567,16 +608,19 @@ def format_issue_body(
             f" | {t['fail_count']} | {run_links} |"
         )
 
-    for name, last_seen in retained_tests.items():
+    for name, entry in retained_tests.items():
         lines.append(
             f"| :hourglass_flowing_sand: | "
-            f"<code>{format_test_name(name)}</code> | n/a"
-            f" | Not observed in current sample | {last_seen.isoformat()}"
-            " | n/a | n/a | n/a |"
+            f"<code>{format_test_name(name)}</code> | {entry.get('platform', 'n/a')}"
+            f" | Not observed flaky in current sample | {entry['last_seen'].isoformat()}"
+            f" | n/a | n/a | {entry.get('jobs', 'n/a')} |"
         )
 
     # Failure message details (collapsible section)
-    tests_with_msgs = [t for t in current_tests if t["fail_messages"]]
+    tests_with_msgs = [t for t in current_tests if t["fail_messages"]] + [
+        {"name": name, **entry}
+        for name, entry in retained_tests.items() if entry.get("fail_messages")
+    ]
     if tests_with_msgs:
         lines.append("")
         lines.append("<details>")
@@ -586,7 +630,10 @@ def format_issue_body(
         lines.append("")
         for t in tests_with_msgs:
             name = format_test_name(t["name"])
-            lines.append(f"**<code>{name}</code>**")
+            historical = (
+                " (last observed)" if t["name"] not in current_names else ""
+            )
+            lines.append(f"**<code>{name}</code>**{historical}")
             for msg in t["fail_messages"]:
                 lines.append(f"<pre>{html.escape(msg)}</pre>")
             lines.append("")
@@ -620,7 +667,7 @@ def format_issue_body(
     )
     lines.append("")
     lines.append(
-        f"<!-- flaky-history: {encoded_history} -->"
+        f"<!-- flaky-history: {encode_flaky_history(history)} -->"
     )
 
     return "\n".join(lines)

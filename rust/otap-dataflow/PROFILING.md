@@ -2,6 +2,23 @@
 
 This section covers CPU and memory profiling for `df_engine`.
 
+The `profiling` build profile uses the level `3`, fat LTO, and single codegen
+unit settings from `release-perf`, while retaining full debug information and
+symbols. This enables profiling with the production optimization settings.
+
+The custom release profiles remove debug information and retain function
+symbols. On Linux, this preserves application function names in backtraces and
+live CPU profiles. Source file/line information requires a build with debug
+information. Package the configured release output directly; an additional
+`--strip-all` pass removes the function names again.
+
+The pinned CPU profiler discards unresolved frames and exports neither their
+instruction addresses nor mappings. Separate debug artifacts cannot recover
+those frames after export. Retaining function symbols in the deployed binary
+keeps the current production profiling path useful. See the
+[release profile measurements](docs/release-profiles.md#stack-capture-cost)
+for diagnostic validation and observed toolchain limitations.
+
 ## CPU profiling (samply)
 
 **Requirements**:

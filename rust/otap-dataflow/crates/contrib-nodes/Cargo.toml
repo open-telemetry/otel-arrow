@@ -23,6 +23,7 @@ otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-scraper = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
@@ -36,13 +37,16 @@ prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
+sqlparser = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -90,6 +94,7 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 # which is not a valid Win32 executable (os error 193).
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
+windows-sys = { workspace = true, optional = true, features = ["Win32_System_Performance"] }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -98,13 +103,15 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-# Keep these umbrella lists exhaustive. Features can appear in both directional
-# categories when they intentionally include source and destination nodes.
+# Keep these umbrella lists exhaustive except for explicitly opt-in integrations.
+# Features can appear in both directional categories when they intentionally
+# include source and destination nodes.
 contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
     "kafka",
     "user-events",
+    "windows-perf-counters",
     "windows-event-forwarding",
 ]
 contrib-processors = [
@@ -114,6 +121,7 @@ contrib-processors = [
 ]
 
 contrib-exporters = [
+    "azure-data-explorer",
     "azure-monitor",
     "clickhouse",
     "geneva",
@@ -146,10 +154,23 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
+# Independently opt-in preparation only; no SQL Server runtime is registered yet.
+sql-server = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:sqlparser",
+    "dep:blake3",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:secrecy",
+]
 etw = ["dep:one_collect", "dep:humantime-serde"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
 # receiver's remaining optional dependencies land with the receiver itself.
-windows-event-forwarding = ["dep:quick-xml"]
+windows-event-forwarding = [
+    "dep:quick-xml",
+    "dep:chrono",
+    "dep:serde_cbor",
+]
 user-events = [
     "dep:base64",
     "dep:chrono",
@@ -157,6 +178,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
+windows-perf-counters = ["dep:humantime", "dep:humantime-serde", "dep:windows-sys"]
 
 # Processors.
 condense-attributes = []
@@ -171,6 +193,14 @@ recordset-kql = [
 resource-validator = []
 
 # Exporters.
+azure-data-explorer = [
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:itoa",
+    "dep:reqwest",
+    "dep:ryu",
+    "dep:sysinfo",
+]
 azure-monitor = [
     "dep:opentelemetry-proto",
     "dep:reqwest",
@@ -205,6 +235,8 @@ geneva = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+    # Geneva metrics exporter.
+    "dep:crc32fast",
 ]
 geneva-certificate-auth = [
     "geneva",
@@ -234,6 +266,7 @@ otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true

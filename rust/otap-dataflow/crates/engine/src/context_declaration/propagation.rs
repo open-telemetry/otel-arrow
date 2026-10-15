@@ -70,16 +70,27 @@ impl CompiledHeaderPropagationPolicy {
             let mut conditions = Vec::new();
             for part in &declaration.definition.0 {
                 match part {
+                    ContextEntryPart::Constant { name, .. } => {
+                        if name == reference.name() {
+                            return Err(format!(
+                                "context entry reference `{reference}` selects constant member `{name}`, which cannot be propagated until constant runtime integration is available"
+                            ));
+                        }
+                    }
+                    ContextEntryPart::Randomness { name, .. } => {
+                        if name == reference.name() {
+                            return Err(format!(
+                                "context entry reference `{reference}` selects randomness member `{name}`, which cannot be propagated until randomness runtime integration is available"
+                            ));
+                        }
+                    }
                     ContextEntryPart::TransportHeader { name, store_as } => {
-                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
-                            source_name = Some(unqualified_context_name(
-                                name,
-                                "transport-header composite member",
-                            )?);
+                        if store_as.as_ref().unwrap_or(name) == reference.name() {
+                            source_name = Some(name.clone());
                         }
                     }
                     ContextEntryPart::AuthorizedIdentity { name, store_as } => {
-                        if store_as.as_ref().unwrap_or_else(|| name.name()) == reference.name() {
+                        if store_as.as_ref().unwrap_or(name) == reference.name() {
                             return Err(format!(
                                 "context entry reference `{reference}` selects authorized-identity member `{name}`, which cannot be propagated as a transport header"
                             ));
@@ -87,10 +98,7 @@ impl CompiledHeaderPropagationPolicy {
                     }
                     ContextEntryPart::TransportHeaderMatch { name, value } => {
                         conditions.push(CompiledTransportHeaderMatch {
-                            name: unqualified_context_name(
-                                name,
-                                "transport-header match condition",
-                            )?,
+                            name: name.clone(),
                             value: value.as_bytes().into(),
                         });
                     }
@@ -291,18 +299,6 @@ impl CompiledNamedPropagation {
             })
         })
     }
-}
-
-fn unqualified_context_name(
-    reference: &ContextEntryRef,
-    purpose: &str,
-) -> Result<ContextEntryName, String> {
-    if reference.scope().is_some() {
-        return Err(format!(
-            "{purpose} `{reference}` must reference a primitive context entry"
-        ));
-    }
-    Ok(reference.name().clone())
 }
 
 #[cfg(test)]
@@ -659,6 +655,174 @@ default:
         let error = CompiledHeaderPropagationPolicy::compile(policy, &[])
             .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
+    }
+
+    /// Scenario: a qualified selector names a header in a composite that also has a constant.
+    /// Guarantees: the unrelated constant does not block compilation or header propagation.
+    #[test]
+    fn propagates_header_with_constant_sibling() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  route:
+    - type: constant
+      name: route_name
+      value: otlp-http-json
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [route:workspace_id]
+  action: propagate
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("header member compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: a qualified selector names a header in a composite with randomness.
+    /// Guarantees: unselected randomness does not block compilation or header propagation.
+    #[test]
+    fn propagates_header_with_randomness_sibling() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  idempotency:
+    - type: randomness
+      name: id
+      value: uuid7
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [idempotency:workspace_id]
+  action: propagate
+  name: stored_name
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("header member compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+
+        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: a qualified propagation selector names a configured constant member.
+    /// Guarantees: pre-integration compilation fails explicitly instead of silently dropping it.
+    #[test]
+    fn composite_transport_header_propagation_rejects_constant_member() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  route:
+    - type: constant
+      name: route_name
+      value: otlp-http-json
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [route:route_name]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("constant propagation must wait for runtime integration");
+        assert!(error.contains("selects constant member `route_name`"));
+        assert!(error.contains("constant runtime integration"));
+    }
+
+    /// Scenario: a qualified propagation selector names a configured randomness member.
+    /// Guarantees: pre-integration compilation fails explicitly instead of silently dropping it.
+    #[test]
+    fn composite_transport_header_propagation_rejects_randomness_member() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  idempotency:
+    - type: randomness
+      name: id
+      value: uuid7
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [idempotency:id]
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let error = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect_err("randomness propagation must wait for runtime integration");
+        assert!(error.contains("selects randomness member `id`"));
+        assert!(error.contains("randomness runtime integration"));
     }
 
     /// Scenario: a named selector repeats an unqualified header using identical and varied case.

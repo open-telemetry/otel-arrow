@@ -23,6 +23,7 @@ datafusion = { workspace = true, features = [
 ] }
 futures-core = { workspace = true }
 memchr = { workspace = true }
+regex = { workspace = true }
 sha1 = { workspace = true, optional = true }
 xxhash-rust = { workspace = true }
 parking_lot = { workspace = true }
@@ -49,6 +50,7 @@ tokio = { workspace = true }
 
 otel-arrow-dfe-query-engine-languages = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true
@@ -68,6 +70,18 @@ required-features = ["bench"]
 
 [[bench]]
 name = "scale_metric"
+harness = false
+
+[[bench]]
+name = "conditional"
+harness = false
+
+[[bench]]
+name = "data_point_parent_attrs"
+harness = false
+
+[[bench]]
+name = "regex_match"
 harness = false
 
 [lints]

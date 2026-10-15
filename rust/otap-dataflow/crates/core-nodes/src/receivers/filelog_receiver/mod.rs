@@ -7,6 +7,7 @@
 
 pub mod decoder;
 pub mod framer;
+pub mod multiline_pattern;
 
 /// Linux source-file access.
 #[cfg(target_os = "linux")]

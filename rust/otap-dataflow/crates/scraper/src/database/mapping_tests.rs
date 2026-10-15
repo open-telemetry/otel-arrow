@@ -3,10 +3,10 @@
 
 use super::otap::parse_utc_timestamp;
 use super::*;
-use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
+use otel_arrow_dfe_pdata_codec::PayloadData;
 use prost::Message;
 
 const UNLIMITED_BYTES: u64 = 64 * 1024 * 1024;

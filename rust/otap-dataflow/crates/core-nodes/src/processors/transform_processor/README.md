@@ -16,6 +16,9 @@ multiple output batches depending on the transformation.
 
 This processor and its query engine integration are under active development.
 
+Result sanitization removes unused dictionary values by default. If it fails,
+the operation returns an error before any default or routed output is sent.
+
 ## Getting Started
 
 Write the query to transform your telemetry in your preferred language:
@@ -82,6 +85,7 @@ The bounded `error.type` values are:
 - `outbound_capacity`: `outbound_request_limit` was exhausted.
 - `output_send`: an immediate default or routed output send failed.
 - `internal`: an internal transform processor invariant failed.
+- `sanitization`: an output batch could not be sanitized.
 
 Common engine telemetry provides total consumed and produced traffic, dropped
 items, channel send failures, and downstream acknowledgement outcomes.

@@ -138,6 +138,9 @@ pub enum Error {
     #[error("Failed to batch OTAP data: {}", source)]
     Batching { source: ArrowError },
 
+    #[error("Failed to sanitize OTAP data: {}", source)]
+    Sanitization { source: ArrowError },
+
     #[error("Failed to measure logical Arrow bytes: {}", source)]
     LogicalArrowSize { source: ArrowError },
 

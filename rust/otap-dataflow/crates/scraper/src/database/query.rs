@@ -12,7 +12,8 @@ use super::scalar::{CursorError, ScalarValue};
 use std::fmt;
 use std::time::Duration;
 
-const MAX_QUERY_BYTES: usize = 16 * 1024;
+/// Maximum SQL byte length accepted by shared query plans and vendor preparation.
+pub const MAX_QUERY_BYTES: usize = 16 * 1024;
 
 /// Cursor binds and columns required by composite watermark mode.
 #[derive(Clone, Debug)]
@@ -43,6 +44,8 @@ pub struct ScalarWatermark {
 /// Mode-specific contract that adapters must validate before execution.
 #[derive(Clone, Debug)]
 pub enum CompiledWatermark {
+    /// One complete result per polling interval, with no source position.
+    Snapshot,
     /// Timestamp plus tie-breaker keyset.
     Composite(CompositeWatermark),
     /// One typed, unique, strictly ordered key.
@@ -54,6 +57,7 @@ impl CompiledWatermark {
     #[must_use]
     pub fn initial(&self) -> Cursor {
         match self {
+            Self::Snapshot => Cursor::Snapshot,
             Self::Composite(value) => value.initial.clone().into(),
             Self::Scalar(value) => value.initial.clone().into(),
         }
@@ -64,7 +68,7 @@ impl CompiledWatermark {
     pub const fn as_composite(&self) -> Option<&CompositeWatermark> {
         match self {
             Self::Composite(value) => Some(value),
-            Self::Scalar(_) => None,
+            Self::Scalar(_) | Self::Snapshot => None,
         }
     }
 
@@ -72,6 +76,7 @@ impl CompiledWatermark {
     pub fn validate_cursor(&self, cursor: &Cursor) -> Result<(), CursorError> {
         cursor.validate()?;
         match (self, cursor) {
+            (Self::Snapshot, Cursor::Snapshot) => Ok(()),
             (Self::Composite(_), Cursor::Composite(_)) => Ok(()),
             (Self::Scalar(spec), Cursor::Scalar(value)) if spec.initial.same_type(value) => Ok(()),
             _ => Err(CursorError::TypeMismatch),
@@ -121,6 +126,7 @@ impl CompiledQuery {
             return Err(QueryError::NotReadOnly);
         }
         let watermark = match watermark {
+            WatermarkConfig::Snapshot {} => CompiledWatermark::Snapshot,
             WatermarkConfig::Composite {
                 timestamp,
                 tie_breaker,
