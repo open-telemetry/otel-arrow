@@ -109,6 +109,13 @@ traffic flip across the whole pipeline.
 - Per-pipeline reconfiguration does not mutate group-level or engine-level
   policy. Full-engine reconciliation can update those fields after all
   requested pipeline rollouts and deletions succeed.
+- Engine- and group-scoped extension declarations are hosted for the process
+  lifetime and cannot be added, removed, or changed through live
+  reconciliation. Creating or deleting a group that has hosted extensions also
+  requires an engine restart.
+- Full-engine reconciliation rejects changes to channel capacity or telemetry
+  values consumed by a running engine or pipeline-group extension scope host.
+  Unrelated policy values remain live-reloadable.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
 
@@ -131,6 +138,11 @@ engine validation on that candidate snapshot. That validation does not make the
 operation a whole-config transaction: another logical pipeline can commit before
 this rollout commits, and commit applies only the accepted pipeline back into
 the latest live config.
+
+Each pipeline generation also captures the exact engine/group extension
+registrations visible when that generation is planned. Create, resize,
+replacement, rollback, and runtime recovery reuse those immutable snapshots;
+they do not re-resolve broader-scope providers from ambient live configuration.
 
 The API intentionally leaves room to adjust the consistency scope later. If
 group-level invariants become mutable outside full-engine reconciliation, the
@@ -296,7 +308,17 @@ growth.
 - Global shutdown dispatch: `POST /groups/shutdown` snapshots active instances
   and attempts shutdown delivery to all of them. One failed send does not
   prevent later instances from receiving shutdown. Dispatch is idempotent for
-  instances that already accepted shutdown.
+  instances that already accepted shutdown. Regular pipeline instances drain
+  first, followed by group- and engine-scoped extension hosts. The system
+  observability pipeline stops last so it can export terminal telemetry from
+  every preceding phase. The first accepted request fixes the regular-pipeline
+  deadline, not the duration of the full sequence. Group hosts share a fresh
+  five-second grace period, then engine hosts receive another five seconds;
+  each host phase has an additional 500 ms of forced-drain slack.
+  Observability receives a separate five-second final drain window.
+  Repeated requests cannot reset an active phase's deadline. A timed-out scope
+  thread is detached with an error, but retains metrics aggregation and
+  observed-state processing until the remaining telemetry producers actually exit.
 - Observed-state compaction: after active controller work no longer needs old
   generations, the controller compacts retained instance status to the selected
   serving view. During active rollout overlap, status still exposes both old and
@@ -456,6 +478,8 @@ Behavior:
 - When `deleteMissing=true`, live pipelines and groups omitted from the desired
   config are gracefully deleted.
 - When `deleteMissing=false`, omitted live pipelines and groups are preserved.
+- With `deleteMissing=false`, omitted engine/group extension declarations are
+  retained because their running hosts are immutable.
 - Engine-level and group-level metadata is committed only after the
   reconciliation succeeds.
 - Reconciliation is not atomic across pipelines. Pipeline rollouts that
@@ -463,6 +487,9 @@ Behavior:
   the committed live config.
 - Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
 - Runtime memory limiter mutation is rejected with `422 Unprocessable Entity`.
+- Engine/group extension declaration changes and hosted-extension runtime
+  policy changes are rejected with `422 Unprocessable Entity`; restart the
+  engine to apply them.
 
 Response body is an `EngineConfigReconcileStatus` with:
 
@@ -846,6 +873,8 @@ original state.
 - Full-config reconciliation, group creation, group deletion, and pipeline
   deletion use an engine-scoped lifecycle guard and return `409 Conflict` when
   another guarded operation is active.
+- Engine/group extension hosts remain alive while descendant pipelines drain
+  and stop in reverse scope order: pipelines, groups, then engine.
 - `GET /groups/{group}/pipelines/{id}` always returns the committed
   live config, not an uncommitted candidate.
 - `GET /groups/{group}/pipelines/{id}/status` is the best endpoint

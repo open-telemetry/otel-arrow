@@ -107,10 +107,9 @@ pub struct PipelineAttributeSet {
 /// `scope.kind` discriminator -- there is no way to build a "kind-less" or
 /// inconsistent scope set in the public API.
 ///
-/// When new scope kinds are introduced (e.g. `"engine"`, `"group"`),
-/// add a corresponding `#[compose]` payload field below and a matching
-/// constructor; existing constructors keep new payloads at `Default` so the
-/// descriptor stays stable across scope kinds.
+/// The single pipeline payload supplies the complete descendant identity.
+/// Engine scope leaves it at `Default`; group scope populates only its group
+/// ID; pipeline scope supplies the full runtime pipeline identity.
 #[attribute_set(scope, name = "extension.scope.attrs")]
 #[derive(Debug, Clone, Hash)]
 pub struct ExtensionScopeAttributeSet {
@@ -119,8 +118,8 @@ pub struct ExtensionScopeAttributeSet {
     #[attribute_key = "scope.kind"]
     pub(crate) kind: Cow<'static, str>,
 
-    /// Pipeline-scope payload. Populated when `kind == "pipeline"`; left at
-    /// `Default::default()` for other scope kinds.
+    /// Descendant identity payload. Group scope populates only
+    /// `pipeline_group_id`; pipeline scope populates the full set.
     #[compose]
     pub(crate) pipeline: PipelineAttributeSet,
 }
@@ -140,6 +139,27 @@ impl Default for ExtensionScopeAttributeSet {
 }
 
 impl ExtensionScopeAttributeSet {
+    /// Engine-host scope.
+    #[must_use]
+    pub fn engine() -> Self {
+        Self {
+            kind: Cow::Borrowed("engine"),
+            pipeline: PipelineAttributeSet::default(),
+        }
+    }
+
+    /// Pipeline-group-host scope.
+    #[must_use]
+    pub fn group(pipeline_group_id: Cow<'static, str>) -> Self {
+        Self {
+            kind: Cow::Borrowed("group"),
+            pipeline: PipelineAttributeSet {
+                pipeline_group_id,
+                ..PipelineAttributeSet::default()
+            },
+        }
+    }
+
     /// Pipeline-host scope. The full pipeline attribute set (group id,
     /// pipeline id, engine id, generation, resource attrs, ...) is composed
     /// into the resulting scope so two distinct `(group, pipeline)` pairs

@@ -68,7 +68,7 @@ const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(10);
 const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
 
 /// Returns the controller deadline for observing an instance's terminal exit.
-fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
+pub(super) fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
     drain_deadline + PIPELINE_SHUTDOWN_COMPLETION_GRACE
 }
 
@@ -93,6 +93,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     engine_event_reporter: ObservedEventReporter,
     /// Metrics reporter cloned into launched runtime instances.
     metrics_reporter: MetricsReporter,
+    /// Immutable capability catalogs for engine and pipeline-group extensions.
+    extension_scope_registry: ExtensionScopeRegistry,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
     /// Immutable engine-wide requirements for transport-header representation.
@@ -174,6 +176,7 @@ impl<
         observed_state_handle: ObservedStateHandle,
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        extension_scope_registry: ExtensionScopeRegistry,
         declared_topics: DeclaredTopics<PData>,
         context_runtime_requirements: ContextRuntimeRequirements,
         context_bindings: Arc<CompiledContextBindings>,
@@ -193,6 +196,7 @@ impl<
             observed_state_handle,
             engine_event_reporter,
             metrics_reporter,
+            extension_scope_registry,
             declared_topics,
             context_runtime_requirements,
             available_core_ids,
@@ -207,6 +211,7 @@ impl<
                 latest_context_bindings: context_bindings,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
+                launching_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
                 deferred_runtime_recoveries: HashMap::new(),
                 pipeline_operation_reservations: HashMap::new(),
@@ -229,8 +234,11 @@ impl<
                 next_pipeline_operation_reservation_id: 0,
                 first_error: None,
                 instance_wait_released: false,
+                launches_closed: false,
                 global_shutdown_requested: false,
                 global_shutdown_deadline: None,
+                observability_shutdown_deadline: None,
+                extension_scope_hosts_stopped: false,
                 global_shutdown_coordinators: 0,
                 controller_telemetry_pending: false,
             }),
@@ -283,6 +291,22 @@ impl<
         &self.declared_topics
     }
 
+    /// Resolves the shared providers inherited by one pipeline.
+    pub(super) fn inherited_extensions_for_pipeline(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline: &PipelineConfig,
+    ) -> InheritedExtensionRegistrations {
+        self.extension_scope_registry.registrations_for_pipeline(
+            pipeline_group_id,
+            pipeline.extensions(),
+            pipeline
+                .nodes()
+                .iter()
+                .flat_map(|(_, node)| node.capabilities.values()),
+        )
+    }
+
     /// Exposes the runtime as the admin control-plane trait object.
     pub(super) fn control_plane(self: &Arc<Self>) -> Arc<dyn ControlPlane> {
         Arc::new(ControllerControlPlane {
@@ -295,7 +319,11 @@ impl<
         state: &ControllerRuntimeState,
         pipeline_key: &PipelineKey,
     ) -> bool {
-        state.active_rollouts.contains_key(pipeline_key)
+        // Global shutdown is terminal for this runtime, so retaining its finite
+        // deployed-instance set cannot grow across later generations. The
+        // records close snapshot/send races until every coordinator finishes.
+        state.global_shutdown_requested
+            || state.active_rollouts.contains_key(pipeline_key)
             || state.active_shutdowns.contains_key(pipeline_key)
             || state
                 .pipeline_operation_reservations

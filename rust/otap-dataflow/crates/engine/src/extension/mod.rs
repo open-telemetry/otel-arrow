@@ -11,6 +11,7 @@
 //! | [`wrapper`]   | [`ControlChannel`], [`EffectHandler`], [`ExtensionLifecycle`], [`ExtensionWrapper`], [`ExtensionBundle`] |
 //! | [`builder`]   | Typestate chain: [`ExtensionBundleBuilder`] plus per-axis stages (see module docs) and [`SharedDecomposed`] / [`LocalDecomposed`] |
 //! | [`readiness`] | [`ReadinessSignaller`] / [`ReadinessProbe`] primitive for extension startup gating |
+//! | [`scope`]     | Declaration-scope hosts, supervision, and inherited provider lookup |
 //!
 //! For the local (!Send) and shared (Send) Extension traits, see
 //! [`local::extension`](crate::local::extension) and
@@ -18,6 +19,7 @@
 
 pub mod builder;
 pub mod readiness;
+pub mod scope;
 pub mod wrapper;
 
 #[cfg(test)]
