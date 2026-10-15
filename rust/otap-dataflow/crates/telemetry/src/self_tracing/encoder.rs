@@ -538,14 +538,6 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             self.write_body(|buf| encode_debug_string(buf, value));
         }
     }
-
-    fn record_error(
-        &mut self,
-        field: &tracing::field::Field,
-        value: &(dyn std::error::Error + 'static),
-    ) {
-        self.record_debug(field, &format_args!("{value}"));
-    }
 }
 
 /// Convert tracing Level to OTLP severity number.
