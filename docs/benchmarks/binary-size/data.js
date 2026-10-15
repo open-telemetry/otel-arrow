@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792103886325,
+  "lastUpdate": 1792106162296,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -63377,6 +63377,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/db9a067bafba4205f20d090b448bd2acd1a975a6"
         },
         "date": 1792103869230,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "73203753+sochen0714@users.noreply.github.com",
+            "name": "sochen0714",
+            "username": "sochen0714"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "3366e0b2abdfa34855a703df1b0c1eeda600cb94",
+          "message": "feat(extensions): support file-backed SASL usernames (#4393)\n\n# Change summary\n\n> Chore PR? Open **Preview**, then [use the chore\ntemplate](?template=chore.md).\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdd optional `username_file` to the existing `flat_file_sasl_auth`\nextension, completing the both-file source from merged #4321. This is a\nnew follow-up based on current `main`. The option shape and file\nprecedence follow Tina's merged Basic Auth work in #4320, while\nretaining SASL-specific validation (including colon usernames).\n\nEach acquisition reads the selected username source, then the required\npassword file through the existing bounded, zeroizing UTF-8 reader,\nconstructs `SaslCredential` directly, and publishes only a complete\nvalid pair. No new polling task, cache, synchronization, dependencies,\nor Basic Auth/Oracle/Kafka changes. The existing Active+Shared provider\nowns refresh, coalescing, watch streams, readiness, retry, retention,\nand shutdown.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4310.\n* Follow-up to merged #4321; related prior art: #4320.\n* Kafka receiver startup integration and consumer-owned live connection\nupdates remain separate (#4276).\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\n**Passed:** 59 targeted regressions, 237 aggregate extension tests (8\nignored), 22 standalone SASL tests; compile, strict standalone/aggregate\nall-target Clippy, Markdown lint, scoped sanity, and changelog checks.\n\n**Full check:** `cargo xtask check` passed structure, inventory,\nformatting, workspace Clippy, and no_std, then stopped on the existing\nWindows Snappy test (1674 contrib-node tests passed, 1 failed). No tests\nwere bypassed; the full suite is not green.\n\n**Unrelated blockers:** local global sanity reports 843 CRLF checkout\nfailures; CI deny reports existing rustls 0.23.45 advisories\nRUSTSEC-2026-0346 through 0349. Dependencies are unchanged. CI sanity,\nMarkdown lint, and changelog checks passed.\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nUse `username_file` plus required `password_secret_file` to keep both\nvalues outside pipeline configuration. Inline `username` remains\nsupported. A selected file wins even over an empty inline username and\nnever falls back on error; nonempty paths and a username source are\nrequired, and unknown fields remain rejected.\n\nThe existing `password_secret_file_refresh` name/default/bounds (`1h`,\n`10s`-`365d`) now refreshes both files; `startup_timeout` retains its\n`30s` default and behavior. Failed acquisitions retain the last good\ncomplete pair with open streams; readiness requires initial success.\n\nAll-or-nothing publication is **not an atomic cross-file snapshot**:\nseparate updates can yield mixed versions despite successful reads.\nCoordinate rotation externally. The README includes both legacy and\nboth-file examples, error redaction, Kubernetes eventual\npropagation/subPath limitations, and no expiry/cache-age guarantee from\npolling. Consumers must apply updates themselves; no automatic live\nKafka rotation/reconnection, inline password, or Azure Key Vault support\nis added.\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-10-15T22:17:22Z",
+          "tree_id": "50a2bddc474c00900ccf30528fe33c9ba01a4d89",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3366e0b2abdfa34855a703df1b0c1eeda600cb94"
+        },
+        "date": 1792106145280,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
