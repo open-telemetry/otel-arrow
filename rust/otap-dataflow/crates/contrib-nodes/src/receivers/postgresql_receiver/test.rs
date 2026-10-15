@@ -467,6 +467,54 @@ macro_rules! postgresql_module_tests {
                     .await;
             }
 
+            /// Scenario: A stop arrives while a server-query fence from an interrupted statement is still outstanding.
+            /// Guarantees: Shutdown reports unconfirmed cleanup, so source ownership is quarantined rather than released while an orphaned backend statement may still run.
+            #[tokio::test(start_paused = true)]
+            async fn shutdown_during_server_query_fence_reports_unconfirmed_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        finished_session(&mut adapter, Err(Error::Unavailable)).await;
+                        let close = adapter
+                            .close_session(CloseReason::OperationInFlight)
+                            .await
+                            .expect("session closed");
+                        assert_eq!(close, SessionClose::Aborted);
+                        assert!(adapter.reconnect_not_before.is_some());
+
+                        // Stopping inside the fence window cannot prove the server
+                        // statement ended, so cleanup stays unconfirmed.
+                        assert_eq!(adapter.shutdown().await, Err(Error::Cleanup));
+                        assert!(adapter.poisoned);
+                    })
+                    .await;
+            }
+
+            /// Scenario: A stop arrives after an earlier server-query fence has already elapsed.
+            /// Guarantees: An expired fence does not quarantine source ownership, so a later stop still reports confirmed cleanup.
+            #[tokio::test(start_paused = true)]
+            async fn shutdown_after_server_query_fence_elapses_confirms_cleanup() {
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let mut adapter = test_adapter();
+                        finished_session(&mut adapter, Err(Error::Unavailable)).await;
+                        _ = adapter
+                            .close_session(CloseReason::OperationInFlight)
+                            .await
+                            .expect("session closed");
+                        assert!(adapter.reconnect_not_before.is_some());
+
+                        tokio::time::advance(Duration::from_secs(30)).await;
+                        assert_eq!(adapter.shutdown().await, Ok(()));
+                        assert!(!adapter.poisoned);
+                    })
+                    .await;
+            }
+
             /// Scenario: An idle session's driver reports a transport failure during teardown.
             /// Guarantees: No statement can outlive an idle driver, so reconnect is not delayed by an unnecessary fence.
             #[tokio::test(start_paused = true)]

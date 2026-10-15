@@ -468,6 +468,23 @@ impl PostgreSqlAdapter {
         error
     }
 
+    /// Delays the next connection until an orphaned backend statement must have
+    /// ended.
+    ///
+    /// What this protects: server resources, not receiver correctness. Pages are
+    /// read-only and a failed page is discarded without advancing the
+    /// checkpoint, so a stale backend query overlapping a new one cannot corrupt
+    /// the cursor. The fence keeps the receiver from stacking duplicate
+    /// expensive queries and from pinning extra snapshots against VACUUM.
+    ///
+    /// One rule decides when it applies: fence whenever a backend statement may
+    /// still be running. A joined driver only proves the local task stopped, so
+    /// an interrupted statement still needs the wait, while an idle teardown
+    /// needs none. See `CloseReason`.
+    ///
+    /// The wait is one operation timeout, which is also the `statement_timeout`
+    /// set by `session_options`, so the server has terminated the orphan by the
+    /// time the fence expires.
     fn fence_server_query(&mut self) {
         let deadline = Instant::now() + self.validated.common.timeout();
         self.reconnect_not_before = Some(
