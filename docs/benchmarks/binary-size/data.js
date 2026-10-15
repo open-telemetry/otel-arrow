@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792100276514,
+  "lastUpdate": 1792103886325,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -63308,6 +63308,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mblanchard@macrosssoftware.com",
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db9a067bafba4205f20d090b448bd2acd1a975a6",
+          "message": "feat(kafka): Introduce plaintext encoding (#4331)\n\nRelates to #4297\n\n# Changes\n\n* Introduces an encoding called `Plaintext` into the Kafka Receiver\nusers may use to convert any arbitrary text into logs\n   * UTF-8 text is set as `body` on emitted logs.\n   * `observed_timestamp` is set to current system time on emitted logs.\n\n# Details\n\nThe idea here is to support receiving arbitrary log text which then\nallows subsequent processors (primarily query engine) to parse\\massage\nit further.\n\n# Example\n\nLet's say logs are coming in as JSON:\n\n```json\n{ \"message\": \"Hello world\", \"level\": \"Info\" }\n```\n\nWe can accept them via Kafka:\n\n```yaml\nlogs:\n  topics:\n    - \"application-logs\"\n  encoding: plaintext\n```\n\nAnd then transform them with something like `recordset_kql_processor`:\n\n```kql\nsource\n| extend json = parse_json(Body)\n| project SeverityText = json.level, Body = json.message\n```",
+          "timestamp": "2026-10-15T21:36:40Z",
+          "tree_id": "a579ca6e445a0e182908c7be4ba69219f5d8dbc0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/db9a067bafba4205f20d090b448bd2acd1a975a6"
+        },
+        "date": 1792103869230,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
             "unit": "MB"
           },
           {
