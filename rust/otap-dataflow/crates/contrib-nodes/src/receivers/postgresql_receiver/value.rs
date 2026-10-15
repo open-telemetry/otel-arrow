@@ -197,6 +197,17 @@ fn text(bytes: &[u8]) -> Result<&str> {
     std::str::from_utf8(bytes).map_err(|_| Error::Value)
 }
 
+/// Appends the leading `take` characters of a zero-padded base-10000 group.
+///
+/// Rows decode on the per-page hot path, so this avoids the temporary string a
+/// width-padded `write!` would allocate for every group of every value.
+fn push_group(output: &mut String, digit: u16, take: usize) {
+    for position in 0..take.min(4) {
+        let power = 10u16.pow(3 - position as u32);
+        output.push(char::from(b'0' + (digit / power % 10) as u8));
+    }
+}
+
 pub(crate) fn numeric(bytes: &[u8]) -> Result<String> {
     // PostgreSQL stores base-10000 groups plus an independent display scale.
     // Render directly to decimal text to preserve large integers and trailing zeros.
@@ -235,7 +246,13 @@ pub(crate) fn numeric(bytes: &[u8]) -> Result<String> {
         1
     } else {
         let d = digits[first.ok_or(Error::Value)?];
-        highest as usize * 4 + d.to_string().len()
+        let width = match d {
+            1000..=9999 => 4,
+            100..=999 => 3,
+            10..=99 => 2,
+            _ => 1,
+        };
+        highest as usize * 4 + width
     };
     let length = integer_len + usize::from(scale > 0) + scale + usize::from(sign != 0);
     if length > MAX_NUMERIC_CHARS {
@@ -258,14 +275,17 @@ pub(crate) fn numeric(bytes: &[u8]) -> Result<String> {
     } else {
         write!(output, "{}", digit_at(highest)).map_err(|_| Error::Value)?;
         for power in (0..highest).rev() {
-            write!(output, "{:04}", digit_at(power)).map_err(|_| Error::Value)?;
+            push_group(&mut output, digit_at(power), 4);
         }
     }
     if scale > 0 {
         output.push('.');
         for group in 0..scale.div_ceil(4) {
-            let formatted = format!("{:04}", digit_at(-(group as i32) - 1));
-            output.push_str(&formatted[..(scale - group * 4).min(4)]);
+            push_group(
+                &mut output,
+                digit_at(-(group as i32) - 1),
+                scale - group * 4,
+            );
         }
     }
     Ok(output)
@@ -306,17 +326,31 @@ pub(crate) fn decode(ty: &Type, bytes: &[u8]) -> Result<CellValue> {
             if !(1..=9999).contains(&date.year()) {
                 return Err(Error::Value);
             }
-            CellValue::String(date.format("%Y-%m-%d").to_string())
+            // Format directly instead of through a chrono format string, which
+            // reparses its pattern for every decoded row.
+            use std::fmt::Write;
+            let mut text = String::with_capacity(10);
+            write!(
+                text,
+                "{:04}-{:02}-{:02}",
+                date.year(),
+                date.month(),
+                date.day()
+            )
+            .map_err(|_| Error::Value)?;
+            CellValue::String(text)
         }
         Type::UUID => {
             let bytes: [u8; 16] = array(bytes)?;
-            use std::fmt::Write;
+            const HEX: [u8; 16] = *b"0123456789abcdef";
             let mut value = String::with_capacity(36);
             for (i, byte) in bytes.iter().enumerate() {
                 if matches!(i, 4 | 6 | 8 | 10) {
                     value.push('-');
                 }
-                write!(value, "{byte:02x}").map_err(|_| Error::Value)?;
+                // Two table lookups per byte instead of a formatter invocation.
+                value.push(char::from(HEX[usize::from(byte >> 4)]));
+                value.push(char::from(HEX[usize::from(byte & 0x0f)]));
             }
             CellValue::String(value)
         }

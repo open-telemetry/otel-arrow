@@ -716,10 +716,15 @@ impl Plan {
             // catalog mismatch cannot hide behind truncation to the expected size.
             let names: Vec<_> = requested.iter().copied().collect();
             operation.check()?;
-            let rows = tx
-                .query(&statements.attributes, &[&oid, &names])
-                .await
-                .map_err(database)?;
+            // Attributes and indexes depend only on the relation OID, and the
+            // contract is revalidated on every page. Issue them together so the
+            // connection pipelines both instead of paying two serial waits.
+            let (rows, index_rows) = futures::future::try_join(
+                tx.query(&statements.attributes, &[&oid, &names]),
+                tx.query(&statements.indexes, &[&oid]),
+            )
+            .await
+            .map_err(database)?;
             operation.check()?;
             if rows.len() != requested.len() {
                 return Err(Error::Metadata);
@@ -753,16 +758,11 @@ impl Plan {
                 );
             }
             operation.check()?;
-            let rows = tx
-                .query(&statements.indexes, &[&oid])
-                .await
-                .map_err(database)?;
-            operation.check()?;
-            if rows.len() > 128 {
+            if index_rows.len() > 128 {
                 return Err(Error::Limit);
             }
             let mut unique = vec![];
-            for row in rows {
+            for row in index_rows {
                 let mut attrs: Vec<i16> = row.try_get(0).map_err(database)?;
                 let n: i16 = row.try_get(1).map_err(database)?;
                 if n <= 0 || n as usize > attrs.len() || attrs.len() > 32 {
