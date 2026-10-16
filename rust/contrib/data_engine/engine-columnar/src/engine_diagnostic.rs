@@ -149,13 +149,12 @@ impl<'a> ColumnarEngineDiagnosticReceiver<'a> for ColumnarEngineDiagnosticReceiv
         F: FnOnce() -> String,
     {
         if diagnostic_level >= self.diagnostic_level {
-            self.diagnostics
-                .borrow_mut()
-                .push(ColumnarEngineDiagnostic::new(
-                    diagnostic_level,
-                    expression,
-                    (generate_message)(),
-                ));
+            let diagnostic = ColumnarEngineDiagnostic::new(
+                diagnostic_level,
+                expression,
+                generate_message(),
+            );
+            self.diagnostics.borrow_mut().push(diagnostic);
         }
     }
 
