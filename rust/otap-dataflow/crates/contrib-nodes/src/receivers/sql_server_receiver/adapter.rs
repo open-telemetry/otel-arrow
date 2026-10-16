@@ -402,8 +402,9 @@ pub(super) fn configure_tls(
     endpoint: &SqlServerConnectionConfig,
     config: &mut Config,
 ) -> Result<(), Error> {
-    // Defense in depth: Tiberius panics if trust_cert and a CA bundle are combined.
-    if (endpoint.ca_file().is_some() && endpoint.trust_server_certificate())
+    // Defense in depth: trust_cert conflicts with CA trust and disables native TLS SNI.
+    if (endpoint.trust_server_certificate()
+        && (endpoint.ca_file().is_some() || endpoint.server_name_override().is_some()))
         || (!endpoint.tls_enabled()
             && (endpoint.ca_file().is_some()
                 || endpoint.server_name_override().is_some()

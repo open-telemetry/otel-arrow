@@ -26,7 +26,7 @@ fn response_result<T>(
     response_pending: &mut bool,
 ) -> Result<T, Error> {
     result.map_err(|error| {
-        // In the pinned Tiberius revision, Query::query and QueryStream defer
+        // In registry Tiberius 0.13.0, Query::query and QueryStream defer
         // server errors until TokenStream::try_unfold reaches connection EOF.
         // Other driver errors do not certify response completion.
         if matches!(&error, tiberius::error::Error::Server(_)) {

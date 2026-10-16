@@ -1,5 +1,9 @@
 # SQL Server Preparation and Driver Adapter
 
+<!-- markdownlint-configure-file
+{ "MD013": { "tables": false, "code_blocks": false } }
+-->
+
 This is the internal preparation and driver-integration layer for a SQL Server
 query-to-logs receiver, not a runnable receiver. Enable `sql-server` explicitly
 to expose validated configuration, T-SQL plans, and `SqlServerAdapter<C>` for
@@ -81,10 +85,13 @@ or require encryption. The Tiberius mapping is `NotSupported`, not `Off`
 `server_name_override`, and `trust_server_certificate: true` as inapplicable;
 an omitted or explicit false trust flag is allowed.
 
-With TLS enabled, `ca_file` conflicts with `trust_server_certificate: true`;
-preparation rejects the combination instead of silently ignoring CA trust.
-An identity override may coexist with the trust bypass to set SNI, but **neither
-the certificate chain nor its name is validated** in that testing mode.
+With TLS enabled, both `ca_file` and `server_name_override` conflict with
+`trust_server_certificate: true`. Preparation rejects these combinations
+instead of silently ignoring CA trust or a requested identity. Tiberius's
+native-TLS bypass disables SNI as well as **both certificate-chain and hostname
+validation**. Use an override only with verified TLS; bypass alone remains an
+explicit controlled-testing option. Configurations that previously combined
+bypass and an override must remove the override or restore verification.
 
 Connection accessors `tls_enabled()`, `trust_server_certificate()`, and
 `server_name_override()` expose this contract. The override getter returns
@@ -240,10 +247,29 @@ A connector must cancel on future drop and confirm any owned connection work
 has stopped in `shutdown`; the default no-op shutdown is only appropriate for
 connectors with no outstanding off-core work.
 
-The pinned driver's [token stream][tiberius-token-stream] defers server errors
-until response EOF, so a returned server error also confirms completion.
+The published 0.13.0 driver's [token stream][tiberius-token-stream] defers server
+errors until response EOF, so a returned server error also confirms completion.
 Metadata-reported errors and conversion failures do not provide this guarantee.
 Recheck this assumption when updating Tiberius.
+
+Tiberius 0.13.0 has an unresolved [cross-message ATTENTION defect][attention-bug]:
+a `DONE_ERROR` message followed by a separate `DONE_ATTN` message can fail
+cancellation despite the server acknowledgement. Switching TLS backends does
+not fix it. Deterministic tests exercise this exact two-message response,
+missing/late acknowledgements, interrupted cleanup, and transport reset during
+streaming using the published driver and real shared controller. Unconfirmed
+cleanup discards the session, returns no partial page from the failed operation,
+leaves its checkpoint unchanged, blocks reconnect/reuse, and keeps shutdown
+unsuccessful so source ownership is quarantined until process exit.
+
+This is fail-closed containment with an availability cost, not proof that
+server-side work stopped. Operators must establish that prior work is stopped
+and preserve the last durable checkpoint before a safe single-owner restart;
+socket closure or process restart alone does not establish server termination.
+The [upstream cancellation fix][attention-fix] remains a follow-up through a
+published release. Successful acknowledged cleanup remains distinct: it permits
+a fresh validated connection and acknowledged prefixes can still be delivered.
+This change does not add timeout retries or reuse acknowledged cancelled sessions.
 
 Only allowlisted transient transport failures and server codes are retried by
 the shared controller. SQL, metadata, authorization, conversion, TLS, and
@@ -276,22 +302,36 @@ adapter accounts for them. Driver-internal value/protocol bounds and broader
 cancellation, fault, load, and deployment qualification remain readiness work.
 TOP bounds returned rows, not necessarily database scan or sort work.
 
-## Temporary Driver Revision
+## Published Driver and Native TLS
 
-Tiberius is optional and uses immutable revision
-`8bbd59fe9e01a74b6f790756077c8b0e09605c68`, with default features disabled and
-`tds73,rustls-no-provider`. This revision contains the small
-[upstream provider-selection fix][tiberius-pr]. Return to a crates.io release
-once it contains the fix; do not follow a moving branch. The later upstream PR
-head has CI-only changes and is not this dependency pin.
+Tiberius is optional and resolves from crates.io at 0.13.0 in the reviewed
+lockfile, with default features disabled and `tds73,native-tls` enabled.
+Both Tiberius and `tiberius-macros` are registry dependencies; no Git pin or
+producer-local patch is required. The provider-neutral Rustls proposal is no
+longer a prerequisite for this receiver.
 
-Provider-neutral Rustls requires a process-installed provider in the host;
-it does not infer or silently add a backend. Do not enable Tiberius's legacy
-`rustls` or `rustls-webpki-roots` features, which retain AWS-LC for compatibility.
+SQL Server explicitly uses platform-native TLS: Schannel on Windows, OpenSSL
+on Linux, and Security Framework on macOS. This scoped choice is independent
+of the engine's Rustls `crypto-*` selection; other components' provider features
+and dependencies are unchanged. The native driver does not require a
+process-installed Rustls provider. Do not enable another Tiberius TLS backend
+through feature unification.
+
+Linux builds require suitable OpenSSL development libraries and discovery
+tooling. Deployments require the corresponding native libraries and trusted
+root store; linking strategy, library/root updates, and complete production
+artifact dependency/governance qualification belong to Part 3. Windows uses
+its system TLS libraries and certificate stores. Selecting native TLS is not
+by itself a compliance certification or proof that the complete engine has no
+other crypto backends.
+
 The injected production connector must honor CA/name verification and the
-explicit SQL Server test modes. Platform-root/CA loading in Tiberius can be
-synchronous, so Part 3 must keep bounded, owned connection setup off the local
-executor and confirm cleanup before releasing source ownership.
+explicit SQL Server test modes. Native connector setup and certificate loading
+can be synchronous, so Part 3 must keep bounded, owned connection setup off the
+local executor and confirm cleanup before releasing source ownership.
+The deterministic connector sets `NotSupported` against in-memory protocol
+bytes: these tests do **not** qualify native TLS handshakes, CA rotation, or
+server identity verification. Those live checks remain in Part 3.
 
 This adapter does not require customer-installed ODBC/JDBC drivers, a JVM, or
 native database client. No server, container, or certificate-generation tools
@@ -319,5 +359,6 @@ Part 3, not these tests.
 [part-2]: https://github.com/open-telemetry/otel-arrow/issues/4360
 [part-3]: https://github.com/open-telemetry/otel-arrow/issues/4361
 [rfc]: https://github.com/open-telemetry/otel-arrow/issues/3918
-[tiberius-pr]: https://github.com/tiberius-rs/tiberius/pull/456
-[tiberius-token-stream]: https://github.com/juanjosalco/tiberius/blob/8bbd59fe9e01a74b6f790756077c8b0e09605c68/src/tds/stream/token.rs
+[tiberius-token-stream]: https://docs.rs/crate/tiberius/0.13.0/source/src/tds/stream/token.rs
+[attention-bug]: https://github.com/tiberius-rs/tiberius/issues/459
+[attention-fix]: https://github.com/tiberius-rs/tiberius/pull/460

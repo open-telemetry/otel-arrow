@@ -222,9 +222,8 @@ simdutf8 = "0.1.5"
 slotmap = "1.0.7"
 smallvec = { version = "1.15" , features = ["union", "const_new"] }
 socket2 = { version = "0.6.1", features = ["all"] }
-# Temporary provider-neutral TLS fix: https://github.com/tiberius-rs/tiberius/pull/456
-# Return to a crates.io release containing the fix; keep this revision immutable.
-tiberius = { git = "https://github.com/juanjosalco/tiberius", rev = "8bbd59fe9e01a74b6f790756077c8b0e09605c68", default-features = false, features = ["tds73", "rustls-no-provider"] }
+# SQL Server uses platform-native TLS independently of other components' crypto-* features.
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "native-tls"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"

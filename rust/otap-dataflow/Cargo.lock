@@ -537,6 +537,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-native-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37dd6b179962fe4048a6f81d4c0d7ed419a21fdf49204b4c6b04971693358e79"
+dependencies = [
+ "futures-util",
+ "native-tls",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11141,8 +11153,10 @@ dependencies = [
 [[package]]
 name = "tiberius"
 version = "0.13.0"
-source = "git+https://github.com/juanjosalco/tiberius?rev=8bbd59fe9e01a74b6f790756077c8b0e09605c68#8bbd59fe9e01a74b6f790756077c8b0e09605c68"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e07324791de2bdaed058af4aa433a0b5ec5c0beac407a9797419c19805df2415"
 dependencies = [
+ "async-native-tls",
  "async-trait",
  "asynchronous-codec",
  "byteorder",
@@ -11157,14 +11171,10 @@ dependencies = [
  "once_cell",
  "pin-project-lite",
  "pretty-hex",
- "rustls-native-certs",
  "rustls-pki-types",
- "rustls-webpki",
  "secrecy",
  "thiserror 2.0.21",
  "tiberius-macros",
- "tokio-rustls",
- "tokio-util",
  "tracing",
  "uuid",
  "zeroize",
@@ -11173,7 +11183,8 @@ dependencies = [
 [[package]]
 name = "tiberius-macros"
 version = "0.1.0"
-source = "git+https://github.com/juanjosalco/tiberius?rev=8bbd59fe9e01a74b6f790756077c8b0e09605c68#8bbd59fe9e01a74b6f790756077c8b0e09605c68"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "907fed5ea55695d902cc3359fffa4a35021dfa9b95ab4eb9c8376d42ffb9eec8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11401,7 +11412,6 @@ checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "futures-util",
  "libc",
