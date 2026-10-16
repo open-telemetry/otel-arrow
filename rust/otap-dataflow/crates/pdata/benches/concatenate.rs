@@ -16,10 +16,10 @@
 //!   budget when uniformly offset, which forces the compaction path. This only
 //!   triggers for logs and traces at the largest shape, so it is only run
 //!   there.
-//! - `small`: many tiny, independently encoded batches
-//!   (`concatenate/small/{size}items/{n}batches/{signal}`), as the batch
-//!   processor sees with small client requests. Per-input and per-column
-//!   overheads dominate here rather than per-row work.
+//!
+//! Small inputs use `concatenate/8items/{shape}/{scenario}/{signal}` with
+//! the `contiguous` and `presplit` scenarios to measure per-input and
+//! per-column overheads rather than per-row work.
 
 use std::num::NonZeroU32;
 use std::ops::Mul;
