@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792110241812,
+  "lastUpdate": 1792114743410,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -63927,6 +63927,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "43687093+athomas9195@users.noreply.github.com",
+            "name": "Tina Tan",
+            "username": "athomas9195"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee9bcd3f59b9151115c0b453279c4c0d547e102a",
+          "message": "feat(receiver): add opt-in composite-watermark PostgreSQL database receiver (#4374)\n\n## Summary\n \nAdds a PostgreSQL receiver registered as `urn:otel:receiver:postgresql`,\nbehind the explicit `postgresql` feature.\n \nThe receiver executes a read-only incremental query using a composite\ntimestamp and signed-integer cursor. It reuses the shared scraper for\nscheduling, OTLP encoding, backpressure, ACK/NACK handling, and\ncheckpointing.\n \nDatabase connections currently use unencrypted TCP. **TLS to be included\nin follow up PR.**\n\n ## Included\n \n- Receiver registration, component metadata, and single-core placement\nvalidation.\n- Native connectivity through `tokio-postgres`, without a separately\ninstalled database client.\n- Authentication through `BasicAuthProvider`, reusing the shared\ncredential extension.\n- Validation of supported SELECT statements, bind parameters, cursor\ntypes, precision, ordering, and column provenance.\n- Cached statements/decoders with fresh metadata checks during\ncollection and reconnects.\n- Configurable fetch size, page-row/byte limits, timeout, and catch-up\nbudgets.\n- Bounded worker communication, receive-buffer protection, cancellation,\nand explicit cleanup handling.\n - README, console configuration, and a new-component changelog entry.\n \n ## Delivery behavior\n\nEach selected row becomes one OTLP log with a structured body. Failed or\nunacknowledged work does not advance the committed cursor. Delivery is\nconditionally at least once; exactly-once delivery is not claimed.\n \n ## Customer requirements and current compatibility\n\n | Area | Current requirement or limitation |\n | --- | --- |\n | Server version | Locally qualified against PostgreSQL **15.19** |\n| Client installation | No separate PostgreSQL client, ODBC, or JDBC\ninstallation is required; the Rust driver is included in the collector.\n|\n | Connection security | Database TLS is not implemented in this PR. |\n| Permissions | A dedicated account with SELECT access to all queried\ntables. |\n| Source/query | Supported read-only SQL over ordinary, schema-qualified\ntables. Views, partitioned tables, foreign tables, and RLS are currently\nunsupported. |\n| Watermarks | Composite mode. Snapshot mode and scalar mode in follow\nup PR |\n| State | Persistent, writable checkpoint storage is required to retain\nacknowledged progress across restarts. |\n\nPostgreSQL 15.19 is the tested configuration, not a production-support\ncertification or a claim that all later versions have been qualified.\n\n ## Validation\n \nTargeted PostgreSQL tests and strict Clippy pass. Separate live\nPostgreSQL qualification covered discovery, metadata changes, cursor\nprecision, configured budgets, restart, and recovery behavior.\n \n ## Related issue\n \n - open-telemetry/otel-arrow#4166\n - open-telemetry/otel-arrow#3918\n - Follows the Oracle integration in open-telemetry/otel-arrow#4189\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-16T00:42:38Z",
+          "tree_id": "4d68a5466689a65655f8588157608be78d4e1e70",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ee9bcd3f59b9151115c0b453279c4c0d547e102a"
+        },
+        "date": 1792114723359,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.17,
             "unit": "MB"
           }
         ]
