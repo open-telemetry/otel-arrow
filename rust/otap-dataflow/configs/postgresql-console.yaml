@@ -30,8 +30,8 @@ groups:
                 database: receiver_fixture
                 tls:
                   enabled: true
-                  # Optional private CA bundle; platform roots are always included.
-                  # ca_file: '${env:PG_CA_FILE}'
+                  # Private CA bundle for the TLS walkthrough; platform roots remain included.
+                  ca_file: '${env:PG_CA_FILE}'
               query:
                 statement: >
                   SELECT e.event_ts, e.event_id, e.actor

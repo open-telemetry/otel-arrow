@@ -16,69 +16,11 @@ releases.
 
 ## Getting started
 
-The [console example](../../../../../configs/postgresql-console.yaml) reads
-`public.receiver_events`. For a disposable local database, create the source and
-a dedicated login:
-
-```sql
--- Run as a PostgreSQL administrator.
-CREATE DATABASE receiver_fixture;
-
--- Reconnect to receiver_fixture before continuing.
-CREATE ROLE otel_reader LOGIN;
-\password otel_reader
-
-CREATE TABLE public.receiver_events (
-  event_ts timestamptz(6) NOT NULL,
-  event_id bigint NOT NULL,
-  actor text NOT NULL,
-  PRIMARY KEY (event_ts, event_id)
-);
-INSERT INTO public.receiver_events VALUES
-  ('2026-10-05T00:00:01Z', 1, 'alice'),
-  ('2026-10-05T00:00:01Z', 2, 'bob'),
-  ('2026-10-05T00:00:02.123456Z', 3, 'carol');
-
-GRANT CONNECT ON DATABASE receiver_fixture TO otel_reader;
-GRANT USAGE ON SCHEMA public TO otel_reader;
-GRANT SELECT ON public.receiver_events TO otel_reader;
-```
-
-Enter the same password into a protected file without putting it in YAML:
-
-```bash
-mkdir -p .secrets/postgresql
-printf '%s\n' 'otel_reader' > .secrets/postgresql/username
-read -r -s -p 'PostgreSQL password: ' PG_PASSWORD
-printf '\n'
-printf '%s\n' "$PG_PASSWORD" > .secrets/postgresql/password
-unset PG_PASSWORD
-chmod 600 .secrets/postgresql/username .secrets/postgresql/password
-
-export PG_HOST=localhost
-export PG_USERNAME_FILE="$PWD/.secrets/postgresql/username"
-export PG_PASSWORD_FILE="$PWD/.secrets/postgresql/password"
-```
-
-Ensure the engine state directory used by `checkpoint.directory` is writable
-and persisted across receiver or host restarts.
-
-From `rust/otap-dataflow`:
-
-```sh
-cargo run --no-default-features --features postgresql,crypto-ring --bin df_engine -- \
-  --config configs/postgresql-console.yaml
-```
-
-No OTLP endpoint is needed for the example. Console output is not durable downstream storage.
-The three rows produce output shaped like:
-
-```text
-RESOURCE v1.Resource [db.system.name=postgresql, receiver.database.source_id=orders-audit]
-INFO database.query.row: {event_ts=2026-10-05T00:00:01.000000Z, event_id=1, actor=alice}
-INFO database.query.row: {event_ts=2026-10-05T00:00:01.000000Z, event_id=2, actor=bob}
-INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, actor=carol}
-```
+Use the [Windows TLS walkthrough](TLS_WALKTHROUGH.md) to run the
+[console example](../../../../../configs/postgresql-console.yaml) against a
+disposable PostgreSQL 15.19 server with a generated private CA. The walkthrough
+creates the source data, runs the receiver, verifies the live TLS session, and
+cleans up the Docker and checkpoint artifacts.
 
 ## Configuration
 
