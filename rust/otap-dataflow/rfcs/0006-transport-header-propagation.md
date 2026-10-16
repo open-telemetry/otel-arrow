@@ -347,7 +347,21 @@ Pdata Context transfer configuration.
 type: processor:durable_buffer
 config:
   context:
+    transfer:
+      customer:
+        type: authorized_identity
+        required: true
+      delivery_id:
+        type: randomness
+        required: true
+      route:
+        type: constant
+      source_addr:
+        type: network_info
+      workspace:
+        type: transport_header
     partition_by:
+      - customer
     export:
       customer:
         selector: {type: authorized_identity, named: [customer_id]}
@@ -356,6 +370,7 @@ config:
     import:
       customer:   # import the configured name, "customer"
       workspace:  # import the configured name, "workspace"
+    ...
 ```
 
 ## All captured transfer
