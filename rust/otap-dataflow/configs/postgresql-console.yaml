@@ -1,0 +1,77 @@
+# Development-only: PostgreSQL transport is unencrypted.
+# Build df_engine with postgresql,crypto-ring.
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          pg-credentials:
+            type: urn:otel:extension:flat_file_user_pass_auth
+            config:
+              username_file: '${env:PG_USERNAME_FILE:-/run/secrets/postgresql/username}'
+              password_secret_file: '${env:PG_PASSWORD_FILE:-/run/secrets/postgresql/password}'
+              password_secret_file_refresh: 1m
+        nodes:
+          pg:
+            type: urn:otel:receiver:postgresql
+            capabilities:
+              basic_auth_provider: pg-credentials
+            config:
+              source_id: orders-audit
+              connection:
+                host: '${env:PG_HOST:-localhost}'
+                port: 5432
+                database: receiver_fixture
+              query:
+                statement: >
+                  SELECT e.event_ts, e.event_id, e.actor
+                  FROM public.receiver_events AS e
+                  WHERE (
+                    e.event_ts > :last_timestamp
+                    OR (
+                      e.event_ts = :last_timestamp
+                      AND e.event_id > :last_tie_breaker
+                    )
+                  )
+                  ORDER BY e.event_ts ASC, e.event_id ASC
+                interval: 1m
+                # Required per-page limits, not whole catch-up-cycle limits.
+                max_rows_per_poll: 10000
+                max_batch_bytes: 10 MiB
+                # Fixed operation timeout: 30s. Defaults: fetch size 300, interval 1m.
+                fetch_size_rows: 300
+                catch_up:
+                  max_pages: 32
+                  max_duration: 10s
+              watermark:
+                mode: composite
+                timestamp:
+                  column: event_ts
+                  bind: last_timestamp
+                  initial: "2026-10-05T00:00:00.000000Z"
+                  timezone: UTC
+                tie_breaker:
+                  column: event_id
+                  bind: last_tie_breaker
+                  initial: 0
+              checkpoint:
+                directory: '${engine.state_dir}/postgresql'
+                on_nack: rewind
+                on_permanent_nack: pause
+                nack_backoff: 1s
+                max_consecutive_failures: 5
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+
+        connections:
+          - from: pg
+            to: console

@@ -70,6 +70,7 @@ pub mod inventory;
 pub use otel_arrow_dfe_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
+pub mod readiness;
 pub mod receiver;
 pub mod retained_work;
 pub mod runtime_services;
