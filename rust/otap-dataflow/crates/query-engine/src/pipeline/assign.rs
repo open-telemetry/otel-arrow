@@ -8958,6 +8958,43 @@ mod test {
         test_update_attr_coalesce_attr_then_literal_per_record::<KqlParser>().await
     }
 
+    /// Scenario: `coalesce(resource.attributes["r"], "foo")` on a batch with two resources where
+    /// only the first resource has `r`, so the arguments share the resource attributes' scope.
+    /// Guarantees: the resource attribute is aligned to every record: the records of the first
+    /// resource get its value and the record of the second resource falls back to the literal.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_resource_attr_then_literal_per_resource() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("r", AnyValue::new_string("ra"))])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish(), LogRecord::build().finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+        let query = r#"logs | extend attributes["x"] = coalesce(resource.attributes["r"], "foo")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+        let attrs: Vec<Vec<KeyValue>> = result
+            .resource_logs
+            .iter()
+            .flat_map(|r| &r.scope_logs)
+            .flat_map(|s| &s.log_records)
+            .map(|l| l.attributes.clone())
+            .collect();
+        let x = |v: &str| vec![KeyValue::new("x", AnyValue::new_string(v))];
+        assert_eq!(attrs, vec![x("ra"), x("ra"), x("foo")]);
+    }
+
     /// Scenario: assign `coalesce` to the root `severity_text` column where every argument is
     /// absent from the whole batch, and where absent arguments are followed by a literal.
     /// Guarantees: the all-absent result is assigned as null (clearing `severity_text`) without

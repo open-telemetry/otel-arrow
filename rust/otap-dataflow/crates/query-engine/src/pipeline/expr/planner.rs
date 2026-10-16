@@ -719,29 +719,26 @@ impl ExprPlanner {
         };
 
         let mut expr = self.build_eval_or_join(case_expr, args_scope, data_scope, true)?;
-        match &mut expr {
-            ScopedExpr::JoinAndEval {
-                align_children_to_record,
-                default_null_children,
-                ..
-            } => {
-                *align_children_to_record = true;
-                // An argument absent from the whole batch (e.g. an attribute key no record has)
-                // is null for every record, so a later argument can still provide the value.
-                *default_null_children = true;
-            }
-            ScopedExpr::Eval {
-                eval:
-                    LeafEval::DatafusionExpr {
-                        projection_opts, ..
-                    },
-                ..
-            } => {
-                // Likewise, an optional column absent from the whole batch (e.g. no record has a
-                // body) is null for every record rather than making the whole result absent.
-                projection_opts.default_null_columns = true;
-            }
-            _ => {}
+        if let ScopedExpr::JoinAndEval {
+            align_children_to_record,
+            default_null_children,
+            ..
+        } = &mut expr
+        {
+            *align_children_to_record = true;
+            // An argument absent from the whole batch (e.g. an attribute key no record has) is
+            // null for every record, so a later argument can still provide the value.
+            *default_null_children = true;
+        } else if let ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr {
+                projection_opts, ..
+            },
+            ..
+        } = &mut expr
+        {
+            // Likewise, an optional column absent from the whole batch (e.g. no record has a
+            // body) is null for every record rather than making the whole result absent.
+            projection_opts.default_null_columns = true;
         }
 
         Ok(PlannedOp {
