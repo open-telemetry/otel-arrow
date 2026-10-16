@@ -4,5 +4,4 @@ note: "Add an opt-in PostgreSQL receiver with verified TLS, automatic result met
 issues: [4166, 3918]
 subtext: |
   Enable postgresql with one crypto-* feature and bind basic_auth_provider. TLS verifies platform or private CAs by default.
-  Set connection.tls.enabled=false only for isolated development. Configure query.max_rows_per_poll and query.max_batch_bytes.
-  Operations use a fixed 30s timeout. Initial timestamps normalize to UTC. Schema must remain stable across restarts.
+  Set connection.tls.enabled=false only for isolated development. Operations use a fixed 30s timeout; initial timestamps normalize to UTC and schema must stay stable.
