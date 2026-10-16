@@ -8,6 +8,7 @@ use serde_json::json;
 
 mod compatibility;
 mod construction_and_configuration;
+mod dlq;
 mod operational;
 mod rebalancing;
 mod routing;
