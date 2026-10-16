@@ -52,6 +52,22 @@ The repository's existing `CODEOWNERS` file remains the source of truth for
 formal GitHub code-owner review. Component metadata supplements it with finer
 review domains; it does not replace or weaken the existing approval rules.
 
+### Advisory component-owner coverage
+
+The non-required `contrib-owner-coverage` status is red while any
+affected contrib node or extension lacks owner coverage. Owners come from
+the nearest metadata on trusted `main`, including inherited crate ownership.
+Each component is covered if the author is an owner or another owner has
+approved. Author ownership covers only their components, not the entire PR,
+and does not replace independent approvals required by GitHub.
+Comments and dismissed or superseded approvals do not count. Renames cover
+both paths; unavailable ownership is reported as an error rather than covered.
+The status description names missing or unknown components when they fit,
+otherwise shows a count; the linked summary always lists all affected components.
+PRs sharing a head commit share this advisory status; the last report wins.
+
+Approvers and maintainers may defer review until owner coverage is present.
+
 ## Component ownership metadata
 
 Each core or contrib node has a `metadata.yaml` beside its implementation.
