@@ -31,7 +31,7 @@ groups:
                 tls:
                   enabled: true
                   # Private CA bundle for the TLS walkthrough; platform roots remain included.
-                  ca_file: '${env:PG_CA_FILE}'
+                  ca_file: '${env:PG_CA_FILE:-.secrets/postgresql/ca.crt}'
               query:
                 statement: >
                   SELECT e.event_ts, e.event_id, e.actor
