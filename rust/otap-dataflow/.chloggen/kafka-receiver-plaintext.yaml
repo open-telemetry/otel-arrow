@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: Kafka receiver supports UTF-8 plaintext records and emits each record as an OpenTelemetry log body.
+issues: [4297]
+subtext:
