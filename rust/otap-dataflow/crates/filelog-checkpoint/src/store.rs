@@ -535,6 +535,15 @@ impl CheckpointStore {
     }
 }
 
+// Shared by startup and live resolution of a failed append:
+// - Startup passes no pending guard and reconstructs state from validated disk
+//   contents, repairing only a proven incomplete final WAL transaction.
+// - Live resolution first syncs the original handle, then supplies the retained
+//   attempt, generation, and WAL offset. Recovery checks these before repair or
+//   cleanup so it cannot roll back accepted progress or accept a different
+//   attempt. The caller re-appends the retained transaction if it is absent.
+// Both paths run under the namespace lock and require the recovery barriers
+// before returning state. Neither path remediates a known sync failure.
 fn recover(
     namespace: &Namespace,
     checkpoint_id: &str,
