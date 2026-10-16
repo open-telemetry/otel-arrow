@@ -1897,12 +1897,22 @@ mod tests {
     #[derive(Clone)]
     struct RecordingSink {
         buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+        /// Fails every write and flush, so the writer thread stops as unavailable.
+        failing: bool,
     }
 
     impl RecordingSink {
         fn new() -> Self {
             Self {
                 buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+                failing: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                failing: true,
+                ..Self::new()
             }
         }
 
@@ -1913,6 +1923,9 @@ mod tests {
 
     impl OutputSink for RecordingSink {
         fn write_frame(&mut self, frame: &[u8]) -> std::io::Result<()> {
+            if self.failing {
+                return Err(std::io::Error::other("simulated console failure"));
+            }
             let mut buffer = self.buffer.lock().expect("sink buffer");
             // Chunked appends mimic an operating system that accepts partial writes.
             for chunk in frame.chunks(4096) {
@@ -1923,6 +1936,9 @@ mod tests {
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
+            if self.failing {
+                return Err(std::io::Error::other("simulated console failure"));
+            }
             Ok(())
         }
     }
@@ -1987,14 +2003,14 @@ mod tests {
         );
     }
 
-    /// Scenario: the console writer is already closed when the exporter formats a payload.
+    /// Scenario: the console writer has already failed when the exporter formats a payload.
     /// Guarantees: the handoff resolves as a counted enqueue failure instead of
     /// blocking, which is what lets the exporter's message loop continue to its ACK.
     #[tokio::test]
     async fn console_handoff_resolves_when_the_writer_is_gone() {
         let encoded = logs_with_full_resource_and_scope().encode_to_vec();
         let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
-        let sink = RecordingSink::new();
+        let sink = RecordingSink::failing();
         let stream = OutputStream::start(
             StreamId::Stdout,
             1,
@@ -2004,7 +2020,7 @@ mod tests {
         )
         .expect("writer thread spawns");
         let handle = stream.handle();
-        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+        assert!(stream.shutdown(Duration::from_secs(5)).writer_failed);
 
         let formatter =
             ConsoleFormatter::RecordJson(RecordJsonFormatter::new(RecordJsonConfig::default()));
@@ -2012,7 +2028,7 @@ mod tests {
         let handoff = formatter.print_logs_data(&logs_view, &handle).await;
         assert!(
             handoff.is_err(),
-            "a closed writer must report the failed handoff"
+            "a failed writer must report the failed handoff"
         );
 
         assert!(sink.contents().is_empty());
@@ -2020,14 +2036,14 @@ mod tests {
     }
 
     /// Scenario: a payload reaches the exporter's message loop while the console writer
-    /// is already closed, so the handoff fails.
+    /// has already failed, so the handoff fails.
     /// Guarantees: the exporter still ACKs that message exactly once and terminates
     /// cleanly, so a dead console writer never strands the upstream pipeline.
     #[test]
     fn enqueue_failure_still_acks_exactly_once() {
         const SUBSCRIBER_NODE_ID: usize = 4242;
 
-        let sink = RecordingSink::new();
+        let sink = RecordingSink::failing();
         let stream = OutputStream::start(
             StreamId::Stdout,
             1,
@@ -2037,7 +2053,7 @@ mod tests {
         )
         .expect("writer thread spawns");
         let handle = stream.handle();
-        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+        assert!(stream.shutdown(Duration::from_secs(5)).writer_failed);
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(CONSOLE_EXPORTER_URN));
