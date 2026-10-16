@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-#[cfg(test)]
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::{context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
@@ -45,6 +45,7 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
+use otel_arrow_dfe_query_engine::pipeline::{MetricTypeContext, SignalContext, SignalKind};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
@@ -95,22 +96,39 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
         // about invalid expressions in user's config
         match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let (expr, function_defs) =
-                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not parse OPL Expression: {e:?}"),
-                    })?;
-
-                let _ = Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
-                    }
-                })?;
+                let _ = try_create_partitioner(&opl_expression, config.signal_type.as_ref())?;
             }
         };
         Ok(())
     },
 };
+
+fn try_create_partitioner(
+    opl_expression: &str,
+    signal_type: Option<&SignalType>,
+) -> Result<Partitioner, ConfigError> {
+    let (expr, function_defs) =
+        OplParser::parse_expr_with_options(opl_expression, default_parser_options()).map_err(
+            |e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!("Could not parse OPL Expression: {e:?}"),
+            },
+        )?;
+
+    let signal_context = match signal_type {
+        None => SignalContext::All,
+        Some(SignalType::Logs) => SignalContext::Single(SignalKind::Logs),
+        Some(SignalType::Metrics) => {
+            SignalContext::Single(SignalKind::Metrics(MetricTypeContext::All))
+        }
+        Some(SignalType::Traces) => SignalContext::Single(SignalKind::Traces),
+    };
+
+    Partitioner::try_new(expr, function_defs, signal_context).map_err(|e| {
+        ConfigError::InvalidUserConfig {
+            error: format!("Could not plan partitioner from OPL expression: {e:?}"),
+        }
+    })
+}
 
 /// partition processor.
 pub struct PartitionProcessor {
@@ -119,6 +137,10 @@ pub struct PartitionProcessor {
     header_name: ContextEntryName,
     serialization_strategy: PartitionValueSerializeStrategy,
     metrics: MeasurementMetricSet<Metrics>,
+
+    /// batches containing this type of signal will be partitioned by this instance, other batches
+    /// will be passed through unmodified. Set to None to partition all signal batches.
+    signal_type: Option<SignalType>,
 }
 
 impl PartitionProcessor {
@@ -135,17 +157,7 @@ impl PartitionProcessor {
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let (expr, function_defs) =
-                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not parse OPL Expression: {e:?}"),
-                    })?;
-
-                Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
-                    }
-                })?
+                try_create_partitioner(&opl_expression, config.signal_type.as_ref())?
             }
         };
 
@@ -155,6 +167,7 @@ impl PartitionProcessor {
             header_name: config.partition_header_name,
             serialization_strategy: config.header_serialization_strategy,
             metrics: Metrics::register(pipeline_ctx),
+            signal_type: config.signal_type,
         })
     }
 
@@ -239,6 +252,14 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
             },
             Message::PData(mut pdata) => {
+                // check if this batch should be pass-through based on configured signal type
+                if let Some(expected_signal_type) = &self.signal_type
+                    && pdata.signal_type() != *expected_signal_type
+                {
+                    effect_handler.send_message_with_source_node(pdata).await?;
+                    return Ok(());
+                }
+
                 // get/preserve the original flow_metric ns counter
                 let flow_metrics_counter = pdata.take_flow_compute();
                 if let Some(flow) = flow_metrics_counter {
@@ -936,6 +957,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": "severity_number / 0" },
+                "signal_type": "Logs",
                 "partition_header_name": "partition-header",
             }),
             &runtime,

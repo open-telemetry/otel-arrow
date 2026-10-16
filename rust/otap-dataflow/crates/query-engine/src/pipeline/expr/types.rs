@@ -202,7 +202,7 @@ pub fn root_field_type(
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq)]
 enum DpMask {
-    Number = 00001,
+    Number = 0b0001,
     Histogram = 0b0010,
     ExpHistogram = 0b0100,
     Summary = 0b1000,
