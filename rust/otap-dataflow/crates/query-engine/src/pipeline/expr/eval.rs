@@ -13,11 +13,11 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
-    StringArray, StructArray, UInt8Array, UInt32Array,
+    RecordBatchOptions, StringArray, StructArray, UInt8Array, UInt32Array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
@@ -260,6 +260,16 @@ pub(super) fn eval_datafusion_expr_value(
                             ids: None,
                             parent_ids: None,
                         }));
+                    }
+                    if projection_opts.default_null_columns {
+                        // The expression treats absent data as null (e.g. `coalesce` of an
+                        // attribute no record has): its value is the same for every record.
+                        return eval_on_null_row(
+                            logical_expr,
+                            projection,
+                            projection_opts,
+                            eval_ctx,
+                        );
                     }
                     return Ok(None);
                 }
@@ -640,6 +650,45 @@ fn execute_bitmap_not_as_value(
 }
 
 /// Evaluate a DataFusion expression on a RecordBatch.
+/// A record batch with no columns and a single row, used to evaluate an expression once when
+/// all of its input data is absent from the batch.
+static NULL_ROW_RECORD_BATCH_INPUT: LazyLock<RecordBatch> = LazyLock::new(|| {
+    RecordBatch::try_new_with_options(
+        Arc::new(Schema::empty()),
+        Vec::new(),
+        &RecordBatchOptions::new().with_row_count(Some(1)),
+    )
+    .expect("a record batch with no columns and one row is valid")
+});
+
+/// Evaluate an expression whose input data is absent from the whole batch as if every column
+/// it reads were null. The result applies to every record, so it is returned as a static
+/// scalar, or `None` if it is null.
+///
+/// The physical expression is planned for this evaluation only rather than cached in the
+/// [`LeafEval`]: the null placeholder columns don't have the types the columns have when the
+/// data is present in a later batch.
+fn eval_on_null_row(
+    logical_expr: &Expr,
+    projection: &Projection,
+    projection_opts: &ProjectionOptions,
+    eval_ctx: &EvalContext<'_>,
+) -> Result<Option<ScopedValue>> {
+    let Some(projected_rb) =
+        projection.project_with_options(NULL_ROW_RECORD_BATCH_INPUT.deref(), projection_opts)?
+    else {
+        return Ok(None);
+    };
+    let value = match evaluate_df_expr(logical_expr, &mut None, eval_ctx, &projected_rb)? {
+        ColumnarValue::Scalar(value) => value,
+        ColumnarValue::Array(values) => ScalarValue::try_from_array(&values, 0)?,
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(ScopedValue::new_scalar(value)))
+}
+
 fn evaluate_df_expr(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,

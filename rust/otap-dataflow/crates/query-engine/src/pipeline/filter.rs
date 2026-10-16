@@ -3110,6 +3110,31 @@ mod test {
         assert_eq!(result_record_count, 0);
     }
 
+    /// Scenario: a dynamic type check on `coalesce` of an attribute and a literal, where every
+    /// record has the attribute with a string value.
+    /// Guarantees: the type check plans and keeps every record, since `coalesce` of arguments
+    /// that share the attribute's scope stays a single evaluation that the type check can use.
+    #[tokio::test]
+    async fn test_filter_type_check_on_coalesce_of_attr_and_literal() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("v"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("w"))])
+                .finish(),
+        ];
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where coalesce(attributes["key"], "foo") is String"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records
+        );
+    }
+
     /// Scenario: Evaluate comparisons between two absent operands using the OPL parser.
     /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]

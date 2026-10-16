@@ -8921,83 +8921,155 @@ mod test {
         test_update_attr_coalesce_absent_args_then_literal::<KqlParser>().await
     }
 
-    /// Scenario: `coalesce(attributes["a"], "foo")` on a batch where only the first record has
-    /// `a`, so the arguments share the attribute's scope and the second record has no row in
-    /// it.
-    /// Guarantees: the record without `a` falls back to the literal instead of getting null,
-    /// and the record with `a` keeps its own value.
-    async fn test_update_attr_coalesce_attr_then_literal_per_record<P: Parser>() {
-        let logs_data = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("a", AnyValue::new_string("a0"))])
-                .finish(),
-            LogRecord::build().finish(),
-        ]);
-        let query = r#"logs | extend attributes["x"] = coalesce(attributes["a"], "foo")"#;
-        let records = exec_coalesce_query::<P>(query, logs_data).await;
-        assert_eq!(records.len(), 2, "no logs should be dropped");
-        assert_eq!(
-            records[0].attributes,
-            vec![
-                KeyValue::new("a", AnyValue::new_string("a0")),
-                KeyValue::new("x", AnyValue::new_string("a0")),
-            ]
-        );
-        assert_eq!(
-            records[1].attributes,
-            vec![KeyValue::new("x", AnyValue::new_string("foo"))]
-        );
+    /// Scenario: assign `coalesce(resource.attributes[...], "foo")` back to a resource attribute
+    /// on a batch with two resources and several logs per resource, both when every resource
+    /// has the attribute and when no resource has it.
+    /// Guarantees: each resource gets its own attribute value (the value stays in the resource's
+    /// scope rather than being aligned to the logs), and when the attribute is absent from the
+    /// whole batch every resource gets the literal.
+    #[tokio::test]
+    async fn test_set_resource_attr_coalesce_resource_attr_then_literal() {
+        let logs_data = |r0: Vec<KeyValue>, r1: Vec<KeyValue>| {
+            LogsData::new(vec![
+                ResourceLogs::new(
+                    Resource::build().attributes(r0).finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![LogRecord::build().finish(), LogRecord::build().finish()],
+                    )],
+                ),
+                ResourceLogs::new(
+                    Resource::build().attributes(r1).finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![
+                            LogRecord::build().finish(),
+                            LogRecord::build().finish(),
+                            LogRecord::build().finish(),
+                        ],
+                    )],
+                ),
+            ])
+        };
+        let x_of = |logs_data: &LogsData| -> Vec<Option<KeyValue>> {
+            logs_data
+                .resource_logs
+                .iter()
+                .map(|r| {
+                    r.resource
+                        .as_ref()
+                        .and_then(|r| r.attributes.iter().find(|kv| kv.key == "x").cloned())
+                })
+                .collect()
+        };
+        let x = |v: &str| Some(KeyValue::new("x", AnyValue::new_string(v)));
+
+        let query =
+            r#"logs | set resource.attributes["x"] = coalesce(resource.attributes["r"], "foo")"#;
+        let result = exec_logs_pipeline::<OplParser>(
+            query,
+            logs_data(
+                vec![KeyValue::new("r", AnyValue::new_string("r0"))],
+                vec![KeyValue::new("r", AnyValue::new_string("r1"))],
+            ),
+        )
+        .await;
+        assert_eq!(x_of(&result), vec![x("r0"), x("r1")]);
+
+        let query = r#"logs | set resource.attributes["x"] = coalesce(resource.attributes["missing"], "foo")"#;
+        let result = exec_logs_pipeline::<OplParser>(
+            query,
+            logs_data(vec![KeyValue::new("q", AnyValue::new_string("q0"))], vec![]),
+        )
+        .await;
+        assert_eq!(x_of(&result), vec![x("foo"), x("foo")]);
     }
 
-    /// Scenario: Run the per-record attribute-then-literal `coalesce` test with the OPL parser.
-    /// Guarantees: OPL planning/evaluation falls back to the literal per record.
+    /// Scenario: one pipeline runs `coalesce` on a batch where an argument is absent and then on
+    /// a batch where it is present, and the reverse, for arguments joined across scopes, root
+    /// fields only, and an attribute with a literal.
+    /// Guarantees: every batch gets its own correct result: evaluating a batch where an argument
+    /// is absent (as a null column or a null row) doesn't change how a later batch with the
+    /// argument present is evaluated, and vice versa.
     #[tokio::test]
-    async fn test_update_attr_coalesce_attr_then_literal_per_record_opl_parser() {
-        test_update_attr_coalesce_attr_then_literal_per_record::<OplParser>().await
-    }
-
-    /// Scenario: Run the per-record attribute-then-literal `coalesce` test with the KQL parser.
-    /// Guarantees: KQL planning/evaluation falls back to the literal per record.
-    #[tokio::test]
-    async fn test_update_attr_coalesce_attr_then_literal_per_record_kql_parser() {
-        test_update_attr_coalesce_attr_then_literal_per_record::<KqlParser>().await
-    }
-
-    /// Scenario: `coalesce(resource.attributes["r"], "foo")` on a batch with two resources where
-    /// only the first resource has `r`, so the arguments share the resource attributes' scope.
-    /// Guarantees: the resource attribute is aligned to every record: the records of the first
-    /// resource get its value and the record of the second resource falls back to the literal.
-    #[tokio::test]
-    async fn test_update_attr_coalesce_resource_attr_then_literal_per_resource() {
-        let logs_data = LogsData::new(vec![
-            ResourceLogs::new(
-                Resource::build()
-                    .attributes(vec![KeyValue::new("r", AnyValue::new_string("ra"))])
+    async fn test_update_attr_coalesce_absent_then_present_across_batches() {
+        let absent = || {
+            to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .severity_text("s0")
                     .finish(),
-                vec![ScopeLogs::new(
-                    InstrumentationScope::default(),
-                    vec![LogRecord::build().finish(), LogRecord::build().finish()],
-                )],
+                LogRecord::build().severity_text("s1").finish(),
+            ])
+        };
+        let present = || {
+            to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("a", AnyValue::new_string("a0"))])
+                    .body(AnyValue::new_string("b0"))
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("a", AnyValue::new_int(7))])
+                    .body(AnyValue::new_int(3))
+                    .finish(),
+            ])
+        };
+        let x_of = |logs_data: LogsData| -> Vec<Option<AnyValue>> {
+            logs_data.resource_logs[0].scope_logs[0]
+                .log_records
+                .iter()
+                .map(|l| {
+                    l.attributes
+                        .iter()
+                        .find(|kv| kv.key == "x")
+                        .and_then(|kv| kv.value.clone())
+                })
+                .collect()
+        };
+        let s = |v: &str| Some(AnyValue::new_string(v));
+        let null = || Some(AnyValue { value: None });
+
+        for (query, when_absent, when_present) in [
+            (
+                r#"logs | set attributes["x"] = coalesce(attributes["a"], attributes["y"], body)"#,
+                vec![s("y0"), null()],
+                vec![s("a0"), Some(AnyValue::new_int(7))],
             ),
-            ResourceLogs::new(
-                Resource::default(),
-                vec![ScopeLogs::new(
-                    InstrumentationScope::default(),
-                    vec![LogRecord::build().finish()],
-                )],
+            (
+                r#"logs | set attributes["x"] = coalesce(body, severity_text)"#,
+                vec![s("s0"), s("s1")],
+                vec![s("b0"), Some(AnyValue::new_int(3))],
             ),
-        ]);
-        let query = r#"logs | extend attributes["x"] = coalesce(resource.attributes["r"], "foo")"#;
-        let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
-        let attrs: Vec<Vec<KeyValue>> = result
-            .resource_logs
-            .iter()
-            .flat_map(|r| &r.scope_logs)
-            .flat_map(|s| &s.log_records)
-            .map(|l| l.attributes.clone())
-            .collect();
-        let x = |v: &str| vec![KeyValue::new("x", AnyValue::new_string(v))];
-        assert_eq!(attrs, vec![x("ra"), x("ra"), x("foo")]);
+            (
+                r#"logs | set attributes["x"] = coalesce(attributes["a"], "foo")"#,
+                vec![s("foo"), s("foo")],
+                vec![s("a0"), Some(AnyValue::new_int(7))],
+            ),
+        ] {
+            for absent_first in [true, false] {
+                let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+                let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+                let order = if absent_first {
+                    [(absent(), &when_absent), (present(), &when_present)]
+                } else {
+                    [(present(), &when_present), (absent(), &when_absent)]
+                };
+                for (input, expected) in order {
+                    let result = pipeline
+                        .execute(otlp_to_otap(&OtlpProtoMessage::Logs(input)))
+                        .await
+                        .unwrap();
+                    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+                        panic!("invalid signal type");
+                    };
+                    assert_eq!(
+                        &x_of(result),
+                        expected,
+                        "{query} absent_first={absent_first}"
+                    );
+                }
+            }
+        }
     }
 
     /// Scenario: assign `coalesce` to the root `severity_text` column where every argument is

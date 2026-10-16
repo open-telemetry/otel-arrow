@@ -18,4 +18,4 @@ issues: [4300]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: 'Records missing the attribute in `coalesce(attributes["x"], "default")` now get the default instead of null. Equality comparisons (`==`, `!=`) between two values that are both absent from a batch no longer fail with a join error.'
+subtext: 'This includes `coalesce(attributes["x"], "default")` and `coalesce(body, "default")` when no record has `x` or a body. Equality comparisons (`==`, `!=`) between two values that are both absent from a batch no longer fail with a join error.'
