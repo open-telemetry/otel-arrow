@@ -72,7 +72,7 @@ pub struct EtwDecodeMetrics {
 pub struct EtwKernelMetrics {
     /// Number of events lost inside kernel ETW buffers before delivery (buffer overrun).
     /// Distinct from receiver-level drops and not included in received total.
-    #[metric(unit = "{event}")]
+    #[metric(name = "events_lost", unit = "{event}")]
     pub events_lost: Counter<u64>,
 }
 
@@ -406,11 +406,11 @@ mod tests {
                 .iter()
                 .any(|s| s.descriptor().name == "receiver.etw.decode")
         );
-        assert!(
-            snapshots
-                .iter()
-                .any(|s| s.descriptor().name == "receiver.etw.kernel")
-        );
+        let kernel_snapshot = snapshots
+            .iter()
+            .find(|s| s.descriptor().name == "receiver.etw.kernel")
+            .expect("kernel metric snapshot must be present");
+        assert_eq!(kernel_snapshot.descriptor().metrics[0].name, "events_lost");
         assert!(snapshots.iter().any(|s| {
             s.descriptor().name == "receiver.etw.dropped"
                 && s.measurement_attribute_value("reason") == Some("slow_worker")
