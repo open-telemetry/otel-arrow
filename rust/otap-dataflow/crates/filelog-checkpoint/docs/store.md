@@ -6,29 +6,17 @@ ownership, publication, WAL appends, synchronization, and startup recovery.
 
 ## Usage and ownership
 
-`open` takes `&StateRoot`, the exact checkpoint ID, and `StoreConfig`. On Linux,
-construct `StateRoot` with `StateRoot::from_borrowed_fd` using the engine's
-provisioned `StateDirectory` descriptor. The checkpoint crate does not depend
-on the engine. The caller must have validated and synchronized the root and its
-ancestors; capability construction does not perform that provisioning.
-Path-only (`O_PATH`) descriptors are rejected as invalid configuration before
-any namespace access or synchronization; use a readable directory descriptor.
+`CheckpointStore::open` takes `&StateRoot`, the exact checkpoint ID, and
+`StoreConfig`. Construct `StateRoot` from the engine's provisioned
+`StateDirectory` using `StateRoot::from_borrowed_fd`. The caller must first
+validate and synchronize the root and its ancestors. Use a readable directory
+descriptor; `O_PATH` handles are rejected.
 
-`StateRoot` duplicates and validates the descriptor, so the original descriptor
-may then be closed. Each store retains its own root handle and revalidates it
-when opening the namespace. The capability may be reused for different
-checkpoint IDs or dropped after opening. All access stays relative to held
-directories, never a pathname fallback.
-
-The internal filesystem boundary uses concrete types and Linux operations.
-Namespace directory handles are private. The store protocol explicitly orders
-`publish_no_replace` and `sync_directory`: publication is atomic but is not
-certified durable until the directory barrier succeeds. The active data handle
-exposes an explicit append operation backed by `O_APPEND`; recovery reads and
-seeks cannot redirect writes into the snapshot or earlier WAL. The wrapper
-retains the original handle for synchronization and pending-write resolution.
-Temporary-file writes remain separate from active-file appends. Both paths use
-the existing fault-injection and terminal sync-failure mechanism.
+`StateRoot` owns a duplicate of the supplied descriptor. Each store retains
+its own root handle and revalidates it when opening the namespace, so the
+caller may close the original descriptor and drop `StateRoot` after opening.
+A root capability can serve multiple checkpoint IDs. Filesystem access stays
+relative to held directory handles, without reopening paths.
 
 Run the store on the dedicated read/checkpoint worker. It creates no threads
 and performs no automatic retries. The caller owns bounded lock acquisition
@@ -75,6 +63,9 @@ artifacts fail closed. `RecoveryReport` exposes interrupted creation, repaired
 byte count, and cleanup for caller-owned health reporting.
 
 ## Writes, synchronization, and failures
+
+Active-file writes use `O_APPEND`, so recovery reads and seeks cannot redirect
+later writes into the snapshot or earlier WAL.
 
 `append` encodes and preflights the entire transaction before writing, then
 commits its state only after the complete write succeeds. Preparation stages
