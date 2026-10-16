@@ -1125,6 +1125,11 @@ impl PipelineStage for AssignPipelineStage {
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
                     otap_batch = match eval_result {
+                        // an all-null result (e.g. every `coalesce` argument was absent) has
+                        // no type to check against the column, so it's assigned as null
+                        Some(eval_result) if eval_result.values.data_type() == DataType::Null => {
+                            self.assign_null_root_column(otap_batch, dest_col_name)
+                        }
                         Some(eval_result) => {
                             self.assign_to_root(otap_batch, eval_result, dest_scope, dest_col_name)
                         }

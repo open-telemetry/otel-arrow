@@ -16,8 +16,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt32Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
+    StringArray, StructArray, UInt8Array, UInt32Array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
@@ -81,6 +81,26 @@ impl<'a> EvalContext<'a> {
         Self {
             data_point_type: Some(data_point_type),
             session_context: session_ctx,
+        }
+    }
+
+    /// Returns the record batch whose rows are the records being evaluated, with its data
+    /// scope: the data points batch when evaluating metric data points, otherwise the root
+    /// batch. Returns `None` if that batch is absent.
+    pub(crate) fn record_batch<'b>(
+        &self,
+        otap_batch: &'b OtapArrowRecords,
+    ) -> Option<(&'b RecordBatch, DataScope)> {
+        match self.data_point_type.as_ref() {
+            Some(dp_type) => otap_batch.get(dp_type.payload_type()).map(|rb| {
+                (
+                    rb,
+                    DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+                )
+            }),
+            None => otap_batch
+                .root_record_batch()
+                .map(|rb| (rb, DataScope::Record(RecordScope::Signal))),
         }
     }
 
@@ -336,7 +356,22 @@ pub(super) fn join_and_eval_value(
             }
             None => {
                 if default_null_children {
-                    ScopedValue::new_scalar(ScalarValue::Null)
+                    // When children are aligned to the records, an absent child is a null for
+                    // every record. Using a null column with the records' row order (rather
+                    // than a null scalar) keeps the join input aligned even if every child is
+                    // absent.
+                    match eval_ctx.record_batch(otap_batch) {
+                        Some((record_rb, record_scope)) if align_children_to_record => {
+                            ScopedValue::new(
+                                ColumnarValue::Array(Arc::new(NullArray::new(
+                                    record_rb.num_rows(),
+                                ))),
+                                record_scope,
+                                record_rb,
+                            )
+                        }
+                        _ => ScopedValue::new_scalar(ScalarValue::Null),
+                    }
                 } else if let Some((strategy, default)) =
                     short_circuit.and_then(|s| s.absent_child_default().map(|d| (s, d)))
                 {
@@ -391,14 +426,9 @@ pub(super) fn join_and_eval_value(
         .map(|sv| scoped_value_to_join_input(sv, otap_batch))
         .collect::<Result<Vec<_>>>()?;
 
-    // When every input is a static scalar (e.g. every child was absent and defaulted to null,
-    // possibly next to a literal), there are no rows to align. `multi_join` handles this by
-    // producing a single row, which is converted back to a scalar after evaluation.
-    let all_inputs_scalar = join_inputs.iter().all(|input| input.data_scope.is_scalar());
-
     // perform the join
     // TODO in the future we should consolidate join strategy so multi-join is the only option.
-    let (joined_rb, result_scope) = if join_inputs.len() == 2 && !all_inputs_scalar {
+    let (joined_rb, result_scope) = if join_inputs.len() == 2 {
         join(&join_inputs[0], &join_inputs[1], otap_batch)?
     } else {
         multi_join(&join_inputs, otap_batch)?
@@ -444,22 +474,11 @@ pub(super) fn join_and_eval_value(
         )?
     };
 
-    let mut result_vals = coerce_nulls_for_predicate(result_vals, *missing_data_passes);
-    // a result with static scalar scope comes from joining only scalars into a single row;
-    // consumers expect a scalar value for that scope, so unwrap the row
-    if result_scope.is_scalar()
-        && let ColumnarValue::Array(arr) = &result_vals
-    {
-        let scalar = ScalarValue::try_from_array(arr, 0)?;
-        if scalar.is_null() {
-            // e.g. every child was absent: report the result as absent, like any other null
-            // input data, rather than as an untyped null scalar
-            return Ok(None);
-        }
-        result_vals = ColumnarValue::Scalar(scalar);
-    }
-
-    let result = ScopedValue::new(result_vals, DataScope::clone(&result_scope), &joined_rb);
+    let result = ScopedValue::new(
+        coerce_nulls_for_predicate(result_vals, *missing_data_passes),
+        DataScope::clone(&result_scope),
+        &joined_rb,
+    );
 
     Ok(Some(result))
 }
