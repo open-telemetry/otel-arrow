@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Controller-side listener-group plan extraction.
+//! Controller-side network listener plan extraction.
 //!
 //! This module is deliberately conservative and data-only: it extracts known
 //! receiver bind identities from resolved configuration and combines them with
@@ -9,17 +9,17 @@
 //! `SO_REUSEPORT`, or attach any selector.
 
 use crate::placement::PipelinePlacement;
-use otel_arrow_dfe_config::engine::ResolvedPipelineConfig;
-use otel_arrow_dfe_engine::listener_group::{
-    ListenerGroupKey, ListenerGroupMember, ListenerGroupPlan, ListenerGroupSnapshot,
-    ListenerProtocol,
+use otel_arrow_dfe_config::{LogicalPipelineDeploymentKey, engine::ResolvedPipelineConfig};
+use otel_arrow_dfe_engine::network_listener::{
+    NetworkEndpoint, NetworkListenerMember, NetworkListenerPlan, NetworkTransport,
 };
 use otel_arrow_dfe_telemetry::otel_warn;
+use std::io;
 use std::net::SocketAddr;
 
 // TODO(#3687): Replace controller-owned receiver schema extraction with
 // receiver-declared listener identities. Distinguish declared-none from
-// undeclared before listener snapshots drive coordination.
+// undeclared before network plans drive coordination.
 const KNOWN_RECEIVER_URNS: &[&str] = &[
     "urn:otel:receiver:otlp",
     "urn:otel:receiver:otap",
@@ -27,7 +27,7 @@ const KNOWN_RECEIVER_URNS: &[&str] = &[
 ];
 
 fn parse_listening_addr(value: &serde_json::Value) -> Option<Result<SocketAddr, String>> {
-    // Listener groups only describe concrete socket bind identities. Hostnames
+    // Network plans only describe concrete socket bind identities. Hostnames
     // can resolve differently over time, so they are left to future resolver
     // integration instead of being guessed here.
     let raw = value.get("listening_addr")?;
@@ -39,18 +39,18 @@ fn parse_listening_addr(value: &serde_json::Value) -> Option<Result<SocketAddr, 
 }
 
 fn push_listening_addr(
-    addresses: &mut Vec<(ListenerProtocol, SocketAddr)>,
+    addresses: &mut Vec<(NetworkTransport, SocketAddr)>,
     node_id: &str,
     receiver_urn: &str,
     config_path: &str,
     value: &serde_json::Value,
-    protocol: ListenerProtocol,
+    protocol: NetworkTransport,
 ) {
     match parse_listening_addr(value) {
         Some(Ok(addr)) => addresses.push((protocol, addr)),
         Some(Err(error)) => {
             otel_warn!(
-                "controller.listener_group.addr_skipped",
+                "controller.network_listener.addr_skipped",
                 node_id = node_id,
                 receiver_urn = receiver_urn,
                 config_path = config_path,
@@ -61,11 +61,11 @@ fn push_listening_addr(
     }
 }
 
-fn listener_addresses(
+fn endpoint_addresses(
     node_id: &str,
     receiver_urn: &str,
     config: &serde_json::Value,
-) -> Vec<(ListenerProtocol, SocketAddr)> {
+) -> Vec<(NetworkTransport, SocketAddr)> {
     let mut addresses = Vec::new();
 
     push_listening_addr(
@@ -74,7 +74,7 @@ fn listener_addresses(
         receiver_urn,
         "listening_addr",
         config,
-        ListenerProtocol::Tcp,
+        NetworkTransport::Tcp,
     );
 
     if let Some(protocols) = config.get("protocols") {
@@ -86,28 +86,24 @@ fn listener_addresses(
                     receiver_urn,
                     &format!("protocols.{protocol}.listening_addr"),
                     protocol_config,
-                    ListenerProtocol::Tcp,
+                    NetworkTransport::Tcp,
                 );
             }
         }
     }
 
-    if let Some(protocol) = config.get("protocol") {
-        for (key, listener_protocol) in [
-            ("tcp", ListenerProtocol::Tcp),
-            ("udp", ListenerProtocol::Udp),
-        ] {
-            if let Some(protocol_config) = protocol.get(key) {
-                push_listening_addr(
-                    &mut addresses,
-                    node_id,
-                    receiver_urn,
-                    &format!("protocol.{key}.listening_addr"),
-                    protocol_config,
-                    listener_protocol,
-                );
-            }
-        }
+    if let Some(protocol_config) = config
+        .get("protocol")
+        .and_then(|protocol| protocol.get("tcp"))
+    {
+        push_listening_addr(
+            &mut addresses,
+            node_id,
+            receiver_urn,
+            "protocol.tcp.listening_addr",
+            protocol_config,
+            NetworkTransport::Tcp,
+        );
     }
 
     addresses.sort();
@@ -115,50 +111,38 @@ fn listener_addresses(
     addresses
 }
 
-pub(crate) fn snapshot_for_pipeline(
+pub(crate) fn plan_for_pipeline(
     pipeline: &ResolvedPipelineConfig,
     placement: &PipelinePlacement,
-    generation: u64,
-) -> ListenerGroupSnapshot {
+    deployment_key: LogicalPipelineDeploymentKey,
+) -> io::Result<NetworkListenerPlan> {
     let members = placement
         .cores
         .iter()
-        .enumerate()
-        .map(|(idx, core)| ListenerGroupMember {
-            listener_id: idx as u32,
+        .map(|core| NetworkListenerMember {
             core_id: core.core_id.id,
             numa_node_id: core.known_numa_node_id,
         })
         .collect::<Vec<_>>();
 
-    if members.is_empty() {
-        return ListenerGroupSnapshot::new(generation, Vec::new());
-    }
-
-    let mut plans = Vec::new();
+    let mut endpoints = Vec::new();
     for (node_id, node_cfg) in pipeline.pipeline.node_iter() {
         if !KNOWN_RECEIVER_URNS.contains(&node_cfg.r#type.as_str()) {
             continue;
         }
 
         for (protocol, bind_address) in
-            listener_addresses(node_id.as_ref(), node_cfg.r#type.as_str(), &node_cfg.config)
+            endpoint_addresses(node_id.as_ref(), node_cfg.r#type.as_str(), &node_cfg.config)
         {
-            plans.push(ListenerGroupPlan {
-                key: ListenerGroupKey::new(
-                    pipeline.pipeline_group_id.clone(),
-                    pipeline.pipeline_id.clone(),
-                    node_id.clone(),
-                    bind_address,
-                    protocol,
-                ),
-                expected_members: members.clone(),
-            });
+            endpoints.push(NetworkEndpoint::new(
+                node_id.clone(),
+                bind_address,
+                protocol,
+            ));
         }
     }
 
-    plans.sort_by(|left, right| left.key.cmp(&right.key));
-    ListenerGroupSnapshot::new(generation, plans)
+    NetworkListenerPlan::new(deployment_key, members, endpoints)
 }
 
 #[cfg(test)]
@@ -203,12 +187,19 @@ mod tests {
         }
     }
 
+    fn deployment_key(placement_generation: u64) -> LogicalPipelineDeploymentKey {
+        LogicalPipelineDeploymentKey::new(
+            otel_arrow_dfe_config::PipelineKey::new("pg".into(), "pipe".into()),
+            placement_generation,
+        )
+    }
+
     /// Scenario: an OTLP receiver exposes both gRPC and HTTP listening
     /// addresses.
-    /// Guarantees: listener planning emits one TCP listener-group plan for
+    /// Guarantees: network planning emits one TCP endpoint for
     /// each configured OTLP bind address.
     #[test]
-    fn extracts_otlp_grpc_and_http_listener_groups() {
+    fn extracts_otlp_grpc_and_http_endpoints() {
         let pipeline = resolved_pipeline(
             r#"
 nodes:
@@ -223,36 +214,30 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement(), 7);
+        let plan = plan_for_pipeline(&pipeline, &placement(), deployment_key(7)).unwrap();
 
-        assert_eq!(snapshot.generation, 7);
-        assert_eq!(snapshot.plans.len(), 2);
-        assert!(
-            snapshot
-                .plan_for(
-                    "otlp",
-                    "127.0.0.1:4317".parse().unwrap(),
-                    ListenerProtocol::Tcp
-                )
-                .is_some()
-        );
-        assert!(
-            snapshot
-                .plan_for(
-                    "otlp",
-                    "127.0.0.1:4318".parse().unwrap(),
-                    ListenerProtocol::Tcp
-                )
-                .is_some()
-        );
-        assert_eq!(snapshot.plans[0].expected_members.len(), 2);
+        assert_eq!(plan.deployment_key.placement_generation(), 7);
+        assert_eq!(plan.endpoints.len(), 2);
+        assert!(plan.endpoints.iter().any(|endpoint| endpoint
+            == &NetworkEndpoint::new(
+                "otlp".into(),
+                "127.0.0.1:4317".parse().unwrap(),
+                NetworkTransport::Tcp
+            )));
+        assert!(plan.endpoints.iter().any(|endpoint| endpoint
+            == &NetworkEndpoint::new(
+                "otlp".into(),
+                "127.0.0.1:4318".parse().unwrap(),
+                NetworkTransport::Tcp
+            )));
+        assert_eq!(plan.members.len(), 2);
     }
 
     /// Scenario: an OTAP receiver exposes a top-level listening address.
     /// Guarantees: listener planning recognizes the OTAP bind identity as a
-    /// TCP listener group.
+    /// TCP endpoint.
     #[test]
-    fn extracts_otap_top_level_listener_group() {
+    fn extracts_otap_top_level_endpoint() {
         let pipeline = resolved_pipeline(
             r#"
 nodes:
@@ -263,19 +248,19 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement(), 0);
+        let plan = plan_for_pipeline(&pipeline, &placement(), deployment_key(0)).unwrap();
 
-        assert_eq!(snapshot.plans.len(), 1);
-        assert_eq!(snapshot.plans[0].key.receiver_node_id.as_ref(), "otap");
-        assert_eq!(snapshot.plans[0].key.protocol, ListenerProtocol::Tcp);
+        assert_eq!(plan.endpoints.len(), 1);
+        assert_eq!(plan.endpoints[0].receiver_node_id.as_ref(), "otap");
+        assert_eq!(plan.endpoints[0].transport, NetworkTransport::Tcp);
     }
 
     /// Scenario: multiple listener-capable receiver nodes are discovered in a
     /// pipeline config.
-    /// Guarantees: listener-group plans are returned in deterministic key
+    /// Guarantees: network endpoints are returned in deterministic key
     /// order independent of config map iteration.
     #[test]
-    fn listener_group_plans_are_sorted_by_key() {
+    fn network_endpoints_are_sorted_by_key() {
         let pipeline = resolved_pipeline(
             r#"
 nodes:
@@ -292,18 +277,18 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement(), 0);
+        let plan = plan_for_pipeline(&pipeline, &placement(), deployment_key(0)).unwrap();
 
-        assert_eq!(snapshot.plans.len(), 2);
-        assert_eq!(snapshot.plans[0].key.receiver_node_id.as_ref(), "a_otlp");
-        assert_eq!(snapshot.plans[1].key.receiver_node_id.as_ref(), "z_otap");
+        assert_eq!(plan.endpoints.len(), 2);
+        assert_eq!(plan.endpoints[0].receiver_node_id.as_ref(), "a_otlp");
+        assert_eq!(plan.endpoints[1].receiver_node_id.as_ref(), "z_otap");
     }
 
-    /// Scenario: a syslog CEF receiver exposes a UDP listening address.
-    /// Guarantees: listener planning preserves the UDP protocol and per-core
-    /// NUMA metadata for expected members.
+    /// Scenario: a syslog CEF receiver exposes only a UDP listening address.
+    /// Guarantees: the TCP-first network listener plan leaves UDP unmanaged
+    /// until a generation-aware UDP accept API is implemented.
     #[test]
-    fn extracts_syslog_udp_listener_group() {
+    fn ignores_syslog_udp_endpoint() {
         let pipeline = resolved_pipeline(
             r#"
 nodes:
@@ -316,11 +301,10 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement(), 0);
+        let plan = plan_for_pipeline(&pipeline, &placement(), deployment_key(0)).unwrap();
 
-        assert_eq!(snapshot.plans.len(), 1);
-        assert_eq!(snapshot.plans[0].key.protocol, ListenerProtocol::Udp);
-        assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, Some(1));
+        assert!(plan.endpoints.is_empty());
+        assert_eq!(plan.members[1].numa_node_id, Some(1));
     }
 
     /// Scenario: pipeline nodes either use unknown receiver URNs or known
@@ -343,9 +327,9 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement(), 0);
+        let plan = plan_for_pipeline(&pipeline, &placement(), deployment_key(0)).unwrap();
 
-        assert!(snapshot.plans.is_empty());
+        assert!(plan.endpoints.is_empty());
     }
 
     /// Scenario: listener planning receives placement built from unknown NUMA
@@ -369,16 +353,16 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement, 0);
+        let plan = plan_for_pipeline(&pipeline, &placement, deployment_key(0)).unwrap();
 
-        assert_eq!(snapshot.plans[0].expected_members[0].numa_node_id, None);
-        assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, None);
+        assert_eq!(plan.members[0].numa_node_id, None);
+        assert_eq!(plan.members[1].numa_node_id, None);
     }
 
     /// Scenario: listener planning receives partial topology where one
     /// selected core has no NUMA mapping.
     /// Guarantees: mapped cores retain their NUMA node and unmapped cores remain
-    /// unknown in listener metadata.
+    /// unknown in network metadata.
     #[test]
     fn partial_topology_keeps_unmapped_member_numa_node_unknown() {
         let mut placement = placement();
@@ -395,9 +379,9 @@ nodes:
 "#,
         );
 
-        let snapshot = snapshot_for_pipeline(&pipeline, &placement, 0);
+        let plan = plan_for_pipeline(&pipeline, &placement, deployment_key(0)).unwrap();
 
-        assert_eq!(snapshot.plans[0].expected_members[0].numa_node_id, Some(0));
-        assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, None);
+        assert_eq!(plan.members[0].numa_node_id, Some(0));
+        assert_eq!(plan.members[1].numa_node_id, None);
     }
 }

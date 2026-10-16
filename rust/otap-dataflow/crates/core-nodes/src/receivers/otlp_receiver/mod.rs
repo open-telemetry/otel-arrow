@@ -553,8 +553,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let grpc_task: Option<GrpcServerTask> = if let Some(grpc_config) =
             &self.config.protocols.grpc
         {
-            let listener = effect_handler.tcp_listener(grpc_config.listening_addr)?;
-            let incoming = grpc_config.build_tcp_incoming(listener);
+            let incoming = grpc_config.build_tcp_incoming(
+                effect_handler.tcp_listener(grpc_config.listening_addr)?,
+                grpc_shutdown.clone(),
+            );
 
             // gRPC enforces its own per-protocol concurrency limit.
             // When HTTP is also enabled, apply an additional global cap so the combined
@@ -1092,15 +1094,18 @@ mod tests {
             );
         let (_metrics_rx, metrics_reporter) =
             otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
+        let mut effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
             test_node("otlp_startup_failure"),
             HashMap::new(),
             None,
             runtime_ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        )
-        .with_readiness_signaller_for_test(readiness_signaller);
+        );
+        effect_handler.set_network_listener_set(
+            otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
+        );
+        let effect_handler = effect_handler.with_readiness_signaller_for_test(readiness_signaller);
 
         let error = match <OTLPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
             Box::new(receiver),
@@ -1459,13 +1464,16 @@ mod tests {
             let mut outputs = HashMap::new();
             let _ = outputs.insert("out".into(), SharedSender::mpsc(output_tx));
 
-            let effect_handler = shared_receiver::EffectHandler::new(
+            let mut effect_handler = shared_receiver::EffectHandler::new(
                 test_node("otlp-dst"),
                 outputs,
                 Some("out".into()),
                 runtime_ctrl_tx,
                 metrics_reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            effect_handler.set_network_listener_set(
+                otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
             );
             let request_effect_handler = effect_handler.clone();
 

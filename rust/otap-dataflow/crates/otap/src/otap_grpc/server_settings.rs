@@ -5,14 +5,17 @@
 
 use crate::compression::{self, CompressionMethod};
 use crate::otap_grpc::otlp::server_new::OtlpServerSettings;
+use futures::{Stream, StreamExt};
 use otel_arrow_dfe_config::byte_units;
 use otel_arrow_dfe_config::tls::TlsServerConfig;
+use otel_arrow_dfe_engine::network_listener::{NetworkTcpListener, tcp_incoming};
 use serde::Deserialize;
+use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio_util::sync::CancellationToken;
 use tonic::codec::EnabledCompressionEncodings;
-use tonic::transport::server::TcpIncoming;
 
 /// Common configuration shared across gRPC receivers.
 #[derive(Debug, Deserialize, Clone)]
@@ -205,14 +208,24 @@ impl GrpcServerSettings {
             .and_then(|methods| methods.first().copied())
     }
 
-    /// Builds the Tonic TCP Incoming.
-    #[must_use]
-    pub fn build_tcp_incoming(&self, tcp_listener: TcpListener) -> TcpIncoming {
-        TcpIncoming::from(tcp_listener)
-            .with_nodelay(Some(self.tcp_nodelay))
-            .with_keepalive(self.tcp_keepalive)
-            .with_keepalive_interval(self.tcp_keepalive_interval)
-            .with_keepalive_retries(self.tcp_keepalive_retries)
+    /// Builds a configured incoming stream that closes its listener on shutdown.
+    pub fn build_tcp_incoming(
+        &self,
+        listener: NetworkTcpListener,
+        shutdown: CancellationToken,
+    ) -> impl Stream<Item = io::Result<TcpStream>> + Send + 'static {
+        let settings = self.clone();
+        tcp_incoming(listener, shutdown.cancelled_owned()).map(move |result| {
+            result.and_then(|stream| {
+                crate::socket_options::apply_socket_options(
+                    stream,
+                    settings.tcp_nodelay,
+                    settings.tcp_keepalive,
+                    settings.tcp_keepalive_interval,
+                    settings.tcp_keepalive_retries,
+                )
+            })
+        })
     }
 
     /// Returns the compression encodings to use for both requests and responses.

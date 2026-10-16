@@ -12,6 +12,7 @@ use crate::control::{
     RuntimeCtrlMsgSender, WakeupSlot,
 };
 use crate::error::Error;
+use crate::network_listener::{NetworkListenerSet, NetworkTcpListener};
 use crate::node::NodeId;
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::runtime_services::PipelineRuntimeServices;
@@ -23,7 +24,7 @@ use otel_arrow_dfe_telemetry::output_service::{Frame, OutputService, StreamHandl
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::UdpSocket;
 
 /// SourceTagging indicates whether the Context will contain empty source frames.
 #[derive(Clone, Copy)]
@@ -68,11 +69,12 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) local_scheduler: Option<NodeLocalSchedulerHandle<PData>>,
     /// Services owned by the containing pipeline runtime.
     pub(crate) runtime_services: PipelineRuntimeServices,
+    network_listener_set: Option<NetworkListenerSet>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id and a metrics reporter.
-    pub(crate) const fn new(
+    pub(crate) fn new(
         node_id: NodeId,
         metrics_reporter: MetricsReporter,
         runtime_services: PipelineRuntimeServices,
@@ -87,7 +89,12 @@ impl<PData> EffectHandlerCore<PData> {
             node_interests: Interests::empty(),
             local_scheduler: None,
             runtime_services,
+            network_listener_set: None,
         }
+    }
+
+    pub(crate) fn set_network_listener_set(&mut self, listener_set: Option<NetworkListenerSet>) {
+        self.network_listener_set = listener_set;
     }
 
     /// Sets the runtime control message sender for this effect handler.
@@ -162,55 +169,26 @@ impl<PData> EffectHandlerCore<PData> {
         submit_diagnostic(&OutputService::diagnostics(), message);
     }
 
-    /// Creates a non-blocking TCP listener on the given address with socket options defined by the
-    /// pipeline engine implementation. It's important for receiver implementer to create TCP
-    /// listeners via this method to ensure the scalability and the serviceability of the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::IoError`] if any step in the process fails.
-    ///
-    /// ToDo: return a std::net::TcpListener instead of a tokio::net::tcp::TcpListener to avoid leaking our current dependency on Tokio.
+    /// Creates the pipeline-local endpoint used to accept assigned TCP connections.
     pub(crate) fn tcp_listener(
         &self,
         addr: SocketAddr,
         receiver_id: NodeId,
-    ) -> Result<TcpListener, Error> {
-        // Helper closure to convert errors.
-        let into_engine_error = |error: std::io::Error| Error::IoError {
-            node: receiver_id.clone(),
-            error,
-        };
-
-        // Create a SO_REUSEADDR + SO_REUSEPORT listener.
-        let sock = socket2::Socket::new(
-            match addr {
-                SocketAddr::V4(_) => socket2::Domain::IPV4,
-                SocketAddr::V6(_) => socket2::Domain::IPV6,
-            },
-            socket2::Type::STREAM,
-            None,
-        )
-        .map_err(into_engine_error)?;
-
-        // Allows multiple sockets to bind to an address/port combination even if a socket in the
-        // TIME_WAIT state currently occupies that combination.
-        // Goal: Restarting the server quickly without waiting for the OS to release a port.
-        sock.set_reuse_address(true).map_err(into_engine_error)?;
-        // Explicitly allows multiple sockets to simultaneously bind and listen to the exact same
-        // IP and port. Incoming connections or packets are distributed between the sockets
-        // (load balancing).
-        // Goal: Load balancing incoming connections.
-        // TODO: Investigate adding set_reuse_port support for Windows.
-        #[cfg(unix)]
-        {
-            sock.set_reuse_port(true).map_err(into_engine_error)?;
-        }
-        sock.set_nonblocking(true).map_err(into_engine_error)?;
-        sock.bind(&addr.into()).map_err(into_engine_error)?;
-        sock.listen(8192).map_err(into_engine_error)?;
-
-        TcpListener::from_std(sock.into()).map_err(into_engine_error)
+    ) -> Result<NetworkTcpListener, Error> {
+        self.network_listener_set
+            .as_ref()
+            .ok_or_else(|| Error::IoError {
+                node: receiver_id.clone(),
+                error: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "pipeline deployment has no network listener plan",
+                ),
+            })?
+            .tcp_listener(receiver_id.name.clone(), addr)
+            .map_err(|error| Error::IoError {
+                node: receiver_id,
+                error,
+            })
     }
 
     /// Creates a non-blocking UDP socket on the given address with socket options defined by the
@@ -535,6 +513,7 @@ fn submit_diagnostic(stream: &StreamHandle, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::test_pipeline_runtime_services;
     use otel_arrow_dfe_telemetry::output_service::{OutputSink, OutputStream, StreamId};
     use std::io;
     use std::sync::Arc;
@@ -554,6 +533,27 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    /// Scenario: a controller-managed pipeline has no declared network listener plan.
+    /// Guarantees: an unexpected receiver listener request fails instead of binding permissively.
+    #[test]
+    fn tcp_listener_requires_an_available_listener_set() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let core: EffectHandlerCore<()> = EffectHandlerCore::new(
+            NodeId::build(0, "receiver".into()),
+            metrics_reporter,
+            test_pipeline_runtime_services(),
+        );
+
+        let result = core.tcp_listener(
+            "127.0.0.1:0".parse().unwrap(),
+            NodeId::build(0, "receiver".into()),
+        );
+        let Err(Error::IoError { error, .. }) = result else {
+            panic!("listener request without a plan unexpectedly succeeded");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     /// Scenario: a node keeps emitting info messages while the diagnostic writer is stalled

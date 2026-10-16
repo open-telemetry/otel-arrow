@@ -1318,7 +1318,7 @@ mod test {
 
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
-        let server_effect_handler =
+        let mut server_effect_handler =
             otel_arrow_dfe_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
                 server_node_id,
                 msg_senders,
@@ -1327,6 +1327,9 @@ mod test {
                 metrics_reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
+        server_effect_handler.set_network_listener_set(
+            otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
+        );
 
         let mut server_settings = HttpServerSettings {
             listening_addr: endpoint_addr.parse().unwrap(),
@@ -2424,7 +2427,7 @@ mod test {
 
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
-        let server_effect_handler =
+        let mut server_effect_handler =
             otel_arrow_dfe_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
                 server_node_id,
                 msg_senders,
@@ -2433,6 +2436,9 @@ mod test {
                 metrics_reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
+        server_effect_handler.set_network_listener_set(
+            otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
+        );
 
         let mut server_settings = HttpServerSettings {
             listening_addr: endpoint_addr.parse().unwrap(),

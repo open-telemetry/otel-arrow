@@ -144,7 +144,7 @@ kube = { version = "4.0.0", default-features = false, features = ["client", "der
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
+mimalloc = { version = "0.1.52", features = ["extended"] }
 jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
 tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }

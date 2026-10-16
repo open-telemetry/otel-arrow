@@ -578,9 +578,11 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             listening_addr = %self.config.grpc.listening_addr
         );
 
-        // create listener on addr provided from config
-        let listener = effect_handler.tcp_listener(self.config.grpc.listening_addr)?;
-        let incoming = self.config.grpc.build_tcp_incoming(listener);
+        let grpc_shutdown = CancellationToken::new();
+        let incoming = self.config.grpc.build_tcp_incoming(
+            effect_handler.tcp_listener(self.config.grpc.listening_addr)?,
+            grpc_shutdown.clone(),
+        );
 
         let stream_tasks = OtapStreamTaskManager::new();
         let settings = Settings {
@@ -685,7 +687,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             .add_service(metrics_server)
             .add_service(traces_server);
 
-        let grpc_shutdown = CancellationToken::new();
         let server_task = {
             let grpc_shutdown = grpc_shutdown.clone();
             async {
@@ -957,15 +958,18 @@ mod tests {
                 Duration::from_secs(1),
             );
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
+        let mut effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
             test_node("otap_startup_failure"),
             HashMap::new(),
             None,
             runtime_ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        )
-        .with_readiness_signaller_for_test(readiness_signaller);
+        );
+        effect_handler.set_network_listener_set(
+            otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
+        );
+        let effect_handler = effect_handler.with_readiness_signaller_for_test(readiness_signaller);
 
         let error = match <OTAPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
             Box::new(receiver),

@@ -1025,6 +1025,8 @@ pub async fn serve(
 
     loop {
         tokio::select! {
+            biased;
+
             _ = shutdown.cancelled() => {
                 break;
             }
@@ -1119,6 +1121,7 @@ pub async fn serve(
         }
     }
 
+    drop(listener);
     let _ = tracker.close();
 
     // Bound shutdown latency to the configured request timeout (or the default) so shutdown

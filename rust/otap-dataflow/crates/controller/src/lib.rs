@@ -63,8 +63,8 @@ use otel_arrow_dfe_config::topic::{
     TopicImplSelectionPolicy, TopicScope, TopicSpec,
 };
 use otel_arrow_dfe_config::{
-    DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
-    SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
+    DeployedPipelineKey, ExtensionId, LogicalPipelineDeploymentKey, PipelineGroupId, PipelineId,
+    PipelineKey, SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
 };
 use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
@@ -82,11 +82,11 @@ use otel_arrow_dfe_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otel_arrow_dfe_engine::error::Error as EngineError;
-use otel_arrow_dfe_engine::listener_group::ListenerGroupSnapshot;
 use otel_arrow_dfe_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
 };
+use otel_arrow_dfe_engine::network_listener::{NetworkListenerBroker, NetworkListenerPlan};
 use otel_arrow_dfe_engine::processor::FlowMetricHook;
 use otel_arrow_dfe_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
@@ -125,7 +125,7 @@ pub mod error;
 /// Available controller extensions.
 pub mod extension;
 
-mod listener_group;
+mod network_listener;
 /// URN of the built-in dataflow controller.
 pub const CONTROLLER_URN: &str = "urn:otel:controller:main";
 
@@ -1760,12 +1760,30 @@ impl<
             pipeline_id: observability_pipeline.pipeline_id.clone(),
             cores: vec![CorePlacement::from_core_id(observability_core, &topology)],
         };
+        let observability_deployment_key = LogicalPipelineDeploymentKey::new(
+            PipelineKey::new(
+                observability_key.pipeline_group_id.clone(),
+                observability_key.pipeline_id.clone(),
+            ),
+            0,
+        );
+        let observability_network_plan = network_listener::plan_for_pipeline(
+            &observability_pipeline,
+            &observability_placement,
+            observability_deployment_key.clone(),
+        )
+        .map_err(|source| Error::PipelineRuntimeError {
+            source: Box::new(source),
+        })?;
+        let observability_network_plan = (!observability_network_plan.endpoints.is_empty())
+            .then(|| Arc::new(observability_network_plan));
         let observability_deployment = LogicalPipelineDeployment::new(
             observability_pipeline,
             Arc::clone(&context.bindings),
             0,
             observability_placement,
-            Arc::new(ListenerGroupSnapshot::empty()),
+            observability_deployment_key,
+            observability_network_plan,
         );
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,

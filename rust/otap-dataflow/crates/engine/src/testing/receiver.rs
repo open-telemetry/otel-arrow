@@ -304,14 +304,20 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let final_metrics_reporter = metrics_reporter.clone();
 
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
+            #[cfg(any(test, feature = "test-utils"))]
+            let network_listener_set =
+                Some(crate::network_listener::NetworkListenerSet::standalone());
+            #[cfg(not(any(test, feature = "test-utils")))]
+            let network_listener_set = None;
             let terminal_state = self
                 .receiver
-                .start(
+                .start_with_network(
                     runtime_ctrl_msg_tx,
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
                     super::create_test_pipeline_runtime_services(),
+                    network_listener_set,
                 )
                 .await
                 .expect("Receiver event loop failed");

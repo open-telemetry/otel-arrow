@@ -17,9 +17,9 @@ use otel_arrow_dfe_engine::control::{
 };
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
-use otel_arrow_dfe_engine::listener_group::ListenerProtocol;
 use otel_arrow_dfe_engine::local::{exporter, receiver};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::network_listener::NetworkTransport;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
@@ -1122,15 +1122,24 @@ fn register_committed_pipeline(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Arc::clone(&state.latest_context_bindings)
     };
-    let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
-        &resolved, &placement, 0,
-    ));
+    let deployment_key = LogicalPipelineDeploymentKey::new(
+        PipelineKey::new(
+            resolved.pipeline_group_id.clone(),
+            resolved.pipeline_id.clone(),
+        ),
+        0,
+    );
+    let network_plan =
+        network_listener::plan_for_pipeline(&resolved, &placement, deployment_key.clone())
+            .expect("committed pipeline network plan must be valid");
+    let network_plan = (!network_plan.endpoints.is_empty()).then(|| Arc::new(network_plan));
     let deployment = LogicalPipelineDeployment::new(
         resolved,
         context_bindings,
         generation,
         placement,
-        listener_group_snapshot,
+        deployment_key,
+        network_plan,
     );
     let pipeline_key = PipelineKey::new(
         deployment.resolved.pipeline_group_id.clone(),
@@ -1652,7 +1661,11 @@ connections:
     assert_eq!(plan.resize_start_cores, vec![1]);
     assert!(plan.resize_stop_cores.is_empty());
     assert_eq!(plan.target_deployment.baseline_generation, 0);
-    assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
+    assert_eq!(
+        plan.target_deployment.deployment_key.placement_generation(),
+        1
+    );
+    assert!(plan.target_deployment.network_plan.is_none());
     assert_eq!(
         plan.rollout
             .cores
@@ -2668,10 +2681,10 @@ connections:
 
 /// Scenario: live-control accepts a new pipeline with listener bind config on
 /// cores mapped to a known NUMA node.
-/// Guarantees: placement and listener metadata are resolved during planning,
+/// Guarantees: placement and network metadata are resolved during planning,
 /// before any runtime worker is launched.
 #[test]
-fn prepare_rollout_plan_resolves_live_numa_and_listener_metadata() {
+fn prepare_rollout_plan_resolves_live_numa_and_network_metadata() {
     let config = engine_config_with_pipeline(simple_pipeline_yaml());
     let topology = NumaTopology::from_node_cpulists(&[(0, "0-3".into()), (1, "4-7".into())]);
     let runtime = test_runtime_with_topology(&config, topology);
@@ -2714,7 +2727,7 @@ connections:
                 drain_timeout_secs: 60,
             },
         )
-        .expect("listener pipeline should be planned");
+        .expect("network receiver pipeline should be planned");
 
     assert_eq!(plan.target_assigned_cores, vec![4, 5]);
     assert_eq!(plan.target_deployment.placement.core_count(), 2);
@@ -2728,19 +2741,26 @@ connections:
         vec![(4, Some(1)), (5, Some(1))]
     );
 
-    let snapshot = &plan.target_deployment.listener_group_snapshot;
-    assert_eq!(snapshot.generation, 1);
-    assert_eq!(snapshot.plans.len(), 1);
-    let listener_plan = snapshot
-        .plan_for(
-            "receiver",
-            "127.0.0.1:4317".parse().unwrap(),
-            ListenerProtocol::Tcp,
-        )
-        .expect("grpc listener group should be planned");
+    let network_plan = plan
+        .target_deployment
+        .network_plan
+        .as_ref()
+        .expect("listener pipeline should have a network plan");
+    assert_eq!(network_plan.deployment_key.placement_generation(), 1);
+    assert_eq!(network_plan.endpoints.len(), 1);
+    let endpoint = network_plan
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.receiver_node_id.as_ref() == "receiver"
+                && endpoint.bind_address == "127.0.0.1:4317".parse().unwrap()
+                && endpoint.transport == NetworkTransport::Tcp
+        })
+        .expect("gRPC network endpoint should be planned");
+    assert_eq!(endpoint.receiver_node_id.as_ref(), "receiver");
     assert_eq!(
-        listener_plan
-            .expected_members
+        network_plan
+            .members
             .iter()
             .map(|member| (member.core_id, member.numa_node_id))
             .collect::<Vec<_>>(),
@@ -2749,11 +2769,11 @@ connections:
 }
 
 /// Scenario: a socket receiver grows its `core_count` while retaining workers
-/// whose immutable listener snapshots contain the old membership.
+/// whose immutable network plans contain the old membership.
 /// Guarantees: planning uses replacement so every worker receives the same new
-/// listener membership and placement generation.
+/// network membership and placement generation.
 #[test]
-fn prepare_rollout_plan_replaces_listener_pipeline_on_scale_up() {
+fn prepare_rollout_plan_replaces_network_pipeline_on_scale_up() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -2821,11 +2841,16 @@ connections:
     assert_eq!(plan.target_deployment.baseline_generation, 1);
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
-    assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
-    let listener_plan = plan.target_deployment.listener_group_snapshot.plans[0].clone();
     assert_eq!(
-        listener_plan
-            .expected_members
+        plan.target_deployment.deployment_key.placement_generation(),
+        1
+    );
+    assert_eq!(
+        plan.target_deployment
+            .network_plan
+            .as_ref()
+            .expect("listener pipeline should have a network plan")
+            .members
             .iter()
             .map(|member| member.core_id)
             .collect::<Vec<_>>(),
@@ -2834,11 +2859,11 @@ connections:
 }
 
 /// Scenario: a socket receiver shrinks its `core_count` while retaining workers
-/// whose immutable listener snapshots still include the removed core.
+/// whose immutable network plans still include the removed core.
 /// Guarantees: planning uses replacement so retained workers cannot keep stale
-/// listener membership after the removed worker exits.
+/// network membership after the removed worker exits.
 #[test]
-fn prepare_rollout_plan_replaces_listener_pipeline_on_scale_down() {
+fn prepare_rollout_plan_replaces_network_pipeline_on_scale_down() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -2909,10 +2934,16 @@ connections:
     assert_eq!(plan.removed_assigned_cores, vec![2]);
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
-    assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
     assert_eq!(
-        plan.target_deployment.listener_group_snapshot.plans[0]
-            .expected_members
+        plan.target_deployment.deployment_key.placement_generation(),
+        1
+    );
+    assert_eq!(
+        plan.target_deployment
+            .network_plan
+            .as_ref()
+            .expect("listener pipeline should have a network plan")
+            .members
             .iter()
             .map(|member| member.core_id)
             .collect::<Vec<_>>(),
@@ -2997,7 +3028,10 @@ connections:
     assert!(plan.resize_start_cores.is_empty());
     assert_eq!(plan.resize_stop_cores, vec![1]);
     assert_eq!(plan.target_deployment.baseline_generation, 0);
-    assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 1);
+    assert_eq!(
+        plan.target_deployment.deployment_key.placement_generation(),
+        1
+    );
     assert_eq!(
         plan.rollout
             .cores
@@ -3075,7 +3109,10 @@ connections:
 
     assert_eq!(plan.action, RolloutAction::NoOp);
     assert_eq!(plan.target_deployment.baseline_generation, 0);
-    assert_eq!(plan.target_deployment.listener_group_snapshot.generation, 0);
+    assert_eq!(
+        plan.target_deployment.deployment_key.placement_generation(),
+        0
+    );
     assert!(plan.rollout.cores.is_empty());
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
@@ -3854,7 +3891,6 @@ connections:
         plan.target_deployment.baseline_generation,
         RuntimeInstanceLifecycle::Active,
     );
-
     runtime.handle_rollout_worker_panic(
         &plan.pipeline_key,
         &plan.rollout.rollout_id,
@@ -3871,6 +3907,15 @@ connections:
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_ne!(
+        state
+            .logical_pipelines
+            .get(&plan.pipeline_key)
+            .expect("committed pipeline should remain registered")
+            .deployment_key,
+        plan.target_deployment.deployment_key,
+        "panic cleanup should leave the committed logical deployment installed"
+    );
     assert!(
         state
             .runtime_instances

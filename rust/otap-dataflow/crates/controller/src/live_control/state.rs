@@ -498,8 +498,10 @@ pub(crate) struct LogicalPipelineDeployment {
     /// Preserved across resize; recovered cores may serve newer generations.
     pub(super) baseline_generation: u64,
     pub(super) placement: PipelinePlacement,
-    pub(super) placement_generation: u64,
-    pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    /// Stable identity for this logical placement deployment.
+    pub(super) deployment_key: LogicalPipelineDeploymentKey,
+    /// Network requirements, omitted when the pipeline declares no listener endpoints.
+    pub(super) network_plan: Option<Arc<NetworkListenerPlan>>,
 }
 
 impl LogicalPipelineDeployment {
@@ -508,15 +510,19 @@ impl LogicalPipelineDeployment {
         context_bindings: Arc<CompiledContextBindings>,
         baseline_generation: u64,
         placement: PipelinePlacement,
-        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+        deployment_key: LogicalPipelineDeploymentKey,
+        network_plan: Option<Arc<NetworkListenerPlan>>,
     ) -> Self {
+        if let Some(plan) = &network_plan {
+            debug_assert_eq!(plan.deployment_key, deployment_key);
+        }
         Self {
             resolved,
             context_bindings,
             baseline_generation,
             placement,
-            placement_generation: listener_group_snapshot.generation,
-            listener_group_snapshot,
+            deployment_key,
+            network_plan,
         }
     }
 
@@ -682,6 +688,7 @@ pub(super) struct CandidateRolloutPlan {
     /// Cores present in both current and target assignments.
     pub(super) common_assigned_cores: Vec<usize>,
     /// Cores present only in the target assignment.
+    #[allow(dead_code)]
     pub(super) added_assigned_cores: Vec<usize>,
     /// Cores present only in the current assignment.
     pub(super) removed_assigned_cores: Vec<usize>,

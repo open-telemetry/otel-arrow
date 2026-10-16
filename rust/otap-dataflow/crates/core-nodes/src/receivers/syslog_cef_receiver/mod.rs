@@ -654,6 +654,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // for TCP we still wait for already accepted connection tasks
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
+                                    drop(listener);
                                     shutdown_flag.set(true); // Signal all connection tasks to flush and exit
 
                                     // Wait for active tasks to finish flushing.
@@ -683,6 +684,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, snapshots));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                                    drop(listener);
                                     shutdown_flag.set(true);
                                     let snapshots = self.metrics.borrow_mut().terminal_snapshots();
                                     return Ok(TerminalState::new(deadline, snapshots));
@@ -1188,6 +1190,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // UDP has no long-lived connection tasks, so receiver-first
                                     // drain just means: stop ingesting new packets, flush the
                                     // current batch buffer once, then report ReceiverDrained.
+                                    drop(socket);
 
                                     if arrow_records_builder.len() > 0 {
                                         match arrow_records_builder.build() {
@@ -1208,6 +1211,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, snapshots));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                                    drop(socket);
                                     let snapshots = self.metrics.borrow_mut().terminal_snapshots();
                                     return Ok(TerminalState::new(deadline, snapshots));
                                 }
@@ -1635,15 +1639,18 @@ mod tests {
             );
         let (_metrics_rx, metrics_reporter) =
             otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = local_receiver::EffectHandler::<OtapPdata>::new(
+        let mut effect_handler = local_receiver::EffectHandler::<OtapPdata>::new(
             test_node("syslog_startup_failure"),
             HashMap::new(),
             None,
             runtime_ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        )
-        .with_readiness_signaller_for_test(readiness_signaller);
+        );
+        effect_handler.set_network_listener_set(
+            otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
+        );
+        let effect_handler = effect_handler.with_readiness_signaller_for_test(readiness_signaller);
 
         let error = match <SyslogCefReceiver as local_receiver::Receiver<OtapPdata>>::start(
             Box::new(receiver),
@@ -3842,13 +3849,16 @@ mod telemetry_tests {
             let (pipe_tx, mut pipe_rx) =
                 otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
             let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(2);
-            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+            let mut eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
                 test_node("syslog_tcp_drain"),
                 senders,
                 None,
                 pipe_tx,
                 reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            eh.set_network_listener_set(
+                otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
             );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -4112,13 +4122,16 @@ mod telemetry_tests {
             );
             let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
             let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
-            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+            let mut eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
                 test_node("syslog_tcp_rate_limit_under_capacity"),
                 senders,
                 None,
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            eh.set_network_listener_set(
+                otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
             );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -4305,13 +4318,16 @@ mod telemetry_tests {
 
             let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
             let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
-            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+            let mut eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
                 test_node("syslog_tcp_rate_limit"),
                 senders,
                 None,
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            eh.set_network_listener_set(
+                otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -4397,13 +4413,16 @@ mod telemetry_tests {
 
             let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
             let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
-            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+            let mut eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
                 test_node("syslog_tcp_rate_limit_oversized"),
                 senders,
                 None,
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            eh.set_network_listener_set(
+                otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -4490,13 +4509,16 @@ mod telemetry_tests {
 
             let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
             let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
-            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+            let mut eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
                 test_node("syslog_tcp_rate_limit_rejected_oversized"),
                 senders,
                 None,
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            eh.set_network_listener_set(
+                otel_arrow_dfe_engine::network_listener::NetworkListenerSet::standalone(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);

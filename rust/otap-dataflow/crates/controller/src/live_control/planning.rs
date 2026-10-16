@@ -959,12 +959,15 @@ impl<
             &resolved_pipeline,
             &reserved_core_ids,
         )?;
-        let mut target_listener_group_snapshot = listener_group::snapshot_for_pipeline(
+        let mut target_network_plan = network_listener::plan_for_pipeline(
             &resolved_pipeline,
             &target_pipeline_placement,
-            0,
-        );
-        let target_has_listener_groups = !target_listener_group_snapshot.plans.is_empty();
+            LogicalPipelineDeploymentKey::new(pipeline_key.clone(), 0),
+        )
+        .map_err(|error| ControlPlaneError::InvalidRequest {
+            message: error.to_string(),
+        })?;
+        let target_has_network_endpoints = !target_network_plan.endpoints.is_empty();
         let current_assigned_cores: Vec<usize> = current_pipeline_placement
             .as_ref()
             .map(|placement| placement.cores.iter().map(|core| core.core_id.id).collect())
@@ -1023,9 +1026,9 @@ impl<
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
-                // Listener snapshots are immutable per worker. Retained cores cannot
+                // Network listener plans are immutable per placement. Retained cores cannot
                 // participate in an in-place resize without keeping stale membership.
-                && !target_has_listener_groups
+                && !target_has_network_endpoints
                 && record
                     .resolved
                     .runtime_shape_matches_ignoring_resources(&resolved_pipeline);
@@ -1085,7 +1088,7 @@ impl<
             let placement_generation = match action {
                 RolloutAction::NoOp => current_deployment
                     .as_ref()
-                    .map(|record| record.placement_generation)
+                    .map(|record| record.deployment_key.placement_generation())
                     .ok_or_else(|| ControlPlaneError::Internal {
                         message: format!(
                             "rollout planner produced {:?} for {}:{} without a current placement generation",
@@ -1102,34 +1105,36 @@ impl<
             };
             (rollout_id, target_generation, placement_generation)
         };
-        target_listener_group_snapshot.generation = placement_generation;
-        let target_listener_group_snapshot = if matches!(action, RolloutAction::NoOp) {
+        let deployment_key =
+            LogicalPipelineDeploymentKey::new(pipeline_key.clone(), placement_generation);
+        let target_network_plan = if matches!(action, RolloutAction::NoOp) {
             current_deployment
                 .as_ref()
-                .map(|deployment| Arc::clone(&deployment.listener_group_snapshot))
-                .ok_or_else(|| ControlPlaneError::Internal {
-                    message: "no-op rollout has no committed listener snapshot".to_owned(),
-                })?
+                .and_then(|record| record.network_plan.as_ref().map(Arc::clone))
+        } else if target_has_network_endpoints {
+            target_network_plan.deployment_key = deployment_key.clone();
+            Some(Arc::new(target_network_plan))
         } else {
-            Arc::new(target_listener_group_snapshot)
+            None
         };
         let target_context_bindings = if matches!(action, RolloutAction::NoOp) {
             current_deployment
                 .as_ref()
-                .map(|deployment| Arc::clone(&deployment.context_bindings))
+                .map(|record| Arc::clone(&record.context_bindings))
                 .ok_or_else(|| ControlPlaneError::Internal {
                     message: "no-op rollout has no committed context bindings".to_owned(),
                 })?
         } else {
             context_bindings
         };
-        let target_deployment = LogicalPipelineDeployment::new(
-            resolved_pipeline,
-            target_context_bindings,
-            target_generation,
-            target_pipeline_placement,
-            target_listener_group_snapshot,
-        );
+        let target_deployment = LogicalPipelineDeployment {
+            resolved: resolved_pipeline,
+            context_bindings: target_context_bindings,
+            baseline_generation: target_generation,
+            placement: target_pipeline_placement,
+            deployment_key,
+            network_plan: target_network_plan,
+        };
 
         let rollout_core_ids = match action {
             RolloutAction::NoOp => Vec::new(),

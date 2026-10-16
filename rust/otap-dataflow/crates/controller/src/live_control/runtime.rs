@@ -123,8 +123,17 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
-        pipeline_ctx
-            .set_listener_group_snapshot_arc(Arc::clone(&deployment.listener_group_snapshot));
+        let listener_set = match &deployment.network_plan {
+            Some(plan) => Some(
+                self.network_listener_broker
+                    .listener_set_for(Arc::clone(plan), core_id)
+                    .map_err(|source| Error::PipelineRuntimeError {
+                        source: Box::new(source),
+                    })?,
+            ),
+            None => None,
+        };
+        pipeline_ctx.set_network_listener_set(listener_set);
         pipeline_ctx.set_compiled_context_bindings(Arc::clone(&deployment.context_bindings));
 
         let channel_capacity_policy = deployment.resolved.policies.channel_capacity.clone();

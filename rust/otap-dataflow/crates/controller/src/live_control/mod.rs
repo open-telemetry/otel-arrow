@@ -95,6 +95,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Network listener registry shared by all runtime instances.
+    network_listener_broker: NetworkListenerBroker,
     /// Immutable engine-wide requirements for transport-header representation.
     context_runtime_requirements: ContextRuntimeRequirements,
     /// Controller-wide core ids available for policy-based allocation.
@@ -202,6 +204,7 @@ impl<
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            network_listener_broker: NetworkListenerBroker::new(),
             context_runtime_requirements,
             available_core_ids,
             topology,

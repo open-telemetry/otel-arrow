@@ -14,8 +14,8 @@ use crate::attributes::{
 pub use crate::attributes::{NodeAttributeSet, NodeWithCustomAttributeSet};
 use crate::context_declaration::CompiledContextBindings;
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
-use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
+use crate::network_listener::NetworkListenerSet;
 use crate::node::NodeId as EngineNodeId;
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
@@ -143,10 +143,8 @@ pub struct PipelineContext {
     /// Optional pipeline-scoped topic set injected by the controller.
     /// ToDo: Make PipelineContext generic over a TopicSet type to avoid dynamic typing here.
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
-    // Immutable placement metadata shared across contexts for this pipeline instance.
-    // Consumers should cache any needed listener plan during setup rather than cloning
-    // or searching this snapshot from the per-record data path.
-    listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    /// Network listeners available to receivers in this pipeline instance.
+    network_listener_set: Option<NetworkListenerSet>,
     /// Compiled context bindings shared by this runtime's nodes.
     compiled_context_bindings: Arc<CompiledContextBindings>,
 }
@@ -368,7 +366,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
-            listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
+            network_listener_set: None,
             compiled_context_bindings: Arc::new(CompiledContextBindings::empty()),
         }
     }
@@ -469,20 +467,15 @@ impl PipelineContext {
         self.topic_set = Some(Arc::new(topic_set));
     }
 
-    /// Sets the controller-resolved listener-group placement snapshot.
-    pub fn set_listener_group_snapshot(&mut self, snapshot: ListenerGroupSnapshot) {
-        self.listener_group_snapshot = Arc::new(snapshot);
+    /// Sets the network listeners available to this pipeline instance.
+    pub fn set_network_listener_set(&mut self, listener_set: Option<NetworkListenerSet>) {
+        self.network_listener_set = listener_set;
     }
 
-    /// Sets a shared controller-resolved listener-group placement snapshot.
-    pub fn set_listener_group_snapshot_arc(&mut self, snapshot: Arc<ListenerGroupSnapshot>) {
-        self.listener_group_snapshot = snapshot;
-    }
-
-    /// Returns the controller-resolved listener-group placement snapshot.
+    /// Returns the network listeners available to this pipeline instance.
     #[must_use]
-    pub fn listener_group_snapshot(&self) -> Arc<ListenerGroupSnapshot> {
-        Arc::clone(&self.listener_group_snapshot)
+    pub fn network_listener_set(&self) -> Option<NetworkListenerSet> {
+        self.network_listener_set.clone()
     }
 
     /// Sets this context's compiled bindings.
@@ -842,7 +835,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
-            listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
+            network_listener_set: self.network_listener_set.clone(),
             compiled_context_bindings: self.compiled_context_bindings.clone(),
         }
     }
@@ -1206,11 +1199,11 @@ mod tests {
         assert_eq!(attrs.engine_attrs.numa_node_id, 2);
     }
 
-    /// Scenario: a pipeline context with a listener plan is converted to a node context.
-    /// Guarantees: the node context retains the listener snapshot generation and plan lookup.
-    #[test]
-    fn pipeline_context_preserves_listener_group_snapshot_across_node_context() {
-        let addr = "127.0.0.1:4317".parse().unwrap();
+    /// Scenario: a pipeline context with a listener set is converted to a node context.
+    /// Guarantees: both contexts share one endpoint registration namespace.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pipeline_context_preserves_network_deployment_across_node_context() {
+        let addr = "127.0.0.1:0".parse().unwrap();
         let mut ctx = ControllerContext::new(TelemetryRegistryHandle::new()).pipeline_context_with(
             Default::default(),
             Default::default(),
@@ -1218,19 +1211,7 @@ mod tests {
             1,
             0,
         );
-        ctx.set_listener_group_snapshot(ListenerGroupSnapshot::new(
-            3,
-            vec![crate::listener_group::ListenerGroupPlan {
-                key: crate::listener_group::ListenerGroupKey::new(
-                    "group".into(),
-                    "pipeline".into(),
-                    "receiver".into(),
-                    addr,
-                    crate::listener_group::ListenerProtocol::Tcp,
-                ),
-                expected_members: Vec::new(),
-            }],
-        ));
+        ctx.set_network_listener_set(Some(NetworkListenerSet::standalone()));
 
         let node_ctx = ctx.with_node_context(
             "receiver".into(),
@@ -1239,17 +1220,19 @@ mod tests {
             HashMap::new(),
         );
 
-        assert_eq!(node_ctx.listener_group_snapshot().generation, 3);
-        assert!(
-            node_ctx
-                .listener_group_snapshot()
-                .plan_for(
-                    "receiver",
-                    addr,
-                    crate::listener_group::ListenerProtocol::Tcp
-                )
-                .is_some()
-        );
+        let _listener = ctx
+            .network_listener_set()
+            .expect("standalone context should provide network listeners")
+            .tcp_listener("receiver".into(), addr)
+            .unwrap();
+        let duplicate = node_ctx
+            .network_listener_set()
+            .expect("node context should preserve network listeners")
+            .tcp_listener("receiver".into(), addr);
+        let Err(duplicate) = duplicate else {
+            panic!("duplicate endpoint claim unexpectedly succeeded");
+        };
+        assert_eq!(duplicate.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     /// Scenario: a node context is created from a pipeline context.

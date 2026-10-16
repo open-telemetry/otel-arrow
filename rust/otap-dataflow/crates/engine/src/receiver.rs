@@ -438,6 +438,26 @@ impl<PData> ReceiverWrapper<PData> {
         node_interests: Interests,
         runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
+        self.start_with_network(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            runtime_services,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_network(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
+        network_listener_set: Option<crate::network_listener::NetworkListenerSet>,
+    ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
                 ReceiverWrapper::Local {
@@ -480,6 +500,9 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler.set_context_materialization(context_materialization_plan);
                 effect_handler.set_readiness_signaller(readiness.map(|state| state.signaller));
+                effect_handler
+                    .core
+                    .set_network_listener_set(network_listener_set);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -527,6 +550,9 @@ impl<PData> ReceiverWrapper<PData> {
                 effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler.set_context_materialization(context_materialization_plan);
                 effect_handler.set_readiness_signaller(readiness.map(|state| state.signaller));
+                effect_handler
+                    .core
+                    .set_network_listener_set(network_listener_set);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);

@@ -177,6 +177,36 @@ impl Serialize for PipelineKey {
     }
 }
 
+/// Unique key for one logical pipeline placement deployment.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct LogicalPipelineDeploymentKey {
+    pipeline_key: PipelineKey,
+    placement_generation: u64,
+}
+
+impl LogicalPipelineDeploymentKey {
+    /// Constructs a logical pipeline deployment key.
+    #[must_use]
+    pub const fn new(pipeline_key: PipelineKey, placement_generation: u64) -> Self {
+        Self {
+            pipeline_key,
+            placement_generation,
+        }
+    }
+
+    /// Returns the logical pipeline key.
+    #[must_use]
+    pub const fn pipeline_key(&self) -> &PipelineKey {
+        &self.pipeline_key
+    }
+
+    /// Returns the controller-assigned placement generation.
+    #[must_use]
+    pub const fn placement_generation(&self) -> u64 {
+        self.placement_generation
+    }
+}
+
 /// Unique key for identifying a pipeline running on a specific core.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
 pub struct DeployedPipelineKey {

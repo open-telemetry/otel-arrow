@@ -40,6 +40,7 @@ use crate::effect_handler::{
 };
 use crate::error::{Error, TypedError};
 use crate::message::Sender;
+use crate::network_listener::NetworkTcpListener;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::readiness::ReadinessSignaller;
@@ -59,7 +60,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::Duration;
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::UdpSocket;
 
 /// A trait for ingress receivers (!Send definition).
 ///
@@ -176,6 +177,15 @@ impl<PData> EffectHandler<PData> {
             context_materialization_plan: None,
             readiness: None,
         }
+    }
+
+    /// Replaces the network listener set for test-only receiver construction.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_network_listener_set(
+        &mut self,
+        listener_set: crate::network_listener::NetworkListenerSet,
+    ) {
+        self.core.set_network_listener_set(Some(listener_set));
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -347,14 +357,8 @@ impl<PData> EffectHandler<PData> {
         self.router.try_send_to(port, data)
     }
 
-    /// Creates a non-blocking TCP listener on the given address with socket options defined by the
-    /// pipeline engine implementation. It's important for receiver implementer to create TCP
-    /// listeners via this method to ensure the scalability and the serviceability of the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::IoError`] if any step in the process fails.
-    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error> {
+    /// Creates the pipeline-local endpoint used to accept assigned TCP connections.
+    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<NetworkTcpListener, Error> {
         self.core.tcp_listener(addr, self.receiver_id())
     }
 

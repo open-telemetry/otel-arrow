@@ -894,14 +894,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let final_metrics_reporter = metrics_reporter.clone();
             let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let receiver_runtime_services = runtime_services.clone();
+            let receiver_network_listener_set = pipeline_context.network_listener_set();
             let fut = async move {
                 match receiver
-                    .start(
+                    .start_with_network(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                         receiver_runtime_services,
+                        receiver_network_listener_set,
                     )
                     .await
                 {
