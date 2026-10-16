@@ -1,13 +1,23 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Isolated allocator measurement; one test prevents harness-thread allocation noise.
+//! Allocation measurement with trials running on the harness calling thread.
 
 use std::{hint::black_box, mem};
 
 use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::decoder::{
     DecodeStart, Encoding, OnDecodeError, StreamDecoder,
 };
+
+#[path = "support/allocation.rs"]
+mod allocation;
+
+fn main() {
+    allocation::run(
+        "filelog_decoder_heap_allocation_is_zero",
+        filelog_decoder_heap_allocation_is_zero,
+    );
+}
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -38,10 +48,12 @@ fn discard(decoder: &mut StreamDecoder, data: &[u8], chunk_size: usize) -> bool 
 
 /// Scenario: Clean and malformed streams are decoded/discarded across reused input, both bytewise and in full chunks.
 /// Guarantees: Decoder construction, steady state, explicit completion and sticky errors allocate zero heap blocks or bytes.
-#[test]
 fn filelog_decoder_heap_allocation_is_zero() {
     let mut scratch = [0; 4096];
-    let _profiler = dhat::Profiler::builder().testing().build();
+    let _profiler = allocation::profiler(
+        "filelog_decoder_allocations",
+        "filelog_decoder_heap_allocation_is_zero",
+    );
     let before = dhat::HeapStats::get();
     for (encoding, pattern) in [
         (Encoding::Utf8, &b"abc\n"[..]),

@@ -7946,6 +7946,7 @@ dependencies = [
  "dhat",
  "hex",
  "itertools 0.15.0",
+ "libtest-mimic",
  "nix 0.31.3",
  "num_enum",
  "otel-arrow-dfe-config",
