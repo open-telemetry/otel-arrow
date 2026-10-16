@@ -365,6 +365,7 @@ fn write_value<B: BoundedBuf>(
         let mut writer = ValueEncoder {
             buf,
             outcome: Ok(false),
+            #[cfg(debug_assertions)]
             wrote_value: false,
         };
         f(&mut writer);
@@ -395,16 +396,20 @@ struct ValueEncoder<'a, B: BoundedBuf> {
     /// `Ok(true)` once any part of the value was lost; a sticky `Err` once
     /// part of it could not be written.
     outcome: Result<bool, EncodeFailure>,
+    #[cfg(debug_assertions)]
     wrote_value: bool,
 }
 
 impl<B: BoundedBuf> ValueEncoder<'_, B> {
     fn put(&mut self, result: Result<bool, EncodeFailure>) {
-        debug_assert!(
-            !self.wrote_value,
-            "value callback must write at most one AnyValue variant"
-        );
-        self.wrote_value = true;
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(
+                !self.wrote_value,
+                "value callback must write at most one AnyValue variant"
+            );
+            self.wrote_value = true;
+        }
         self.outcome = self.outcome.and_then(|lost| Ok(lost | result?));
     }
 
