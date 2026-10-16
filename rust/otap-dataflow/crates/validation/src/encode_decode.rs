@@ -78,7 +78,7 @@ mod test {
     fn get_registry() -> ResolvedRegistry {
         // weaver fetches remote registries over rustls without choosing a crypto
         // provider. Production installs one at startup; tests must do it here.
-        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
             None,

@@ -1144,7 +1144,7 @@ mod tests {
     fn test_traffic_generator_receiver() {
         // weaver fetches remote registries over rustls without choosing a crypto
         // provider. Production installs one at startup; tests must do it here.
-        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
         let registry_path = config::default_registry_path();
@@ -1227,7 +1227,7 @@ mod tests {
     fn test_traffic_generator_receiver_message_rate_only() {
         // weaver fetches remote registries over rustls without choosing a crypto
         // provider. Production installs one at startup; tests must do it here.
-        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
         let registry_path = config::default_registry_path();
@@ -1303,7 +1303,7 @@ mod tests {
     fn test_traffic_generator_receiver_max_signal_count_only() {
         // weaver fetches remote registries over rustls without choosing a crypto
         // provider. Production installs one at startup; tests must do it here.
-        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let registry_path = config::default_registry_path();
 

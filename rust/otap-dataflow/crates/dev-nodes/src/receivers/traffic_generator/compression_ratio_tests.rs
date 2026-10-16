@@ -96,7 +96,7 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 fn load_semconv_registry() -> ResolvedRegistry {
     // weaver fetches remote registries over rustls without choosing a crypto
     // provider. Production installs one at startup; tests must do it here.
-    let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path = std::env::var("OTAP_SEMCONV_REGISTRY")
         .map(|path| {
             path.parse::<VirtualDirectoryPath>()
