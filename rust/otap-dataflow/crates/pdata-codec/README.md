@@ -13,27 +13,35 @@ metadata; it never owns a codec instance.
 
 ## Architecture overview
 
-![PData passthrough, read-only views, and on-demand conversion][codec-diagram]
+![PData forwarding, views, conversion, batching, and codec lifecycle][codec-diagram]
 
 [codec-diagram]: assets/pdata-codec-framework.png
 
-The three paths are alternatives selected by the consumer, not sequential
+The four paths are alternatives selected by the consumer, not sequential
 pipeline stages:
 
-- **Passthrough (blue):** a matching output encoding forwards the shared bytes
-  without decoding, re-encoding, or creating a codec instance.
+- **Unchanged forwarding (blue):** a matching output encoding forwards the
+  original shared bytes without decoding, re-encoding, or creating a codec
+  instance. This guarantee does not apply to merge/split operations.
 - **Read-only view (teal):** `AcceptedEncodings` selects direct byte borrowing.
   Existing OTAP records are borrowed; other encodings decode to temporary OTAP
   records without changing the original payload.
 - **On-demand conversion (orange):** decode to native OTAP when processing
   requires records, then encode if the output requires an encoded format.
   Already-native input skips decoding.
+- **Codec-aware batching (purple):** `BatchPlan` selects codec-native merge/split
+  or native OTAP batching, including item-based fallback. Outputs carry input
+  ranges for delivery tracking; the processor retains contexts and owns Ack/Nack.
+  Encoded batching can create new buffers and instantiate a reusable batcher
+  without materializing OTAP. See [batching flow](#batching-flow) and
+  [input-range ownership](#input-ranges-and-delivery-ownership) for details.
 
 The lower band shows codec registrations, registry validation, and the pipeline
-service that lazily creates and reuses decoder and encoder instances. Nodes
-access that service through effect handlers.
+service that lazily creates and reuses decoder, encoder, and batcher instances.
+Nodes access that service through effect handlers; stateless item counters do
+not require an instance.
 
-The syslog encoding shown belongs to the follow-up syslog codec integration.
+The syslog encoding is marked as upcoming in PR5, not part of PR3.
 Native OTAP is the common processing representation, not a registered byte codec.
 
 ## Design model
