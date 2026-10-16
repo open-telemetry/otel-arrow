@@ -276,6 +276,73 @@ macro_rules! postgresql_module_tests {
                 );
             }
 
+            /// Scenario: A PostgreSQL peer accepts SSLRequest, reads ClientHello, and never finishes TLS.
+            /// Guarantees: The connection deadline closes the socket and reports retryable unavailability without publishing a session.
+            #[tokio::test]
+            async fn stalled_tls_handshake_obeys_connection_deadline() {
+                use serde_json::json;
+                use tokio::{
+                    io::{AsyncReadExt, AsyncWriteExt},
+                    net::TcpListener,
+                };
+
+                otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+                let directory = tempfile::tempdir().expect("CA directory");
+                let ca_file = directory.path().join("ca.pem");
+                let ca = otel_arrow_dfe_test_tls_certs::generate_ca("PostgreSQL timeout CA");
+                std::fs::write(&ca_file, ca.cert_pem).expect("CA file");
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("loopback listener");
+                let address = listener.local_addr().expect("listener address");
+                let validated = super::super::tests::test_validated_with_connection(json!({
+                    "host": "127.0.0.1",
+                    "port": address.port(),
+                    "database": "fixture",
+                    "tls": {"ca_file": ca_file},
+                }));
+                let mut adapter = PostgreSqlAdapter::new(
+                    validated,
+                    super::super::tests::test_provider(),
+                )
+                .expect("adapter");
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let server = async {
+                            let (mut socket, _) = listener.accept().await.expect("connection");
+                            let mut request = [0; 8];
+                            let _ = socket.read_exact(&mut request).await.expect("SSLRequest");
+                            assert_eq!(request, [0, 0, 0, 8, 4, 210, 22, 47]);
+                            socket.write_all(b"S").await.expect("TLS supported");
+                            let mut buffer = [0; 4096];
+                            assert!(socket.read(&mut buffer).await.expect("ClientHello") > 0);
+                            tokio::time::pause();
+                            tokio::time::advance(CONNECTION_TIMEOUT).await;
+                            while socket.read(&mut buffer).await.expect("client closes") != 0 {}
+                        };
+                        let client = async {
+                            assert_eq!(
+                                adapter
+                                    .connect(
+                                        &Operation::default(),
+                                        &super::super::tests::fixed_credential()
+                                    )
+                                    .await,
+                                Err(Error::Unavailable)
+                            );
+                            assert!(adapter.session.is_none());
+                            assert!(adapter.cancel.borrow().is_none());
+                        };
+                        tokio::time::timeout(Duration::from_secs(30), async {
+                            tokio::join!(server, client);
+                        })
+                        .await
+                        .expect("timeout scenario completed");
+                    })
+                    .await;
+            }
+
             /// Scenario: One large row is followed by ten thousand small rows.
             /// Guarantees: The outlier ages out after the bounded window, target returns to 300, and estimated native requests stay bounded.
             #[test]
