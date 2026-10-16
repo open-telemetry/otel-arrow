@@ -174,6 +174,8 @@ impl BatchProfile {
 #[derive(Debug)]
 pub struct BatchingSupport {
     /// Supported units; declaring a unit promises in-line merge and split support.
+    /// Declaring [`BatchSizer::Items`] requires a registered item counter,
+    /// even when another unit is the default or the codec has no decoder.
     pub sizers: &'static [BatchSizer],
     /// Default policy when the node has no explicit codec profile.
     pub default_profile: BatchProfile,
