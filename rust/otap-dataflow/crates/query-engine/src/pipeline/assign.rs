@@ -8656,6 +8656,244 @@ mod test {
         test_update_attr_coalesce_missing_attributes::<KqlParser>().await
     }
 
+    /// Runs `query` on `logs_data` and returns the log records of the first scope.
+    async fn exec_coalesce_query<P: Parser>(query: &str, logs_data: LogsData) -> Vec<LogRecord> {
+        let mut result = exec_logs_pipeline::<P>(query, logs_data).await;
+        std::mem::take(&mut result.resource_logs[0].scope_logs[0].log_records)
+    }
+
+    /// Two logs where no record has the attribute `missing` (and the resource has no
+    /// attributes): the first has attribute `y = "y0"` and body `"b0"`, the second only has
+    /// body `"b1"`.
+    fn logs_for_coalesce_absent_arg() -> LogsData {
+        to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                .body(AnyValue::new_string("b0"))
+                .finish(),
+            LogRecord::build().body(AnyValue::new_string("b1")).finish(),
+        ])
+    }
+
+    /// Asserts the result of `coalesce(<absent>, attributes["y"], body)` assigned to
+    /// `attributes["x"]` on [`logs_for_coalesce_absent_arg`].
+    fn assert_coalesce_fell_back_to_y_then_body(records: &[LogRecord]) {
+        assert_eq!(records.len(), 2, "no logs should be dropped");
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("y0")),
+                KeyValue::new("x", AnyValue::new_string("y0")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![KeyValue::new("x", AnyValue::new_string("b1"))]
+        );
+    }
+
+    /// Scenario: `coalesce` whose first argument is a record attribute that no record in the
+    /// batch has, followed by a present attribute and the body (see #4300).
+    /// Guarantees: the absent argument is treated as null for every record, so each record
+    /// falls back to the first later argument that has a value (`y0` from the attribute on
+    /// the first record, `b1` from the body on the second) instead of the result being null.
+    async fn test_update_attr_coalesce_record_attr_absent_from_batch<P: Parser>() {
+        let query = r#"logs | extend attributes["x"] = coalesce(attributes["missing"], attributes["y"], body)"#;
+        let records = exec_coalesce_query::<P>(query, logs_for_coalesce_absent_arg()).await;
+        assert_coalesce_fell_back_to_y_then_body(&records);
+    }
+
+    /// Scenario: Run the absent-record-attribute `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back past the absent attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_record_attr_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_record_attr_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-record-attribute `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back past the absent attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_record_attr_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_record_attr_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` whose first argument is a resource attribute when the resource has
+    /// no attributes at all, followed by a record attribute and the body.
+    /// Guarantees: an absent resource attribute is treated as null, so each record falls back
+    /// to the record attribute or the body.
+    async fn test_update_attr_coalesce_resource_attr_absent_from_batch<P: Parser>() {
+        let query = r#"logs | extend attributes["x"] = coalesce(resource.attributes["missing"], attributes["y"], body)"#;
+        let records = exec_coalesce_query::<P>(query, logs_for_coalesce_absent_arg()).await;
+        assert_coalesce_fell_back_to_y_then_body(&records);
+    }
+
+    /// Scenario: Run the absent-resource-attribute `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back past the absent resource attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_resource_attr_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_resource_attr_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-resource-attribute `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back past the absent resource attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_resource_attr_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_resource_attr_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` whose first argument is a nested path under a record attribute
+    /// that no record in the batch has.
+    /// Guarantees: an absent nested attribute path is treated as null, so each record falls
+    /// back to the record attribute or the body.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_nested_attr_absent_from_batch() {
+        let query = r#"logs | extend attributes["x"] = coalesce(attributes["missing"]["k"], attributes["y"], body)"#;
+        let records = exec_coalesce_query::<OplParser>(query, logs_for_coalesce_absent_arg()).await;
+        assert_coalesce_fell_back_to_y_then_body(&records);
+    }
+
+    /// Scenario: `coalesce` whose first argument is the body when no record in the batch has a
+    /// body, followed by a record attribute present on every record.
+    /// Guarantees: an absent body is treated as null, so each record gets its own attribute
+    /// value.
+    async fn test_update_attr_coalesce_body_absent_from_batch<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("y1"))])
+                .finish(),
+        ]);
+        let query = r#"logs | extend attributes["x"] = coalesce(body, attributes["y"])"#;
+        let records = exec_coalesce_query::<P>(query, logs_data).await;
+        assert_eq!(records.len(), 2, "no logs should be dropped");
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("y0")),
+                KeyValue::new("x", AnyValue::new_string("y0")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("y1")),
+                KeyValue::new("x", AnyValue::new_string("y1")),
+            ]
+        );
+    }
+
+    /// Scenario: Run the absent-body `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back past the absent body.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_body_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_body_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-body `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back past the absent body.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_body_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_body_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` where every argument is absent from the whole batch, with two
+    /// arguments (record and resource attributes) and with three (adding the body, which no
+    /// record has).
+    /// Guarantees: the pipeline does not fail and the result is null, so every record gets
+    /// `attributes["x"]` with an empty value.
+    async fn test_update_attr_coalesce_all_args_absent_from_batch<P: Parser>() {
+        for query in [
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing"], resource.attributes["missing"])"#,
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing"], resource.attributes["missing"], body)"#,
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .finish(),
+                LogRecord::build().finish(),
+            ]);
+            let records = exec_coalesce_query::<P>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            assert_eq!(
+                records[0].attributes,
+                vec![
+                    KeyValue::new("y", AnyValue::new_string("y0")),
+                    KeyValue::new("x", AnyValue { value: None }),
+                ],
+                "{query}"
+            );
+            assert_eq!(
+                records[1].attributes,
+                vec![KeyValue::new("x", AnyValue { value: None })],
+                "{query}"
+            );
+        }
+    }
+
+    /// Scenario: Run the all-absent `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns null without an error.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_all_args_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_all_args_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the all-absent `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns null without an error.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_all_args_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_all_args_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` where every argument before a trailing string literal is absent from
+    /// the whole batch: two attribute arguments, or a nested `coalesce` whose own arguments are
+    /// all absent.
+    /// Guarantees: the absent arguments are treated as null, so every record gets the literal
+    /// default instead of a null or an error.
+    async fn test_update_attr_coalesce_absent_args_then_literal<P: Parser>() {
+        for query in [
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing1"], attributes["missing2"], "foo")"#,
+            r#"logs | extend attributes["x"] = coalesce(coalesce(attributes["missing"], resource.attributes["missing"]), "foo")"#,
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .finish(),
+                LogRecord::build().finish(),
+            ]);
+            let records = exec_coalesce_query::<P>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            assert_eq!(
+                records[0].attributes,
+                vec![
+                    KeyValue::new("y", AnyValue::new_string("y0")),
+                    KeyValue::new("x", AnyValue::new_string("foo")),
+                ],
+                "{query}"
+            );
+            assert_eq!(
+                records[1].attributes,
+                vec![KeyValue::new("x", AnyValue::new_string("foo"))],
+                "{query}"
+            );
+        }
+    }
+
+    /// Scenario: Run the absent-then-literal `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back to the literal.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_absent_args_then_literal_opl_parser() {
+        test_update_attr_coalesce_absent_args_then_literal::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-then-literal `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back to the literal.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_absent_args_then_literal_kql_parser() {
+        test_update_attr_coalesce_absent_args_then_literal::<KqlParser>().await
+    }
+
     async fn test_update_attr_to_lower_case_function_call<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()

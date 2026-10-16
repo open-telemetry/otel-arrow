@@ -391,9 +391,14 @@ pub(super) fn join_and_eval_value(
         .map(|sv| scoped_value_to_join_input(sv, otap_batch))
         .collect::<Result<Vec<_>>>()?;
 
+    // When every input is a static scalar (e.g. every child was absent and defaulted to null,
+    // possibly next to a literal), there are no rows to align. `multi_join` handles this by
+    // producing a single row, which is converted back to a scalar after evaluation.
+    let all_inputs_scalar = join_inputs.iter().all(|input| input.data_scope.is_scalar());
+
     // perform the join
     // TODO in the future we should consolidate join strategy so multi-join is the only option.
-    let (joined_rb, result_scope) = if join_inputs.len() == 2 {
+    let (joined_rb, result_scope) = if join_inputs.len() == 2 && !all_inputs_scalar {
         join(&join_inputs[0], &join_inputs[1], otap_batch)?
     } else {
         multi_join(&join_inputs, otap_batch)?
@@ -439,11 +444,16 @@ pub(super) fn join_and_eval_value(
         )?
     };
 
-    let result = ScopedValue::new(
-        coerce_nulls_for_predicate(result_vals, *missing_data_passes),
-        DataScope::clone(&result_scope),
-        &joined_rb,
-    );
+    let mut result_vals = coerce_nulls_for_predicate(result_vals, *missing_data_passes);
+    // a result with static scalar scope comes from joining only scalars into a single row;
+    // consumers expect a scalar value for that scope, so unwrap the row
+    if result_scope.is_scalar()
+        && let ColumnarValue::Array(arr) = &result_vals
+    {
+        result_vals = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?);
+    }
+
+    let result = ScopedValue::new(result_vals, DataScope::clone(&result_scope), &joined_rb);
 
     Ok(Some(result))
 }

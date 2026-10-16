@@ -3083,6 +3083,47 @@ mod test {
         test_filter_or_with_absent_attrs_payload::<KqlParser>().await;
     }
 
+    /// Scenario: equality and inequality between a record attribute and a resource attribute
+    /// on a batch where neither attributes payload exists, so both operands are absent.
+    /// Guarantees: the filter does not fail; both operands are null for every row, so `==`
+    /// keeps every row and `!=` keeps none, as for rows where both values are null.
+    async fn test_filter_compare_both_operands_absent<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == resource.attributes[\"y\"]",
+            to_logs_data(logs_no_attrs()),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 3);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] != resource.attributes[\"y\"]",
+            to_logs_data(logs_no_attrs()),
+        )
+        .await;
+        let result_record_count: usize = result
+            .resource_logs
+            .iter()
+            .flat_map(|r| &r.scope_logs)
+            .map(|s| s.log_records.len())
+            .sum();
+        assert_eq!(result_record_count, 0);
+    }
+
+    /// Scenario: Evaluate comparisons between two absent operands using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_compare_both_operands_absent_opl_parser() {
+        test_filter_compare_both_operands_absent::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate comparisons between two absent operands using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_compare_both_operands_absent_kql_parser() {
+        test_filter_compare_both_operands_absent::<KqlParser>().await;
+    }
+
     /// Scenario: OR expression where the right side references an absent attributes
     /// payload and the left side matches root-scoped fields.
     /// Guarantees: same correctness as the left-absent case, but exercises the code
