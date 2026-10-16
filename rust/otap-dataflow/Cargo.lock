@@ -7856,7 +7856,10 @@ dependencies = [
  "crc",
  "dhat",
  "hex",
+ "nix 0.31.3",
+ "rustix",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
