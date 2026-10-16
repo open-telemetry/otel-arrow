@@ -9,10 +9,10 @@
 //!
 //! ```text
 //! receiver.etw.events.received
-//!     = receiver.etw.events.forwarded                     (events in successfully-sent batches)
-//!     + receiver.etw.dropped{reason="forward_failed"}     (events in batches that failed to build/send)
-//!     + receiver.etw.dropped{reason="slow_worker"}        (events dropped by internal backpressure)
-//!     + receiver.etw.dropped{reason="memory_pressure"}    (events dropped due to memory limits)
+//!     = receiver.etw.events.forwarded                             (events in successfully-sent batches)
+//!     + receiver.etw.dropped.dropped{reason="forward_failed"}     (events in batches that failed to build/send)
+//!     + receiver.etw.dropped.dropped{reason="slow_worker"}        (events dropped by internal backpressure)
+//!     + receiver.etw.dropped.dropped{reason="memory_pressure"}    (events dropped due to memory limits)
 //!     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
 //! ```
 //!
@@ -24,8 +24,8 @@
 //! * `receiver.etw.kernel.events_lost`: Events lost inside Windows kernel ETW buffers before the receiver
 //!   ever saw them (kernel buffer overrun). These come from a different boundary and are distinct from
 //!   `receiver.etw.events.received`.
-//! * Slow-worker drop rate = `receiver.etw.dropped{reason="slow_worker"} / receiver.etw.events.received`
-//! * Forward-failure rate = `receiver.etw.dropped{reason="forward_failed"} / receiver.etw.events.received`
+//! * Slow-worker drop rate = `receiver.etw.dropped.dropped{reason="slow_worker"} / receiver.etw.events.received`
+//! * Forward-failure rate = `receiver.etw.dropped.dropped{reason="forward_failed"} / receiver.etw.events.received`
 
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::error::Error;

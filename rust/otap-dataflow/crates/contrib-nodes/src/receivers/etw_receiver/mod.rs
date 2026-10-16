@@ -483,7 +483,7 @@ impl EtwReceiver {
 /// `builder` is always reset to a fresh empty builder (its contents are taken
 /// via [`std::mem::take`]) regardless of outcome. Returns `Ok(None)` when the
 /// builder is empty (nothing to flush). On a `build()` failure the
-/// `received_events_forward_failed` metric is recorded and the error is
+/// `receiver.etw.dropped.dropped{reason="forward_failed"}` metric is recorded and the error is
 /// returned - a build failure indicates an encoding bug rather than a transient
 /// downstream condition, so it is surfaced to the caller.
 fn build_pending_batch(
@@ -528,7 +528,7 @@ fn build_pending_batch(
 /// `builder` is always reset to a fresh empty builder regardless of outcome.
 ///
 /// A forward failure is treated as a **per-batch loss event**, not a fatal
-/// error: the `received_events_forward_failed` metric is incremented, a warning
+/// error: the `receiver.etw.dropped.dropped{reason="forward_failed"}` metric is incremented, a warning
 /// is logged, and `Ok(())` is returned so the receiver stays alive. On the
 /// awaiting path the only reachable send failure is the downstream channel
 /// being closed (backpressure parks rather than failing), which can happen
@@ -575,7 +575,7 @@ async fn flush_batch(
 /// shutting-down downstream cannot park the task past the drain deadline.
 ///
 /// Like [`flush_batch`], a forward failure (downstream channel full or closed)
-/// is treated as a per-batch loss event: the `received_events_forward_failed`
+/// is treated as a per-batch loss event: the `receiver.etw.dropped.dropped{reason="forward_failed"}`
 /// metric is incremented, a warning is logged, and `Ok(())` is returned so the
 /// receiver stays alive. A `build()` failure still propagates.
 fn try_flush_batch(
@@ -761,8 +761,8 @@ impl EtwReceiver {
     ///   session-wide total is therefore exact.
     ///
     /// The trade-off is intentional: the producer-side counters
-    /// (`received_events_total`, `received_events_dropped_slow_worker`, and
-    /// `received_events_invalid`) are **session-scoped, not
+    /// (`events.received`, `dropped` with `reason="slow_worker"`, and
+    /// `decode.errors`) are **session-scoped, not
     /// per-core**. They cannot be attributed to an individual core - if they
     /// were given a per-core attribute they would land on an arbitrary core
     /// each interval and produce noisy, meaningless per-core series.

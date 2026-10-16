@@ -70,10 +70,10 @@ There is a single ingress denominator:
 
 ```text
 receiver.etw.events.received
-    = receiver.etw.events.forwarded                     (events in successfully-sent batches)
-    + receiver.etw.dropped{reason="forward_failed"}     (events in batches that failed to build/send)
-    + receiver.etw.dropped{reason="slow_worker"}        (events dropped by internal backpressure)
-    + receiver.etw.dropped{reason="memory_pressure"}    (events dropped due to memory limits)
+    = receiver.etw.events.forwarded                             (events in successfully-sent batches)
+    + receiver.etw.dropped.dropped{reason="forward_failed"}     (events in batches that failed to build/send)
+    + receiver.etw.dropped.dropped{reason="slow_worker"}        (events dropped by internal backpressure)
+    + receiver.etw.dropped.dropped{reason="memory_pressure"}    (events dropped due to memory limits)
     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
 ```
 
@@ -83,5 +83,5 @@ Important operational notes:
 - **Decode Quality**: `receiver.etw.decode.errors` tracks events where TDH decode failed. Note that decode failures are still forwarded downstream with empty decoded fields, so they are counted in both `receiver.etw.events.received` and `receiver.etw.events.forwarded`.
 - **Kernel Loss**: `receiver.etw.kernel.events_lost` counts events lost inside Windows kernel buffers before the receiver ever saw them (kernel buffer overrun). These are independent from receiver-level drops and are not included in `receiver.etw.events.received`.
 - **Derived Rates**:
-  - Slow-worker drop rate = `receiver.etw.dropped{reason="slow_worker"} / receiver.etw.events.received`
-  - Forward-failure rate = `receiver.etw.dropped{reason="forward_failed"} / receiver.etw.events.received`
+  - Slow-worker drop rate = `receiver.etw.dropped.dropped{reason="slow_worker"} / receiver.etw.events.received`
+  - Forward-failure rate = `receiver.etw.dropped.dropped{reason="forward_failed"} / receiver.etw.events.received`
