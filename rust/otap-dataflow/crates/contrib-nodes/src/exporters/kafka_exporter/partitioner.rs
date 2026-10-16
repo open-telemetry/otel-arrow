@@ -84,7 +84,7 @@ pub fn partition_key_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 
     fn context_name(raw: &str) -> otel_arrow_dfe_config::ContextEntryName {
         raw.try_into().expect("valid test context entry name")

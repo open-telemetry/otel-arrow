@@ -291,7 +291,7 @@ case variants, are accepted as equivalent. Unknown composites, unknown members,
 authorized-identity members, and conflicting source bindings are rejected
 during startup. Exporter overrides retain precedence and can independently
 select the primitive header. See
-[Transport header policies](transport-headers.md#conditional-composite-members)
+[Transport header policies](transport-headers.md#composite-members)
 for complete matching, naming, and override semantics.
 
 ### Pipeline Core Allocation

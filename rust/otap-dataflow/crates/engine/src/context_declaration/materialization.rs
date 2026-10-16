@@ -33,7 +33,7 @@ pub struct ContextMaterializationPlan {
 impl ContextMaterializationPlan {
     /// Compiles selected composites and their referenced fields.
     pub fn compile(declarations: &[ContextEntryDeclaration]) -> Result<Self, Error> {
-        let mut declarations = declarations.iter().cloned().collect::<Vec<_>>();
+        let mut declarations = declarations.to_vec();
         declarations.sort_by(|left, right| {
             left.name
                 .cmp(&right.name)

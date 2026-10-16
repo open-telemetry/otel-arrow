@@ -2233,7 +2233,7 @@ default:
             &exporter,
             &None,
             &None,
-            &[declaration.clone()],
+            std::slice::from_ref(&declaration),
         )
         .expect("wrapper declarations");
         let ContextDeclaration::HeaderPropagation { policy } =
