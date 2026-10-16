@@ -300,6 +300,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:postgresql",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:receiver:syslog_cef",
     "category": "Receiver",
     "description": null,
