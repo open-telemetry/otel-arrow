@@ -39,8 +39,8 @@ const DATA_OMISSION_STATUSES: [u32; 5] = [
 fn config(path: &str) -> CounterConfig {
     CounterConfig {
         path: path.to_owned(),
-        name: path.to_owned(),
-        unit: "1".to_owned(),
+        name: Arc::from(path),
+        unit: Arc::from("1"),
         description: Arc::from("Test counter"),
         kind: MetricKind::Sum,
         attributes: Arc::new(BTreeMap::new()),
@@ -1309,6 +1309,98 @@ fn live_pdh_direct_queries() {
     }
     drop(first);
     assert!(second.collect().unwrap().failures.is_empty());
+}
+
+/// Scenario: One live PDH query maps Available Bytes to two metrics with different attributes.
+/// Guarantees: Both mappings emit integers on two collections, and OTAP preserves each metric's name, value and attributes.
+/// This verifies that PDH accepts two handles on one path in one query, which fake-PDH unit tests cannot show.
+#[test]
+#[ignore = "requires live Windows performance counters; run explicitly with --ignored"]
+fn live_pdh_collects_distinct_mappings_of_one_native_path() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
+    use prost::Message;
+
+    let path = r"\Memory\Available Bytes";
+    let config = RuntimeConfig::from_json(&serde_json::json!({
+        "metrics": {
+            "memory.available": {"unit": "By", "gauge": {}},
+            "memory.free": {"unit": "By", "gauge": {}}
+        },
+        "perfcounters": [{"object": "Memory", "counters": [
+            {"name": "Available Bytes", "metric": "memory.available"},
+            {"name": "Available Bytes", "metric": "memory.free",
+             "attributes": {"state": "free"}}
+        ]}]
+    }))
+    .unwrap();
+    assert_eq!(config.counters.len(), 2);
+    assert!(config.counters.iter().all(|counter| counter.path == path));
+    let mut query = Query::open(&config.counters, "distinct-mappings".to_owned()).unwrap();
+    assert!(
+        query.startup_failures.is_empty(),
+        "{:?}",
+        query.startup_failures
+    );
+    for _ in 0..2 {
+        let sample = query.collect().unwrap();
+        assert!(sample.failures.is_empty(), "{:?}", sample.failures);
+        assert_eq!(sample.points.len(), 2);
+        let values: Vec<_> = sample
+            .points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                assert_eq!(point.counter_index, index);
+                match point.value {
+                    SampleValue::Value(Number::Integer(value)) if value >= 0 => value,
+                    value => panic!("expected non-negative available bytes, got {value:?}"),
+                }
+            })
+            .collect();
+        let records = into_otap(&config.counters, sample).unwrap().unwrap();
+        let bytes: OtlpProtoBytes = OtapPayload::from_otap(records)
+            .try_into_with_default()
+            .unwrap();
+        let decoded = ExportMetricsServiceRequest::decode(bytes.as_bytes()).unwrap();
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 2);
+        for ((metric, (name, state)), value) in metrics
+            .iter()
+            .zip([("memory.available", None), ("memory.free", Some("free"))])
+            .zip(values)
+        {
+            assert_eq!(metric.name, name);
+            let Some(metric::Data::Gauge(gauge)) = &metric.data else {
+                panic!("expected a Gauge");
+            };
+            assert_eq!(gauge.data_points.len(), 1);
+            let point = &gauge.data_points[0];
+            assert_eq!(point.value, Some(number_data_point::Value::AsInt(value)));
+            let attributes: BTreeMap<_, _> = point
+                .attributes
+                .iter()
+                .map(|attribute| {
+                    let Some(any_value::Value::StringValue(value)) = attribute
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref())
+                    else {
+                        panic!("expected a string attribute");
+                    };
+                    (attribute.key.as_str(), value.as_str())
+                })
+                .collect();
+            let mut expected = BTreeMap::from([("windows.perf_counter.path", path)]);
+            if let Some(state) = state {
+                let _ = expected.insert("state", state);
+            }
+            assert_eq!(attributes, expected);
+        }
+    }
 }
 
 /// Scenario: Live PDH reads exact rates, timers, queues, fractions and averages.

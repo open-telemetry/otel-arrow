@@ -189,8 +189,8 @@ mod tests {
     fn counter(name: &str, kind: MetricKind) -> CounterConfig {
         CounterConfig {
             path: format!(r"\Object\{name}"),
-            name: name.to_owned(),
-            unit: "By".to_owned(),
+            name: Arc::from(name),
+            unit: Arc::from("By"),
             description: Arc::from(format!("Description for {name}.")),
             kind,
             attributes: Arc::new(BTreeMap::new()),
@@ -297,9 +297,9 @@ mod tests {
         assert_eq!(metadata.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(scope.metrics.len(), counters.len());
         for ((metric, counter), value) in scope.metrics.iter().zip(&counters).zip(values) {
-            assert_eq!(metric.name, counter.name);
+            assert_eq!(metric.name, counter.name.as_ref());
             assert_eq!(metric.description, counter.description.as_ref());
-            assert_eq!(metric.unit, counter.unit);
+            assert_eq!(metric.unit, counter.unit.as_ref());
             let points = match (counter.kind, metric.data.as_ref().unwrap()) {
                 (MetricKind::Gauge, metric::Data::Gauge(gauge)) => &gauge.data_points,
                 (MetricKind::Sum, metric::Data::Sum(sum)) => {
@@ -335,6 +335,72 @@ mod tests {
                 attributes(&point.attributes),
                 BTreeMap::from([("windows.perf_counter.path", counter.path.as_str())])
             );
+        }
+    }
+
+    /// Scenario: One native path maps to case-distinct OTLP names and attribute-distinct points.
+    /// Guarantees: Decoded output preserves exact names and unrestricted units without collapsing mappings.
+    #[test]
+    fn projects_distinct_mappings_of_one_native_path() {
+        let lower = format!("1 memory \u{e9} {}", "x".repeat(512));
+        let upper = lower.to_uppercase();
+        let unit = format!("\u{b5}s/{}", "u".repeat(128));
+        let config = RuntimeConfig::from_json(&serde_json::json!({
+            "metrics": {
+                lower.clone(): {"unit": unit, "description": "lower"},
+                upper.clone(): {"unit": "B y", "description": "upper"}
+            },
+            "perfcounters": [{"object": "Memory", "counters": [
+                {"name": "Available Bytes", "metric": lower, "attributes": {"view": "a"}},
+                {"name": "Available Bytes", "metric": upper},
+                {"name": "Available Bytes", "metric": lower, "attributes": {"view": "b"}}
+            ]}]
+        }))
+        .unwrap();
+        let decoded = decode(
+            into_otap(
+                &config.counters,
+                sample(
+                    0,
+                    10,
+                    vec![
+                        point(0, SampleValue::Value(Number::Integer(42))),
+                        point(1, SampleValue::Value(Number::Integer(42))),
+                        point(2, SampleValue::Value(Number::Integer(42))),
+                    ],
+                ),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 2);
+        for (metric, name, unit, description, views) in [
+            (
+                &metrics[0],
+                lower.as_str(),
+                unit.as_str(),
+                "lower",
+                vec![Some("a"), Some("b")],
+            ),
+            (&metrics[1], upper.as_str(), "B y", "upper", vec![None]),
+        ] {
+            assert_eq!(metric.name, name);
+            assert_eq!(metric.unit, unit);
+            assert_eq!(metric.description, description);
+            let Some(metric::Data::Gauge(gauge)) = &metric.data else {
+                panic!("expected a Gauge");
+            };
+            assert_eq!(gauge.data_points.len(), views.len());
+            for (point, view) in gauge.data_points.iter().zip(views) {
+                assert_eq!(point.value, Some(number_data_point::Value::AsInt(42)));
+                let attrs = attributes(&point.attributes);
+                assert_eq!(
+                    attrs["windows.perf_counter.path"],
+                    r"\Memory\Available Bytes"
+                );
+                assert_eq!(attrs.get("view").copied(), view);
+            }
         }
     }
 
