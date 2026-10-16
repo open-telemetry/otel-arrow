@@ -679,8 +679,27 @@ impl ExprPlanner {
         coalesce_expr: &CoalesceScalarExpression,
         functions: &[PipelineFunction],
     ) -> Result<PlannedOp> {
-        let (df_args, args_scope, data_scope, _) =
+        let (mut df_args, mut args_scope, data_scope, _) =
             self.plan_function_args(coalesce_expr.get_expressions().iter(), functions)?;
+
+        // Evaluated in an attribute's own scope (e.g. `coalesce(attributes["x"], "default")`),
+        // there are only rows for the records that have the attribute, so the others (or every
+        // record, when no record has it) could not fall back to the later arguments. Plan the
+        // arguments as a join instead, so each one is aligned to the records below.
+        if let FunctionArgScope::Combined(DataScope::Attribute(..) | DataScope::AttributesAll(_)) =
+            args_scope
+            && coalesce_expr.get_expressions().len() > 1
+        {
+            let children = coalesce_expr
+                .get_expressions()
+                .iter()
+                .map(|arg| self.plan_scalar(arg, functions).map(|planned| planned.expr))
+                .collect::<Result<Vec<_>>>()?;
+            df_args = (0..children.len())
+                .map(|i| col(arg_column_name(i)))
+                .collect();
+            args_scope = FunctionArgScope::Join(children);
+        }
 
         // DataFusion's `coalesce` UDF does not support direct physical evaluation; the optimizer
         // rewrites it via `CoalesceFunc::simplify`. Reuse that implementation here.
@@ -700,16 +719,29 @@ impl ExprPlanner {
         };
 
         let mut expr = self.build_eval_or_join(case_expr, args_scope, data_scope, true)?;
-        if let ScopedExpr::JoinAndEval {
-            align_children_to_record: ref mut align_children_to_root,
-            ref mut default_null_children,
-            ..
-        } = expr
-        {
-            *align_children_to_root = true;
-            // An argument absent from the whole batch (e.g. an attribute key no record has) is
-            // null for every record, so a later argument can still provide the value.
-            *default_null_children = true;
+        match &mut expr {
+            ScopedExpr::JoinAndEval {
+                align_children_to_record,
+                default_null_children,
+                ..
+            } => {
+                *align_children_to_record = true;
+                // An argument absent from the whole batch (e.g. an attribute key no record has)
+                // is null for every record, so a later argument can still provide the value.
+                *default_null_children = true;
+            }
+            ScopedExpr::Eval {
+                eval:
+                    LeafEval::DatafusionExpr {
+                        projection_opts, ..
+                    },
+                ..
+            } => {
+                // Likewise, an optional column absent from the whole batch (e.g. no record has a
+                // body) is null for every record rather than making the whole result absent.
+                projection_opts.default_null_columns = true;
+            }
+            _ => {}
         }
 
         Ok(PlannedOp {

@@ -450,7 +450,13 @@ pub(super) fn join_and_eval_value(
     if result_scope.is_scalar()
         && let ColumnarValue::Array(arr) = &result_vals
     {
-        result_vals = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?);
+        let scalar = ScalarValue::try_from_array(arr, 0)?;
+        if scalar.is_null() {
+            // e.g. every child was absent: report the result as absent, like any other null
+            // input data, rather than as an untyped null scalar
+            return Ok(None);
+        }
+        result_vals = ColumnarValue::Scalar(scalar);
     }
 
     let result = ScopedValue::new(result_vals, DataScope::clone(&result_scope), &joined_rb);

@@ -8753,35 +8753,54 @@ mod test {
     }
 
     /// Scenario: `coalesce` whose first argument is the body when no record in the batch has a
-    /// body, followed by a record attribute present on every record.
-    /// Guarantees: an absent body is treated as null, so each record gets its own attribute
-    /// value.
+    /// body, followed by a record attribute present on every record (arguments joined across
+    /// scopes), or only by root fields and literals (arguments evaluated in the record's own
+    /// scope): another root field, a literal, or a root field and then a literal.
+    /// Guarantees: an absent body is treated as null, so each record gets its own value from
+    /// the next argument that has one.
     async fn test_update_attr_coalesce_body_absent_from_batch<P: Parser>() {
-        let logs_data = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("y", AnyValue::new_string("y1"))])
-                .finish(),
-        ]);
-        let query = r#"logs | extend attributes["x"] = coalesce(body, attributes["y"])"#;
-        let records = exec_coalesce_query::<P>(query, logs_data).await;
-        assert_eq!(records.len(), 2, "no logs should be dropped");
-        assert_eq!(
-            records[0].attributes,
-            vec![
-                KeyValue::new("y", AnyValue::new_string("y0")),
-                KeyValue::new("x", AnyValue::new_string("y0")),
-            ]
-        );
-        assert_eq!(
-            records[1].attributes,
-            vec![
-                KeyValue::new("y", AnyValue::new_string("y1")),
-                KeyValue::new("x", AnyValue::new_string("y1")),
-            ]
-        );
+        for (query, expected) in [
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, attributes["y"])"#,
+                ["y0", "y1"],
+            ),
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, severity_text)"#,
+                ["s0", "s1"],
+            ),
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, "foo")"#,
+                ["foo", "foo"],
+            ),
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, event_name, "unknown")"#,
+                ["e0", "unknown"],
+            ),
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .severity_text("s0")
+                    .event_name("e0")
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y1"))])
+                    .severity_text("s1")
+                    .finish(),
+            ]);
+            let records = exec_coalesce_query::<P>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            for (i, record) in records.iter().enumerate() {
+                assert_eq!(
+                    record.attributes,
+                    vec![
+                        KeyValue::new("y", AnyValue::new_string(format!("y{i}"))),
+                        KeyValue::new("x", AnyValue::new_string(expected[i])),
+                    ],
+                    "{query}"
+                );
+            }
+        }
     }
 
     /// Scenario: Run the absent-body `coalesce` test with the OPL parser.
@@ -8847,12 +8866,15 @@ mod test {
     }
 
     /// Scenario: `coalesce` where every argument before a trailing string literal is absent from
-    /// the whole batch: two attribute arguments, or a nested `coalesce` whose own arguments are
-    /// all absent.
+    /// the whole batch: a single record or resource attribute (evaluated in that attribute's own
+    /// scope), two attribute arguments, or a nested `coalesce` whose own arguments are all
+    /// absent.
     /// Guarantees: the absent arguments are treated as null, so every record gets the literal
     /// default instead of a null or an error.
     async fn test_update_attr_coalesce_absent_args_then_literal<P: Parser>() {
         for query in [
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing"], "foo")"#,
+            r#"logs | extend attributes["x"] = coalesce(resource.attributes["missing"], "foo")"#,
             r#"logs | extend attributes["x"] = coalesce(attributes["missing1"], attributes["missing2"], "foo")"#,
             r#"logs | extend attributes["x"] = coalesce(coalesce(attributes["missing"], resource.attributes["missing"]), "foo")"#,
         ] {
@@ -8892,6 +8914,77 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_coalesce_absent_args_then_literal_kql_parser() {
         test_update_attr_coalesce_absent_args_then_literal::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce(attributes["a"], "foo")` on a batch where only the first record has
+    /// `a`, so the arguments share the attribute's scope and the second record has no row in
+    /// it.
+    /// Guarantees: the record without `a` falls back to the literal instead of getting null,
+    /// and the record with `a` keeps its own value.
+    async fn test_update_attr_coalesce_attr_then_literal_per_record<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("a0"))])
+                .finish(),
+            LogRecord::build().finish(),
+        ]);
+        let query = r#"logs | extend attributes["x"] = coalesce(attributes["a"], "foo")"#;
+        let records = exec_coalesce_query::<P>(query, logs_data).await;
+        assert_eq!(records.len(), 2, "no logs should be dropped");
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new("a", AnyValue::new_string("a0")),
+                KeyValue::new("x", AnyValue::new_string("a0")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![KeyValue::new("x", AnyValue::new_string("foo"))]
+        );
+    }
+
+    /// Scenario: Run the per-record attribute-then-literal `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back to the literal per record.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_attr_then_literal_per_record_opl_parser() {
+        test_update_attr_coalesce_attr_then_literal_per_record::<OplParser>().await
+    }
+
+    /// Scenario: Run the per-record attribute-then-literal `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back to the literal per record.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_attr_then_literal_per_record_kql_parser() {
+        test_update_attr_coalesce_attr_then_literal_per_record::<KqlParser>().await
+    }
+
+    /// Scenario: assign `coalesce` to the root `severity_text` column where every argument is
+    /// absent from the whole batch, and where absent arguments are followed by a literal.
+    /// Guarantees: the all-absent result is assigned as null (clearing `severity_text`) without
+    /// a type error, and the literal fallback is assigned to every record.
+    #[tokio::test]
+    async fn test_set_root_column_coalesce_absent_args() {
+        for (query, expected) in [
+            (
+                r#"logs | set severity_text = coalesce(attributes["missing"], resource.attributes["missing"])"#,
+                "",
+            ),
+            (
+                r#"logs | set severity_text = coalesce(attributes["missing"], "foo")"#,
+                "foo",
+            ),
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build().severity_text("s0").finish(),
+                LogRecord::build().severity_text("s1").finish(),
+            ]);
+            let records = exec_coalesce_query::<OplParser>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            assert!(
+                records.iter().all(|r| r.severity_text == expected),
+                "{query}: {records:?}"
+            );
+        }
     }
 
     async fn test_update_attr_to_lower_case_function_call<P: Parser>() {
