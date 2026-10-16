@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792182088475,
+  "lastUpdate": 1792193117154,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -65034,6 +65034,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ada79a67e7a8a732b536b2156d736fd718371cb5",
+          "message": "chore(engine/topic): fix flaky all-mode concurrent publish/subscribe test (#4420)\n\n# Chore Summary\n\nFixes the flaky\n`broadcast_all_mode_concurrent_publish_subscribe_resolves` test in\n`crates/engine/src/topic/tests.rs`, which the flaky test tracker (#2720)\nreported. Test-only change; no production code is modified.\n\nEach joining subscriber stopped receiving after a 1ms receive timeout\nbut stayed registered. Later `all`-mode publishes could include it in\ntheir consensus ack set, so those receipts never resolved and the 5s\nguard fired.\n\n- Service every subscriber in its own task, receiving and acking until\nan explicit stop signal sent after all receipts resolve.\n- Pair the publisher and joiner with a per-round `Barrier`, so\nsubscriber `i` races publish `i` and is registered before publish `i +\n1`. Previously most runs had little or no actual subscribe/publish\noverlap.\n- Require every receipt to resolve as Ack, and check each subscriber's\nack count against the messages published after it joined.\n- Keep spawned tasks in `JoinSet`s, await them, and propagate failures;\ndropping a `JoinSet` on a failure path aborts its tasks.\n\nValidation (no retries):\n\n- `cargo test -p otel-arrow-dfe-engine --lib\ntopic::tests::broadcast_all_mode`: passed (13 tests).\n- Test binary, `--exact\ntopic::tests::broadcast_all_mode_concurrent_publish_subscribe_resolves`,\n500 runs: 0 failures.\n- Test binary, `topic::tests`, 100 runs: 0 failures.\n- `cargo nextest run -p otel-arrow-dfe-engine --lib --retries 0 -E\n'test(/^topic::tests::/)'`, 30 runs: 0 failures (92 tests per run).\n- Mutation check: shifting the subscriber `start_seq` in `topic.rs` by\none in either direction makes the test fail (receipt timeout, or ack of\nan untracked message).\n\n## Related issue\n\n* Closes #4409",
+          "timestamp": "2026-10-16T22:24:38Z",
+          "tree_id": "a2166b14bef5c03553117654169038afbb20eb51",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ada79a67e7a8a732b536b2156d736fd718371cb5"
+        },
+        "date": 1792193098882,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.72,
             "unit": "MB"
           },
           {
