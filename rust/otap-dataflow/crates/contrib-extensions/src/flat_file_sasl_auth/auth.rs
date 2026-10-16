@@ -3,16 +3,18 @@
 
 //! Flat file SASL credential source and capability implementation.
 
+use std::path::Path;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use otel_arrow_dfe_engine::capability::CapabilityError;
-use otel_arrow_dfe_engine::capability::auth::SaslCredential;
 use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
     SaslCredentialProvider, SaslCredentialStream,
 };
+use otel_arrow_dfe_engine::capability::auth::{SaslCredential, SaslCredentialError};
 use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
+use secrecy::SecretString;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::common::background_refresh::{
@@ -23,10 +25,25 @@ use crate::common::secret_file::{ReadSecretFileError, read_secret_file};
 use super::config::Config;
 use super::error::Error;
 
-/// Acquires SASL credentials from an inline username and a local password file.
+/// Acquires SASL credentials from an inline or file-backed username and a local password file.
 #[derive(Clone)]
 pub struct FlatFileSaslAuth {
     config: Config,
+}
+
+async fn read_credential_file(path: &Path, field: &'static str) -> Result<SecretString, Error> {
+    read_secret_file(path).await.map_err(|error| match error {
+        ReadSecretFileError::Read(source) => Error::ReadCredentialFile {
+            field,
+            path: path.to_owned(),
+            source,
+        },
+        ReadSecretFileError::InvalidUtf8 => Error::CredentialAcquisition {
+            field,
+            path: Some(path.to_owned()),
+            message: "file does not contain valid UTF-8".to_string(),
+        },
+    })
 }
 
 impl FlatFileSaslAuth {
@@ -41,20 +58,38 @@ impl BackgroundProviderSource<SaslCredential> for FlatFileSaslAuth {
     type Error = Error;
 
     async fn fetch(&self) -> Result<SaslCredential, Error> {
-        let path = &self.config.password_secret_file;
-        let password = read_secret_file(path).await.map_err(|error| match error {
-            ReadSecretFileError::Read(source) => Error::ReadCredentialFile {
-                path: path.clone(),
-                source,
-            },
-            ReadSecretFileError::InvalidUtf8 => Error::CredentialAcquisition {
-                path: path.clone(),
-                message: "file does not contain valid UTF-8".to_string(),
-            },
-        })?;
-        SaslCredential::new(self.config.username.clone(), password).map_err(|error| {
+        let username_field = if self.config.username_file.is_some() {
+            "username_file"
+        } else {
+            "username"
+        };
+        let username = if let Some(path) = &self.config.username_file {
+            read_credential_file(path, username_field).await?
+        } else {
+            self.config
+                .username
+                .clone()
+                .ok_or_else(|| Error::CredentialAcquisition {
+                    field: username_field,
+                    path: None,
+                    message: "either `username` or `username_file` must be set".to_string(),
+                })?
+        };
+        let password =
+            read_credential_file(&self.config.password_secret_file, "password_secret_file").await?;
+        SaslCredential::new(username, password).map_err(|error| {
+            let (field, path) = match &error {
+                SaslCredentialError::InvalidUsername { .. } => {
+                    (username_field, self.config.username_file.clone())
+                }
+                SaslCredentialError::InvalidPassword { .. } => (
+                    "password_secret_file",
+                    Some(self.config.password_secret_file.clone()),
+                ),
+            };
             Error::CredentialAcquisition {
-                path: path.clone(),
+                field,
+                path,
                 message: error.to_string(),
             }
         })

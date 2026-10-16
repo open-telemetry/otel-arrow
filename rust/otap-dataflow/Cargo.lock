@@ -7812,6 +7812,7 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -7940,6 +7941,7 @@ dependencies = [
  "pretty_assertions",
  "prost 0.14.4",
  "rand 0.10.3",
+ "regex",
  "replace_with",
  "roaring",
  "serde",
