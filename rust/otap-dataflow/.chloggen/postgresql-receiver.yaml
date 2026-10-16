@@ -1,7 +1,7 @@
 change_type: new_component
 component: pipeline
-note: "Add an opt-in, development-only PostgreSQL receiver with automatic result metadata, configurable page budgets, shared credentials, and acknowledged composite polling."
+note: "Add an opt-in PostgreSQL receiver with verified TLS, automatic result metadata, configurable page budgets, shared credentials, and acknowledged composite polling."
 issues: [4166, 3918]
 subtext: |
-  Enable postgresql and bind basic_auth_provider. Set query.max_rows_per_poll and query.max_batch_bytes. Unencrypted TCP: trusted development only.
-  Operations use a fixed 30s timeout. Initial timestamps normalize to UTC. Schema must remain stable across restarts.
+  Enable postgresql with one crypto-* feature and bind basic_auth_provider. TLS verifies platform or private CAs by default.
+  Set connection.tls.enabled=false only for isolated development. Operations use a fixed 30s timeout; initial timestamps normalize to UTC and schema must stay stable.
