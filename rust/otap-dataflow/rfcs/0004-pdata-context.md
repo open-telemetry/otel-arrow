@@ -248,16 +248,45 @@ policies:
           name: peer_socket_addr
 ```
 
-More entry types can be added as needed, for example `randomness`,
+Randomness entries are configured with a named member and generator:
 
 ```yaml
 policies:
   context:
     entries:
-      idempotency:              # Named context entry
+      correlation:              # Named context entry
         - type: randomness
+          name: id              # Composite member name
           value: uuid7
 ```
+
+The randomness `value` selects a generator rather than containing generated
+data. The initial supported generator is `uuid7`. Randomness members have
+configured member names but no source domain or original wire name. They add
+no presence requirement, so referenced fields and conditions still determine
+whether the composite entry is present.
+
+Each selected random value is generated once when its context is materialized
+at the receiver boundary and retained for that context's lifetime. Materialized
+values are preserved by detached context clones together with their originating
+declaration. Split or partitioned outputs therefore inherit the same random
+value; it identifies their shared context lineage and is not a unique
+per-output idempotency key.
+
+Materialization runs at receiver boundaries. Source changes made later within
+the same pipeline do not update an existing snapshot or make an absent
+composite present. After a topic hop, the destination receiver may materialize
+an absent composite from the source state carried into that pipeline. A
+destination plan retains an existing composite only when that declaration is
+identical. A same-named composite with different provenance is treated as
+absent, so the destination presence gate is evaluated before its value is
+materialized. Runtime projection reads use the existing logical projection
+model; general consumer bindings, optimized lookups, projector transforms, and
+propagation remain separate integration work.
+
+UUID v7 values expose their generation time and are not secrets. They must not
+be used as authentication tokens, secret values, or cryptographic anti-replay
+mechanisms.
 
 Or `constant`,
 
@@ -266,9 +295,18 @@ policies:
   context:
     entries:
       routename:                # Named context entry
-        type: constant
-        value: otlp-http-json
+        - type: constant
+          name: route_name      # Composite member name
+          value: otlp-http-json
 ```
+
+Constant values are UTF-8 strings supplied directly by configuration. They
+have configured member names but no source domain or original wire name.
+Constants are always available, so only referenced fields and conditions
+determine whether a composite entry is present. Configuration values are not
+secret storage and must not contain credentials or other sensitive data.
+Selected constants are copied into the materialized context when the enclosing
+composite is present.
 
 #### Composite context entry dimensions
 

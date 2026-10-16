@@ -49,11 +49,13 @@ pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+pub use internal_events::{Logger, Sampler};
 /// Runtime-reloadable filtering for internal logs.
 pub mod log_filter;
 /// Internal log tap for admin-side log queries.
 pub mod log_tap;
 pub mod metrics;
+pub mod output_service;
 pub mod registry;
 pub mod reporter;
 pub mod resource_detectors;

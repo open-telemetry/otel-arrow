@@ -11,9 +11,10 @@
 //! factory URNs itself (following `name: SOME_URN_CONST` to the const's value,
 //! including cross-crate `use` re-exports). This test is the **reliability**
 //! half: it links a large set of real components (`core-nodes`, `contrib-nodes`,
-//! and `otap` via this crate's dev-dependencies) and reads the **compiler-resolved**
-//! `COMPONENT_INVENTORY` distributed slice, then asserts that every linked
-//! component matches the committed `components-baseline.json`.
+//! `contrib-extensions`, and `otap` via this crate's dev-dependencies) and reads
+//! the **compiler-resolved** `COMPONENT_INVENTORY` distributed slice, then
+//! asserts that every linked component matches the committed
+//! `components-baseline.json`.
 //!
 //! Because the compiler has already resolved every `name:` URN const, this
 //! catches any scanner URN-resolution error (e.g. a cross-crate `use`d const
@@ -38,6 +39,7 @@ use otel_arrow_dfe_engine::inventory::components;
 // Pull the component-bearing crates into this test binary so their
 // `#[component_inventory]` link-time entries are present in COMPONENT_INVENTORY.
 // `use ... as _` keeps the dependency linked without importing any names.
+use otel_arrow_dfe_contrib_extensions as _;
 use otel_arrow_dfe_contrib_nodes as _;
 use otel_arrow_dfe_core_nodes as _;
 use otel_arrow_dfe_dev_nodes as _;

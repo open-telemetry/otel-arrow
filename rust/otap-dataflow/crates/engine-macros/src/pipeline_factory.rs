@@ -6,7 +6,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{
-    Ident, ItemStatic, Token, Type,
+    ExprPath, Ident, ItemStatic, Token, Type,
     parse::{Parse, ParseStream},
 };
 
@@ -16,6 +16,8 @@ pub(crate) struct PipelineFactoryArgs {
     pub prefix: Ident,
     /// Data type for the pipeline factory.
     pub pdata_type: Type,
+    /// Optional data-type-specific context materializer.
+    pub context_materializer: Option<ExprPath>,
 }
 
 impl Parse for PipelineFactoryArgs {
@@ -23,7 +25,17 @@ impl Parse for PipelineFactoryArgs {
         let prefix = input.parse::<Ident>()?;
         let _comma: Token![,] = input.parse()?;
         let pdata_type = input.parse::<Type>()?;
-        Ok(PipelineFactoryArgs { prefix, pdata_type })
+        let context_materializer = if input.is_empty() {
+            None
+        } else {
+            let _comma: Token![,] = input.parse()?;
+            Some(input.parse::<ExprPath>()?)
+        };
+        Ok(PipelineFactoryArgs {
+            prefix,
+            pdata_type,
+            context_materializer,
+        })
     }
 }
 
@@ -34,6 +46,10 @@ pub(crate) fn expand_pipeline_factory(
 ) -> TokenStream {
     let prefix = &args.prefix;
     let pdata_type = &args.pdata_type;
+    let context_materializer = args
+        .context_materializer
+        .as_ref()
+        .map(|materializer| quote!(.with_context_materializer(#materializer)));
     let registry_name = &registry_static.ident;
     let registry_vis = &registry_static.vis;
 
@@ -88,7 +104,7 @@ pub(crate) fn expand_pipeline_factory(
                 &#processor_factories_name,
                 &#exporter_factories_name,
                 &#extension_factories_name,
-            )
+            ) #context_materializer
         });
 
         /// Gets the receiver factory map, initializing it if necessary.

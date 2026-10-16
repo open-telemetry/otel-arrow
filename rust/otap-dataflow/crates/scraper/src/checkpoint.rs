@@ -20,7 +20,7 @@
 //! directory-fsync operation. A machine crash can therefore lose a brand-new
 //! state tree or a rename; source retention must allow replay.
 
-use crate::database::CompositeCursor;
+use crate::database::Cursor;
 use crate::partition::{checkpoint_name_digest, create_dir_all_durable};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -47,7 +47,7 @@ struct CheckpointPayload {
     revision: u64,
     source_id: String,
     config_fingerprint: String,
-    cursor: CompositeCursor,
+    cursor: Cursor,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,7 +63,7 @@ pub struct CheckpointState {
     /// Monotonic revision of the committed checkpoint.
     pub revision: u64,
     /// Last durably acknowledged cursor.
-    pub cursor: CompositeCursor,
+    pub cursor: Cursor,
 }
 
 /// Non-fatal outcome details of one checkpoint write.
@@ -482,7 +482,7 @@ impl CheckpointStore {
     pub fn write(
         &self,
         current_revision: u64,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
     ) -> Result<(CheckpointState, WriteOutcome), CheckpointError> {
         #[cfg(test)]
         if let Some(control) = &self.write_control {
@@ -639,7 +639,7 @@ impl CheckpointStore {
         &self,
         path: &Path,
         revision: u64,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
         parent: &Path,
     ) -> bool {
         let expected = CheckpointState {

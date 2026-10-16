@@ -105,7 +105,9 @@ impl LogParserProcessor {
             .await
             .map_err(|error| (ParserErrorType::Internal, error.into()))?;
         if self.sanitize_results {
-            sanitize_otap_batch_cooperative(&mut batch).await;
+            sanitize_otap_batch_cooperative(&mut batch)
+                .await
+                .map_err(|error| (ParserErrorType::Sanitization, error.into()))?;
         }
         self.metrics
             .record_parsing(self.log_parser.format(), counts);
@@ -181,7 +183,7 @@ impl Processor<OtapPdata> for LogParserProcessor {
                     effect_handler.send_message_with_source_node(pdata).await?;
                     return Ok(());
                 }
-                let pdata = match effect_handler.try_into_otap(pdata).await {
+                let pdata = match effect_handler.materialize_otap(pdata).await {
                     Ok(pdata) => pdata,
                     Err(error) => {
                         self.metrics

@@ -123,6 +123,7 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
             pipeline_id: pipeline_ctx.pipeline_id(),
             policies: Policies::resolve(pipeline.policies()),
             pipeline,
+            topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             role: ResolvedPipelineRole::Regular,
         }],
     };
@@ -157,6 +158,52 @@ pub fn test_extension_effect_handler(
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
         None,
     )
+}
+
+/// Run an extension through the engine's spawn and readiness gates, then shut it down.
+///
+/// The caller must drive `local_tasks`, for example with [`LocalSet::run_until`].
+///
+/// # Errors
+///
+/// Returns engine startup errors, including readiness timeout and premature task exit.
+///
+/// # Panics
+///
+/// Panics if an extension still running after the gate fails to shut down cleanly.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn test_extension_readiness(
+    wrapper: crate::extension::ExtensionWrapper,
+    local_tasks: &LocalSet,
+    ext_ctx: &ExtensionContext,
+) -> Result<(), crate::error::Error> {
+    let entity_key = ext_ctx.register_extension_entity(wrapper.name(), wrapper.variant());
+    let (tx, _rx) = flume::bounded(8);
+    let mut lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
+        vec![(wrapper, entity_key)],
+        local_tasks,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        Default::default(),
+        ext_ctx,
+        crate::extension_monitor::ExtensionMetricsMonitor::disabled(ext_ctx.clone()),
+    );
+    let outcome = async {
+        lifecycle.wait_all_spawned().await?;
+        lifecycle.wait_all_ready().await
+    }
+    .await;
+    lifecycle.initiate_shutdown(Some("extension readiness test finished"));
+    while !lifecycle.is_empty() {
+        match lifecycle.next_event().await {
+            crate::extension_lifecycle::LifecycleEvent::Completion(result) => result
+                .expect("test extension task joins")
+                .expect("test extension shuts down cleanly"),
+            crate::extension_lifecycle::LifecycleEvent::MonitorTick(_) => {
+                unreachable!("test lifecycle monitoring is disabled")
+            }
+        }
+    }
+    outcome
 }
 
 /// A test message type used in component tests.

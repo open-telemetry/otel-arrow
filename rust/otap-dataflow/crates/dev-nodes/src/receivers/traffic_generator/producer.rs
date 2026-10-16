@@ -558,16 +558,8 @@ mod tests {
     use super::*;
 
     fn into_otlp(payload: OtapPayload) -> otel_arrow_dfe_pdata::OtlpProtoBytes {
-        let encoded = payload
-            .into_encoded_for_test(
-                otel_arrow_dfe_pdata_codec::PdataEncoding::OTLP,
-                Default::default(),
-            )
-            .expect("OTLP conversion");
-        otel_arrow_dfe_pdata::OtlpProtoBytes::new_from_bytes(
-            encoded.signal_type(),
-            encoded.into_bytes(),
-        )
+        otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
+            .expect("OTLP conversion")
     }
 
     /// Helper to build a minimal `SyntheticGenerator` with no resource attributes.

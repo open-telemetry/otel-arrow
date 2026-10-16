@@ -11,6 +11,39 @@ time, and keep mutable decoder, encoder, or batcher state inside one pipeline
 runtime. A payload carries only its encoding identity, signal, bytes, and cached
 metadata; it never owns a codec instance.
 
+## Architecture overview
+
+![PData forwarding, views, conversion, batching, and codec lifecycle][codec-diagram]
+
+[codec-diagram]: assets/pdata-codec-framework.png
+
+The four paths are alternatives selected by the consumer, not sequential
+pipeline stages:
+
+- **Unchanged forwarding (blue):** a matching output encoding forwards the
+  original shared bytes without decoding, re-encoding, or creating a codec
+  instance. This guarantee does not apply to merge/split operations.
+- **Read-only view (teal):** `AcceptedEncodings` selects direct byte borrowing.
+  Existing OTAP records are borrowed; other encodings decode to temporary OTAP
+  records without changing the original payload.
+- **On-demand conversion (orange):** decode to native OTAP when processing
+  requires records, then encode if the output requires an encoded format.
+  Already-native input skips decoding.
+- **Codec-aware batching (purple):** `BatchPlan` selects codec-native merge/split
+  or native OTAP batching, including item-based fallback. Outputs carry input
+  ranges for delivery tracking; the processor retains contexts and owns Ack/Nack.
+  Encoded batching can create new buffers and instantiate a reusable batcher
+  without materializing OTAP. See [batching flow](#batching-flow) and
+  [input-range ownership](#input-ranges-and-delivery-ownership) for details.
+
+The lower band shows codec registrations, registry validation, and the pipeline
+service that lazily creates and reuses decoder, encoder, and batcher instances.
+Nodes access that service through effect handlers; stateless item counters do
+not require an instance.
+
+The syslog encoding is marked as upcoming in PR5, not part of PR3.
+Native OTAP is the common processing representation, not a registered byte codec.
+
 ## Design model
 
 - `PdataEncoding` is the stable identity used by configuration and diagnostics.
@@ -26,9 +59,9 @@ metadata; it never owns a codec instance.
 - `CodecService` creates mutable implementations lazily and reuses them within
   one pipeline runtime. Payload admission and matching-format forwarding do not
   instantiate a codec.
-- `InspectionPlan` resolves the encoded representations a read-only node can
-  inspect directly. Applying it returns a `PdataView`; other representations
-  are decoded to native OTAP.
+- `AcceptedEncodings` identifies the resolved encodings a read-only node can
+  inspect directly. Obtaining a `PdataView` borrows these bytes or existing
+  native records; other encodings are decoded to native OTAP.
 - Native OTAP remains the mutable processing representation and the fallback
   intermediate for conversion between different encodings.
 
@@ -59,6 +92,65 @@ flowchart LR
 Receivers, processors, and exporters in one pipeline receive clones of the same
 runtime-services handle. The registry is immutable after validation, while the
 service creates only the mutable codec state that the pipeline actually uses.
+
+### Direct borrowing and accepted encodings
+
+`PdataPayload::encoded_view()` borrows the existing encoding identity, signal,
+and bytes together, or returns `None` for native OTAP. It performs no registry
+lookup, codec creation, validation, decoding, buffer cloning, or allocation.
+The consumer must check the encoding and signal before interpreting the bytes.
+An `EncodedView` guarantees that bytes are available, not that their content is
+valid or that the consumer accepts them.
+
+Use `AcceptedEncodings` when a consumer supports selected encodings directly
+but also needs native fallback. It selects encodings for direct access, not an
+input whitelist: encodings absent from the set are decoded to owned native OTAP,
+rather than rejected. Already-native records are always borrowed. An empty set
+requires native OTAP access for every input. Borrowed encoded views do not
+validate their content.
+
+Resolve and reuse the set through the effect handler:
+
+```rust,ignore
+let accepted_encodings =
+    effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
+let view = effect_handler.view(payload, &accepted_encodings).await?;
+```
+
+### Owned native access and delivery ownership
+
+Nodes use `PdataEffectHandlerExtension` from the OTAP crate to obtain owned
+native records through pipeline-managed codecs. Choose the operation according
+to who owns delivery context and whether processing needs original-input recovery:
+
+| Operation | Use when | Successful result |
+| --- | --- | --- |
+| `materialize_otap(pdata)` | Context and records should remain together | `OtapArrowPdata` |
+| `materialize_otap_payload(payload)` | The caller already manages context separately | `OtapArrowRecords` |
+| `prepare_otap_work(pdata)` | Working records and delivery ownership must be independent | `(PdataDelivery, OtapArrowRecords)` |
+| `update_otap(pdata, update)` | A synchronous, fallible update needs recovery bookkeeping | `(OtapArrowPdata, R)` |
+
+Materialization consumes its input and decodes only when necessary. Already-native
+records move directly without creating a codec. Decode failures return the exact
+original input for the caller to Nack or retry. Successful ordinary
+materialization retains no original snapshot for subsequent processing failures.
+
+`prepare_otap_work` retains a shallow snapshot before conversion only when
+`RETURN_DATA` requires recovery after processing. `update_otap` uses that same
+retention policy around its synchronous callback. Async algorithms instead keep
+the delivery owner from `prepare_otap_work` across their awaits; no codec borrow
+survives into the algorithm.
+
+`PdataDelivery` is an inline, non-`Clone`, `#[must_use]` owner of delivery context
+and conditionally retained input. `with_payload` attaches an output to the
+context; `into_pdata` constructs a message for Ack/Nack with retained input, or
+an empty payload of the original signal when none was retained. Neither method
+sends anything, and dropping the owner does not acknowledge automatically.
+
+`OtapPdata::into_work()` separates delivery ownership from a working payload
+without materializing it. `OtapPdata::into_delivery()` transfers an already-used
+input into delivery ownership without cloning, retaining or discarding its
+payload according to `RETURN_DATA`.
 
 ## Implement a codec
 
@@ -173,9 +265,9 @@ rejects duplicate identities independently of link order.
 
 An item counter is required for every decoder registration and must be
 stateless. Return `None` when malformed bytes cannot be counted; zero means the
-payload was inspected and contains no primary-signal items. The payload
-integration introduced in the next series step caches successful counts,
-keeping an unavailable count distinct from zero.
+payload was inspected and contains no primary-signal items. Payloads cache
+successful counts, keeping an unavailable count distinct from zero. Count caches
+are codec-owned; receivers and processors cannot inject arbitrary counts.
 
 ## Add native batching
 
@@ -185,11 +277,127 @@ without first materializing OTAP records. Register it with
 `BatchingSupport` declares the supported sizing units and default bounded
 profile.
 
-A native batcher must preserve input order and produce independently decodable
-outputs. Output ownership weights must sum to the measured input total even
-when splitting duplicates representation wrappers. Codecs without native
-batching use the engine's OTAP fallback when the requested sizing policy permits
-it.
+### Batching flow
+
+`BatchPlan` selects a working representation and an output representation before
+buffering starts. In preserve mode, codecs without matching native batching use
+OTAP fallback with item sizing and emit OTAP. An explicit output codec instead
+requires an encoder; an encode-only codec can therefore be an output target.
+`prepare` converts its mutable payload argument to the working representation
+in place; `finish` converts it to the output representation. Matching formats
+are untouched, and failed conversions preserve the original payload for recovery.
+`PdataPayload` can hold bytes or native records; `OtapPayload` is its transitional
+alias, not a guarantee of Arrow storage.
+
+The diagram shows the successful buffered path. Blue is encoded batching without
+OTAP materialization; green is native OTAP batching, including conversion fallback.
+The processor owns scheduling and delivery; batchers receive payloads, not
+contexts.
+
+```mermaid
+flowchart TB
+    prepare["BatchPlan::prepare<br/>To working representation"]
+    buffer["Buffer by plan and signal<br/>Processor retains contexts"]
+    batch["BatchPlan::batch"]
+    encoded["PdataBatcher via CodecService<br/>Merge / split encoded bytes"]
+    native["OTAP item batcher<br/>Merge / split Arrow records"]
+    result["Validated BatchingOutput<br/>Payloads + input ranges<br/>completed_inputs"]
+    owners["Processor assigns owners<br/>by input range, not size"]
+    finish["BatchPlan::finish<br/>To output representation"]
+    send["Send downstream<br/>Track Ack/Nack by input owner"]
+    complete["No-output inputs<br/>Complete without sending"]
+
+    prepare --> buffer
+    buffer -->|"Size, timer, or shutdown flush"| batch
+    batch -->|"Encoded"| encoded
+    batch -->|"Native OTAP or fallback"| native
+    encoded --> result
+    native --> result
+    result --> owners
+    owners -->|"Outputs to emit"| finish
+    owners -->|"No-output inputs"| complete
+    finish --> send
+
+    classDef encodedPath fill:#eaf2ff,stroke:#2563eb,color:#172554
+    classDef nativePath fill:#e8f5ee,stroke:#15803d,color:#14532d
+    classDef delivery fill:#fff4df,stroke:#b45309,color:#78350f
+    class encoded encodedPath
+    class native nativePath
+    class buffer,owners,complete delivery
+```
+
+Already in-range inputs skip buffering and merge/split, but still pass through
+`finish` before forwarding with their original delivery context. A small final
+output can stay buffered in the working format only when it belongs solely to
+the last buffered input. A remainder spanning several inputs is sent immediately,
+avoiding ambiguous ownership if later split again.
+
+This is local capability validation, not graph-wide representation negotiation
+or a node-signature system. OTLP is a built-in encoded codec and uses the same
+inline encoded storage as other byte formats. Native OTAP alone is the mutable
+processing representation; its storage and encoded storage remain private behind
+payload capabilities.
+
+### Input ranges and delivery ownership
+
+A native batcher must preserve item order within a call and produce independently
+decodable outputs. This does not promise global processor ordering: an in-range
+input can bypass previously buffered input. A batcher must understand its format's
+boundaries; arbitrary byte concatenation or splitting is not generally valid.
+
+Each output reports an inclusive range of indices into that batching call's
+input vector. Capture these ranges while planning or executing the batch, before
+integrity repair or encoding can change counts and sizes. Outputs are ordered;
+only a shared boundary input may occur in consecutive ranges when it is split.
+List inputs consumed successfully without any output in `completed_inputs`.
+Ranges and completed indices must account for every input without overlap
+between those two categories. A failed call must return an error instead.
+
+This example splits input 0 across two outputs and merges its remainder with
+input 1. Input 2 is consumed successfully without output, for example when
+integrity repair removes all of its records. Arrows show contribution, not
+size conservation.
+
+```mermaid
+flowchart LR
+    input0["Input 0"]
+    input1["Input 1"]
+    input2["Input 2"]
+    outputA["Output A<br/>input range: 0..=0"]
+    outputB["Output B<br/>input range: 0..=1"]
+    noOutput["No output<br/>completed_inputs: [2]"]
+
+    input0 -->|"First part"| outputA
+    input0 -->|"Remaining part"| outputB
+    input1 -->|"Merged"| outputB
+    input2 -.->|"Consumed without output"| noOutput
+
+    classDef output fill:#eaf2ff,stroke:#2563eb,color:#172554
+    classDef completion fill:#fff4df,stroke:#b45309,color:#78350f
+    class outputA,outputB output
+    class noOutput completion
+```
+
+| Original input | Successful completion requires | Failure routing |
+| --- | --- | --- |
+| 0 | Ack from both A and B | A Nack from either output fails input 0 |
+| 1 | Ack from B | A Nack from B fails input 1; A has no effect |
+| 2 | No downstream Ack; the batching call consumed it without output | A failed batching call must return an error instead |
+
+The plan validates ranges before the processor uses them. The processor installs
+all output references before releasing pending input references, preventing early
+completion when one input contributes to multiple outputs. A tracked input
+completes once: after all of its outputs succeed, or on the first failure.
+
+Measurements control flush thresholds and splitting, not delivery ownership.
+Byte sizing includes encoding wrappers and intrinsic compression but excludes
+transport framing and compression. Split targets are best effort for indivisible
+entries or exhausted amplification budgets. Size estimation is a separate future
+optimization; this API currently uses exact measurements.
+
+Implementation entry points: [batching plans and codec contracts](src/batching.rs),
+[shared input-range result](../pdata/src/batching.rs), and
+[processor scheduling and completion](../core-nodes/src/processors/batch_processor/mod.rs).
 
 ## Test a codec
 
@@ -206,7 +414,7 @@ Add codec-specific tests for:
 - Independent decoding of every encoded output.
 - Bounded scratch, allocation, and decompression behavior.
 - Encoder recovery after limits or other failures.
-- Native batching order, ownership weights, split limits, and output decoding.
+- Native batching ranges, no-output completion, split limits, and output decoding.
 
 From `rust/otap-dataflow`, validate changes with:
 

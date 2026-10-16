@@ -66,7 +66,7 @@ struct RecoveryAdapter {
     inner: FakeAdapter,
     steps: Rc<RefCell<VecDeque<(Phase, Action)>>>,
     calls: Rc<RefCell<Vec<(Phase, Instant)>>>,
-    cursors: Rc<RefCell<Vec<CompositeCursor>>>,
+    cursors: Rc<RefCell<Vec<Cursor>>>,
     cancelled: Rc<Cell<bool>>,
 }
 
@@ -147,7 +147,7 @@ impl DriverAdapter for RecoveryAdapter {
     async fn execute(
         &mut self,
         query: &CompiledQuery,
-        cursor: &CompositeCursor,
+        cursor: &Cursor,
     ) -> Result<QueryPage, Self::Error> {
         self.cursors.borrow_mut().push(cursor.clone());
         Self::result(self.step(Phase::Execute))?;

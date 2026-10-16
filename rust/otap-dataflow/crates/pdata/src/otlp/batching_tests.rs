@@ -455,10 +455,12 @@ fn test_split_per_flush_budget_bounds_output_fanout() {
 
     // Records preserved in order in both runs.
     for out in [&unbounded, &bounded] {
+        assert!(out.completed_inputs.is_empty());
+        assert!(out.batches.iter().all(|(_, inputs)| *inputs == (0..=0)));
         let msgs: Vec<OtlpProtoMessage> = out
             .batches
             .iter()
-            .map(|(b, _w)| otlp_bytes_to_message(b.clone()))
+            .map(|(b, _)| otlp_bytes_to_message(b.clone()))
             .collect();
         assert_eq!(
             log_bodies(&msgs),
@@ -1085,4 +1087,37 @@ fn test_split_scope_without_records() {
 
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_bytes(), top.as_slice());
+}
+
+/// Scenario: OTLP packing splits one input and merges its tail with another, around empty inputs.
+/// Guarantees: Ranges identify the original inputs independently of packed size; empty
+/// inputs outside emitted ranges complete explicitly and are not attributed to another output.
+#[test]
+fn test_packing_input_ranges_with_empty_inputs() {
+    // Valid unknown top-level varints are indivisible two-byte packing units.
+    let inputs = vec![
+        vec![],
+        vec![0x10, 1, 0x10, 1, 0x10, 1],
+        vec![],
+        vec![0x10, 2],
+        vec![],
+    ]
+    .into_iter()
+    .map(|bytes| OtlpProtoBytes::new_from_bytes(SignalType::Logs, bytes))
+    .collect();
+    let result = make_bytes_batches_owned(
+        SignalType::Logs,
+        NonZeroU64::new(4),
+        None,
+        None,
+        None,
+        inputs,
+    )
+    .unwrap();
+    assert_eq!(result.completed_inputs, [0, 4]);
+    assert_eq!(result.batches.len(), 2);
+    assert_eq!(result.batches[0].1, 1..=1);
+    assert_eq!(result.batches[0].0.as_bytes(), &[0x10, 1, 0x10, 1]);
+    assert_eq!(result.batches[1].1, 1..=3);
+    assert_eq!(result.batches[1].0.as_bytes(), &[0x10, 1, 0x10, 2]);
 }

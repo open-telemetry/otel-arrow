@@ -112,7 +112,7 @@ impl LogSamplingProcessor {
         pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+        let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
             Ok(arrow_pdata) => arrow_pdata,
             Err(error) => {
                 let (error, pdata) = error.into_parts();

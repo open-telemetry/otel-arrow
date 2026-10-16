@@ -5,40 +5,8 @@
 
 use super::error::KafkaExporterError;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, Producer as PdataProducer};
-#[cfg(test)]
-use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
-#[cfg(test)]
-use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 use prost::Message as ProstMessage;
-
-/// Encodes an OTAP payload to OTLP protobuf bytes.
-///
-/// This function handles both payload types:
-/// - `OtlpProtoBytes`: Returns the bytes as-is
-/// - `OtapArrowRecords`: Converts to OTLP protobuf using the built-in encoder
-///
-/// # Arguments
-///
-/// * `payload` - The OTAP payload to encode
-///
-/// # Returns
-///
-/// A vector of bytes containing the OTLP protobuf representation,
-/// ready to be sent to Kafka.
-#[cfg(test)]
-pub(crate) fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, KafkaExporterError> {
-    // Convert payload to OTLP protobuf bytes
-    // This uses the built-in TryFrom implementation that handles both cases:
-    // - OtlpProtoBytes -> return as-is
-    // - OtapArrowRecords -> encode using LogsProtoBytesEncoder, MetricsProtoBytesEncoder, etc.
-    let otlp_bytes: OtlpProtoBytes = payload
-        .try_into_with_default()
-        .map_err(|e| KafkaExporterError::OtlpConversion(format!("{}", e)))?;
-
-    // Extract the bytes from the OTLP wrapper
-    Ok(otlp_bytes.as_bytes().to_vec())
-}
 
 /// Encodes an OTAP payload to BatchArrowRecord bytes.
 ///
@@ -163,17 +131,6 @@ pub(crate) fn logs_otap_records_with_stale_dict_key() -> OtapArrowRecords {
 mod tests {
     use super::*;
     use otel_arrow_dfe_pdata::Producer;
-
-    #[test]
-    fn test_encode_otlp_bytes_passthrough() {
-        // Basic smoke test: OtlpProtoBytes should pass through unchanged
-        let bytes = vec![1, 2, 3, 4, 5];
-        let otlp_bytes = OtlpProtoBytes::ExportTracesRequest(bytes.clone().into());
-        let payload = OtapPayload::from(otlp_bytes);
-
-        let result = encode_to_otlp_bytes(payload).expect("encoding should succeed");
-        assert_eq!(result, bytes);
-    }
 
     /// Scenario: the Kafka OTAP serialization path encodes a logs batch whose
     /// dictionary-encoded attribute value column has a null row whose raw

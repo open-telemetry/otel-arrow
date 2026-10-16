@@ -1,8 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! crate containing GRPC Server implementations for the OTLP services that
-//! convert the received OTLP signals into OTAP
+//! gRPC server implementations that admit OTLP signals as encoded pdata.
+//!
+//! Receivers preserve protobuf bytes; consumers decode them through the pipeline
+//! codec service only when native OTAP records are required.
 
 pub mod client;
 

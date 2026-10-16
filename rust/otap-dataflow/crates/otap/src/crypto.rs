@@ -15,6 +15,41 @@
 //! | `crypto-symcrypt`| `rustls-symcrypt`| Microsoft/SymCrypt-aligned backend |
 
 use cfg_if::cfg_if;
+use std::sync::Arc;
+
+/// Returns the rustls [`CryptoProvider`](rustls::crypto::CryptoProvider)
+/// selected by the process.
+///
+/// If a provider is already installed, this returns that exact provider.
+/// Otherwise, it constructs the provider selected by the compile-time
+/// `crypto-*` features using the same priority as [`install_crypto_provider`].
+///
+/// # Panics
+///
+/// Panics if no `crypto-*` feature is enabled.
+#[must_use]
+pub fn selected_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    if let Some(provider) = rustls::crypto::CryptoProvider::get_default() {
+        return Arc::clone(provider);
+    }
+
+    cfg_if! {
+        if #[cfg(feature = "crypto-ring")] {
+            Arc::new(rustls::crypto::ring::default_provider())
+        } else if #[cfg(feature = "crypto-aws-lc")] {
+            Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+        } else if #[cfg(feature = "crypto-openssl")] {
+            Arc::new(rustls_openssl::default_provider())
+        } else if #[cfg(feature = "crypto-symcrypt")] {
+            rustls_symcrypt::default_symcrypt_provider_arc()
+        } else {
+            panic!(
+                "no crypto-* feature enabled; enable exactly one of: \
+                 crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt"
+            )
+        }
+    }
+}
 
 /// Installs the selected rustls `CryptoProvider` as the process-wide default.
 ///
@@ -36,22 +71,31 @@ pub fn install_crypto_provider() -> Result<(), String> {
     cfg_if! {
         // If you're using rustls, you must install a rustls CryptoProvider.
         if #[cfg(feature = "crypto-ring")] {
-            rustls::crypto::ring::default_provider()
+            selected_crypto_provider()
+                .as_ref()
+                .clone()
                 .install_default()
                 .map_err(|_| "crypto provider already installed (ring)".to_string())?;
         } else if #[cfg(feature = "crypto-aws-lc")] {
-            rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .map_err(|_| "crypto provider already installed (aws-lc-rs)".to_string())?;
+            selected_crypto_provider()
+                .as_ref()
+                .clone()
+                .install_default()
+                .map_err(|_| "crypto provider already installed (aws-lc-rs)".to_string())?;
         } else if #[cfg(feature = "crypto-openssl")] {
-            rustls_openssl::default_provider()
-            .install_default()
-            .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
+            selected_crypto_provider()
+                .as_ref()
+                .clone()
+                .install_default()
+                .map_err(|_| "crypto provider already installed (openssl)".to_string())?;
         } else if #[cfg(feature = "crypto-symcrypt")] {
-            rustls_symcrypt::default_symcrypt_provider()
-            .install_default()
-            .map_err(|_| {
-                "crypto provider is already installed (crypto-symcrypt)".to_string()})?;
+            selected_crypto_provider()
+                .as_ref()
+                .clone()
+                .install_default()
+                .map_err(|_| {
+                    "crypto provider is already installed (crypto-symcrypt)".to_string()
+                })?;
         } else {
             otel_arrow_dfe_telemetry::otel_warn!(
             "crypto.no_provider",

@@ -3,7 +3,7 @@
 
 //! This module tests batching.rs logic.
 
-use crate::otap::batching::make_item_batches;
+use crate::otap::batching::make_item_batches_with_ranges;
 use crate::proto::OtlpProtoMessage;
 use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::{DataGenerator, MetricsConfig};
@@ -265,10 +265,43 @@ fn test_batching(
         .expect("at least one input")
         .signal_type();
 
-    let outputs_otlp: Vec<_> = make_item_batches(signal_type, max_items, inputs_otap)
-        .expect("batching should succeed")
+    let result = make_item_batches_with_ranges(signal_type, max_items, inputs_otap)
+        .expect("batching should succeed");
+    assert!(result.completed_inputs.is_empty());
+    // Independently locate each output's first/last item in the input stream.
+    // Metrics can also consume empty metric rows from an adjacent input, so
+    // their provenance can be wider than the surviving data points imply.
+    let owners: Vec<_> = inputs_otlp
         .iter()
-        .map(otap_to_otlp)
+        .enumerate()
+        .flat_map(|(index, input)| std::iter::repeat_n(index, input.num_items()))
+        .collect();
+    let mut offset = 0;
+    for (output, range) in &result.batches {
+        let count = output.num_items();
+        let first = owners[offset];
+        let last = owners[offset + count - 1];
+        assert!(range.contains(&first) && range.contains(&last));
+        if signal_type != otel_arrow_dfe_config::SignalType::Metrics {
+            assert_eq!(*range, first..=last);
+        }
+        offset += count;
+    }
+    assert_eq!(offset, owners.len());
+    assert_eq!(*result.batches.first().unwrap().1.start(), 0);
+    assert_eq!(
+        *result.batches.last().unwrap().1.end(),
+        inputs_otlp.len() - 1
+    );
+    for pair in result.batches.windows(2) {
+        let previous = *pair[0].1.end();
+        let next = *pair[1].1.start();
+        assert!(next == previous || next == previous + 1);
+    }
+    let outputs_otlp: Vec<_> = result
+        .batches
+        .iter()
+        .map(|(output, _)| otap_to_otlp(output))
         .collect();
 
     // Assert num_items <= max_items
@@ -320,6 +353,8 @@ fn count_metrics_in_batch(
 // We envision extending this to more synthetic and corner-case data
 // in a future PR.
 
+/// Scenario: Log inputs are merged and split across item limits.
+/// Guarantees: Output content, size constraints, and input provenance remain correct.
 #[test]
 fn test_simple_batch_logs() {
     for input_count in 1..=20 {
@@ -334,6 +369,8 @@ fn test_simple_batch_logs() {
     }
 }
 
+/// Scenario: Trace inputs are merged and split across item limits.
+/// Guarantees: Output content, size constraints, and input provenance remain correct.
 #[test]
 fn test_simple_batch_traces() {
     for input_count in 1..=20 {
@@ -348,6 +385,8 @@ fn test_simple_batch_traces() {
     }
 }
 
+/// Scenario: Mixed metric inputs include indivisible metrics and empty metric rows.
+/// Guarantees: Output content, size constraints, and input provenance remain correct.
 #[test]
 fn test_simple_batch_metrics() {
     for input_count in 1..=20 {
@@ -363,6 +402,8 @@ fn test_simple_batch_metrics() {
     }
 }
 
+/// Scenario: Varied gauge and sum shapes exercise split and concatenation boundaries.
+/// Guarantees: Item fidelity, best-effort limits, and input provenance hold across the matrix.
 #[test]
 fn test_comprehensive_batch_metrics() {
     let test_cases = generate_metrics_batching_test_cases();
