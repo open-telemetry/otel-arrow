@@ -82,7 +82,6 @@ fn anyvalue_subtype_for(t: &ExprLogicalType) -> Option<AttributeValueType> {
         | ExprLogicalType::Int64
         | ExprLogicalType::UInt8
         | ExprLogicalType::UInt32
-        | ExprLogicalType::UInt64
         | ExprLogicalType::AnyInt => AttributeValueType::Int,
         ExprLogicalType::Binary | ExprLogicalType::FixedSizeBinary(_) => AttributeValueType::Bytes,
         // No `AnyValue` subtype maps to these.
@@ -207,7 +206,6 @@ impl ScalarUDFImpl for IsTypeFunc {
             ExprLogicalType::Int64 => is_logically_type(&arg_data_type, &DataType::Int64),
             ExprLogicalType::UInt8 => is_logically_type(&arg_data_type, &DataType::UInt8),
             ExprLogicalType::UInt32 => is_logically_type(&arg_data_type, &DataType::UInt32),
-            ExprLogicalType::UInt64 => is_logically_type(&arg_data_type, &DataType::UInt64),
             ExprLogicalType::AnyInt => is_any_int(&arg_data_type),
             ExprLogicalType::AnyValueNumeric => {
                 is_logically_type(&arg_data_type, &DataType::Float64) | is_any_int(&arg_data_type)

@@ -46,7 +46,6 @@ pub enum ExprLogicalType {
     Int64,
     UInt8,
     UInt32,
-    UInt64,
     String,
     DurationNanoSecond,
     TimestampNanosecond,
@@ -54,10 +53,7 @@ pub enum ExprLogicalType {
 
 impl ExprLogicalType {
     pub fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32 | Self::UInt64
-        )
+        matches!(self, Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32)
     }
 
     fn is_signed_integer(&self) -> bool {
@@ -76,7 +72,7 @@ impl ExprLogicalType {
         match self {
             Self::UInt8 => Some(8),
             Self::Int32 | Self::UInt32 => Some(32),
-            Self::UInt64 | Self::Int64 => Some(64),
+            Self::Int64 => Some(64),
             _ => None,
         }
     }
@@ -96,7 +92,6 @@ impl ExprLogicalType {
                 DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
             }
             Self::DurationNanoSecond => DataType::Duration(TimeUnit::Nanosecond),
-            Self::UInt64 => DataType::UInt64,
             Self::UInt32 => DataType::UInt32,
             Self::UInt8 => DataType::UInt8,
 
@@ -257,7 +252,7 @@ pub fn data_point_field_type(
 
         // histogram/exp hist/summary data point common fields
         consts::SUM => (ExprLogicalType::Float64, DpMask::HistExpHistSummary),
-        consts::COUNT => (ExprLogicalType::UInt64, DpMask::HistExpHistSummary),
+        // TODO histogram/sum count uint64 not yet supported by query-engine
 
         // summary data points
         // TODO quantile struct field not supported by query-engine
@@ -273,9 +268,9 @@ pub fn data_point_field_type(
 
         // exponential histogram data point fields
         consts::EXP_HISTOGRAM_SCALE => (ExprLogicalType::Int32, DpMask::ExpHistogram),
-        consts::EXP_HISTOGRAM_ZERO_COUNT => (ExprLogicalType::UInt64, DpMask::ExpHistogram),
         consts::EXP_HISTOGRAM_ZERO_THRESHOLD => (ExprLogicalType::Float64, DpMask::ExpHistogram),
         // TODO exp histogram positive/negative struct fields not yet supported by query-engine
+        // TODO exp histogram zero count uint64 type not yet supported by query-engine
         _ => return None,
     };
 
