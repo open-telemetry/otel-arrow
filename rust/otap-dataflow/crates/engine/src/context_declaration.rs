@@ -11,15 +11,17 @@
 
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
-/// Materializes selected constant and randomness composites at runtime.
+/// Materializes selected composites at runtime.
 mod materialization;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
 
+use PreparedHeaderPropagationPolicy as HeaderPropagationPolicy;
 pub use layout::*;
 pub use materialization::*;
 pub use propagation::CompiledHeaderPropagationPolicy;
-use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+#[doc(hidden)]
+pub use propagation::PreparedHeaderPropagationPolicy;
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -434,7 +436,7 @@ struct CompiledNodeBindings {
     /// Receiver header capture policy compiled for the engine requirements.
     header_capture: Option<CompiledHeaderCapturePolicy>,
     /// Exporter header propagation policy resolved from node or pipeline config.
-    header_propagation: Option<HeaderPropagationPolicy>,
+    header_propagation: Option<CompiledHeaderPropagationPolicy>,
     /// Receiver authorized identity claim projection policy.
     authorized_identity_capture: Option<AuthorizedIdentityPolicy>,
 }
@@ -462,19 +464,34 @@ impl PreparedNodeContextDeclarations {
     ) -> Result<Self, Error> {
         let composite_names = declarations
             .iter()
-            .filter_map(|declaration| match declaration {
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::Entries { entries },
-                } => Some(entries.iter()),
-                _ => None,
+            .flat_map(|declaration| {
+                let mut names = Vec::new();
+                match declaration {
+                    ContextDeclaration::Consumes {
+                        selector: ContextConsumerSelector::Entries { entries },
+                    } => names.extend(
+                        entries
+                            .iter()
+                            .filter_map(|entry| entry.target.composite_name())
+                            .cloned(),
+                    ),
+                    ContextDeclaration::HeaderPropagation { policy } => {
+                        policy.visit_composite_names(|name| names.push(name.clone()));
+                    }
+                    ContextDeclaration::Produces { .. }
+                    | ContextDeclaration::Consumes {
+                        selector: ContextConsumerSelector::AllStored { .. },
+                    }
+                    | ContextDeclaration::HeaderCapture { .. }
+                    | ContextDeclaration::AuthorizedIdentityCapture { .. } => {}
+                }
+                names
             })
-            .flatten()
-            .filter_map(|entry| entry.target.composite_name())
             .collect::<BTreeSet<_>>();
         let composites = composite_names
             .into_iter()
             .map(|name| {
-                let mut declaration = composite_declaration(name, context)?.clone();
+                let mut declaration = composite_declaration(&name, context)?.clone();
                 validate_definition(&declaration)?;
                 declaration.definition.0.sort_unstable();
                 Ok(declaration)
@@ -630,7 +647,8 @@ impl CompiledNodeBindings {
     fn compile(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
-    ) -> Self {
+        materialization_plan: &ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
         let mut component_declarations = Vec::new();
         let mut header_capture = None;
         let mut header_propagation = None;
@@ -646,7 +664,8 @@ impl CompiledNodeBindings {
                         Some(policy.compile(|name| requirements.preserves_original_name(name)));
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
-                    header_propagation = Some(policy);
+                    header_propagation =
+                        Some(policy.bind(materialization_plan).map_err(invalid_context)?);
                 }
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
                     authorized_identity_capture = Some(policy);
@@ -654,13 +673,13 @@ impl CompiledNodeBindings {
             }
         }
 
-        Self {
+        Ok(Self {
             component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
             header_capture,
             header_propagation,
             authorized_identity_capture,
-        }
+        })
     }
 
     /// Returns whether the node has no component declarations or engine context policies.
@@ -700,17 +719,22 @@ impl CompiledContextBindings {
                     .collect::<Vec<_>>();
                 let materialization = ContextMaterializationPlan::compile(&selected_composites)?;
                 if !materialization.is_empty() {
-                    _ = materialization_by_pipeline.insert(pipeline.clone(), materialization);
+                    _ = materialization_by_pipeline
+                        .insert(pipeline.clone(), materialization.clone());
                 }
                 let nodes = prepared_nodes
                     .into_iter()
                     .map(|(node, declarations)| {
-                        (
+                        Ok((
                             node,
-                            CompiledNodeBindings::compile(declarations, requirements),
-                        )
+                            CompiledNodeBindings::compile(
+                                declarations,
+                                requirements,
+                                &materialization,
+                            )?,
+                        ))
                     })
-                    .collect();
+                    .collect::<Result<_, Error>>()?;
                 Ok((pipeline, nodes))
             })
             .collect::<Result<_, Error>>()?;
@@ -752,7 +776,7 @@ impl CompiledContextBindings {
         &self,
         pipeline: &PipelineKey,
         node: &ConfigNodeId,
-    ) -> Option<&HeaderPropagationPolicy> {
+    ) -> Option<&CompiledHeaderPropagationPolicy> {
         self.by_pipeline
             .get(pipeline)?
             .get(node)?
@@ -1019,7 +1043,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers::TransportHeaders;
     use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy as HeaderPropagationConfig;
     use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
 
@@ -2046,12 +2070,16 @@ groups:
         let requirements = context_runtime_requirements(declarations.clone());
         assert!(requirements.preserves_original_name(&context_name("preserved")));
         assert!(!requirements.preserves_original_name(&context_name("other")));
+        let expected = policy
+            .clone()
+            .bind(&ContextMaterializationPlan::default())
+            .expect("prepared policy binds");
         assert_eq!(
             compiled.header_propagation_policy(
                 &pipeline("group", "pipeline"),
                 &ConfigNodeId::from("node")
             ),
-            Some(&policy),
+            Some(&expected),
         );
     }
 
@@ -2205,7 +2233,7 @@ default:
             &exporter,
             &None,
             &None,
-            &[declaration],
+            std::slice::from_ref(&declaration),
         )
         .expect("wrapper declarations");
         let ContextDeclaration::HeaderPropagation { policy } =
@@ -2213,22 +2241,17 @@ default:
         else {
             panic!("expected header propagation declaration");
         };
-        let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
-        assert_eq!(policy.propagate(&headers).count(), 0);
-        headers.push(TransportHeader::text(
-            context_name("environment"),
-            b"production",
-        ));
-
-        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
-        assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].header_name, "workspace_id");
-        assert_eq!(propagated[0].value, b"acme");
+        let mut selected = Vec::new();
+        policy.visit_composite_names(|name| selected.push(name.clone()));
+        assert_eq!(selected, [context_name("tenant")]);
+        let plan = ContextMaterializationPlan::compile(&[declaration])
+            .expect("materialization plan compiles");
+        let bound = policy.clone().bind(&plan).expect("prepared policy binds");
+        assert_eq!(bound.materialization_plan(), &plan);
     }
 
     /// Scenario: complete YAML changes a composite condition or selected member during a live update.
-    /// Guarantees: resolution compiles an effective exporter binding and reconciliation detects both changes.
+    /// Guarantees: resolution binds propagation to a materialization plan and detects both changes.
     #[test]
     fn full_yaml_compilation_tracks_conditional_composite_changes() {
         let current_composite = "[{type: transport_header, name: workspace, store_as: workspace_id}, \
@@ -2245,15 +2268,11 @@ default:
             .bindings
             .header_propagation_policy(&pipeline, &exporter)
             .expect("compiled exporter propagation policy");
-        let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(context_name("workspace"), b"acme"));
-        headers.push(TransportHeader::text(
-            context_name("environment"),
-            b"production",
-        ));
-        let propagated = policy.propagate(&headers).collect::<Vec<_>>();
-        assert_eq!(propagated.len(), 1);
-        assert_eq!(propagated[0].header_name, "workspace_id");
+        assert!(!policy.materialization_plan().is_empty());
+        assert_eq!(
+            installed.bindings.context_materialization_plan(&pipeline),
+            Some(policy.materialization_plan())
+        );
 
         let changed_condition = resolve_conditional_pipeline(
             "[{type: transport_header, name: workspace, store_as: workspace_id}, \
@@ -2325,7 +2344,7 @@ default:
             (
                 "[{type: transport_header, name: workspace, store_as: workspace_id}]",
                 "tenant:missing",
-                "context entry reference `tenant:missing` does not select a transport-header member",
+                "context entry reference `tenant:missing` does not select a value-bearing member",
             ),
             (
                 "[{type: authorized_identity, name: customer_id}]",
@@ -2472,9 +2491,12 @@ default:
         else {
             unreachable!("test declaration is header propagation");
         };
+        let expected = propagation_policy
+            .bind(&ContextMaterializationPlan::default())
+            .expect("prepared policy binds");
         assert_eq!(
             bindings.header_propagation_policy(&pipeline, &node),
-            Some(&propagation_policy)
+            Some(&expected)
         );
     }
 

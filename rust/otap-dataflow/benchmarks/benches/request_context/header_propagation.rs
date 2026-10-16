@@ -11,10 +11,11 @@
 //! cargo bench -p benchmarks --bench request_context -- header_propagation
 //! ```
 
-use criterion::{BenchmarkId, Criterion, Throughput};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 use otel_arrow_dfe_config::context_policy::{
-    ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+    ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
+    ContextScope,
 };
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::transport_headers_policy::{
@@ -23,6 +24,9 @@ use otel_arrow_dfe_config::transport_headers_policy::{
     PropagationSelectorType,
 };
 use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextFieldLayout, ContextValueSource, MaterializedContext, MaterializedContextValues,
+};
 use std::hint::black_box;
 
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
@@ -33,6 +37,7 @@ const DUPLICATE_TOTAL_HEADERS: usize = 32;
 const SHARED_CONDITION_BINDING_COUNTS: [usize; 3] = [4, 5, 32];
 
 pub(super) fn benchmarks(c: &mut Criterion) {
+    receiver_send_materialization_benchmarks(c);
     small_composite_benchmarks(c);
     let mut group = c.benchmark_group("header_propagation");
 
@@ -53,8 +58,11 @@ pub(super) fn benchmarks(c: &mut Criterion) {
         for condition_count in CONDITION_COUNTS {
             for matches in [true, false] {
                 let conditional = conditional_policy(header_count, condition_count, matches);
+                let materialized = materialize(&conditional, &headers);
                 assert_eq!(
-                    conditional.propagate(&headers).count(),
+                    conditional
+                        .propagate_materialized_only(Some(&materialized))
+                        .count(),
                     usize::from(matches)
                 );
                 let case = if matches { "match" } else { "miss" };
@@ -63,9 +71,15 @@ pub(super) fn benchmarks(c: &mut Criterion) {
                         format!("conditional_{case}_{condition_count}_conditions"),
                         format!("{header_count}_headers"),
                     ),
-                    &headers,
-                    |b, headers| {
-                        b.iter(|| black_box(conditional.propagate(black_box(headers)).count()));
+                    &materialized,
+                    |b, materialized| {
+                        b.iter(|| {
+                            black_box(
+                                conditional
+                                    .propagate_materialized_only(Some(black_box(materialized)))
+                                    .count(),
+                            )
+                        });
                     },
                 );
             }
@@ -80,8 +94,11 @@ pub(super) fn benchmarks(c: &mut Criterion) {
         let headers = duplicate_source_headers(source_count);
         for matches in [true, false] {
             let conditional = duplicate_source_policy(matches);
+            let materialized = materialize(&conditional, &headers);
             assert_eq!(
-                conditional.propagate(&headers).count(),
+                conditional
+                    .propagate_materialized_only(Some(&materialized))
+                    .count(),
                 if matches { source_count } else { 0 }
             );
             let case = if matches { "match" } else { "miss" };
@@ -90,9 +107,15 @@ pub(super) fn benchmarks(c: &mut Criterion) {
                     format!("conditional_duplicate_{case}_4_conditions"),
                     format!("{source_count}_sources_32_headers"),
                 ),
-                &headers,
-                |b, headers| {
-                    b.iter(|| black_box(conditional.propagate(black_box(headers)).count()));
+                &materialized,
+                |b, materialized| {
+                    b.iter(|| {
+                        black_box(
+                            conditional
+                                .propagate_materialized_only(Some(black_box(materialized)))
+                                .count(),
+                        )
+                    });
                 },
             );
         }
@@ -106,8 +129,11 @@ pub(super) fn benchmarks(c: &mut Criterion) {
         let _ = binding_group.throughput(Throughput::Elements(binding_count as u64));
         for matches in [true, false] {
             let conditional = shared_condition_policy(binding_count, matches);
+            let materialized = materialize(&conditional, &headers);
             assert_eq!(
-                conditional.propagate(&headers).count(),
+                conditional
+                    .propagate_materialized_only(Some(&materialized))
+                    .count(),
                 if matches { binding_count } else { 0 }
             );
             let case = if matches { "match" } else { "miss" };
@@ -116,15 +142,86 @@ pub(super) fn benchmarks(c: &mut Criterion) {
                     format!("conditional_shared_{case}_4_conditions"),
                     binding_count,
                 ),
-                &headers,
-                |b, headers| {
-                    b.iter(|| black_box(conditional.propagate(black_box(headers)).count()));
+                &materialized,
+                |b, materialized| {
+                    b.iter(|| {
+                        black_box(
+                            conditional
+                                .propagate_materialized_only(Some(black_box(materialized)))
+                                .count(),
+                        )
+                    });
                 },
             );
         }
     }
 
     binding_group.finish();
+}
+
+fn receiver_send_materialization_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("receiver_send_materialization");
+    for composite_count in [0usize, 1, 3] {
+        let declarations = (0..composite_count)
+            .map(|index| ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name: context_name(&format!("composite_{index}")),
+                definition: ContextEntryDefinition(vec![
+                    ContextEntryPart::TransportHeader {
+                        name: context_name(&format!("workspace_{index}")),
+                        store_as: Some(context_name("workspace")),
+                    },
+                    ContextEntryPart::TransportHeaderMatch {
+                        name: context_name(&format!("environment_{index}")),
+                        value: "production".to_owned(),
+                    },
+                    ContextEntryPart::Constant {
+                        name: context_name("route"),
+                        value: "otlp-grpc".to_owned(),
+                    },
+                    ContextEntryPart::Randomness {
+                        name: context_name("correlation"),
+                        value: ContextRandomnessKind::Uuid7,
+                    },
+                ]),
+            })
+            .collect::<Vec<_>>();
+        let plan = otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan::compile(
+            &declarations,
+        )
+        .expect("materialization plan compiles");
+        let _ = group.bench_function(BenchmarkId::new("materialize", composite_count), |b| {
+            b.iter_batched(
+                || {
+                    let mut context = otel_arrow_dfe_otap::pdata::Context::default();
+                    let mut headers =
+                        TransportHeaders::with_capacity(composite_count.saturating_mul(2));
+                    for index in 0..composite_count {
+                        headers.push(
+                            otel_arrow_dfe_config::transport_headers::TransportHeader::text(
+                                context_name(&format!("workspace_{index}")),
+                                b"acme",
+                            ),
+                        );
+                        headers.push(
+                            otel_arrow_dfe_config::transport_headers::TransportHeader::text(
+                                context_name(&format!("environment_{index}")),
+                                b"production",
+                            ),
+                        );
+                    }
+                    context.set_transport_headers(headers);
+                    context
+                },
+                |mut context| {
+                    context.materialize_context(black_box(&plan));
+                    black_box(context)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
 }
 
 fn small_composite_benchmarks(c: &mut Criterion) {
@@ -165,8 +262,11 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             let (config, declarations) = small_composite_config(member_count, condition);
             let policy =
                 HeaderPropagationPolicy::compile(config, &declarations).expect("composite");
+            let materialized = materialize(&policy, &headers);
             assert_eq!(
-                policy.propagate(&headers).count(),
+                policy
+                    .propagate_materialized_only(Some(&materialized))
+                    .count(),
                 if condition == Some(false) {
                     0
                 } else {
@@ -175,10 +275,12 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             );
             let _ = group.bench_with_input(
                 BenchmarkId::new(case, format!("{member_count}_members")),
-                &headers,
-                |b, headers| {
+                &materialized,
+                |b, materialized| {
                     b.iter(|| {
-                        for header in policy.propagate(black_box(headers)) {
+                        for header in
+                            policy.propagate_materialized_only(Some(black_box(materialized)))
+                        {
                             let _ = black_box(header);
                         }
                     })
@@ -187,6 +289,24 @@ fn small_composite_benchmarks(c: &mut Criterion) {
         }
     }
     group.finish();
+}
+
+struct EmptySource;
+
+impl ContextValueSource for EmptySource {
+    fn values(&self, _field: &ContextFieldLayout) -> Option<MaterializedContextValues> {
+        None
+    }
+}
+
+fn materialize(
+    policy: &HeaderPropagationPolicy,
+    headers: &TransportHeaders,
+) -> MaterializedContext {
+    let mut context = MaterializedContext::default();
+    context.set_transport_headers(headers.clone());
+    context.materialize_with_stored_transport(policy.materialization_plan(), &EmptySource);
+    context
 }
 
 fn small_composite_headers(member_count: usize) -> TransportHeaders {
