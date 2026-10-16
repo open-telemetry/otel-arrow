@@ -50,7 +50,7 @@ fields to use defaults.
 
 ### Transport security
 
-TLS is required by default and does not fall back to plaintext. The configured
+TLS is required by default and the connection does not fall back to plaintext. The configured
 host is used for certificate verification and SNI. Platform CA certificates
 are trusted; `connection.tls.ca_file` can add one or more PEM-encoded private
 CA certificates. The CA file is read during each connection attempt, so a
