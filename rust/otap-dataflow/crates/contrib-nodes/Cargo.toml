@@ -45,6 +45,9 @@ base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
@@ -146,10 +149,13 @@ kafka = [
 ]
 
 # Receivers.
-# Plaintext PostgreSQL is development-only and explicitly opt-in.
+# PostgreSQL is explicitly opt-in.
 postgresql = [
     "dep:otel-arrow-dfe-scraper",
     "dep:tokio-postgres",
+    "dep:tokio-postgres-rustls",
+    "dep:rustls",
+    "dep:rustls-pki-types",
     "dep:sqlparser",
     "dep:chrono",
     "dep:secrecy",
@@ -276,6 +282,7 @@ otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-test-tls-certs.workspace = true
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
@@ -284,6 +291,7 @@ pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 

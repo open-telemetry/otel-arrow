@@ -14,8 +14,6 @@ releases.
 - Output: OTLP logs, one log record per selected database row
 - Execution: One query per receiver, in a single-core pipeline
 
-**Database transport is unencrypted TCP without server-identity verification. Use only isolated, trusted development environments and disposable credentials.**
-
 ## Getting started
 
 The [console example](../../../../../configs/postgresql-console.yaml) reads
@@ -90,6 +88,8 @@ INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, acto
 | `connection.host` | Yes | One DNS name or IP address; no URI or host list. |
 | `connection.port` | No | `5432`; must be nonzero. |
 | `connection.database` | Yes | Database name, 1-63 UTF-8 bytes. |
+| `connection.tls.enabled` | No | `true`; set `false` only to request plaintext explicitly. |
+| `connection.tls.ca_file` | No | PEM CA bundle that augments platform trust. Valid only when TLS is enabled. |
 | `query.statement` | Yes | One read-only `SELECT`, at most 16 KiB. |
 | `query.interval` | No | `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
 | `query.timeout` | N/A | Fixed at default `30s` and not configurable for v1. |
@@ -105,6 +105,37 @@ Checkpoint defaults: `on_nack: rewind`, `on_permanent_nack: pause`, `nack_backof
 
 Explicit `null` values are rejected for PostgreSQL receiver fields. Omit optional
 fields to use defaults.
+
+### Transport security
+
+TLS is required by default and does not fall back to plaintext. The configured
+host is used for certificate verification and SNI. Platform CA certificates
+are trusted; `connection.tls.ca_file` can add one or more PEM-encoded private
+CA certificates. The CA file is read during each connection attempt, so a
+replacement applies on reconnect without changing the source fingerprint.
+The bundle must be nonempty, valid PEM and no larger than 4 MiB. Platform
+roots are cached for the process lifetime. Trust changes do not replace a
+healthy session.
+
+Build with one of the workspace `crypto-*` features (for example
+`postgresql,crypto-ring`). Connection setup, including trust loading, DNS,
+TCP, TLS, and login, has a fixed 10-second deadline. Cancellation requests
+use the same TLS policy and server identity as the active session.
+
+For an isolated development database that does not support TLS, opt out
+explicitly:
+
+```yaml
+connection:
+  host: localhost
+  port: 5432
+  database: receiver_fixture
+  tls:
+    enabled: false
+```
+
+`ca_file` cannot be combined with `enabled: false`. The receiver does not
+support skipping certificate or hostname verification.
 
 ### Authentication and source identity
 
@@ -206,8 +237,9 @@ advances the acknowledged checkpoint.
 | Class | Examples | Behavior | Operator action |
 | --- | --- | --- | --- |
 | Configuration | Unknown or null fields, invalid host/database/cursor, unsupported SQL mapping, zero or out-of-range limits | Validation fails before collection starts. PostgreSQL has no configurable driver field. | Correct the configuration and restart the receiver. |
+| TLS configuration | Missing crypto provider, unavailable trust store, unreadable or invalid CA bundle, untrusted/expired/mismatched server certificate, TLS refusal | Terminal errors identify the failing TLS stage without exposing certificate contents, paths, or native server diagnostics. | Check the indicated provider, CA file, server certificate, hostname, or TLS protocol settings, then restart the receiver. |
 | Authentication | Missing, expired, unavailable, or rejected username/password | Credential details are redacted. The latest provider credential is fetched for each operation, but an authentication failure is terminal rather than retried indefinitely. | Repair or rotate the provider credential, wait for provider refresh if configured, then restart the receiver. |
-| Transient transport | Connection reset/refused, EOF, broken pipe, failover, server restart, overload, idle-session or temporary lock timeout, serialization failure, deadlock | The partial page is discarded. The receiver reconnects and revalidates after shared backoff (`1s`, `2s`, `4s`, `8s`, `16s`, then `30s`); the checkpoint remains unchanged. | Usually none. Investigate the database or network if retries continue. |
+| Transient transport | Connection reset/refused, EOF, broken pipe (including during TLS handshakes), failover, server restart, overload, idle-session or temporary lock timeout, serialization failure, deadlock | The partial page is discarded. The receiver reconnects and revalidates after shared backoff (`1s`, `2s`, `4s`, `8s`, `16s`, then `30s`); the checkpoint remains unchanged. | Usually none. Investigate the database or network if retries continue. |
 | Timeout or cancellation | Native operation exceeds the fixed 30-second deadline, pipeline stop interrupts a query | PostgreSQL cancellation is requested and the local connection task is stopped and joined. Retryable timeouts reconnect after backoff; possible old server work is fenced for the statement timeout. Unconfirmed cleanup fails closed. | Usually none for a recovered timeout. Perform a full process restart after terminal `Cleanup`. |
 | Query or metadata | Syntax error, missing table, permission denied, changed result columns/types, lost joined-side uniqueness | The query is non-retryable and collection terminates without emitting or checkpointing the failed page. | Restore the expected query, schema, indexes, and grants. For an intentional semantic change, use a reviewed initial cursor and new source/checkpoint identity. |
 | Conversion or bounds | Unsupported type/value, overflow, malformed timestamp or UTF-8, precision loss, non-advancing cursor, oversized frame/row/page | The entire page fails without skipping, truncating, coercing to text, or advancing the checkpoint. | Repair the source value/query or increase `max_batch_bytes`, then restart the receiver. |
@@ -216,7 +248,38 @@ advances the acknowledged checkpoint.
 
 ## Development
 
+Run commands from `rust/otap-dataflow`.
+
+Run the complete PostgreSQL receiver unit and loopback transport suite:
+
 ```sh
 cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver
-cargo clippy -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib --tests -- -D warnings
+```
+
+Run only the socket-level TLS transport scenarios:
+
+```sh
+cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::worker::tls_tests
+```
+
+Run focused PostgreSQL test groups:
+
+```sh
+# Configuration, SQL contract, cursor, and value conversion.
+cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::tests
+
+# Adapter error classification and retry policy.
+cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::adapter::tests
+
+# Worker session lifecycle, cancellation, cleanup, and reconnect fencing.
+cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::worker::tests
+
+# Bounded PostgreSQL backend frame handling.
+cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::worker::framing_tests
+```
+
+Check the production engine with PostgreSQL and the default Ring provider:
+
+```sh
+cargo check -p otel-arrow-dfe --no-default-features --features postgresql,crypto-ring
 ```

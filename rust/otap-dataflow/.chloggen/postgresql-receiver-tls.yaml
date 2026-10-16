@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Enable verified TLS by default for the PostgreSQL receiver, with optional private CA files and an explicit plaintext opt-out."
+issues: [4166]
+subtext: "Transient TLS I/O failures retry without losing checkpoints. TLS setup errors identify provider, CA file, certificate verification, or negotiation problems without exposing sensitive details."

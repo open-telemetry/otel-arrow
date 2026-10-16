@@ -279,9 +279,16 @@ impl DriverAdapter for PostgreSqlAdapter {
     fn classify_error(error: &Error) -> otel_arrow_dfe_engine::error::ReceiverErrorKind {
         use otel_arrow_dfe_engine::error::ReceiverErrorKind;
         match error {
-            Error::Config | Error::Sql | Error::Metadata | Error::Credential => {
-                ReceiverErrorKind::Configuration
-            }
+            Error::Config
+            | Error::Sql
+            | Error::Metadata
+            | Error::Credential
+            | Error::TlsProvider
+            | Error::TlsRoots
+            | Error::TlsCaRead(_)
+            | Error::TlsCaParse
+            | Error::TlsCertificate
+            | Error::TlsHandshake => ReceiverErrorKind::Configuration,
             Error::Value | Error::Limit | Error::Database | Error::Unavailable | Error::Timeout => {
                 ReceiverErrorKind::Transport
             }
@@ -310,6 +317,28 @@ pub(crate) enum Error {
     Limit,
     #[error("postgresql: credential provider unavailable, expired, or invalid")]
     Credential,
+    #[error(
+        "postgresql: TLS crypto provider unavailable or incompatible; enable and initialize a crypto-* feature"
+    )]
+    TlsProvider,
+    #[error(
+        "postgresql: TLS trust store unavailable or empty; check platform CAs or connection.tls.ca_file"
+    )]
+    TlsRoots,
+    #[error(
+        "postgresql: failed to read connection.tls.ca_file ({0:?}); check file access and the 4 MiB size limit"
+    )]
+    TlsCaRead(std::io::ErrorKind),
+    #[error("postgresql: connection.tls.ca_file must contain valid PEM-encoded CA certificates")]
+    TlsCaParse,
+    #[error(
+        "postgresql: TLS server certificate verification failed; check the CA trust, certificate validity, and connection.host"
+    )]
+    TlsCertificate,
+    #[error(
+        "postgresql: TLS negotiation or handshake failed; check server TLS support and protocol configuration"
+    )]
+    TlsHandshake,
     #[error("postgresql: database operation rejected")]
     Database,
     #[error("postgresql: transport unavailable after cleanup")]
@@ -324,6 +353,25 @@ pub(crate) enum Error {
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
+pub(crate) fn tls_ca_read(error: std::io::Error) -> Error {
+    let kind = error.kind();
+    if matches!(
+        kind,
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::BrokenPipe
+    ) {
+        Error::Unavailable
+    } else {
+        Error::TlsCaRead(kind)
+    }
+}
+
 pub(crate) fn database(error: tokio_postgres::Error) -> Error {
     if let Some(code) = error.code() {
         sqlstate(code.code())
@@ -333,8 +381,14 @@ pub(crate) fn database(error: tokio_postgres::Error) -> Error {
         use std::error::Error as _;
         let mut source = error.source();
         while let Some(value) = source {
-            if let Some(io) = value.downcast_ref::<std::io::Error>()
-                && matches!(
+            if let Some(tls) = value.downcast_ref::<rustls::Error>() {
+                return match tls {
+                    rustls::Error::InvalidCertificate(_) => Error::TlsCertificate,
+                    _ => Error::TlsHandshake,
+                };
+            }
+            if let Some(io) = value.downcast_ref::<std::io::Error>() {
+                if matches!(
                     io.kind(),
                     std::io::ErrorKind::ConnectionRefused
                         | std::io::ErrorKind::ConnectionReset
@@ -343,11 +397,15 @@ pub(crate) fn database(error: tokio_postgres::Error) -> Error {
                         | std::io::ErrorKind::TimedOut
                         | std::io::ErrorKind::UnexpectedEof
                         | std::io::ErrorKind::BrokenPipe
-                )
-            {
-                return Error::Unavailable;
+                ) {
+                    return Error::Unavailable;
+                }
+                // io::Error::source() skips its wrapped error. Inspect that error
+                // directly to retain rustls certificate diagnostics.
+                source = io.get_ref().map(|inner| inner as &dyn std::error::Error);
+            } else {
+                source = value.source();
             }
-            source = value.source();
         }
         Error::Database
     }
