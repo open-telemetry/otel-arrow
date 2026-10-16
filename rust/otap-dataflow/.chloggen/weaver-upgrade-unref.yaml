@@ -1,14 +1,14 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: bug_fix
+change_type: enhancement
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
 component: dependencies
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Upgrade weaver to v0.28.0 so the traffic generator can parse semantic conventions registries that use `unref`.
+note: Upgrade weaver to v0.28.0. This allows the traffic generator to parse semantic conventions registries that use `unref`.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4405]
@@ -22,4 +22,4 @@ subtext: |
   Weaver v0.28.0 adds support for the `unref` signal refinement now used by the
   upstream semantic-conventions registry. Weaver's git transport no longer picks
   a rustls crypto provider, so one must be installed before loading a remote
-  registry (df_engine already does this at startup).
+  registry.
