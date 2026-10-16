@@ -7,15 +7,15 @@ use arrow::{array::*, buffer::NullBuffer, datatypes::*};
 pub enum DictionaryKeyArray {
     KeyArray(DictionaryArrowKeyArray),
     BooleanArray {
-        data_type: DataType,
+        data_type: DictionaryKeyType,
         values: BooleanArray,
     },
     UniqueValues {
-        data_type: DataType,
+        data_type: DictionaryKeyType,
         length: usize,
     },
     SingleValue {
-        data_type: DataType,
+        data_type: DictionaryKeyType,
         length: usize,
         value_index: Option<usize>,
     },
@@ -104,7 +104,7 @@ impl DictionaryKeyArray {
         }
     }
 
-    pub fn data_type(&self) -> DataType {
+    pub fn data_type(&self) -> DictionaryKeyType {
         match self {
             DictionaryKeyArray::KeyArray(a) => a.data_type(),
             DictionaryKeyArray::BooleanArray {
@@ -202,16 +202,16 @@ impl DictionaryArrowKeyArray {
         self.as_array().nulls().cloned()
     }
 
-    pub fn data_type(&self) -> DataType {
+    pub fn data_type(&self) -> DictionaryKeyType {
         match self {
-            DictionaryArrowKeyArray::Int8(_) => DataType::Int8,
-            DictionaryArrowKeyArray::Int16(_) => DataType::Int16,
-            DictionaryArrowKeyArray::Int32(_) => DataType::Int32,
-            DictionaryArrowKeyArray::Int64(_) => DataType::Int64,
-            DictionaryArrowKeyArray::UInt8(_) => DataType::UInt8,
-            DictionaryArrowKeyArray::UInt16(_) => DataType::UInt16,
-            DictionaryArrowKeyArray::UInt32(_) => DataType::UInt32,
-            DictionaryArrowKeyArray::UInt64(_) => DataType::UInt64,
+            DictionaryArrowKeyArray::Int8(_) => DictionaryKeyType::Int8,
+            DictionaryArrowKeyArray::Int16(_) => DictionaryKeyType::Int16,
+            DictionaryArrowKeyArray::Int32(_) => DictionaryKeyType::Int32,
+            DictionaryArrowKeyArray::Int64(_) => DictionaryKeyType::Int64,
+            DictionaryArrowKeyArray::UInt8(_) => DictionaryKeyType::UInt8,
+            DictionaryArrowKeyArray::UInt16(_) => DictionaryKeyType::UInt16,
+            DictionaryArrowKeyArray::UInt32(_) => DictionaryKeyType::UInt32,
+            DictionaryArrowKeyArray::UInt64(_) => DictionaryKeyType::UInt64,
         }
     }
 
@@ -274,6 +274,30 @@ impl_from_key_array!(UInt16Type, UInt16);
 impl_from_key_array!(UInt32Type, UInt32);
 impl_from_key_array!(UInt64Type, UInt64);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictionaryKeyType {
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+}
+
+pub enum DictionaryArrowKeyArrayIter<'a> {
+    Int8(PrimitiveIter<'a, Int8Type>),
+    Int16(PrimitiveIter<'a, Int16Type>),
+    Int32(PrimitiveIter<'a, Int32Type>),
+    Int64(PrimitiveIter<'a, Int64Type>),
+
+    UInt8(PrimitiveIter<'a, UInt8Type>),
+    UInt16(PrimitiveIter<'a, UInt16Type>),
+    UInt32(PrimitiveIter<'a, UInt32Type>),
+    UInt64(PrimitiveIter<'a, UInt64Type>),
+}
+
 impl<'a> Iterator for DictionaryArrowKeyArrayIter<'a> {
     type Item = Option<usize>;
 
@@ -289,18 +313,6 @@ impl<'a> Iterator for DictionaryArrowKeyArrayIter<'a> {
             DictionaryArrowKeyArrayIter::UInt64(i) => i.next().map(|v| v.map(|v| v as usize)),
         }
     }
-}
-
-pub enum DictionaryArrowKeyArrayIter<'a> {
-    Int8(PrimitiveIter<'a, Int8Type>),
-    Int16(PrimitiveIter<'a, Int16Type>),
-    Int32(PrimitiveIter<'a, Int32Type>),
-    Int64(PrimitiveIter<'a, Int64Type>),
-
-    UInt8(PrimitiveIter<'a, UInt8Type>),
-    UInt16(PrimitiveIter<'a, UInt16Type>),
-    UInt32(PrimitiveIter<'a, UInt32Type>),
-    UInt64(PrimitiveIter<'a, UInt64Type>),
 }
 
 fn get_bool_array_value_index_for_key_index(
@@ -326,7 +338,7 @@ mod tests {
         assert_eq!(primitive.get_value_index_for_key_index(3), None);
 
         let boolean = DictionaryKeyArray::BooleanArray {
-            data_type: DataType::Int8,
+            data_type: DictionaryKeyType::Int8,
             values: BooleanArray::from(vec![Some(false), Some(true), None]),
         };
         assert_eq!(boolean.get_value_index_for_key_index(0), Some(0));
@@ -340,19 +352,19 @@ mod tests {
     #[test]
     fn synthetic_key_arrays_report_metadata_and_validity() {
         let unique = DictionaryKeyArray::UniqueValues {
-            data_type: DataType::UInt16,
+            data_type: DictionaryKeyType::UInt16,
             length: 2,
         };
         assert_eq!(unique.len(), 2);
         assert!(!unique.is_empty());
         assert!(!unique.is_null());
         assert!(unique.nulls().is_none());
-        assert_eq!(unique.data_type(), DataType::UInt16);
+        assert_eq!(unique.data_type(), DictionaryKeyType::UInt16);
         assert_eq!(unique.get_value_index_for_key_index(1), Some(1));
         assert_eq!(unique.get_value_index_for_key_index(2), None);
 
         let null = DictionaryKeyArray::SingleValue {
-            data_type: DataType::Int32,
+            data_type: DictionaryKeyType::Int32,
             length: 2,
             value_index: None,
         };
