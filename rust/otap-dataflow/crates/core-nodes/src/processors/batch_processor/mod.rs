@@ -1276,6 +1276,8 @@ impl BatchProcessor {
                 message: "invalid batch completion token".into(),
             });
         }
+        // SAFETY: the length check above guarantees two elements, and calldata
+        // has not been mutated since, so pop() must return Some.
         let slot = u64::from(calldata.pop().expect("checked token"));
         let index = (slot / 3) as usize;
         let signal = match slot % 3 {
@@ -5030,6 +5032,9 @@ mod tests {
         match fmt {
             ResidualFormat::Otap => out.num_items(),
             ResidualFormat::Otlp | ResidualFormat::EncodedOtlp => {
+                // SAFETY: callers use the matching OTLP-output test configuration;
+                // both legacy and generalized encoded OTLP report Some(buffer.len()).
+                // A panic here indicates a fixture or output-format regression.
                 out.num_bytes().expect("otlp size") / residual_unit_size(fmt)
             }
         }

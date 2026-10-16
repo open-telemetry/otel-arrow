@@ -269,6 +269,68 @@ without first materializing OTAP records. Register it with
 `BatchingSupport` declares the supported sizing units and default bounded
 profile.
 
+### Batching flow
+
+`BatchPlan` selects a working representation and an output representation before
+buffering starts. In preserve mode, codecs without matching native batching use
+OTAP fallback with item sizing and emit OTAP. An explicit output codec instead
+requires an encoder; an encode-only codec can therefore be an output target.
+`prepare` converts its mutable payload argument to the working representation
+in place; `finish` converts it to the output representation. Matching formats
+are untouched, and failed conversions preserve the original payload for recovery.
+`PdataPayload` can hold bytes or native records; `OtapPayload` is its transitional
+alias, not a guarantee of Arrow storage.
+
+The diagram shows the successful buffered path. Blue is encoded batching without
+OTAP materialization; green is native OTAP batching, including conversion fallback.
+The processor owns scheduling and delivery; batchers receive payloads, not
+contexts.
+
+```mermaid
+flowchart TB
+    prepare["BatchPlan::prepare<br/>To working representation"]
+    buffer["Buffer by plan and signal<br/>Processor retains contexts"]
+    batch["BatchPlan::batch"]
+    encoded["PdataBatcher via CodecService<br/>Merge / split encoded bytes"]
+    native["OTAP item batcher<br/>Merge / split Arrow records"]
+    result["Validated BatchingOutput<br/>Payloads + input ranges<br/>completed_inputs"]
+    owners["Processor assigns owners<br/>by input range, not size"]
+    finish["BatchPlan::finish<br/>To output representation"]
+    send["Send downstream<br/>Track Ack/Nack by input owner"]
+    complete["No-output inputs<br/>Complete without sending"]
+
+    prepare --> buffer
+    buffer -->|"Size, timer, or shutdown flush"| batch
+    batch -->|"Encoded"| encoded
+    batch -->|"Native OTAP or fallback"| native
+    encoded --> result
+    native --> result
+    result --> owners
+    owners -->|"Outputs to emit"| finish
+    owners -->|"No-output inputs"| complete
+    finish --> send
+
+    classDef encodedPath fill:#eaf2ff,stroke:#2563eb,color:#172554
+    classDef nativePath fill:#e8f5ee,stroke:#15803d,color:#14532d
+    classDef delivery fill:#fff4df,stroke:#b45309,color:#78350f
+    class encoded encodedPath
+    class native nativePath
+    class buffer,owners,complete delivery
+```
+
+Already in-range inputs skip buffering and merge/split, but still pass through
+`finish` before forwarding with their original delivery context. A small final
+output can stay buffered in the working format only when it belongs solely to
+the last buffered input. A remainder spanning several inputs is sent immediately,
+avoiding ambiguous ownership if later split again.
+
+This is local capability validation, not graph-wide representation negotiation
+or a node-signature system. OTLP is a built-in encoded codec. Its dedicated
+`OtlpBytes` storage is temporary and is removed by PR4; native OTAP alone is the
+special mutable processing representation.
+
+### Input ranges and delivery ownership
+
 A native batcher must preserve item order within a call and produce independently
 decodable outputs. This does not promise global processor ordering: an in-range
 input can bypass previously buffered input. A batcher must understand its format's
@@ -282,11 +344,41 @@ List inputs consumed successfully without any output in `completed_inputs`.
 Ranges and completed indices must account for every input without overlap
 between those two categories. A failed call must return an error instead.
 
-For example, outputs with ranges `0..=0` and `0..=1` both hold input 0 open;
-input 1 waits only for the second output. The processor validates these ranges
-and owns the completion references. It retains a small final output only when
-it belongs solely to the last buffered input. A remainder spanning several
-inputs is sent immediately, avoiding ambiguous ownership if later split again.
+This example splits input 0 across two outputs and merges its remainder with
+input 1. Input 2 is consumed successfully without output, for example when
+integrity repair removes all of its records. Arrows show contribution, not
+size conservation.
+
+```mermaid
+flowchart LR
+    input0["Input 0"]
+    input1["Input 1"]
+    input2["Input 2"]
+    outputA["Output A<br/>input range: 0..=0"]
+    outputB["Output B<br/>input range: 0..=1"]
+    noOutput["No output<br/>completed_inputs: [2]"]
+
+    input0 -->|"First part"| outputA
+    input0 -->|"Remaining part"| outputB
+    input1 -->|"Merged"| outputB
+    input2 -.->|"Consumed without output"| noOutput
+
+    classDef output fill:#eaf2ff,stroke:#2563eb,color:#172554
+    classDef completion fill:#fff4df,stroke:#b45309,color:#78350f
+    class outputA,outputB output
+    class noOutput completion
+```
+
+| Original input | Successful completion requires | Failure routing |
+| --- | --- | --- |
+| 0 | Ack from both A and B | A Nack from either output fails input 0 |
+| 1 | Ack from B | A Nack from B fails input 1; A has no effect |
+| 2 | No downstream Ack; the batching call consumed it without output | A failed batching call must return an error instead |
+
+The plan validates ranges before the processor uses them. The processor installs
+all output references before releasing pending input references, preventing early
+completion when one input contributes to multiple outputs. A tracked input
+completes once: after all of its outputs succeed, or on the first failure.
 
 Measurements control flush thresholds and splitting, not delivery ownership.
 Byte sizing includes encoding wrappers and intrinsic compression but excludes
@@ -294,20 +386,9 @@ transport framing and compression. Split targets are best effort for indivisible
 entries or exhausted amplification budgets. Size estimation is a separate future
 optimization; this API currently uses exact measurements.
 
-`BatchPlan` selects a working representation and an output representation before
-buffering starts. In preserve mode, codecs without matching native batching use
-OTAP fallback with item sizing and emit OTAP. An explicit output codec instead
-requires an encoder; an encode-only codec can therefore be an output target.
-`prepare` converts its mutable payload argument to the working representation
-in place; `finish` converts it to the output representation. Matching formats
-are untouched, and failed conversions preserve the original payload for recovery.
-`PdataPayload` can hold bytes or native records; `OtapPayload` is its transitional
-alias, not a guarantee of Arrow storage.
-
-This is local capability validation, not graph-wide representation negotiation
-or a node-signature system. OTLP is a built-in encoded codec. Its dedicated
-`OtlpBytes` storage is temporary and is removed by PR4; native OTAP alone is the
-special mutable processing representation.
+Implementation entry points: [batching plans and codec contracts](src/batching.rs),
+[shared input-range result](../pdata/src/batching.rs), and
+[processor scheduling and completion](../core-nodes/src/processors/batch_processor/mod.rs).
 
 ## Test a codec
 

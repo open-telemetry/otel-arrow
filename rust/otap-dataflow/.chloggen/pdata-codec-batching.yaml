@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Allow batching profiles and output selection for registered codecs, with OTAP fallback when encoded batching is unavailable."
+note: "Batch data using registered codecs, with configurable output encoding and OTAP fallback when encoded batching is unavailable."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3452]
@@ -18,4 +18,4 @@ issues: [3452]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Existing OTAP and OTLP settings remain supported. Preserve mode retains the input encoding when its codec supports batching; otherwise it uses OTAP item batching."
+subtext: "Preserve mode retains the input encoding when its codec supports batching. Existing OTAP/OTLP settings remain supported. Split and merged batches preserve delivery acknowledgements and permanent rejections, with output metrics reflecting the emitted encoding."
