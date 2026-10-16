@@ -56,21 +56,43 @@ maps, vectors, locators, allocation metadata, and removal-heavy event state.
 
 ### Framer payload
 
-```text
-copies = 2 for non-raw preserve_raw
-copies = 1 otherwise
+Use the formula for the selected framer; do not add both for the same reader.
+These are payload allowances, separate from inline state and regex storage.
 
-framer_peak_payload =
+For newline-only `LineFramer`, retain the existing conservative allowance:
+
+```text
+copies = 2 for non-raw preserve_raw; 1 otherwise
+
+newline_peak_payload =
   4 * copies *
     (min(max_line_bytes, max_record_bytes) + max_record_bytes)
   + 16 * copies
   + 16
 ```
 
-The factor four models old and new vector allocations coexisting during growth. Fixed
-terms cover delimiter lookahead and a pending decoded/source unit. Regex program/cache,
-decoder objects, allocator metadata, and library overhead remain separate bounded or
-measured terms.
+For `MultilineFramer`, including line replay:
+
+```text
+line_source = max_line_bytes + 8 for raw or preserve_raw
+line_source = 2 * max_line_bytes + 8 otherwise
+line_text = 0 for raw; max_line_bytes otherwise
+record_copies = 2 for non-raw preserve_raw; 1 otherwise
+
+multiline_peak_payload =
+  4 * (line_source + line_text + record_copies * max_record_bytes)
+```
+
+Grouping retains a complete bounded physical line independently of the record
+limit. Exact source bytes support safe-unit replay and source offsets, including
+UTF-16 replacement output. UTF-16 source can use two bytes per decoded ASCII
+byte; the eight-byte allowance covers BOM and delimiter storage. Preserve-raw
+prospective sizing already bounds exact body bytes by the line limit.
+
+The factor four conservatively covers old/new buffer growth. Regex storage,
+decoder objects, other inline state, and allocator overhead are separate charges.
+The primitive exposes this payload estimate and its actual retained capacities;
+receiver admission must account for all simultaneously retained storage.
 
 ### Regex construction and worker scratch
 
@@ -150,7 +172,7 @@ slots can remain held indefinitely by boundary-less input with idle flush
 disabled. Only reservation/accounting violations use the partial-state terminal
 failure path; capacity saturation does not permit discard-and-rewind.
 
-At the proposed defaults, the payload-only framer formula is 16,777,264 bytes
+At the proposed defaults, the multiline payload formula is 16,777,248 bytes
 per worst-case text/preserve-raw reader. A 256 MiB budget therefore admits at most
 15 worst-case slots before other mutable state is included, even when actual
 records are short. This is a conservative payload estimate, not the final slot
@@ -691,6 +713,7 @@ while their semantic and format definitions remain normative from version 1.
 | Decoding | UTF-8/ASCII/UTF-16LE/UTF-16BE/raw | Expected body and source offsets |
 | Decoding | Matching initial BOM | Stripped body; frame owns BOM |
 | Decoding | Conflicting BOM | Configured decode-error policy |
+| Decoding | First line with matching/conflicting BOM overflows line or record bounds | Replay strips matching BOMs and preserves conflicting-BOM malformed grouping and source ranges under split/truncate |
 | Decoding | BOM away from stream start | Ordinary content/error semantics |
 | Decoding | NUL in every encoding | Preserved as data |
 | Decoding | Split source unit across reads | No premature emit/commit |
@@ -704,14 +727,17 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Empty line | Empty body; LF progress |
 | Framing | Multiline | Internal LFs retained |
 | Framing | Start-pattern fallback | Newline record and bounded counter |
+| Framing | Complete unmatched seeking-state line exceeds the record limit but fits the line limit | One fallback observation on its first frame; byte-limit endings remain intact; continuation recovery does not recount it |
 | Framing | Next start match | Previous record emits; match starts next |
+| Framing | Bounded start match would overflow buffered record | Previous record emits `StartPattern` at its own LF; matching line starts a new record and splits/truncates independently if it alone exceeds the record limit |
 | Framing | End match | Matching line included |
 | Framing | Body exactly at line/record bound | Fits |
 | Framing | Oversize physical line after multiline buffer | Earlier buffer emits first |
-| Framing | Multiline overflow trigger | Deterministic boundary at trigger-line LF |
+| Framing | Appending a line belonging to the current record exceeds its bound | Deterministic boundary at trigger-line LF, or at the source end for authorized partial-line completion |
 | Framing | Split crosses Ack boundary | Durable continuation reproduces next fragment |
 | Framing | Restart mid-split oversize physical line with `record_end_offset == 0` | Seek committed offset; suppress fresh framing; bounded-scan and fragment through next decoded/raw LF |
 | Framing | Scan-to-LF continuation reaches temporary EOF | Remains pending; no fabricated final fragment |
+| Framing | Scan-to-LF continuation receives idle/permanent-EOF authority | Empty recovery remains pending; a nonempty suffix completes with correct ranges, final fragment index, and completion evidence; decode-fail suppresses malformed suffix output |
 | Framing | Restart mid-split start-pattern multiline | Existing sequence continues without requiring another start match; stored end determines `is_last` |
 | Framing | Restart mid-split end-pattern multiline | Existing sequence continues without re-evaluating end pattern; stored end determines `is_last` |
 | Framing | Restart continuation committed inside a physical line | Safe-unit fragments continue from committed offset without rereading the prefix |

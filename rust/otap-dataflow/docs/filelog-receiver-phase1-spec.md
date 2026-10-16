@@ -1700,7 +1700,11 @@ Every source offset counts original bytes. The processing order is:
 6. construct an OTAP record or fragment; and
 7. attach a progress delta owning the complete frame range.
 
-Text newline and regex framing always follow decoding. Raw mode performs no decoding.
+Text newline and regex framing always follow decoding. With `preserve_raw`, text
+patterns see the decoded line with U+FFFD for malformed units, even when the
+emitted record uses exact source bytes. With `replace`, patterns see that same
+replacement text. With `fail`, malformed input stops decoding before matching.
+Raw-mode patterns inspect source bytes directly, without decoding.
 
 ### Encoding behavior
 
@@ -1876,6 +1880,16 @@ In `seeking`:
 - a complete nonmatching line is emitted under newline framing; and
 - each such fallback increments bounded `pattern_not_matched` telemetry.
 
+Match complete physical lines within `max_line_bytes` even when they exceed
+`max_record_bytes` in seeking state. An unmatched line still counts as one
+fallback when it must split or truncate. Fallback evidence is independent of
+completion reason: byte-limited fragments retain their byte-limit reason, and
+only the first emitted frame carries the fallback observation. Do not count
+both that observation and the completion reason. Stored continuations do not
+reconstruct the original match result or produce another fallback observation.
+Partial lines completed by idle/permanent EOF and oversized physical lines do
+not produce this complete-line fallback evidence.
+
 In `buffering`:
 
 - a nonmatching line is appended with its internal LF;
@@ -1907,7 +1921,8 @@ End-pattern mode begins buffering with the first physical line.
 - Perl classes `\d`, `\s`, `\w`, their negations, and word boundaries use RE2's
   ASCII semantics.
 - Counted repetition limits are at most 1,000.
-- Text patterns run over validated decoded UTF-8.
+- Text patterns run over decoded UTF-8, including U+FFFD replacements for
+  malformed units under `preserve_raw` or `replace`.
 - Raw patterns use non-Unicode byte semantics. Fixed and braced hex escapes
   denote bytes (`\xFF` and `\x{FF}` both denote byte `FF`); values above `FF`
   are rejected in raw mode, including in classes and range endpoints.
@@ -2023,10 +2038,20 @@ When a physical line crosses `max_line_bytes`:
 
 No unbounded physical-line buffer is created.
 
-When adding a complete physical line would make a multiline body exceed
-`max_record_bytes`, the deterministic logical boundary is the LF of that first
-overflow-triggering line. Regex and line-count decisions are suppressed until that
-line ends. The framer then resets multiline state.
+In start-pattern mode, match a physical line within `max_line_bytes` before
+checking whether appending it would exceed the buffered record's byte limit.
+A matching line first completes the previous record immediately before that line,
+then begins a new record. The previous record ends cleanly at its own LF and
+requires no continuation state. A matching line that exceeds `max_record_bytes`
+on its own is split or truncated as its own record, with its own start and end.
+Oversized physical lines remain isolated and are never matched.
+
+For a line that belongs to the current record (including a new record's first
+line), if adding it would exceed `max_record_bytes`, the deterministic logical
+boundary is the LF of that overflow-triggering line. End-pattern and line-count
+decisions are suppressed for that line, and no further pattern decisions occur
+during its split/truncate replay. The framer then resets multiline state.
+An authorized partial-line completion uses its source end in place of the LF.
 
 For a body exactly equal to `max_record_bytes`, retaining another internal separator
 would overflow. The current body is emitted as a clean forced boundary before any later
@@ -2105,6 +2130,18 @@ that end. For the zero-ended scan-to-LF form, source framing establishes the
 boundary at runtime; a nonzero-delta update preserves the same start and mode
 until that proof exists, and any later continuation starts at or after the
 prior committed frontier. Zero-delta updates remain bit-for-bit preserving.
+
+Continuation stores no completion reason. For a recovered known-end sequence,
+the stored boundary makes the final fragment eligible; the original idle or
+permanent-EOF reason is not reconstructed. Do not infer
+`terminal_unterminated` from a stored end alone. This follows the
+[record-reproduction contract](#crash-recovery-and-record-reproduction):
+stored continuation coordinates remain authoritative, but completion metadata
+can change
+across a crash. In-process retries still preserve the retained batch unchanged.
+A scan-to-LF continuation that reaches LF retains its oversized-line reason;
+new idle or permanent-EOF authority is reported only when it actually completes
+that recovered pending frame.
 
 The committed prefix is neither reread nor re-emitted. For a nonzero stored end,
 a current source size below `record_end_offset` is detected truncation and
