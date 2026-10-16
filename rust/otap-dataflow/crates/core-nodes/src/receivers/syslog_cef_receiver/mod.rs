@@ -581,12 +581,10 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                         error: error.to_string(),
                     },
                 )?;
-            Ok(ReceiverWrapper::local(
-                receiver,
-                node,
-                node_config,
-                receiver_config,
-            ))
+            Ok(
+                ReceiverWrapper::local(receiver, node, node_config, receiver_config)
+                    .with_startup_readiness(),
+            )
         },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -642,6 +640,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let shutdown_flag = Rc::new(Cell::new(false));
                 // Counter to track active connection tasks for graceful shutdown
                 let active_task_count = Rc::new(Cell::new(0usize));
+                effect_handler.signal_ready();
 
                 loop {
                     tokio::select! {
@@ -1170,6 +1169,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let socket = effect_handler.udp_socket(udp_config.listening_addr)?;
                 let mut buf = vec![0u8; MAX_MESSAGE_SIZE];
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
+                effect_handler.signal_ready();
 
                 let max_batch_duration = self.config.max_batch_duration();
                 let max_batch_size = self.config.max_batch_size();
@@ -1605,11 +1605,17 @@ mod tests {
         }
     }
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+    use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind};
+    use otel_arrow_dfe_engine::local::message::LocalReceiver;
+    use otel_arrow_dfe_engine::local::receiver as local_receiver;
+    use otel_arrow_dfe_engine::message::Receiver as EngineReceiver;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use std::collections::HashMap;
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -1618,6 +1624,127 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
+
+    async fn start_receiver_expect_error(receiver: SyslogCefReceiver) -> Error {
+        let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
+        let _ctrl_tx = ctrl_tx;
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (readiness_signaller, readiness_probe) =
+            otel_arrow_dfe_engine::readiness::ReadinessSignaller::pair_for_test(
+                Duration::from_secs(1),
+            );
+        let (_metrics_rx, metrics_reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = local_receiver::EffectHandler::<OtapPdata>::new(
+            test_node("syslog_startup_failure"),
+            HashMap::new(),
+            None,
+            runtime_ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+        .with_readiness_signaller_for_test(readiness_signaller);
+
+        let error = match <SyslogCefReceiver as local_receiver::Receiver<OtapPdata>>::start(
+            Box::new(receiver),
+            local_receiver::ControlChannel::new(EngineReceiver::Local(LocalReceiver::mpsc(
+                ctrl_rx,
+            ))),
+            effect_handler,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("receiver startup should fail"),
+        };
+        assert_eq!(
+            readiness_probe.wait_ready().await,
+            Err(otel_arrow_dfe_engine::readiness::ReadinessProbeError::SignallerDropped),
+            "failed startup must not signal readiness"
+        );
+        error
+    }
+
+    /// Scenario: The Syslog TCP listening address is already owned by another TCP listener.
+    /// Guarantees: TCP startup returns the original bind failure before signaling readiness.
+    #[tokio::test(flavor = "current_thread")]
+    async fn syslog_tcp_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve Syslog TCP address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = SyslogCefReceiver::new(Config::new_tcp(addr));
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: The Syslog UDP listening address is already owned by another UDP socket.
+    /// Guarantees: UDP startup returns the original bind failure before signaling readiness.
+    #[tokio::test(flavor = "current_thread")]
+    async fn syslog_udp_startup_reports_bind_failure() {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("reserve Syslog UDP address");
+        let addr = socket.local_addr().expect("reserved socket address");
+        let receiver = SyslogCefReceiver::new(Config::new_udp(addr));
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: Syslog TCP startup receives incomplete server TLS material.
+    /// Guarantees: TLS configuration fails before the receiver signals readiness or accepts traffic.
+    #[tokio::test(flavor = "current_thread")]
+    async fn syslog_tcp_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tls = serde_json::from_value(serde_json::json!({
+            "cert_pem": "incomplete TLS material"
+        }))
+        .expect("syntactically valid TLS config");
+        let config = Config {
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr: "127.0.0.1:0".parse().expect("valid TCP address"),
+                framing: TcpFraming::Newline,
+                tls: Some(tls),
+            }),
+            batch: None,
+        };
+        let receiver = SyslogCefReceiver::new(config);
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    ..
+                }
+            ),
+            "expected Syslog TLS configuration error, got {error}"
+        );
+    }
 
     /// Scenario: A pending Syslog batch is dropped before downstream handoff.
     /// Guarantees: Buffered records are cleared without rewriting the node-local success outcome.
