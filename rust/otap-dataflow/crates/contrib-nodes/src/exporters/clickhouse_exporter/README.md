@@ -319,15 +319,31 @@ attribute tables do not exist.
 
 ## Telemetry
 
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
 Input PData message volume is reported by the engine through
 `channel.receiver.messages` and is not duplicated by the exporter.
 
 <!-- markdownlint-disable MD013 -->
 
+#### `exporter.attempted`
+
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose ClickHouse export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal ClickHouse write result, including conversion, queueing, and transformation. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of ClickHouse export attempts, including preparation-only outcomes. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal ClickHouse write result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Encoded application payload bytes submitted by the attempt. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
+
+#### `exporter.clickhouse`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.clickhouse.rows.written` | `{row}` | `signal` | Total number of rows written successfully into ClickHouse. |
+| `exporter.clickhouse.batches.transformed` | `{batch}` | `path` | Total number of log batches transformed by the given path (`fast_path`, `generic_fallback`, `otlp_direct`, `otlp_legacy_fallback`). |
 
 <!-- markdownlint-enable MD013 -->
 
