@@ -1005,7 +1005,7 @@ pub async fn serve(
     authorizer: Option<Arc<dyn BearerTokenAuthorizer>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
-    let listener = effect_handler
+    let mut listener = effect_handler
         .tcp_listener(settings.listening_addr)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 

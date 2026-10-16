@@ -1,0 +1,5 @@
+change_type: enhancement
+component: engine
+note: "Distribute accepted Windows TCP connections across all pipeline runtimes through a shared listener."
+issues: [2364]
+subtext: "Windows network receivers now use one broker-managed socket per endpoint with bounded round-robin dispatch and backpressure when all runtimes are saturated."

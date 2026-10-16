@@ -607,7 +607,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                     listening_addr = tcp_config.listening_addr.to_string()
                 );
 
-                let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
+                let mut listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
 
                 // Build TLS acceptor if TLS is configured
                 let maybe_tls_acceptor = build_tls_acceptor(tcp_config.tls.as_ref())

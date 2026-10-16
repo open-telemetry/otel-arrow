@@ -1119,7 +1119,7 @@ connections:
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let listener = effect_handler.tcp_listener(addr)?;
+            let mut listener = effect_handler.tcp_listener(addr)?;
             let local_addr = listener.local_addr().unwrap();
 
             // Notify the test of the actual bound address.
@@ -1198,7 +1198,7 @@ connections:
         ) -> Result<TerminalState, Error> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let listener = effect_handler.tcp_listener(addr)?;
+            let mut listener = effect_handler.tcp_listener(addr)?;
             let local_addr = listener.local_addr().unwrap();
 
             // Notify the test of the actual bound address.
