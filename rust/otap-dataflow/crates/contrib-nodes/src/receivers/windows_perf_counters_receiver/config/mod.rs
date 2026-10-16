@@ -2,20 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Configuration parsing, validation, and exact-path normalization.
-//!
-//! `metrics.<name>` (unused definitions emit nothing):
-//! - `gauge` | `sum`: metric kind; defaults to Gauge.
-//!   - `aggregation`: required for Sum; only `cumulative`.
-//!   - `monotonic`: only `false` (the default).
-//! - `unit`: blank or omitted defaults to `"1"`.
-//! - `description`: blank or omitted defaults to empty.
-//!
-//! `perfcounters[].counters[]`:
-//! - `metric`: definition name; blank or omitted uses the counter path.
-//!   - An explicit name must be defined.
-//!   - A path name uses an exact matching definition, otherwise a Gauge
-//!     with default metadata.
-//! - `attributes`: applied only with an explicit `metric`; otherwise ignored.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -30,8 +16,6 @@ const MAX_COUNTER_PATH_LEN: usize = 2_047;
 const MIN_COLLECTION_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COLLECTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_INITIAL_DELAY: Duration = Duration::from_secs(24 * 60 * 60);
-const MAX_METRIC_NAME_LEN: usize = 255;
-const MAX_METRIC_UNIT_LEN: usize = 63;
 const MAX_COUNTERS: usize = 256;
 const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
 
@@ -90,12 +74,6 @@ impl RuntimeConfig {
     pub(super) fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
         let user: Config =
             serde_json::from_value(value.clone()).map_err(|err| invalid(err.to_string()))?;
-        // Bound configuration size even when metric definitions are unused.
-        if user.metrics.len() > MAX_COUNTERS {
-            return Err(invalid(format!(
-                "metrics must contain at most {MAX_COUNTERS} entries"
-            )));
-        }
         if !(MIN_COLLECTION_INTERVAL..=MAX_COLLECTION_INTERVAL).contains(&user.collection_interval)
         {
             return Err(invalid(format!(
@@ -116,23 +94,25 @@ impl RuntimeConfig {
         }
 
         let mut metrics = BTreeMap::new();
-        let mut metric_identities = HashSet::new();
         for (name, metric) in &user.metrics {
-            let name = validate_metric_name(name)?;
-            // Reject case-insensitive duplicates; preserve names for case-sensitive lookup.
-            if !metric_identities.insert(name.to_ascii_lowercase()) {
-                return Err(invalid(format!("metrics contains duplicate {name:?}")));
-            }
-            let description = metric.description.trim();
-            let unit = validate_metric_unit(name, &metric.unit)?;
+            validate_metric_name(name)?;
+            let unit = normalize_metric_unit(&metric.unit);
             let kind = metric.kind(name)?;
             let _ = metrics.insert(
-                name,
+                name.as_str(),
                 NormalizedMetric {
-                    description: Arc::from(description),
+                    description: Arc::from(metric.description.as_str()),
                     unit,
                     kind,
                 },
+            );
+        }
+        for group in case_distinct_metric_definitions(metrics.keys().copied()) {
+            otel_arrow_dfe_telemetry::otel_warn!(
+                "windows_perf_counters_receiver.config.metric_definition.case_collision",
+                message = "metric definitions differ only by case; exact lookup \
+                           keeps them distinct, but this may be a configuration typo",
+                names = format!("{group:?}")
             );
         }
 
@@ -182,7 +162,7 @@ impl RuntimeConfig {
                     validate_counter_name(&format!("{counter_field}.name"), &mapping.name)?;
                 let metric_name = match &mapping.metric {
                     None => None,
-                    Some(Some(name)) => Some(name.trim()).filter(|name| !name.is_empty()),
+                    Some(Some(name)) => Some(name.as_str()).filter(|name| !name.is_empty()),
                     Some(None) => {
                         return Err(invalid(format!(
                             "{counter_field}.metric must be a string when present; null metric is invalid"
@@ -240,6 +220,14 @@ impl RuntimeConfig {
                 return Err(invalid(format!("duplicate counter path: {}", counter.path)));
             }
         }
+        for name in unused_path_metric_definitions(metrics.keys().copied(), &counters) {
+            otel_arrow_dfe_telemetry::otel_warn!(
+                "windows_perf_counters_receiver.config.metric_definition.unused_path",
+                message = "path-shaped metric definition is not selected by an explicit reference \
+                           or exact configured path lookup; it emits no metric",
+                definition = name
+            );
+        }
         Ok(Self {
             counters,
             collection_interval: user.collection_interval,
@@ -271,14 +259,31 @@ pub(super) struct CounterConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    #[serde(default)]
+    /// Metric definitions by name. Defaults to empty, including when null.
+    /// Names are kept as written and must not be empty. Case-only variants
+    /// stay distinct and warn once per lowercase group. Path-shaped keys not
+    /// selected by a configured counter warn once; unused definitions emit nothing.
+    #[serde(default, deserialize_with = "deserialize_metric_definitions")]
     metrics: BTreeMap<String, MetricConfig>,
+    /// Objects to collect. At least one; must expand to at most 256 counter paths,
+    /// one per mapping and instance.
     #[serde(rename = "perfcounters")]
     perf_counters: Vec<ObjectConfig>,
+    /// Time between collections. Defaults to 30 seconds; 1 second to 24 hours.
     #[serde(default = "default_interval", with = "humantime_serde")]
     collection_interval: Duration,
+    /// Delay before the first collection. Defaults to 1 second; up to 24 hours.
     #[serde(default = "default_initial_delay", with = "humantime_serde")]
     initial_delay: Duration,
+}
+
+fn deserialize_metric_definitions<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, MetricConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<BTreeMap<String, MetricConfig>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn default_interval() -> Duration {
@@ -289,15 +294,20 @@ fn default_initial_delay() -> Duration {
     Duration::from_secs(1)
 }
 
+/// `gauge` and `sum` are mutually exclusive.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MetricConfig {
+    /// Metric description, kept as written. Defaults to empty.
     #[serde(default)]
     description: String,
+    /// Metric unit, kept as written. Defaults to `"1"` when omitted or empty.
     #[serde(default)]
     unit: String,
+    /// Selects Gauge. Defaults to Gauge when no kind is set.
     #[serde(default, deserialize_with = "present_marker")]
     gauge: Option<EmptyConfig>,
+    /// Selects Sum.
     #[serde(default, deserialize_with = "present_sum")]
     sum: Option<SumConfig>,
 }
@@ -356,7 +366,9 @@ struct EmptyConfig {}
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SumConfig {
+    /// Sum aggregation. Required; only `cumulative` is supported.
     aggregation: Aggregation,
+    /// Sum monotonicity. Defaults to `false`; only `false` is supported.
     #[serde(default)]
     monotonic: bool,
 }
@@ -364,21 +376,39 @@ struct SumConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ObjectConfig {
+    /// Native object name. Surrounding whitespace is trimmed; must be nonblank
+    /// and must not contain `\`, `(`, `)`, `*`, `?` or NUL.
     object: String,
+    /// Native instance name or list. Defaults to no instance.
+    /// If set, the list must be nonempty; each name is trimmed, must be nonblank
+    /// and must not contain `\`, `(`, `)`, `*`, `?` or NUL. Numeric suffixes
+    /// omit `#0` and leading index zeroes for native paths, preserving configured
+    /// spelling after trimming for metric lookup. An index must follow a nonempty
+    /// instance name. Duplicate native instances are rejected regardless of case.
     #[serde(default)]
     instances: Option<OneOrMany>,
+    /// Counter mappings. At least one.
     counters: Vec<CounterMapping>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CounterMapping {
+    /// Native counter name. Surrounding whitespace is trimmed; must be nonblank
+    /// and must not contain `\`, `*`, `?` or NUL.
     name: String,
+    /// Metric definition name, kept as written. Defaults to the configured counter
+    /// path when omitted or empty. Implicit paths use an exact matching definition
+    /// or otherwise a Gauge. Nonempty references must be defined. Null is invalid.
     // Point null-reference errors to the specific counter that needs fixing.
     #[serde(default, deserialize_with = "present_metric")]
     metric: Option<Option<String>>,
+    /// Point attributes, applied only with an explicit `metric`. Defaults to empty.
+    /// Keys are trimmed, must be nonblank, must not start with
+    /// `windows.perf_counter.`, and must not collide after trimming.
     #[serde(default)]
     attributes: BTreeMap<String, String>,
+    /// Multiplies the value by 10 to this power. Defaults to 0; -18 to 18.
     #[serde(default)]
     scale_power10: i32,
 }
@@ -390,7 +420,7 @@ where
     Option::<String>::deserialize(deserializer).map(Some)
 }
 
-/// A metric definition after trimming and validation.
+/// Validated metric metadata with the empty-unit default applied.
 struct NormalizedMetric<'a> {
     description: Arc<str>,
     unit: &'a str,
@@ -417,50 +447,43 @@ fn instance_index(value: &str) -> Option<(&str, &str)> {
         .filter(|(_, index)| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Accepts configured local counter paths or ordinary instrument names.
-fn validate_metric_name(name: &str) -> Result<&str, Error> {
-    let name = name.trim();
-    require_name("metric name", name)?;
-    if let Some(path) = name.strip_prefix('\\') {
-        let field = format!("metric name {name:?}");
-        let invalid_padding = || {
-            invalid(format!(
-                "{field} segments must not have surrounding whitespace"
-            ))
-        };
-        let (object, counter) = path
-            .split_once('\\')
-            .ok_or_else(|| invalid(format!("{field} must be a full counter path")))?;
-        let object = if let Some((object, instance)) = object.split_once('(') {
-            let instance = instance
-                .strip_suffix(')')
-                .ok_or_else(|| invalid(format!("{field} must close its instance parentheses")))?;
-            if validate_instance(&field, instance)? != instance {
-                return Err(invalid_padding());
-            }
-            object
-        } else {
-            object
-        };
-        let checked_object = validate_object(&field, object)?;
-        let checked_counter = validate_counter_name(&field, counter)?;
-        if checked_object != object || checked_counter != counter {
-            return Err(invalid_padding());
-        }
-        validate_path_length("metric name", name)?;
-        return Ok(name);
+/// Accepts OTLP stream names without imposing SDK instrument-name restrictions.
+fn validate_metric_name(name: &str) -> Result<(), Error> {
+    if name.is_empty() {
+        return Err(invalid("metric name must not be empty"));
     }
-    let mut chars = name.chars();
-    let valid = name.len() <= MAX_METRIC_NAME_LEN
-        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/'));
-    if !valid {
-        return Err(invalid(format!(
-            "metric name {name:?} must start with an ASCII letter, contain only ASCII \
-             letters, digits, '_', '.', '-', or '/', and be at most {MAX_METRIC_NAME_LEN} characters"
-        )));
+    Ok(())
+}
+
+fn is_path_metric_name(name: &str) -> bool {
+    name.starts_with('\\')
+}
+
+fn unused_path_metric_definitions<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    counters: &[CounterConfig],
+) -> Vec<&'a str> {
+    let selected: HashSet<_> = counters
+        .iter()
+        .map(|counter| counter.name.as_str())
+        .collect();
+    names
+        .into_iter()
+        .filter(|name| is_path_metric_name(name) && !selected.contains(name))
+        .collect()
+}
+
+fn case_distinct_metric_definitions<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<Vec<&'a str>> {
+    let mut groups = BTreeMap::<String, Vec<&str>>::new();
+    for name in names {
+        groups.entry(name.to_lowercase()).or_default().push(name);
     }
-    Ok(name)
+    groups
+        .into_values()
+        .filter(|group| group.len() > 1)
+        .collect()
 }
 
 fn validate_instance<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
@@ -505,20 +528,9 @@ fn validate_path_length(field: &str, path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Enforces the OpenTelemetry instrument-unit syntax on the trimmed unit.
-fn validate_metric_unit<'a>(name: &str, unit: &'a str) -> Result<&'a str, Error> {
-    let unit = unit.trim();
-    let field = format!("metrics.{name}.unit");
-    if unit.is_empty() {
-        return Ok("1");
-    }
-    if unit.len() > MAX_METRIC_UNIT_LEN || !unit.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
-    {
-        return Err(invalid(format!(
-            "{field} must be printable ASCII and at most {MAX_METRIC_UNIT_LEN} characters"
-        )));
-    }
-    Ok(unit)
+/// Defaults an empty unit to "1"; preserves every nonempty unit as written.
+fn normalize_metric_unit(unit: &str) -> &str {
+    if unit.is_empty() { "1" } else { unit }
 }
 
 fn validate_counter(counter: &CounterConfig) -> Result<(), Error> {
