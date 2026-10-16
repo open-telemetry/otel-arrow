@@ -42,6 +42,7 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::terminal_state::TerminalState;
@@ -148,6 +149,8 @@ pub struct EffectHandler<PData> {
     authorized_identity_policy: Option<Rc<AuthorizedIdentityPolicy>>,
     /// Data-type-specific context materialization shared by local handler clones.
     context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+    /// Optional signal used to gate pipeline startup on receiver initialization.
+    readiness: Option<ReadinessSignaller>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -171,6 +174,7 @@ impl<PData> EffectHandler<PData> {
             capture_policy: None,
             authorized_identity_policy: None,
             context_materialization_plan: None,
+            readiness: None,
         }
     }
 
@@ -251,6 +255,27 @@ impl<PData> EffectHandler<PData> {
     ) {
         self.context_materialization_plan =
             Some(ReceiverContextMaterialization::new(plan, materialize));
+    }
+
+    pub(crate) fn set_readiness_signaller(&mut self, readiness: Option<ReadinessSignaller>) {
+        self.readiness = readiness;
+    }
+
+    /// Attaches an observable readiness signal to a receiver effect handler in tests.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_readiness_signaller_for_test(mut self, readiness: ReadinessSignaller) -> Self {
+        self.readiness = Some(readiness);
+        self
+    }
+
+    /// Signals that fallible receiver startup has completed.
+    ///
+    /// This is a no-op for receivers that did not opt into startup readiness.
+    pub fn signal_ready(&self) {
+        if let Some(readiness) = &self.readiness {
+            readiness.ready();
+        }
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.

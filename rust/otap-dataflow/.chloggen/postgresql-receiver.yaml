@@ -1,0 +1,7 @@
+change_type: new_component
+component: pipeline
+note: "Add an opt-in, development-only PostgreSQL receiver with automatic result metadata, configurable page budgets, shared credentials, and acknowledged composite polling."
+issues: [4166, 3918]
+subtext: |
+  Enable postgresql and bind basic_auth_provider. Set query.max_rows_per_poll and query.max_batch_bytes. Unencrypted TCP: trusted development only.
+  Operations use a fixed 30s timeout. Initial timestamps normalize to UTC. Schema must remain stable across restarts.

@@ -41,7 +41,7 @@ impl FromStr for RecordSetEngineDiagnosticLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Verbose" | "verbose" => Ok(RecordSetEngineDiagnosticLevel::Verbose),
-            "Info" | "info" => Ok(RecordSetEngineDiagnosticLevel::Verbose),
+            "Info" | "info" => Ok(RecordSetEngineDiagnosticLevel::Info),
             "Warn" | "warn" => Ok(RecordSetEngineDiagnosticLevel::Warn),
             "Error" | "error" => Ok(RecordSetEngineDiagnosticLevel::Error),
             _ => Err(()),
