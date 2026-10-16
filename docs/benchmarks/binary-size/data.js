@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792144139405,
+  "lastUpdate": 1792174464231,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -64359,6 +64359,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 112.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "59dd8fa183d91b94a8d3e7ba01a13facca6a664f",
+          "message": "chore(telemetry): consolidate self-tracing encoding (#4401)\n\n# Change summary\n\n<!--Replace with a brief summary of the change in this PR-->\n\nRefactor self-tracing value encoding while preserving the existing\nmodule layout and behavior.\n\nResource and scope attributes share an internal recursive AnyValue\nwriter. Tracing scalar fields, strings, Debug values, and bodies use\nstatically dispatched payload closures, with common helpers for protobuf\nframing, per-attribute budgeting, and transactional rollback.\n\nThe tracing field/body path intentionally does not go through the\nrecursive writer: keeping that hot path inlinable avoids the performance\nregression measured with the initial consolidation.\n\nThis PR only prepares the encoding internals; structured logging support\nand diagnostics adoption remain separate follow-ups.\n\nPR sequence:\n1. #4151 added the diagnostics package.\n2. #4279 added the log sampling interface.\n3. #4401 (this PR) refactors self-tracing encoding.\n4. Follow-up: add a `structured` log argument that encodes an AnyValue\nby downcasting a caller-preallocated `Arc<Structured>`, e.g.,\nhttps://github.com/open-telemetry/otel-arrow/pull/4396\n5. Follow-up: migrate the diagnostics implementation from #4151 to the\nsampling and structured logging interfaces, diagnostics will be standard\nlog events w/ dedicated sampler & nested LogRecord, as described in\n#4279.\n\n## Related issue\n\nPart of #4236.\n\nSee #4151; this prepares for logging the previous LogRecord in the\n`diagnostics` package.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: bae9dbae-f83f-40c6-b7b9-6b18733929f4\nCopilot-Session: 113f356d-e3e8-4dc1-9ead-e33370fdd0b3",
+          "timestamp": "2026-10-16T17:13:53Z",
+          "tree_id": "08ce971fb95076ee419a621ab6690d19e4948953",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/59dd8fa183d91b94a8d3e7ba01a13facca6a664f"
+        },
+        "date": 1792174445041,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
             "unit": "MB"
           }
         ]
