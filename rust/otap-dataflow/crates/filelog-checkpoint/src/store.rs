@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Blocking Linux checkpoint storage. Call only from the dedicated checkpoint
-//! worker. The caller supplies an engine-validated state-directory descriptor,
+//! worker. The caller supplies a provisioned state-root capability,
 //! source/Ack authorization, retry deadlines, and periodic/drain sync scheduling.
 //! Compaction is a separate task; reaching admission returns `CompactionRequired`.
 
 mod filesystem;
 
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::fd::BorrowedFd;
 
 use crate::{
     CHECKPOINT_HEADER_BYTES, DecodeError, EncodeError, Operation, ReplayConfig, ReplayError,
@@ -18,7 +16,8 @@ use crate::{
     Transaction, TransactionScan, WAL_MAX_TX_FRAME_BYTES, decode_checkpoint_header,
     encode_checkpoint, encode_transaction, scan_next_transaction,
 };
-use filesystem::{Io, Namespace};
+pub use filesystem::StateRoot;
+use filesystem::{DataFile, Io, Namespace};
 
 const DB: &str = "checkpoint.db";
 const CREATE: &str = "checkpoint.db.create.tmp";
@@ -218,7 +217,7 @@ pub struct RecoveryReport {
 }
 
 struct Recovered {
-    file: File,
+    file: DataFile,
     state: ReplayState,
     wal_offset: u64,
     end: u64,
@@ -261,7 +260,7 @@ impl CheckpointStore {
     /// caller must prevent retry/reconfiguration from bypassing a known failure,
     /// including SyncFailed returned before a store instance was constructed.
     pub fn open(
-        root: BorrowedFd<'_>,
+        root: &StateRoot,
         checkpoint_id: &str,
         config: StoreConfig,
     ) -> Result<Self, StoreError> {
@@ -269,7 +268,7 @@ impl CheckpointStore {
     }
 
     fn open_with_io(
-        root: BorrowedFd<'_>,
+        root: &StateRoot,
         checkpoint_id: &str,
         config: StoreConfig,
         mut io: Io,
@@ -285,10 +284,10 @@ impl CheckpointStore {
             }
             interrupted_creation = !namespace.created;
             // Establish a namespace barrier before deleting an interrupted temp.
-            io.sync(&namespace.directory, "initial recovery directory sync")?;
+            namespace.sync_directory(&mut io, "initial recovery directory sync")?;
             if artifacts.create {
                 namespace.remove(CREATE)?;
-                io.sync(&namespace.directory, "initial cleanup directory sync")?;
+                namespace.sync_directory(&mut io, "initial cleanup directory sync")?;
                 cleaned_creation = true;
             }
             let prefix = encode_checkpoint(0, checkpoint_id, &[])?;
@@ -298,8 +297,8 @@ impl CheckpointStore {
             io.sync(&temp, "creation file sync")?;
             namespace.verify(CREATE, &temp)?;
             drop(temp);
-            namespace.publish_initial()?;
-            io.sync(&namespace.directory, "publication directory sync")?;
+            namespace.publish_no_replace()?;
+            namespace.sync_directory(&mut io, "publication directory sync")?;
         }
         let mut recovered = recover(&namespace, checkpoint_id, config, &mut io, None)?;
         recovered.report.interrupted_creation = interrupted_creation;
@@ -355,7 +354,7 @@ impl CheckpointStore {
     // This instance must never resume after observing namespace substitution.
     fn verify_authority(&mut self) -> Result<(), StoreError> {
         self.authority_failed = true;
-        self.namespace.verify(DB, &self.recovered.file)?;
+        self.namespace.verify_database(&self.recovered.file)?;
         self.authority_failed = false;
         Ok(())
     }
@@ -367,9 +366,8 @@ impl CheckpointStore {
         let length = self
             .recovered
             .file
-            .metadata()
-            .map_err(|e| io("stat checkpoint length", e))?
-            .len();
+            .len()
+            .map_err(|e| io("stat checkpoint length", e))?;
         if length != self.recovered.end {
             return Err(StoreError::AuthorityChanged);
         }
@@ -434,12 +432,11 @@ impl CheckpointStore {
             sequence,
         });
         let pending = self.pending.as_ref().expect("installed pending append");
-        self.io
-            .write_all(&mut self.recovered.file, &pending.frame)?;
+        self.recovered.file.append(&mut self.io, &pending.frame)?;
         self.recovered.state.commit(prepared);
         self.recovered.end += pending.frame.len() as u64;
         if must_sync {
-            self.io.sync(&self.recovered.file, "append file sync")?;
+            self.recovered.file.sync(&mut self.io, "append file sync")?;
             self.synced_sequence = sequence;
         }
         self.pending = None;
@@ -456,7 +453,9 @@ impl CheckpointStore {
         self.ready()?;
         self.verify_authority()?;
         self.verify_length()?;
-        self.io.sync(&self.recovered.file, "explicit file sync")?;
+        self.recovered
+            .file
+            .sync(&mut self.io, "explicit file sync")?;
         self.synced_sequence = self.recovered.state.last_sequence();
         Ok(())
     }
@@ -479,9 +478,8 @@ impl CheckpointStore {
         let size = self
             .recovered
             .file
-            .metadata()
-            .map_err(|e| io("stat pending append", e))?
-            .len();
+            .len()
+            .map_err(|e| io("stat pending append", e))?;
         if size < pending.boundary || size > pending.boundary + pending.frame.len() as u64 {
             return Err(StoreError::AuthorityChanged);
         }
@@ -489,8 +487,9 @@ impl CheckpointStore {
         // Preserve the original open description's writeback-error history.
         // A newly opened handle need not report an already-observed error.
         // This covers both earlier deferred progress and this failed attempt.
-        self.io
-            .sync(&self.recovered.file, "pre-resolution file sync")?;
+        self.recovered
+            .file
+            .sync(&mut self.io, "pre-resolution file sync")?;
         let recovery = recover(
             &self.namespace,
             &self.checkpoint_id,
@@ -519,11 +518,11 @@ impl CheckpointStore {
                 unreachable!("retained frame is complete");
             };
             let prepared = recovered.state.prepare(transaction)?;
-            self.io.write_all(&mut recovered.file, &pending.frame)?;
+            recovered.file.append(&mut self.io, &pending.frame)?;
             recovered.state.commit(prepared);
             recovered.end += pending.frame.len() as u64;
         }
-        self.io.sync(&recovered.file, "resolved append sync")?;
+        recovered.file.sync(&mut self.io, "resolved append sync")?;
         let receipt = AppendReceipt {
             sequence: pending.sequence,
             synced: true,
@@ -557,9 +556,8 @@ fn recover(
     }
     let mut file = namespace.open_database()?;
     let length = file
-        .metadata()
-        .map_err(StoreError::AuthoritativeGenerationUnreadable)?
-        .len();
+        .len()
+        .map_err(StoreError::AuthoritativeGenerationUnreadable)?;
     if length > MAX_BYTES {
         return Err(StoreError::RecoveryLimit("1 GiB checkpoint file ceiling"));
     }
@@ -653,25 +651,24 @@ fn recover(
     }
     // Recheck opened authority before any mutation; the directory barrier must
     // precede both torn-tail truncation and temporary cleanup.
-    namespace.verify(DB, &file)?;
+    namespace.verify_database(&file)?;
     if file
-        .metadata()
-        .map_err(StoreError::AuthoritativeGenerationUnreadable)?
         .len()
+        .map_err(StoreError::AuthoritativeGenerationUnreadable)?
         != length
     {
         return Err(StoreError::AuthorityChanged);
     }
-    io_ops.sync(&namespace.directory, "recovery directory sync")?;
+    namespace.sync_directory(io_ops, "recovery directory sync")?;
     if end != length {
-        file.set_len(end)
+        file.truncate(end)
             .map_err(|e| io("truncate torn WAL tail", e))?;
     }
     // This barrier covers normal startup and truncation. It cannot certify bytes
     // affected by a previous process's writeback failure: a newly opened handle
     // may not report that failure. Callers must not automatically reopen after
     // SyncFailed/SyncPoisoned; see the storage remediation contract.
-    io_ops.sync(&file, "recovery file sync")?;
+    file.sync(io_ops, "recovery file sync")?;
     let mut cleaned = false;
     for (exists, name) in [(artifacts.create, CREATE), (artifacts.compact, COMPACT)] {
         if exists {
@@ -680,11 +677,8 @@ fn recover(
         }
     }
     if cleaned {
-        io_ops.sync(&namespace.directory, "cleanup directory sync")?;
+        namespace.sync_directory(io_ops, "cleanup directory sync")?;
     }
-    let _ = file
-        .seek(SeekFrom::Start(end))
-        .map_err(|e| io("seek append boundary", e))?;
     Ok(Recovered {
         file,
         state,
@@ -698,7 +692,7 @@ fn recover(
     })
 }
 
-fn read_prefix(file: &mut File, bytes: &mut [u8]) -> Result<(), StoreError> {
+fn read_prefix(file: &mut impl Read, bytes: &mut [u8]) -> Result<(), StoreError> {
     file.read_exact(bytes).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
             StoreError::AuthoritativeGenerationIncomplete
