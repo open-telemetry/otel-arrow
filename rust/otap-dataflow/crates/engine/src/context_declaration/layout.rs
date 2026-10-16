@@ -5,12 +5,14 @@
 //!
 //! A projection identifies selected values and the enclosing composite whose
 //! presence a consumer must establish. This module compiles and resolves that
-//! model; it does not evaluate message values or change header propagation.
+//! model; runtime materialization is implemented by the sibling
+//! `materialization` module, while header propagation remains separate.
 //!
-//! Layout-local IDs are not offsets into message storage. Runtime presence
-//! evaluation, consumer integration, and precomputed hashes are separate work.
+//! Layout-local IDs are not offsets into message storage. General consumer
+//! bindings and precomputed hashes remain separate work.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use otel_arrow_dfe_config::context::ContextEntryName;
 pub use otel_arrow_dfe_config::context_policy::ContextDomain;
@@ -22,6 +24,8 @@ use otel_arrow_dfe_config::error::Error;
 /// A deterministic logical layout of primitive fields and composite entries.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ContextLayout {
+    /// Opaque identity shared by clones of this layout.
+    identity: ContextLayoutIdentity,
     /// Primitive elements from each domain.
     fields: Box<[ContextFieldLayout]>,
     /// Composite entries from `policies::context::entries`.
@@ -30,6 +34,17 @@ pub struct ContextLayout {
     field_names: BTreeMap<(ContextDomain, ContextEntryName), ContextFieldId>,
     /// Composite names are independent of primitive source names.
     entry_names: BTreeMap<ContextEntryName, ContextEntryId>,
+}
+
+/// Opaque identity proving that a projection originated from one logical layout instance.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ContextLayoutIdentity(Arc<()>);
+
+impl ContextLayoutIdentity {
+    fn matches(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// A primitive field is a named element in one authority domain.
@@ -126,6 +141,8 @@ pub enum ContextProjection {
     Primitive(ContextFieldId),
     /// All or selected members from a composite entry.
     Composite {
+        /// Identity of the layout that produced this projection.
+        layout: ContextLayoutIdentity,
         /// Composite whose members and conditions determine presence.
         entry: ContextEntryId,
         /// Members in canonical member-name order.
@@ -287,6 +304,7 @@ impl ContextLayout {
             });
         }
         Ok(Self {
+            identity: ContextLayoutIdentity::default(),
             fields,
             entries: entries.into_boxed_slice(),
             field_names,
@@ -335,6 +353,7 @@ impl ContextLayout {
             .ok_or_else(|| invalid(format!("unknown context member `{composite}:{member}`")))?
             .clone();
         Ok(ContextProjection::Composite {
+            layout: self.identity.clone(),
             entry,
             members: Box::new([member]),
         })
@@ -347,9 +366,26 @@ impl ContextLayout {
     ) -> Result<ContextProjection, Error> {
         let entry = self.entry_id(composite)?;
         Ok(ContextProjection::Composite {
+            layout: self.identity.clone(),
             entry,
             members: self.entries[entry.index()].members.clone(),
         })
+    }
+
+    pub(crate) fn projected_entry(
+        &self,
+        identity: &ContextLayoutIdentity,
+        entry: ContextEntryId,
+        members: &[ContextMember],
+    ) -> Option<&ContextEntryLayout> {
+        if !self.identity.matches(identity) || !members.windows(2).all(|pair| pair[0] < pair[1]) {
+            return None;
+        }
+        let layout = self.entries.get(entry.index())?;
+        members
+            .iter()
+            .all(|member| layout.members.binary_search(member).is_ok())
+            .then_some(layout)
     }
 
     fn entry_id(&self, name: &ContextEntryName) -> Result<ContextEntryId, Error> {

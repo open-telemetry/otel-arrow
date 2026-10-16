@@ -1,20 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Readiness primitive for opting an extension into pipeline-startup
-//! gating.
+//! Shared startup-readiness primitives for engine components.
 //!
-//! An extension's Active or Background lifecycle opts in via
-//! [`with_readiness_probe`](super::builder::ActiveStage::with_readiness_probe)
-//! (default 5 s) or
-//! [`with_readiness_probe_timeout_override`](super::builder::ActiveStage::with_readiness_probe_timeout_override)
-//! (longer timeout). Each registered variant gets a fresh
-//! ([`ReadinessSignaller`], [`ReadinessProbe`]) pair; the extension
-//! fires via [`EffectHandler::signal_ready`](super::wrapper::EffectHandler::signal_ready).
+//! Each participating component receives a [`ReadinessSignaller`] and the
+//! engine waits on the matching [`ReadinessProbe`]. Components signal only
+//! after their fallible runtime initialization has completed.
 //!
 //! # Examples
 //!
-//! Extension side:
+//! Component side:
 //!
 //! ```ignore
 //! async fn start(self: Box<Self>, ctrl: ControlChannel, eh: EffectHandler)
@@ -29,18 +24,7 @@
 //! Wiring side:
 //!
 //! ```ignore
-//! ExtensionWrapper::builder(name, user_cfg, runtime_cfg)
-//!     .active()
-//!     .with_readiness_probe()
-//!     .shared(ext)
-//!     .local(local_ext)
-//!     .build()?;
-//!
-//! ExtensionWrapper::builder(name, user_cfg, runtime_cfg)
-//!     .active()
-//!     .with_readiness_probe_timeout_override(Duration::from_secs(15))
-//!     .shared(ext)
-//!     .build()?;
+//! let (signaller, probe) = ReadinessSignaller::pair_with_external_timeout();
 //! ```
 
 use std::fmt;
@@ -48,11 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-/// Default timeout used by
-/// [`with_readiness_probe`](super::builder::ActiveStage::with_readiness_probe).
-pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Send-side handle for a variant's readiness signal. Cloneable;
+/// Send-side handle for a component's readiness signal. Cloneable;
 /// only the first [`ReadinessSignaller::ready`] call delivers.
 pub struct ReadinessSignaller {
     inner: Arc<ReadinessInner>,
@@ -71,7 +51,32 @@ impl ReadinessSignaller {
                 tx_slot: Mutex::new(Some(tx)),
             }),
         };
-        let probe = ReadinessProbe { rx, timeout };
+        let probe = ReadinessProbe {
+            rx,
+            timeout: Some(timeout),
+        };
+        (sig, probe)
+    }
+
+    /// Constructs an observable readiness pair for receiver tests in downstream crates.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn pair_for_test(timeout: Duration) -> (Self, ReadinessProbe) {
+        Self::pair(timeout)
+    }
+
+    /// Construct a matched pair whose timeout is owned by the caller.
+    ///
+    /// Receiver startup uses the controller's rollout or recovery deadline
+    /// instead of layering an independent component timeout on top.
+    pub(crate) fn pair_with_external_timeout() -> (Self, ReadinessProbe) {
+        let (tx, rx) = oneshot::channel();
+        let sig = Self {
+            inner: Arc::new(ReadinessInner {
+                tx_slot: Mutex::new(Some(tx)),
+            }),
+        };
+        let probe = ReadinessProbe { rx, timeout: None };
         (sig, probe)
     }
 
@@ -118,7 +123,7 @@ impl fmt::Debug for ReadinessSignaller {
 /// Engine-side half of a readiness probe.
 pub struct ReadinessProbe {
     rx: oneshot::Receiver<()>,
-    timeout: Duration,
+    timeout: Option<Duration>,
 }
 
 impl ReadinessProbe {
@@ -126,6 +131,7 @@ impl ReadinessProbe {
     #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
+            .expect("readiness timeout is owned by the external caller")
     }
 
     /// Resolves on signal, or [`ReadinessProbeError::SignallerDropped`]

@@ -2788,6 +2788,7 @@ impl<
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
+        startup_ready: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core. As much as possible, we pin
         // before allocating memory.
@@ -2824,7 +2825,7 @@ impl<
                 .as_ref()
                 .map(|(settings, _)| settings)
                 .cloned();
-            let runtime_pipeline = pipeline_factory
+            let mut runtime_pipeline = pipeline_factory
                 .build(
                     pipeline_context.clone(),
                     pipeline_config.clone(),
@@ -2853,14 +2854,21 @@ impl<
                     }
                 })?;
 
-            obs_evt_reporter.report(EngineEvent::ready(
-                pipeline_key.clone(),
-                Some("Pipeline initialization successful.".to_owned()),
-            ));
-
-            if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
-                let _ = startup_tx.send(Ok(()));
-            }
+            let startup_event_reporter = obs_evt_reporter.clone();
+            let startup_pipeline_key = pipeline_key.clone();
+            let internal_startup_tx = internal_telemetry
+                .as_ref()
+                .map(|(_, startup_tx)| startup_tx.clone());
+            runtime_pipeline = runtime_pipeline.with_startup_callback(move || {
+                startup_ready.store(true, std::sync::atomic::Ordering::Release);
+                startup_event_reporter.report(EngineEvent::ready(
+                    startup_pipeline_key,
+                    Some("Pipeline runtime initialization successful.".to_owned()),
+                ));
+                if let Some(startup_tx) = internal_startup_tx {
+                    let _ = startup_tx.send(Ok(()));
+                }
+            });
 
             // Start the pipeline (this will use the current thread's Tokio runtime)
             runtime_pipeline
@@ -2877,6 +2885,11 @@ impl<
                     pipeline_completion_msg_rx,
                 )
                 .map_err(|e| {
+                    if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
+                        let _ = startup_tx.send(Err(EngineError::InternalError {
+                            message: e.to_string(),
+                        }));
+                    }
                     otel_error!(
                         "controller.pipeline_runtime_failed",
                         core_id = core_id.id,

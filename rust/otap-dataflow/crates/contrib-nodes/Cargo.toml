@@ -44,6 +44,7 @@ tracing.workspace = true
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
@@ -146,6 +147,17 @@ kafka = [
 ]
 
 # Receivers.
+# Plaintext PostgreSQL is development-only and explicitly opt-in.
+postgresql = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:tokio-postgres",
+    "dep:sqlparser",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:blake3",
+    "dep:humantime-serde",
+    "serde_json/raw_value",
+]
 # Oracle requires separately provisioned native client libraries and is explicitly opt-in.
 oracle = [
     "dep:otel-arrow-dfe-scraper",
@@ -171,6 +183,11 @@ etw = ["dep:one_collect", "dep:humantime-serde"]
 windows-event-forwarding = [
     "dep:quick-xml",
     "dep:chrono",
+    "dep:serde_cbor",
+    "dep:uuid",
+    "uuid/v5",
+    "dep:url",
+    "dep:humantime-serde",
 ]
 user-events = [
     "dep:base64",
@@ -195,8 +212,12 @@ resource-validator = []
 
 # Exporters.
 azure-data-explorer = [
+    "dep:chrono",
     "dep:humantime-serde",
+    "dep:itoa",
     "dep:reqwest",
+    "dep:ryu",
+    "dep:sysinfo",
 ]
 azure-monitor = [
     "dep:opentelemetry-proto",

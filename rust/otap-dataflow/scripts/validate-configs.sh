@@ -27,7 +27,7 @@ else
     # mutually exclusive (compile_error! in non-test builds).
     cargo build \
         --locked \
-        --features azure,aws,contrib-exporters,contrib-processors,contrib-receivers,contrib-extensions,oracle \
+        --features azure,aws,contrib-exporters,contrib-processors,contrib-receivers,contrib-extensions,oracle,postgresql \
         --manifest-path "$PROJECT_DIR/Cargo.toml"
     BINARY="$PROJECT_DIR/target/debug/df_engine"
 fi

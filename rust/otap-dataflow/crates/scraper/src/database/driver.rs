@@ -17,6 +17,8 @@ pub enum DatabaseSystem {
     Oracle,
     /// Microsoft SQL Server.
     SqlServer,
+    /// PostgreSQL.
+    PostgreSQL,
 }
 
 impl DatabaseSystem {
@@ -26,6 +28,7 @@ impl DatabaseSystem {
         match self {
             Self::Oracle => "oracle.db",
             Self::SqlServer => "microsoft.sql_server",
+            Self::PostgreSQL => "postgresql",
         }
     }
 }

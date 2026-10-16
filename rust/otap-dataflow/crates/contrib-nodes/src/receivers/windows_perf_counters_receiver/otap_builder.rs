@@ -426,6 +426,302 @@ mod tests {
         }
     }
 
+    /// Scenario: Referenced Gauge and Sum definitions omit metadata while other definitions have no observations.
+    /// Guarantees: Decoded output retains default metadata and values, with no empty records for unused or omitted metrics.
+    #[test]
+    fn projects_optional_metric_metadata_without_empty_records() {
+        let config = RuntimeConfig::from_json(&serde_json::json!({
+            "metrics": {
+                "gauge": {},
+                "sum": {"unit": "", "sum": {"aggregation": "cumulative"}},
+                "unobserved": {},
+                "unused": {"sum": {"aggregation": "cumulative"}}
+            },
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [
+                    {"name": "Available Bytes", "metric": "gauge", "attributes": {"state": "free"}},
+                    {"name": "Committed Bytes", "metric": "sum", "attributes": {"state": "used"}},
+                    {"name": "Cache Bytes", "metric": "unobserved"}
+                ]
+            }]
+        }))
+        .unwrap();
+        let decoded = decode(
+            into_otap(
+                &config.counters,
+                sample(
+                    5,
+                    10,
+                    vec![
+                        point(0, SampleValue::Value(Number::Integer(42))),
+                        point(1, SampleValue::Value(Number::Double(12.5))),
+                        point(2, SampleValue::NoObservation),
+                    ],
+                ),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 2);
+        for (metric, name, path, state, value) in [
+            (
+                &metrics[0],
+                "gauge",
+                r"\Memory\Available Bytes",
+                "free",
+                number_data_point::Value::AsInt(42),
+            ),
+            (
+                &metrics[1],
+                "sum",
+                r"\Memory\Committed Bytes",
+                "used",
+                number_data_point::Value::AsDouble(12.5),
+            ),
+        ] {
+            assert_eq!(metric.name, name);
+            assert_eq!(metric.unit, "1");
+            assert!(metric.description.is_empty());
+            let points = match metric.data.as_ref().unwrap() {
+                metric::Data::Gauge(gauge) if name == "gauge" => &gauge.data_points,
+                metric::Data::Sum(sum) if name == "sum" => {
+                    assert_eq!(
+                        sum.aggregation_temporality,
+                        AggregationTemporality::Cumulative as i32
+                    );
+                    assert!(!sum.is_monotonic);
+                    &sum.data_points
+                }
+                _ => panic!("unexpected metric kind"),
+            };
+            assert_eq!(points.len(), 1);
+            assert_eq!(points[0].value, Some(value));
+            assert_eq!(points[0].time_unix_nano, 10);
+            assert_eq!(
+                points[0].start_time_unix_nano,
+                if name == "gauge" { 0 } else { 5 }
+            );
+            assert_eq!(
+                attributes(&points[0].attributes),
+                BTreeMap::from([("state", state), ("windows.perf_counter.path", path),])
+            );
+        }
+        assert!(
+            into_otap(
+                &config.counters,
+                sample(
+                    5,
+                    10,
+                    (0..config.counters.len())
+                        .map(|index| point(index, SampleValue::NoObservation))
+                        .collect()
+                ),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    /// Scenario: Omitted or blank references and an explicit reference resolve to an indexed path-named Gauge or Sum.
+    /// Guarantees: Configured index spelling selects the definition while grouped points retain canonical paths and explicit attributes only.
+    #[test]
+    fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
+        let name = r"\Process(app#001)\Private Bytes";
+        for (kind, definition) in [
+            (MetricKind::Gauge, serde_json::json!({"gauge": {}})),
+            (
+                MetricKind::Sum,
+                serde_json::json!({"sum": {"aggregation": "cumulative"}}),
+            ),
+        ] {
+            let mut definition = definition;
+            definition["unit"] = serde_json::json!("By");
+            definition["description"] = serde_json::json!("Shared memory observations.");
+            let mut value = serde_json::json!({
+                "metrics": {name: definition, "unused": {}},
+                "perfcounters": [{"object": "Process", "instances": "app#001", "counters": [
+                    {"name": "Private Bytes", "attributes": {"state": "ignored", "windows.perf_counter.path": "ignored"}},
+                    {"name": "Working Set", "metric": name, "attributes": {"state": "used"}}
+                ]}]
+            });
+            for reference in [None, Some(""), Some(" \t ")] {
+                if let Some(reference) = reference {
+                    value["perfcounters"][0]["counters"][0]["metric"] =
+                        serde_json::json!(reference);
+                }
+                let config = RuntimeConfig::from_json(&value).unwrap();
+                let decoded = decode(
+                    into_otap(
+                        &config.counters,
+                        sample(
+                            5,
+                            10,
+                            vec![
+                                point(1, SampleValue::Value(Number::Double(12.5))),
+                                point(0, SampleValue::Value(Number::Integer(42))),
+                            ],
+                        ),
+                    )
+                    .unwrap()
+                    .unwrap(),
+                );
+                let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+                assert_eq!(metrics.len(), 1);
+                let metric = &metrics[0];
+                assert_eq!(metric.name, name);
+                assert_eq!(metric.unit, "By");
+                assert_eq!(metric.description, "Shared memory observations.");
+                let points = match (kind, metric.data.as_ref().unwrap()) {
+                    (MetricKind::Gauge, metric::Data::Gauge(gauge)) => &gauge.data_points,
+                    (MetricKind::Sum, metric::Data::Sum(sum)) => {
+                        assert_eq!(
+                            sum.aggregation_temporality,
+                            AggregationTemporality::Cumulative as i32
+                        );
+                        assert!(!sum.is_monotonic);
+                        &sum.data_points
+                    }
+                    _ => panic!("unexpected metric kind"),
+                };
+                assert_eq!(points.len(), 2);
+                assert_eq!(
+                    points[0].value,
+                    Some(number_data_point::Value::AsDouble(12.5))
+                );
+                assert_eq!(points[1].value, Some(number_data_point::Value::AsInt(42)));
+                assert_eq!(
+                    attributes(&points[0].attributes),
+                    BTreeMap::from([
+                        ("state", "used"),
+                        ("windows.perf_counter.path", r"\Process(app#1)\Working Set"),
+                    ])
+                );
+                assert_eq!(
+                    attributes(&points[1].attributes),
+                    BTreeMap::from([(
+                        "windows.perf_counter.path",
+                        r"\Process(app#1)\Private Bytes"
+                    ),])
+                );
+                for point in points {
+                    assert_eq!(point.time_unix_nano, 10);
+                    assert_eq!(
+                        point.start_time_unix_nano,
+                        if kind == MetricKind::Sum { 5 } else { 0 }
+                    );
+                }
+                assert!(
+                    into_otap(
+                        &config.counters,
+                        sample(
+                            5,
+                            10,
+                            vec![
+                                point(0, SampleValue::NoObservation),
+                                point(1, SampleValue::NoObservation)
+                            ]
+                        ),
+                    )
+                    .unwrap()
+                    .is_none()
+                );
+            }
+        }
+    }
+
+    /// Scenario: Unreferenced paths differ from definitions by casing or canonical instance-index spelling.
+    /// Guarantees: Exact lookup falls back to path-named default Gauges and ignores attributes without losing points.
+    #[test]
+    fn projects_configured_path_names_with_exact_definition_lookup() {
+        let mut value = serde_json::json!({
+            "metrics": {
+                r"\Memory\Available Bytes": {"unit": "By", "sum": {"aggregation": "cumulative"}},
+                r"\Process(worker#1)\Private Bytes": {"description": "Must not match", "sum": {"aggregation": "cumulative"}}
+            },
+            "perfcounters": [
+                {"object": "memory", "counters": [{"name": "available bytes", "attributes": {"state": "ignored"}}]},
+                {"object": "Process", "instances": ["app#00", "worker#001"], "counters": [
+                    {"name": "Private Bytes", "attributes": {" ": "ignored", "windows.perf_counter.path": "ignored"}}
+                ]}
+            ]
+        });
+        let definitions = value["metrics"].clone();
+        for (definitions, reference) in [
+            (None, None),
+            (Some(serde_json::json!({})), Some("")),
+            (Some(definitions), Some(" \t ")),
+        ] {
+            match definitions {
+                Some(definitions) => value["metrics"] = definitions,
+                None => {
+                    let _ = value.as_object_mut().unwrap().remove("metrics");
+                }
+            }
+            if let Some(reference) = reference {
+                for object in value["perfcounters"].as_array_mut().unwrap() {
+                    object["counters"][0]["metric"] = serde_json::json!(reference);
+                }
+            }
+            let config = RuntimeConfig::from_json(&value).unwrap();
+            let decoded = decode(
+                into_otap(
+                    &config.counters,
+                    sample(
+                        0,
+                        10,
+                        vec![
+                            point(0, SampleValue::Value(Number::Integer(42))),
+                            point(1, SampleValue::Value(Number::Double(12.5))),
+                            point(2, SampleValue::Value(Number::Integer(-7))),
+                        ],
+                    ),
+                )
+                .unwrap()
+                .unwrap(),
+            );
+            let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+            assert_eq!(metrics.len(), 3);
+            for (metric, name, path, value) in [
+                (
+                    &metrics[0],
+                    r"\memory\available bytes",
+                    r"\memory\available bytes",
+                    number_data_point::Value::AsInt(42),
+                ),
+                (
+                    &metrics[1],
+                    r"\Process(app#00)\Private Bytes",
+                    r"\Process(app)\Private Bytes",
+                    number_data_point::Value::AsDouble(12.5),
+                ),
+                (
+                    &metrics[2],
+                    r"\Process(worker#001)\Private Bytes",
+                    r"\Process(worker#1)\Private Bytes",
+                    number_data_point::Value::AsInt(-7),
+                ),
+            ] {
+                assert_eq!(metric.name, name);
+                assert_eq!(metric.unit, "1");
+                assert!(metric.description.is_empty());
+                let Some(metric::Data::Gauge(gauge)) = &metric.data else {
+                    panic!("expected a fallback Gauge");
+                };
+                assert_eq!(gauge.data_points.len(), 1);
+                let point = &gauge.data_points[0];
+                assert_eq!(point.value, Some(value));
+                assert_eq!(point.time_unix_nano, 10);
+                assert_eq!(point.start_time_unix_nano, 0);
+                assert_eq!(
+                    attributes(&point.attributes),
+                    BTreeMap::from([("windows.perf_counter.path", path)])
+                );
+            }
+        }
+    }
+
     /// Scenario: A cumulative non-monotonic Sum has integer and scaled-double points from two instances.
     /// Guarantees: Decoded output preserves Sum semantics, metadata, values, attributes and timestamps.
     #[test]
