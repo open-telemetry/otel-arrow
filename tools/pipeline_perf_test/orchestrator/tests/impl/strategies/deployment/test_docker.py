@@ -1,5 +1,6 @@
 import os
 import pytest
+from typing import Optional
 from unittest.mock import MagicMock, patch
 from docker.errors import DockerException, APIError
 
@@ -13,6 +14,10 @@ from lib.impl.strategies.deployment.docker import (
     build_port_bindings,
     build_ulimits,
     build_volume_bindings,
+)
+from lib.impl.strategies.monitoring.docker_component import (
+    _calculate_cpu_usage,
+    _docker_stats_interval_seconds,
 )
 from lib.core.component import Component
 from lib.core.context.framework_element_contexts import StepContext
