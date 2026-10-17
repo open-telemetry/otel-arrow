@@ -982,33 +982,33 @@ fn extract_decoded_fields(
 pub(super) struct SessionWideMetrics {
     /// Every event the `ProcessTrace` callback observed from the trace
     /// session, counted *before* any per-core channel send is attempted.
-    /// Published as `received_events_total` in the metric set.
+    /// Published as `events.received` (`receiver.etw.events.received`) in the metric set.
     ///
     /// This is the producer-side ingress denominator. The slow-worker drop
     /// rate is computable as `dropped_slow_worker / total`. See the
     /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
     pub total: AtomicU64,
     /// Events dropped because a per-core channel was full (internal backpressure).
-    /// Published as `received_events_dropped_slow_worker` in the metric set.
+    /// Published as `dropped` with `reason="slow_worker"` (`receiver.etw.dropped.dropped`) in the metric set.
     pub dropped_slow_worker: AtomicU64,
-    /// Events whose TDH decode failed (`received_events_invalid`).
+    /// Events whose TDH decode failed (`receiver.etw.decode.errors`).
     pub decode_failed: AtomicU64,
     /// Kernel-side ETW events lost (buffer overrun) before `one_collect` ever
     /// saw them, from `TraceStats::events_lost`. A background poller converts
     /// the cumulative session counter into per-interval deltas and
-    /// `fetch_add`s them here. Published as `received_events_lost_kernel`.
+    /// `fetch_add`s them here. Published as `kernel.events_lost` (`receiver.etw.kernel.events_lost`).
     /// Distinct from `dropped_slow_worker`, which is our own downstream loss.
     pub kernel_events_lost: AtomicU64,
     /// Real-time delivery buffers lost (consumer too slow to drain the ETW
     /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
-    /// Published as `kernel_real_time_buffers_lost`.
+    /// Published as `buffers` with `outcome="real_time_lost"` (`receiver.etw.buffers.buffers`).
     pub kernel_real_time_buffers_lost: AtomicU64,
     /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`. Published as `kernel_log_buffers_lost`.
+    /// `TraceStats::log_buffers_lost`. Published as `buffers` with `outcome="log_lost"` (`receiver.etw.buffers.buffers`).
     pub kernel_log_buffers_lost: AtomicU64,
     /// Total ETW buffers written by the session, from
     /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal. Published as `kernel_buffers_written`.
+    /// than a loss signal. Published as `buffers` with `outcome="written"` (`receiver.etw.buffers.buffers`).
     pub kernel_buffers_written: AtomicU64,
 }
 
@@ -1367,7 +1367,7 @@ fn spawn_etw_session(
                         // schema.  A failure (NotFound for manifest-based
                         // events, or other decode errors) leaves the empty
                         // defaults in place and is counted via
-                        // `received_events_invalid` - the event is still
+                        // `decode.errors` (`receiver.etw.decode.errors`) - the event is still
                         // forwarded with empty `decoded_fields`.  Future work
                         // will add manifest decoding with a
                         // (Provider, Id, Version) cache key.
@@ -1435,7 +1435,7 @@ fn spawn_etw_session(
 
                     // Count every event the session produced, *before* the
                     // send is attempted. This is the producer-side ingress
-                    // denominator (`received_events_total` in the metric set).
+                    // denominator (`receiver.etw.events.received` in the metric set).
                     // The slow-worker drop rate is therefore
                     // `dropped_slow_worker / total`.
                     let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
@@ -1447,7 +1447,7 @@ fn spawn_etw_session(
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             // Bump the shared atomic so the async receiver can
-                            // surface it as `received_events_dropped_slow_worker`
+                            // surface it as `receiver.etw.dropped.dropped{reason="slow_worker"}`
                             // on the next `CollectTelemetry`.
                             let _ = telemetry
                                 .dropped_slow_worker
