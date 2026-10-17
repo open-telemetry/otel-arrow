@@ -160,7 +160,7 @@ it is separate from the retry processor's whole-batch redelivery policy.
 Generates synthetic traffic with performance metrics:
 
 - Generates synthetic traffic -> performance exporter
-- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+- View metrics at: `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=prometheus&reset=false`
 
 ### `trafficgen-multi-tenant-perf.yaml`
 
@@ -170,7 +170,7 @@ Generates mixed-tenant traffic using weighted resource attribute rotation:
 prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
   per pipeline.
 - Generates synthetic traffic -> performance exporter
-- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+- View metrics at: `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=prometheus&reset=false`
 
 The `resource_attributes` field accepts three forms:
 
@@ -202,7 +202,7 @@ OTAP receiver with performance metrics:
 
 - Receives OTAP traffic on `127.0.0.1:4317`
 - Measures and exports performance metrics
-- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+- View metrics at: `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=prometheus&reset=false`
 
 ### `otlp-otap.yaml`
 
@@ -243,7 +243,7 @@ OTLP receiver with performance metrics:
 
 - Receives OTLP traffic on `127.0.0.1:4317`
 - Measures and exports performance metrics
-- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+- View metrics at: `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=prometheus&reset=false`
 
 ### `syslog-perf.yaml`
 
@@ -251,7 +251,7 @@ Syslog/CEF receiver with performance metrics:
 
 - Receives syslog messages on UDP `0.0.0.0:5140`
 - Measures and exports performance metrics
-- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+- View metrics at: `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=prometheus&reset=false`
 
 To send a quick test message (UDP):
 
