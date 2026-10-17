@@ -41,6 +41,7 @@ use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::Re
 use otel_arrow_dfe_config::DeployedPipelineKey;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_pdata_codec::DecodePolicy;
 use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
@@ -280,6 +281,8 @@ pub struct RuntimePipeline<PData: Debug> {
     admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
+    /// Validation policy supplied to lazy pipeline-local pdata decoders.
+    decode_policy: DecodePolicy,
     /// Optional one-shot notification fired at the runtime-ready boundary.
     startup_callback: Option<Box<dyn FnOnce()>>,
     #[cfg(test)]
@@ -415,6 +418,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         )>,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
+        decode_policy: DecodePolicy,
     ) -> Self {
         Self {
             config,
@@ -426,6 +430,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics: Default::default(),
             admission_metrics: Default::default(),
             telemetry_policy,
+            decode_policy,
             startup_callback: None,
             #[cfg(test)]
             readiness_drop_callback: None,
@@ -500,6 +505,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             channel_metrics,
             admission_metrics,
             telemetry_policy,
+            decode_policy,
             mut startup_callback,
             #[cfg(test)]
             mut readiness_drop_callback,
@@ -512,7 +518,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
-        let runtime_services = PipelineRuntimeServices::new(Default::default())?;
+        let runtime_services = PipelineRuntimeServices::new(decode_policy)?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut receiver_readiness = FuturesUnordered::new();
@@ -1595,6 +1601,7 @@ connections:
                     pipeline_config,
                     channel_capacity_policy,
                     TelemetryPolicy::default(),
+                    Default::default(),
                     std::collections::BTreeMap::new(),
                     None,
                     None,

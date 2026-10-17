@@ -13,7 +13,17 @@
 //! owners. This boundary keeps the service bundle focused and avoids turning it
 //! into a container for unrelated runtime objects.
 
-use otel_arrow_dfe_pdata_codec::{CodecService, CodecServiceBuilder, DecodePolicy, RegistryError};
+use otel_arrow_dfe_config::policy::{PdataDecodeValidation, PdataPolicy};
+use otel_arrow_dfe_pdata_codec::{
+    CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation, RegistryError,
+};
+
+pub(crate) const fn decode_policy_from_config(policy: &PdataPolicy) -> DecodePolicy {
+    DecodePolicy::new(match policy.decode_validation {
+        PdataDecodeValidation::BestEffort => DecodeValidation::BestEffort,
+        PdataDecodeValidation::Strict => DecodeValidation::Strict,
+    })
+}
 
 /// Runtime-owned services shared by every effect handler in one pipeline.
 ///
@@ -90,5 +100,19 @@ mod tests {
                 .codec_service()
                 .shares_state_with(shared.codec_service())
         );
+    }
+
+    /// Scenario: pipeline configuration selects strict pdata decode validation.
+    /// Guarantees: runtime service construction supplies the matching codec policy.
+    #[test]
+    fn pdata_config_maps_to_pipeline_codec_policy() {
+        let config = PdataPolicy {
+            decode_validation: PdataDecodeValidation::Strict,
+        };
+        let policy = decode_policy_from_config(&config);
+        let services = PipelineRuntimeServices::new(policy).unwrap();
+
+        assert_eq!(policy.validation(), DecodeValidation::Strict);
+        assert_eq!(services.codecs().decode_policy(), policy);
     }
 }

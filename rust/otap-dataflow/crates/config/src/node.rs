@@ -623,6 +623,21 @@ policies:
         assert!(!telemetry.size);
     }
 
+    /// Scenario: a node attempts to override the pipeline-owned pdata decode policy.
+    /// Guarantees: the restricted node policy schema rejects the unsupported field.
+    #[test]
+    fn node_user_config_rejects_pdata_policy() {
+        let yaml = r#"
+type: "processor:batch"
+policies:
+  pdata:
+    decode_validation: strict
+"#;
+        let error = serde_yaml::from_str::<NodeUserConfig>(yaml)
+            .expect_err("pdata decode policy belongs to the pipeline scope");
+        assert!(error.to_string().contains("unknown field `pdata`"));
+    }
+
     #[test]
     fn test_yaml_node_config() {
         let yaml = r#"

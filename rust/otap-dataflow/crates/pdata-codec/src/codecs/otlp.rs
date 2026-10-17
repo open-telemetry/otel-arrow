@@ -14,6 +14,8 @@
 //! scratch buffers so repeated output avoids reallocating while an unused
 //! signal consumes no buffer.
 
+use std::sync::LazyLock;
+
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::encode::{
@@ -37,11 +39,21 @@ use prost::Message;
 use crate::{
     BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
     CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, DecodeValidation, EncodeOutput,
-    EncodePolicy, PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding,
+    EncodePolicy, PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding, RegistryError,
+    ResolvedCodec,
 };
 
 /// Stable identity of uncompressed OTLP protobuf service-request bytes.
 pub const OTLP_ENCODING: PdataEncoding = PdataEncoding::OTLP;
+
+static RESOLVED_OTLP: LazyLock<Result<ResolvedCodec, RegistryError>> = LazyLock::new(|| {
+    crate::CodecRegistry::global().and_then(|registry| registry.resolve(&OTLP_ENCODING))
+});
+
+/// Returns the built-in OTLP identity after validated registry resolution.
+pub fn resolve_otlp() -> Result<ResolvedCodec, RegistryError> {
+    RESOLVED_OTLP.as_ref().copied().map_err(Clone::clone)
+}
 
 const INITIAL_BUFFER_CAPACITY: usize = 8 * 1024;
 const MAX_RETAINED_BUFFER_CAPACITY: usize = 256 * 1024;
@@ -327,24 +339,26 @@ mod tests {
             .build()
     }
 
-    /// Scenario: OTLP admission uses the validated registry without mutable state.
-    /// Guarantees: Admission preserves the shared buffer and stateless item count.
+    /// Scenario: OTLP admission uses either pipeline decode-validation policy.
+    /// Guarantees: Admission preserves the shared buffer and creates no decoder.
     #[test]
     fn admission_does_not_create_an_instance() {
-        let service = CodecService::new().unwrap();
-        let codec = service
-            .registry()
-            .resolve_decoder(&OTLP_ENCODING, SignalType::Logs)
-            .unwrap();
-        let bytes = logs_bytes();
-        let pointer = bytes.as_ptr();
-        let encoded = codec.admit(SignalType::Logs, bytes).unwrap();
-        assert_eq!(encoded.bytes().as_ptr(), pointer);
-        assert_eq!(
-            codec.count_items(SignalType::Logs, encoded.bytes()),
-            Some(4)
-        );
-        assert_eq!(service.test_instance_count().unwrap(), 0);
+        for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+            let service = service(validation);
+            let codec = service
+                .registry()
+                .resolve_decoder(&OTLP_ENCODING, SignalType::Logs)
+                .unwrap();
+            let bytes = logs_bytes();
+            let pointer = bytes.as_ptr();
+            let encoded = codec.admit(SignalType::Logs, bytes).unwrap();
+            assert_eq!(encoded.bytes().as_ptr(), pointer);
+            assert_eq!(
+                codec.count_items(SignalType::Logs, encoded.bytes()),
+                Some(4)
+            );
+            assert_eq!(service.test_instance_count().unwrap(), 0);
+        }
     }
 
     /// Scenario: A read-only consumer accepts OTLP and another requires native OTAP.

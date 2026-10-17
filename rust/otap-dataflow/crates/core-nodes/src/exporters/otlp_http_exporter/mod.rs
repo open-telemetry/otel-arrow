@@ -54,8 +54,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-#[cfg(test)]
-use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_pdata_codec::{EncodePolicy, PdataEncoding};
 use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
 use prost::Message as _;
@@ -3653,21 +3651,15 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload().into_data() {
-                                    PayloadData::OtapRecords(otap_batch) => {
-                                        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-                                        assert!(
-                                            logs_batch.num_rows() > 0,
-                                            "expected record batches to be returned in Nack, but it was empty"
-                                        );
-                                    }
-                                    other_payload => {
-                                        panic!(
-                                            "received unexpected payload type in Nack: {:?}",
-                                            other_payload
-                                        );
-                                    }
-                                }
+                                let payload = nack.refused.payload();
+                                let otap_batch = payload
+                                    .otap_ref()
+                                    .expect("expected native OTAP payload in Nack");
+                                let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+                                assert!(
+                                    logs_batch.num_rows() > 0,
+                                    "expected record batches to be returned in Nack, but it was empty"
+                                );
 
                                 if ack_count >= num_expected_nacks {
                                     break;
@@ -3740,20 +3732,14 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload().into_data() {
-                                    PayloadData::OtlpBytes(proto_bytes) => {
-                                        assert!(
-                                            !proto_bytes.as_bytes().is_empty(),
-                                            "expected payload bytes to be returned in Nack, but it was empty"
-                                        );
-                                    }
-                                    other_payload => {
-                                        panic!(
-                                            "received unexpected payload type in Nack: {:?}",
-                                            other_payload
-                                        );
-                                    }
-                                }
+                                let payload = nack.refused.payload();
+                                assert!(
+                                    !payload
+                                        .encoded_bytes()
+                                        .expect("expected encoded payload in Nack")
+                                        .is_empty(),
+                                    "expected payload bytes to be returned in Nack, but it was empty"
+                                );
 
                                 if ack_count >= num_expected_nacks {
                                     break;

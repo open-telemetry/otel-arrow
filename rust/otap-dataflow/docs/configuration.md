@@ -526,7 +526,7 @@ engine:
 Observability pipelines use the same node and connection model as regular
 pipelines. Pipeline-scoped extensions can provide capabilities to observability
 nodes and are declared in the pipeline's `extensions` section. They support
-`channel_capacity`, `health`, and `telemetry` policies, but resource policies
+`channel_capacity`, `health`, `pdata`, and `telemetry` policies, but resource policies
 are intentionally not supported there. The pipeline is mandatory and must
 contain exactly one connected internal telemetry receiver. The receiver
 defaults to `signals: [logs, metrics]`, while either signal can be selected

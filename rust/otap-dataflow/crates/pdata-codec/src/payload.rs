@@ -6,25 +6,19 @@
 use std::borrow::Cow;
 
 use bytes::{Bytes, BytesMut};
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes};
 use prost::Message;
 
 use crate::{
-    AcceptedEncodings, CodecError, CodecRegistry, CodecService, EncodeOutput, EncodedPdata,
-    EncodedView, EncodingPlan, PdataEncoding, PdataView, ResolvedCodec,
+    AcceptedEncodings, CodecError, CodecService, EncodeOutput, EncodedPdata, EncodedView,
+    EncodingPlan, PdataEncoding, PdataView, ResolvedCodec,
 };
 
-/// Concrete inline storage used during the transition from specialized OTLP bytes.
+/// Concrete inline storage hidden behind representation-independent capabilities.
 #[derive(Clone, Debug)]
-pub enum PayloadStorage {
-    /// Temporary compatibility storage for existing OTLP receivers during the
-    /// staged codec rollout. PR4 removes it when receivers switch to `Encoded`.
-    /// OTLP is a built-in byte codec, not a second native processing format;
-    /// native OTAP alone remains special. Both OTLP storage forms already expose
-    /// the same encoded identity through `PdataPayload::format`.
-    OtlpBytes(OtlpProtoBytes),
+enum PayloadStorage {
     /// Independently decodable bytes and their resolved codec identity.
     Encoded(EncodedPdata),
     /// Native mutable OTAP Arrow records.
@@ -34,7 +28,6 @@ pub enum PayloadStorage {
 impl PayloadStorage {
     fn signal_type(&self) -> SignalType {
         match self {
-            Self::OtlpBytes(bytes) => bytes.signal_type(),
             Self::Encoded(encoded) => encoded.signal_type(),
             Self::OtapRecords(records) => records.signal_type(),
         }
@@ -42,7 +35,6 @@ impl PayloadStorage {
 
     fn is_empty(&self) -> bool {
         match self {
-            Self::OtlpBytes(bytes) => bytes.is_empty(),
             Self::Encoded(encoded) => encoded.bytes().is_empty(),
             Self::OtapRecords(records) => records.is_empty(),
         }
@@ -50,7 +42,6 @@ impl PayloadStorage {
 
     fn retained_memory_bytes(&self) -> usize {
         match self {
-            Self::OtlpBytes(bytes) => bytes.retained_memory_bytes(),
             Self::Encoded(encoded) => encoded.bytes().len(),
             Self::OtapRecords(records) => records.retained_memory_bytes(),
         }
@@ -131,9 +122,6 @@ pub struct PdataPayload {
 /// Transitional name retained while nodes migrate to [`PdataPayload`].
 pub type OtapPayload = PdataPayload;
 
-/// Transitional storage name retained while callers migrate to capabilities.
-pub type PayloadData = PayloadStorage;
-
 /// A failed native conversion together with the exact recoverable input.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -187,10 +175,25 @@ impl PdataPayload {
         }
     }
 
-    /// Constructs transitional OTLP storage through the validated registry.
+    /// Constructs generalized OTLP storage through the validated registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the linked codec registrations are invalid. Pipeline runtime
+    /// services validate the global registry before starting nodes; standalone
+    /// callers can use [`crate::builtins::resolve_otlp`] to handle that error.
     #[must_use]
     pub fn from_otlp(bytes: OtlpProtoBytes) -> Self {
-        Self::from_storage(PayloadStorage::OtlpBytes(bytes))
+        let signal = bytes.signal_type();
+        // SAFETY: Pipeline startup has validated the immutable global registry.
+        // Standalone callers must satisfy the documented valid-registration
+        // precondition. The built-in OTLP registration always includes a decoder
+        // for every SignalType, so admission cannot fail or inspect the bytes.
+        let encoded = crate::builtins::resolve_otlp()
+            .expect("validated OTLP codec")
+            .admit(signal, bytes.into_bytes())
+            .expect("OTLP codec supports every signal");
+        Self::from_encoded(encoded)
     }
 
     /// Constructs native OTAP storage.
@@ -217,9 +220,6 @@ impl PdataPayload {
     #[must_use]
     pub fn format(&self) -> PdataFormat {
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => {
-                PdataFormat::encoded(otlp_codec(bytes.signal_type()))
-            }
             PayloadStorage::Encoded(encoded) => PdataFormat::encoded(encoded.codec()),
             PayloadStorage::OtapRecords(_) => PdataFormat::OTAP,
         }
@@ -235,7 +235,6 @@ impl PdataPayload {
     #[must_use]
     pub fn encoded_bytes(&self) -> Option<&Bytes> {
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => Some(bytes.bytes()),
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes()),
             PayloadStorage::OtapRecords(_) => None,
         }
@@ -249,14 +248,7 @@ impl PdataPayload {
     /// unsupported encodings should instead fall back to native OTAP decoding.
     #[must_use]
     pub fn encoded_view(&self) -> Option<EncodedView<'_>> {
-        // Legacy storage has no encoding field to borrow.
-        static OTLP_ENCODING: PdataEncoding = PdataEncoding::OTLP;
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => Some(EncodedView::new(
-                &OTLP_ENCODING,
-                bytes.signal_type(),
-                bytes.bytes(),
-            )),
             PayloadStorage::Encoded(encoded) => Some(EncodedView::new(
                 encoded.encoding(),
                 encoded.signal_type(),
@@ -270,7 +262,6 @@ impl PdataPayload {
     #[must_use]
     pub fn into_encoded_bytes(self) -> Option<Bytes> {
         match self.storage {
-            PayloadStorage::OtlpBytes(bytes) => Some(bytes.into_bytes()),
             PayloadStorage::Encoded(encoded) => Some(encoded.into_bytes()),
             PayloadStorage::OtapRecords(_) => None,
         }
@@ -285,44 +276,10 @@ impl PdataPayload {
         }
     }
 
-    /// Borrows the transitional concrete storage.
-    #[must_use]
-    pub const fn storage(&self) -> &PayloadStorage {
-        &self.storage
-    }
-
-    /// Consumes the payload and returns transitional concrete storage.
-    #[must_use]
-    pub fn into_storage(self) -> PayloadStorage {
-        self.storage
-    }
-
-    /// Transitional alias for [`Self::storage`].
-    #[must_use]
-    pub const fn data(&self) -> &PayloadStorage {
-        self.storage()
-    }
-
-    /// Transitional alias for [`Self::into_storage`].
-    #[must_use]
-    pub fn into_data(self) -> PayloadStorage {
-        self.into_storage()
-    }
-
     /// Returns the telemetry signal.
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
         self.storage.signal_type()
-    }
-
-    /// Transitional storage format used by legacy batching.
-    #[must_use]
-    pub const fn signal_format(&self) -> SignalFormat {
-        match self.storage {
-            PayloadStorage::OtlpBytes(_) => SignalFormat::OtlpBytes,
-            PayloadStorage::Encoded(_) => SignalFormat::Encoded,
-            PayloadStorage::OtapRecords(_) => SignalFormat::OtapRecords,
-        }
     }
 
     /// Returns true when the payload is empty.
@@ -350,7 +307,6 @@ impl PdataPayload {
             return count;
         }
         let count = match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => bytes.num_items(),
             PayloadStorage::Encoded(encoded) => {
                 let Some(count) = encoded
                     .codec()
@@ -369,7 +325,6 @@ impl PdataPayload {
     /// Returns the logical size of the current representation.
     pub fn num_bytes(&mut self) -> Option<usize> {
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => Some(bytes.bytes().len()),
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes().len()),
             PayloadStorage::OtapRecords(records) => {
                 if let Some(size) = self.size.get() {
@@ -386,7 +341,6 @@ impl PdataPayload {
     #[must_use]
     pub fn measured_bytes(&self) -> Option<usize> {
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => Some(bytes.bytes().len()),
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes().len()),
             PayloadStorage::OtapRecords(records) => self.size.get().or_else(|| records.num_bytes()),
         }
@@ -402,7 +356,6 @@ impl PdataPayload {
     #[must_use]
     pub fn take_payload(&mut self) -> Self {
         let empty = match &mut self.storage {
-            PayloadStorage::OtlpBytes(bytes) => PayloadStorage::OtlpBytes(bytes.take_payload()),
             PayloadStorage::Encoded(encoded) => {
                 let empty = EncodedPdata::from_resolved(
                     encoded.codec(),
@@ -434,17 +387,6 @@ impl PdataPayload {
         } = self;
         match storage {
             PayloadStorage::OtapRecords(records) => Ok(records),
-            PayloadStorage::OtlpBytes(bytes) => {
-                let codec = otlp_codec(bytes.signal_type());
-                let payload = Self {
-                    storage: PayloadStorage::OtlpBytes(bytes.clone()),
-                    item_count,
-                    size,
-                };
-                codecs
-                    .decode_parts(codec, bytes.signal_type(), bytes.bytes())
-                    .map_err(|source| decode_error(source, payload))
-            }
             PayloadStorage::Encoded(encoded) => {
                 let payload = Self {
                     storage: PayloadStorage::Encoded(encoded.clone()),
@@ -465,12 +407,6 @@ impl PdataPayload {
         accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => codecs.view_parts(
-                otlp_codec(bytes.signal_type()),
-                bytes.signal_type(),
-                bytes.bytes(),
-                accepted_encodings,
-            ),
             PayloadStorage::Encoded(encoded) => codecs.view(encoded, accepted_encodings),
             PayloadStorage::OtapRecords(records) => Ok(PdataView::Native(Cow::Borrowed(records))),
         }
@@ -485,10 +421,6 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
-            PayloadStorage::OtlpBytes(bytes) if otlp_codec(bytes.signal_type()) == plan.codec() => {
-                plan.validate_encoded_size(bytes.bytes().len())?;
-                Ok(consume(EncodeOutput::bytes(bytes.clone_bytes())))
-            }
             PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
                 plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
@@ -498,14 +430,6 @@ impl PdataPayload {
                 // Invalidate before exposing mutable records, not just on success.
                 self.size = CachedMeasurement::unknown();
                 codecs.with_encoded_output(records, plan, consume)
-            }
-            PayloadStorage::OtlpBytes(bytes) => {
-                let mut records = codecs.decode_parts(
-                    otlp_codec(bytes.signal_type()),
-                    bytes.signal_type(),
-                    bytes.bytes(),
-                )?;
-                codecs.with_encoded_output(&mut records, plan, consume)
             }
             PayloadStorage::Encoded(encoded) => {
                 let mut records = codecs.decode(encoded)?;
@@ -523,7 +447,7 @@ impl PdataPayload {
         self.with_encoded_output(codecs, plan, |output| output.into_bytes())
     }
 
-    /// Returns an empty transitional OTLP payload for a signal.
+    /// Returns an empty generalized OTLP payload for a signal.
     #[must_use]
     pub fn empty(signal: SignalType) -> Self {
         Self::from_otlp(OtlpProtoBytes::empty(signal))
@@ -546,17 +470,6 @@ impl PdataPayload {
 
 fn decode_error(source: CodecError, payload: PdataPayload) -> PdataPayloadDecodeError {
     PdataPayloadDecodeError(Box::new(PdataPayloadDecodeErrorInner { source, payload }))
-}
-
-fn otlp_codec(signal: SignalType) -> ResolvedCodec {
-    let registry = CodecRegistry::global().expect("the pdata codec registry must be valid");
-    let codec = registry
-        .resolve(&PdataEncoding::OTLP)
-        .expect("the built-in OTLP codec must be registered");
-    codec
-        .require_decoder(signal)
-        .expect("the built-in OTLP codec must support every OTLP signal");
-    codec
 }
 
 impl From<OtapArrowRecords> for PdataPayload {
@@ -585,15 +498,10 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords
 
     fn try_from_with_options(
         value: PdataPayload,
-        options: otel_arrow_dfe_config::ConversionOptions,
+        _options: otel_arrow_dfe_config::ConversionOptions,
     ) -> Result<Self, Self::Error> {
-        match value.into_storage() {
+        match value.storage {
             PayloadStorage::OtapRecords(records) => Ok(records),
-            PayloadStorage::OtlpBytes(bytes) => {
-                Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
-                    OtlpProtoBytes,
-                >>::try_from_with_options(bytes, options)?)
-            }
             PayloadStorage::Encoded(encoded) => {
                 let service = CodecService::new().map_err(CodecError::from)?;
                 Ok(service.decode(&encoded)?)
@@ -610,8 +518,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
         value: PdataPayload,
         options: otel_arrow_dfe_config::ConversionOptions,
     ) -> Result<Self, Self::Error> {
-        match value.into_storage() {
-            PayloadStorage::OtlpBytes(bytes) => Ok(bytes),
+        match value.storage {
             PayloadStorage::Encoded(encoded) if encoded.encoding() == &PdataEncoding::OTLP => Ok(
                 Self::new_from_bytes(encoded.signal_type(), encoded.into_bytes()),
             ),
@@ -640,12 +547,6 @@ impl From<OtlpProtoBytes> for PdataPayload {
 impl From<EncodedPdata> for PdataPayload {
     fn from(encoded: EncodedPdata) -> Self {
         Self::from_encoded(encoded)
-    }
-}
-
-impl From<PayloadStorage> for PdataPayload {
-    fn from(storage: PayloadStorage) -> Self {
-        Self::from_storage(storage)
     }
 }
 
@@ -679,8 +580,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CodecMetadata, CodecRegistration, CodecServiceBuilder, DecodePolicy, DecodeValidation,
-        EncodePolicy,
+        CodecMetadata, CodecRegistration, CodecRegistry, CodecServiceBuilder, DecodePolicy,
+        DecodeValidation, EncodePolicy,
     };
     use otel_arrow_dfe_pdata::arrow::{
         array::RecordBatch,
@@ -719,7 +620,7 @@ mod tests {
         }
     }
 
-    /// Scenario: Legacy OTLP, generalized OTLP, and another encoding contain opaque bytes.
+    /// Scenario: OTLP compatibility adapters, admitted OTLP, and another encoding contain opaque bytes.
     /// Guarantees: Direct views preserve identity, signal, and buffer without validation;
     /// native OTAP has no encoded view.
     #[test]
@@ -759,7 +660,7 @@ mod tests {
         assert!(native.encoded_view().is_none());
     }
 
-    /// Scenario: Transitional OTLP, generalized encoded, and native storage is built on 64 bit.
+    /// Scenario: Generalized encoded and native storage is built on 64 bit.
     /// Guarantees: Inline encoded storage keeps the runtime payload at 64 bytes.
     #[test]
     #[cfg(target_pointer_width = "64")]

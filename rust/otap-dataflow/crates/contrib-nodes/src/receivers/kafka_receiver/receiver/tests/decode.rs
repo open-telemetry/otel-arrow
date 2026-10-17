@@ -65,10 +65,7 @@ fn decode_traces_payload_otap_proto() {
             .expect("should decode");
     let payload: OtapPayload = pdata.take_payload();
     assert!(
-        matches!(
-            payload.into_data(),
-            PayloadData::OtapRecords(OtapArrowRecords::Traces(_))
-        ),
+        matches!(payload.otap_ref(), Some(OtapArrowRecords::Traces(_))),
         "expected OtapArrowRecords::Traces"
     );
 }
@@ -85,10 +82,7 @@ fn decode_metrics_payload_otap_proto() {
             .expect("should decode");
     let payload: OtapPayload = pdata.take_payload();
     assert!(
-        matches!(
-            payload.into_data(),
-            PayloadData::OtapRecords(OtapArrowRecords::Metrics(_))
-        ),
+        matches!(payload.otap_ref(), Some(OtapArrowRecords::Metrics(_))),
         "expected OtapArrowRecords::Metrics"
     );
 }
@@ -105,10 +99,7 @@ fn decode_logs_payload_otap_proto() {
             .expect("should decode");
     let payload: OtapPayload = pdata.take_payload();
     assert!(
-        matches!(
-            payload.into_data(),
-            PayloadData::OtapRecords(OtapArrowRecords::Logs(_))
-        ),
+        matches!(payload.otap_ref(), Some(OtapArrowRecords::Logs(_))),
         "expected OtapArrowRecords::Logs"
     );
 }
@@ -123,11 +114,11 @@ fn decode_logs_payload_plaintext_sets_body() {
         SignalDecoder::decode_signal_payload(SignalType::Logs, input, MessageFormat::Plaintext)
             .expect("decode plaintext");
     let payload: OtapPayload = pdata.take_payload();
-    let arrow_records = match payload.into_data() {
-        PayloadData::OtapRecords(records @ OtapArrowRecords::Logs(_)) => records,
-        _ => panic!("expected plaintext to produce OtapArrowRecords::Logs"),
-    };
-    let mut pdata = OtapPdata::new(Default::default(), arrow_records.into());
+    assert!(matches!(
+        payload.otap_ref(),
+        Some(OtapArrowRecords::Logs(_))
+    ));
+    let mut pdata = OtapPdata::new(Default::default(), payload);
     let proto = take_otlp_proto(&mut pdata);
     let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
 

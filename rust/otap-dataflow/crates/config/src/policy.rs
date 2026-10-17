@@ -16,10 +16,37 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::time::Duration;
 
+/// Validation level applied when a pipeline decodes encoded pdata.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PdataDecodeValidation {
+    /// Prefer decoding performance and permit codecs to skip validation of
+    /// encoded content they do not visit.
+    #[default]
+    BestEffort,
+    /// Require codecs to reject malformed content anywhere in an encoded batch.
+    Strict,
+}
+
+/// Policy controlling conversion from encoded pdata to native OTAP records.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PdataPolicy {
+    /// Validation level selected when a pipeline-local decoder is created.
+    #[serde(default)]
+    pub decode_validation: PdataDecodeValidation,
+}
+
 /// Top-level policy set.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Policies {
+    /// Pdata decoding policy.
+    ///
+    /// When absent, a parent scope's pdata policy or the built-in best-effort
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pdata: Option<PdataPolicy>,
     /// Channel capacity policy.
     ///
     /// When absent, a parent scope's channel capacity policy or the built-in
@@ -82,6 +109,7 @@ impl Policies {
     pub fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
         let mut channel_capacity = None;
         let mut health = None;
+        let mut pdata = None;
         let mut runtime_recovery = None;
         let mut telemetry = None;
         let mut core_allocation = None;
@@ -96,6 +124,9 @@ impl Policies {
             }
             if health.is_none() {
                 health = scope.health.as_ref();
+            }
+            if pdata.is_none() {
+                pdata = scope.pdata.as_ref();
             }
             if runtime_recovery.is_none() {
                 runtime_recovery = scope.runtime_recovery.as_ref();
@@ -130,6 +161,7 @@ impl Policies {
         ResolvedPolicies {
             channel_capacity: channel_capacity.cloned().unwrap_or_default(),
             health: health.cloned().unwrap_or_default(),
+            pdata: pdata.cloned().unwrap_or_default(),
             runtime_recovery: runtime_recovery.cloned().unwrap_or_default(),
             telemetry: telemetry.cloned().unwrap_or_default(),
             resources: ResolvedResourcesPolicy {
@@ -282,6 +314,8 @@ pub struct ResolvedPolicies {
     pub channel_capacity: ChannelCapacityPolicy,
     /// Health policy.
     pub health: HealthPolicy,
+    /// Pdata decoding policy.
+    pub pdata: PdataPolicy,
     /// Runtime telemetry policy.
     pub telemetry: TelemetryPolicy,
     /// Controller-managed runtime recovery policy.
@@ -309,6 +343,7 @@ impl PartialEq for ResolvedPolicies {
         let Self {
             channel_capacity,
             health,
+            pdata,
             telemetry,
             runtime_recovery,
             resources,
@@ -321,6 +356,7 @@ impl PartialEq for ResolvedPolicies {
         let Self {
             channel_capacity: other_channel_capacity,
             health: other_health,
+            pdata: other_pdata,
             telemetry: other_telemetry,
             runtime_recovery: other_runtime_recovery,
             resources: other_resources,
@@ -333,6 +369,7 @@ impl PartialEq for ResolvedPolicies {
 
         channel_capacity == other_channel_capacity
             && health == other_health
+            && pdata == other_pdata
             && telemetry == other_telemetry
             && runtime_recovery == other_runtime_recovery
             && resources == other_resources
@@ -379,6 +416,7 @@ impl ResolvedPolicies {
         let Self {
             channel_capacity: self_channel_capacity,
             health: self_health,
+            pdata: self_pdata,
             telemetry: self_telemetry,
             runtime_recovery: self_runtime_recovery,
             resources: _,
@@ -391,6 +429,7 @@ impl ResolvedPolicies {
         let Self {
             channel_capacity: other_channel_capacity,
             health: other_health,
+            pdata: other_pdata,
             telemetry: other_telemetry,
             runtime_recovery: other_runtime_recovery,
             resources: _,
@@ -403,6 +442,7 @@ impl ResolvedPolicies {
 
         self_channel_capacity == other_channel_capacity
             && self_health == other_health
+            && self_pdata == other_pdata
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
@@ -1336,7 +1376,7 @@ mod tests {
     }
 
     /// Scenario: all policy families are omitted from configuration.
-    /// Guarantees: runtime recovery defaults to five enabled attempts with balanced timing.
+    /// Guarantees: pdata and runtime recovery use their documented built-in defaults.
     #[test]
     fn defaults_match_expected_values() {
         let defaults = Policies::resolve([&Policies::default()]);
@@ -1356,6 +1396,10 @@ mod tests {
         );
         assert_eq!(defaults.health, crate::health::HealthPolicy::default());
         assert_eq!(
+            defaults.pdata.decode_validation,
+            super::PdataDecodeValidation::BestEffort
+        );
+        assert_eq!(
             defaults.runtime_recovery,
             RuntimeRecoveryPolicy {
                 enabled: true,
@@ -1366,6 +1410,47 @@ mod tests {
                 reset_after: Duration::from_secs(60),
             }
         );
+    }
+
+    /// Scenario: pipeline, group, and engine scopes declare pdata decode policies.
+    /// Guarantees: the lowest configured scope wins and omission inherits its parent.
+    #[test]
+    fn pdata_policy_resolves_by_scope_precedence() {
+        let engine: Policies = serde_yaml::from_str("pdata:\n  decode_validation: strict\n")
+            .expect("engine pdata policy");
+        let group: Policies = serde_yaml::from_str("pdata:\n  decode_validation: best_effort\n")
+            .expect("group pdata policy");
+        let pipeline = Policies::default();
+
+        let inherited = Policies::resolve([&pipeline, &group, &engine]);
+        assert_eq!(
+            inherited.pdata.decode_validation,
+            super::PdataDecodeValidation::BestEffort
+        );
+
+        let pipeline: Policies = serde_yaml::from_str("pdata:\n  decode_validation: strict\n")
+            .expect("pipeline pdata policy");
+        let overridden = Policies::resolve([&pipeline, &group, &engine]);
+        assert_eq!(
+            overridden.pdata.decode_validation,
+            super::PdataDecodeValidation::Strict
+        );
+    }
+
+    /// Scenario: only the effective pdata decode validation changes.
+    /// Guarantees: runtime policy comparison requests a pipeline redeployment.
+    #[test]
+    fn resolved_policies_detect_pdata_policy_change() {
+        let current = super::ResolvedPolicies::default();
+        let candidate = super::ResolvedPolicies {
+            pdata: super::PdataPolicy {
+                decode_validation: super::PdataDecodeValidation::Strict,
+            },
+            ..super::ResolvedPolicies::default()
+        };
+
+        assert_ne!(current, candidate);
+        assert!(!current.eq_ignoring_resources(&candidate));
     }
 
     /// Scenario: a pipeline-level authorized identity policy overrides an

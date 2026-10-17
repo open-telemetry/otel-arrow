@@ -117,6 +117,7 @@ Policy families:
 - `policies.channel_capacity.control.pipeline`
 - `policies.channel_capacity.control.completion`
 - `policies.channel_capacity.pdata`
+- `policies.pdata.decode_validation`
 - `policies.health`
 - `policies.telemetry.pipeline_metrics`
 - `policies.telemetry.tokio_metrics`
@@ -130,6 +131,7 @@ Defaults:
 - `channel_capacity.control.pipeline = 256`
 - `channel_capacity.control.completion = 512`
 - `channel_capacity.pdata = 128`
+- `pdata.decode_validation = best_effort`
 - `telemetry.pipeline_metrics = true`
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
@@ -148,6 +150,15 @@ Telemetry policy note:
 - it gates channel endpoint transport metrics, per-node input/output
   outcome metrics, and the shared control-plane metric families exported on the
   pipeline entity (`pipeline.runtime_control` and `pipeline.completion`)
+
+Pdata decode policy note:
+
+- `policies.pdata.decode_validation` accepts `best_effort` (default) or
+  `strict`
+- best-effort decoding permits faster borrowed parsers that may not detect
+  malformed fields they do not visit
+- strict decoding validates a complete encoded batch before returning records
+- encoded pass-through performs no decode validation in either mode
 
 Resolution precedence:
 
@@ -174,7 +185,7 @@ Memory limiter policy:
 
 Resolution semantics:
 
-- precedence applies per policy family (`channel_capacity`, `health`,
+- precedence applies per policy family (`channel_capacity`, `health`, `pdata`,
   `telemetry`, `resources`)
 - no cross-scope deep merge of nested fields
 - policy objects are default-filled: if a lower-scope `policies` block exists,
