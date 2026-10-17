@@ -701,11 +701,26 @@ impl ExprPlanner {
 
         let mut expr = self.build_eval_or_join(case_expr, args_scope, data_scope, true)?;
         if let ScopedExpr::JoinAndEval {
-            align_children_to_record: ref mut align_children_to_root,
+            align_children_to_record,
+            default_null_children,
             ..
-        } = expr
+        } = &mut expr
         {
-            *align_children_to_root = true;
+            *align_children_to_record = true;
+            // An argument absent from the whole batch (e.g. an attribute key no record has) is
+            // null for every record, so a later argument can still provide the value.
+            *default_null_children = true;
+        } else if let ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr {
+                projection_opts, ..
+            },
+            ..
+        } = &mut expr
+        {
+            // Likewise, when the arguments share one scope, an optional column (e.g. no record
+            // has a body) or an attribute absent from the whole batch is null for every record
+            // rather than making the whole result absent.
+            projection_opts.default_null_columns = true;
         }
 
         Ok(PlannedOp {
