@@ -157,6 +157,14 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
     /// Compiled context bindings used by this runtime instance.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Write-once cross-thread startup linearization marker.
+    ///
+    /// The asynchronous lifecycle event channel remains the observable source of
+    /// pipeline state, but an immediate runtime exit can be observed before its
+    /// preceding ready event is reduced. The runtime stores this marker with
+    /// `Release` before publishing `EngineEvent::ready`; rollout waits load it
+    /// with `Acquire` so crossing readiness wins over any later exit.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,
 }

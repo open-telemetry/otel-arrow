@@ -13,6 +13,10 @@ pub mod kafka_receiver;
 #[cfg(feature = "oracle")]
 pub mod oracle_receiver;
 
+/// PostgreSQL database receiver.
+#[cfg(feature = "postgresql")]
+pub mod postgresql_receiver;
+
 /// SQL Server configuration and query preparation without a runtime factory.
 #[cfg(feature = "sql-server")]
 pub mod sql_server_receiver;
@@ -20,6 +24,10 @@ pub mod sql_server_receiver;
 /// Linux user_events receiver.
 #[cfg(all(feature = "user-events", target_os = "linux"))]
 pub mod user_events_receiver;
+
+/// Windows Event Forwarding over mutual TLS.
+#[cfg(feature = "windows-event-forwarding")]
+pub mod windows_event_forwarding_receiver;
 
 /// Windows performance-counter receiver.
 #[cfg(all(feature = "windows-perf-counters", target_os = "windows"))]

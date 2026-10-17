@@ -124,6 +124,21 @@ pub struct ReplayState {
     live_locators: HashMap<Locator, FileId>,
 }
 
+// Prepared mutations remain crate-private and are committed only against the
+// unchanged state that produced them, under exclusive store ownership.
+pub(crate) struct PreparedTransaction {
+    sequence: u64,
+    changes: PreparedChanges,
+}
+
+enum PreparedChanges {
+    Progress(Vec<Operation>),
+    Other {
+        records: HashMap<FileId, Option<SnapshotRecord>>,
+        claims: HashMap<Locator, Option<FileId>>,
+    },
+}
+
 impl ReplayState {
     /// Validates the checkpoint header/snapshot and returns the WAL start offset.
     ///
@@ -221,7 +236,8 @@ impl ReplayState {
                 transaction,
                 consumed,
             }) => {
-                self.apply(transaction)?;
+                let prepared = self.prepare(transaction)?;
+                self.commit(prepared);
                 Ok(ReplayStep::Applied {
                     sequence: expected,
                     consumed,
@@ -237,16 +253,21 @@ impl ReplayState {
 
     // Only the validating scanner creates inputs to this method. In particular,
     // class, duplicate progress IDs, operation sizes, and CRCs are already checked.
-    fn apply(&mut self, transaction: Transaction) -> Result<(), ReplayError> {
+    pub(crate) fn prepare(
+        &self,
+        transaction: Transaction,
+    ) -> Result<PreparedTransaction, ReplayError> {
         // The scanner guarantees a nonempty, homogeneous class and distinct IDs
         // for progress. No operation can affect another progress precondition.
         if matches!(
             transaction.operations.first(),
             Some(Operation::UpdateProgress(_))
         ) {
-            self.apply_progress(&transaction.operations)?;
-            self.last_sequence = transaction.sequence;
-            return Ok(());
+            self.validate_progress_operations(&transaction.operations)?;
+            return Ok(PreparedTransaction {
+                sequence: transaction.sequence,
+                changes: PreparedChanges::Progress(transaction.operations),
+            });
         }
         let mut staged = HashMap::<FileId, Option<SnapshotRecord>>::new();
         let mut claims = HashMap::<Locator, Option<FileId>>::new();
@@ -318,8 +339,25 @@ impl ReplayState {
                 ));
             }
         }
-        // No fallible semantic work remains. Staging is proportional to touched
-        // records; untouched records are neither scanned nor cloned.
+        Ok(PreparedTransaction {
+            sequence: transaction.sequence,
+            changes: PreparedChanges::Other {
+                records: staged,
+                claims,
+            },
+        })
+    }
+
+    pub(crate) fn commit(&mut self, prepared: PreparedTransaction) {
+        debug_assert_eq!(self.last_sequence.checked_add(1), Some(prepared.sequence));
+        self.last_sequence = prepared.sequence;
+        let (staged, claims) = match prepared.changes {
+            PreparedChanges::Progress(operations) => {
+                self.commit_progress(&operations);
+                return;
+            }
+            PreparedChanges::Other { records, claims } => (records, claims),
+        };
         // Remove first so hash iteration order cannot temporarily exceed admission
         // when a full table replaces several identities in the same transaction.
         for (id, record) in &staged {
@@ -342,13 +380,11 @@ impl ReplayState {
                 let _ = self.live_locators.insert(locator, owner);
             }
         }
-        self.last_sequence = transaction.sequence;
-        Ok(())
     }
 
     // Pure progress touches only fixed-size fields. Validate the complete set
     // against immutable records first, then commit without copying evidence.
-    fn apply_progress(&mut self, operations: &[Operation]) -> Result<(), ReplayError> {
+    fn validate_progress_operations(&self, operations: &[Operation]) -> Result<(), ReplayError> {
         for operation in operations {
             let Operation::UpdateProgress(op) = operation else {
                 unreachable!("scanner validated progress-only transaction");
@@ -359,6 +395,10 @@ impl ReplayState {
                 .ok_or_else(|| invalid(op.file_id, "target file is absent"))?;
             validate_progress(record, op)?;
         }
+        Ok(())
+    }
+
+    fn commit_progress(&mut self, operations: &[Operation]) {
         for operation in operations {
             let Operation::UpdateProgress(op) = operation else {
                 unreachable!("scanner validated progress-only transaction");
@@ -372,7 +412,6 @@ impl ReplayState {
                 let _ = self.live_locators.remove(&record.locator);
             }
         }
-        Ok(())
     }
 }
 

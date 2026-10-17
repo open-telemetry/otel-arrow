@@ -170,7 +170,7 @@ macro_rules! otel_info {
     }};
     // The trailing "" is required because tracing macros need at least a format
     // string or fields. The encoder skips empty strings so no body is encoded.
-    // See: `DirectFieldVisitor::encode_body_string` in encoder.rs.
+    // See: `DirectFieldVisitor::record_str` in encoder.rs.
     ($name:expr) => {{
         $crate::otel_info!(target: env!("CARGO_PKG_NAME"), $name);
     }};

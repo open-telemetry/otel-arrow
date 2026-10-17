@@ -169,7 +169,7 @@ $t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Te
 ```
 
 See the admin console on port 8080, or visit
-`http://localhost:8080/metrics` to see engine metrics in Prometheus
+`http://127.0.0.1:8080/api/v1/metrics` to see engine metrics in Prometheus
 format.
 
 ![syslog-to-console admin console page](./docs/img/df_engine_screen.png)
