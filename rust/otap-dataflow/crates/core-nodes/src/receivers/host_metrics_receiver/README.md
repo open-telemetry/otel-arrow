@@ -127,22 +127,45 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+#### `receiver.host_metrics.scrapes`
+
+Scrape outcome counters dimensioned by `outcome`.
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `receiver.host_metrics.scrapes` | `{scrape}` | Number of scrape ticks recorded by outcome. |
+
+Attributes:
+
+| Attribute | Values | Description |
+| --- | --- | --- |
+| `outcome` | `completed`, `failed`, `overrun` | Outcome of the scrape tick. |
+
+#### `receiver.host_metrics.errors`
+
+Error counters dimensioned by `error.type`.
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `receiver.host_metrics.errors` | `{error}` | Number of errors encountered during scrape ticks and delivery. |
+
+Attributes:
+
+| Attribute | Values | Description |
+| --- | --- | --- |
+| `error.type` | `scraper_failure`, `partial_error`, `source_read_error`, `send_failure` | Classification of the error encountered. |
+
 #### `receiver.host_metrics`
+
+Non-dimensioned operational and timing metrics.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
 | `receiver.host_metrics.scrapes_started` | `{scrape}` | Number of scrape ticks started. |
-| `receiver.host_metrics.scrapes_completed` | `{scrape}` | Number of scrape ticks that built and sent a metrics batch. |
-| `receiver.host_metrics.scrapes_failed` | `{scrape}` | Number of fatal scrape failures. |
-| `receiver.host_metrics.scrapes_overrun` | `{scrape}` | Number of scrape ticks skipped or timed out before completion. |
-| `receiver.host_metrics.scraper_failures` | `{error}` | Number of scraper worker failures. |
-| `receiver.host_metrics.partial_errors` | `{error}` | Number of source read errors skipped because other families succeeded. |
-| `receiver.host_metrics.source_read_errors` | `{error}` | Number of source read errors seen during scrapes. |
 | `receiver.host_metrics.families_scraped` | `{family}` | Number of due metric families processed. |
+| `receiver.host_metrics.batches_sent` | `{batch}` | Number of batches sent downstream. |
 | `receiver.host_metrics.scrape_duration_ns` | `ns` | Wall-clock scrape duration. |
 | `receiver.host_metrics.scrape_lag_ns` | `ns` | Delay between scheduled and actual scrape start. |
-| `receiver.host_metrics.batches_sent` | `{batch}` | Number of batches sent downstream. |
-| `receiver.host_metrics.send_failures` | `{error}` | Number of downstream send failures. |
 
 ### Events
 

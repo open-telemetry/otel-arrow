@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: "Migrate `receiver:host_metrics` internal telemetry to enum-dimensioned metric sets."
+issues: [3530]
+subtext: |
+  Migration: Update queries to use `receiver.host_metrics.scrapes` with the `outcome` attribute and `receiver.host_metrics.errors` with the `error.type` attribute.
