@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792196874355,
+  "lastUpdate": 1792225091206,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -65509,6 +65509,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a9289e51a7568f6b1fe1920db106917b1762c0e0",
+          "message": "feat(pdata): add codec-aware batching (#4347)\n\n# Change summary\n\n**PR3 of the five-PR pluggable PData codec series**, following #4042.\n\nAdds batching as an optional codec capability. Encoded telemetry can be\nmerged and split without first materializing OTAP, and new formats can\nprovide batching support without adding format-specific branches to the\nbatch processor.\n\n## How it works\n\n- **Codec-native batching:** `PdataBatcher` produces independently\ndecodable batches. OTLP reuses the existing protobuf batching\nalgorithms.\n- **OTAP fallback:** `BatchPlan` resolves representations and sizing at\nstartup. Compatible item-based policies use native OTAP batching when\ncodec-native batching is unavailable; unsupported combinations are\nrejected.\n- **Explicit delivery ownership:** outputs identify their contributing\ninput ranges, including splits and merges. Inputs consumed without\noutput are accounted for separately. Ack/Nack tracking no longer depends\non additive byte or item counts; the processor retains delivery\ncontexts, buffering, flush deadlines, and backpressure.\n\nThe **purple batching path** extends the framework introduced by the\npreceding PRs:\n\n![PData forwarding, views, conversion, batching, and codec\nlifecycle](https://raw.githubusercontent.com/lquerel/otel-arrow/3a899d7b056a3787a7a82693b470f7b622245e2c/rust/otap-dataflow/crates/pdata-codec/assets/pdata-codec-framework.png)\n\nUnchanged forwarding retains the original bytes without creating a codec\ninstance. Encoded batching may create new buffers and reuse a batcher\ninstance, while avoiding OTAP materialization.\n\n## Remaining series\n\n- **PR4:** activate encoded OTLP, remove transitional storage, and\nexpose pipeline decode-policy configuration.\n- **PR5:** activate the syslog codec, enabling batching before syslog\nparsing and Arrow construction.\n\n## Related issue\n\n- Advances #3452.\n\n## Validation\n\n`cargo xtask check` passed \n\n### Full-engine benchmarks\n\n**No broad CPU or RSS regression is apparent.** CPU point estimates\ndiffer by less than 1% in every scenario.\n\n| Scenario | Pairs | Main CPU (us/log) | PR3 CPU (us/log) | CPU change\n(95% paired CI) | Main RSS (MiB) | PR3 RSS (MiB) |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| OTAP → OTAP | 4 | 1.7237 | 1.7188 | -0.29% [-2.53, +1.96] | 56.94 |\n57.15 |\n| OTLP → OTLP | 4 | 4.6525 | 4.6675 | +0.32% [-0.10, +0.74] | 45.41 |\n45.48 |\n| Syslog → OTAP | 4 | 6.8262 | 6.8113 | -0.22% [-1.31, +0.87] | 65.97 |\n66.09 |\n| HTTP gzip, 128 KiB | 4 | 6.3348 | 6.3260 | -0.14% [-0.60, +0.33] |\n53.33 | 53.20 |\n| HTTP gzip, 240 KiB | 4 | 6.2564 | 6.2589 | +0.04% [-0.28, +0.36] |\n53.20 | 52.17 |\n| HTTP gzip, 272 KiB | 4 | 6.1621 | 6.1571 | -0.08% [-0.40, +0.23] |\n52.84 | 51.66 |\n| HTTP gzip, 512 KiB | 4 | 6.0203 | 6.0353 | +0.25% [-0.93, +1.43] |\n54.33 | 53.11 |\n| HTTP gzip, 1 MiB | 4 | 5.5714 | 5.5664 | -0.09% [-2.30, +2.12] | 56.15\n| 54.67 |\n| HTTP gzip, 4 MiB | 4 | 4.5040 | 4.5427 | +0.86% [+0.49, +1.23] | 63.45\n| 61.55 |\n| gRPC gzip, 128 KiB | 4 | 6.2685 | 6.2860 | +0.28% [-0.21, +0.77] |\n51.42 | 50.81 |\n| gRPC gzip, 240 KiB | 4 | 6.2314 | 6.2314 | +0.00% [-0.18, +0.18] |\n52.66 | 51.00 |\n| gRPC gzip, 272 KiB | 4 | 6.1483 | 6.1521 | +0.06% [-0.39, +0.51] |\n52.69 | 50.96 |\n| gRPC gzip, 512 KiB | 4 | 6.0066 | 6.0141 | +0.13% [-0.37, +0.62] |\n54.00 | 52.22 |\n| gRPC gzip, 1 MiB | 4 | 5.6389 | 5.6014 | -0.66% [-2.21, +0.89] | 56.19\n| 54.40 |\n| gRPC gzip, 4 MiB | 1 | 4.5053 | 4.5227 | +0.39% (CI unavailable: one\npair) | 65.22 | 63.38 |\n\n## User-facing changes\n\nAdds per-codec batching profiles and output encoding selection. Existing\nOTLP and OTAP configurations remain compatible. In preserve mode, native\nbatching retains the encoding; supported fallback paths emit OTAP.",
+          "timestamp": "2026-10-17T07:28:43Z",
+          "tree_id": "0d469f40c1a6c0b75b7177677dedc56ca849eaa2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a9289e51a7568f6b1fe1920db106917b1762c0e0"
+        },
+        "date": 1792225069769,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.29,
             "unit": "MB"
           }
         ]
