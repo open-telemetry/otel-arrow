@@ -500,11 +500,15 @@ fn driver_errors_are_redacted_and_retries_are_allowlisted() {
     assert!(SqlServerAdapter::<PendingConnector>::is_retryable(
         &Error::Transport(io::ErrorKind::ConnectionReset)
     ));
+    assert!(SqlServerAdapter::<PendingConnector>::is_retryable(
+        &Error::QueryTimeout
+    ));
     for error in [
         Error::Tls,
         Error::Credentials,
         Error::Metadata,
         Error::Deadline,
+        Error::UnconfirmedTransport(io::ErrorKind::ConnectionReset),
         Error::Server(102),
         Error::Server(147),
         Error::Server(208),
@@ -532,6 +536,10 @@ enum ResponseFault {
     LateAttention,
     DroppedCleanup,
     ResetDuringRows,
+    ResetOnceDuringRows,
+    ResetBeforeWrite,
+    ResetAfterWrite,
+    ResetDuringCleanup,
 }
 
 // A complete request releases one in-memory response, exercising the real driver's
@@ -555,6 +563,9 @@ impl AsyncRead for ScriptedStream {
     ) -> Poll<io::Result<usize>> {
         if self.readable.is_empty() {
             if self.reset {
+                if matches!(self.fault, Some(ResponseFault::ResetOnceDuringRows)) {
+                    self.reset = false;
+                }
                 _ = self.calls.resets.fetch_add(1, Ordering::Relaxed);
                 return Poll::Ready(Err(io::Error::from(io::ErrorKind::ConnectionReset)));
             }
@@ -583,6 +594,12 @@ impl AsyncWrite for ScriptedStream {
         _: &mut Context<'_>,
         input: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if matches!(self.fault, Some(ResponseFault::ResetBeforeWrite))
+            && self.calls.requests.load(Ordering::Relaxed) == 4
+        {
+            _ = self.calls.resets.fetch_add(1, Ordering::Relaxed);
+            return Poll::Ready(Err(io::Error::from(io::ErrorKind::ConnectionReset)));
+        }
         self.writing.extend_from_slice(input);
         loop {
             if self.writing.len() < 8 {
@@ -614,7 +631,20 @@ impl AsyncWrite for ScriptedStream {
                     } else {
                         self.readable.extend(response);
                     }
-                    if request == 5 && matches!(self.fault, Some(ResponseFault::ResetDuringRows)) {
+                    if request == 5
+                        && matches!(
+                            self.fault,
+                            Some(
+                                ResponseFault::ResetDuringRows
+                                    | ResponseFault::ResetOnceDuringRows
+                                    | ResponseFault::ResetAfterWrite
+                            )
+                        )
+                    {
+                        self.reset = true;
+                    }
+                    if request == 6 && matches!(self.fault, Some(ResponseFault::ResetDuringCleanup))
+                    {
                         self.reset = true;
                     }
                 } else {
@@ -761,6 +791,7 @@ struct FixtureConnector {
     calls: Arc<ProtocolCalls>,
     expected_credentials: VecDeque<BasicAuthCredential>,
     fault: Option<ResponseFault>,
+    connect_errors: VecDeque<Error>,
 }
 
 impl FixtureConnector {
@@ -770,6 +801,7 @@ impl FixtureConnector {
             calls: Arc::default(),
             expected_credentials: VecDeque::new(),
             fault: None,
+            connect_errors: VecDeque::new(),
         }
     }
 }
@@ -783,6 +815,9 @@ impl SqlServerConnector for FixtureConnector {
         mut config: tiberius::Config,
     ) -> Result<tiberius::Client<Self::Stream>, Error> {
         _ = self.calls.connections.fetch_add(1, Ordering::Relaxed);
+        if let Some(error) = self.connect_errors.pop_front() {
+            return Err(error);
+        }
         // Test-only login against in-memory bytes, not a production TLS connector.
         config.encryption(tiberius::EncryptionLevel::NotSupported);
         config.handshake_timeout(Some(Duration::from_secs(1)));
@@ -1023,7 +1058,12 @@ fn uncertain_response(fault: ResponseFault) -> (SqlServerReceiverConfig, Fixture
     .normalized_size()
         + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, bytes);
-    let rows = if matches!(fault, ResponseFault::ResetDuringRows) {
+    let rows = if matches!(fault, ResponseFault::ResetAfterWrite) {
+        Vec::new()
+    } else if matches!(
+        fault,
+        ResponseFault::ResetDuringRows | ResponseFault::ResetOnceDuringRows
+    ) {
         let complete = rows_response(&[8]);
         let mut partial = packet(complete[8..complete.len() - done().len()].to_vec());
         partial[1] = 0; // The next TDS packet never arrives; the transport resets instead.
@@ -1040,7 +1080,7 @@ fn uncertain_response(fault: ResponseFault) -> (SqlServerReceiverConfig, Fixture
             response.extend(attention_done());
             response
         }
-        ResponseFault::LateAttention => attention_done(),
+        ResponseFault::LateAttention | ResponseFault::ResetOnceDuringRows => attention_done(),
         _ => Vec::new(),
     };
     let mut connector = FixtureConnector::new([vec![
@@ -1053,6 +1093,109 @@ fn uncertain_response(fault: ResponseFault) -> (SqlServerReceiverConfig, Fixture
     (config, connector)
 }
 
+fn uncertain_error(fault: ResponseFault) -> Error {
+    match fault {
+        ResponseFault::ResetBeforeWrite => {
+            Error::UnconfirmedTransport(io::ErrorKind::ConnectionReset)
+        }
+        // Tiberius 0.13.0 maps framed-stream read errors to BrokenPipe.
+        ResponseFault::ResetDuringRows
+        | ResponseFault::ResetAfterWrite
+        | ResponseFault::ResetDuringCleanup => {
+            Error::UnconfirmedTransport(io::ErrorKind::BrokenPipe)
+        }
+        _ => Error::Driver,
+    }
+}
+
+/// Scenario: Metadata or fetch exceeds its absolute deadline and receives a genuine cancellation ACK.
+/// Guarantees: Only confirmed query timeouts become retryable; the failed operation returns no page.
+#[tokio::test(start_paused = true)]
+async fn acknowledged_query_timeouts_are_retryable() {
+    for validating in [true, false] {
+        let responses = if validating {
+            vec![vec![], attention_done()]
+        } else {
+            vec![
+                metadata_response(),
+                metadata_response(),
+                vec![],
+                attention_done(),
+            ]
+        };
+        let (mut adapter, query) = adapter(false, responses);
+        if !validating {
+            _ = adapter.begin_operation().unwrap();
+            _ = adapter.validate_query(&query).await.unwrap();
+        }
+        _ = adapter.begin_operation().unwrap();
+        let started = tokio::time::Instant::now();
+        let error = if validating {
+            adapter.validate_query(&query).await.unwrap_err()
+        } else {
+            adapter
+                .execute(&query, &query.watermark().initial())
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(error, Error::QueryTimeout);
+        assert!(SqlServerAdapter::<FixtureConnector>::is_retryable(&error));
+        assert!(started.elapsed() >= query.timeout());
+        assert!(started.elapsed() < query.timeout() + Duration::from_secs(1));
+        _ = adapter.begin_operation().unwrap();
+        adapter.shutdown().await.unwrap();
+    }
+}
+
+/// Scenario: Streaming reports a transport reset but a later cancellation response is acknowledged.
+/// Guarantees: Explicit confirmation preserves the retryable original transport cause, never a partial row page.
+#[tokio::test]
+async fn acknowledged_transport_cleanup_preserves_original_error() {
+    let (config, connector) = uncertain_response(ResponseFault::ResetOnceDuringRows);
+    let query = config.query().clone();
+    let calls = Arc::clone(&connector.calls);
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    let error = adapter
+        .execute(&query, &query.watermark().initial())
+        .await
+        .unwrap_err();
+    assert_eq!(error, Error::Transport(io::ErrorKind::BrokenPipe));
+    assert!(SqlServerAdapter::<FixtureConnector>::is_retryable(&error));
+    assert_eq!(calls.resets.load(Ordering::Relaxed), 1);
+    _ = adapter.begin_operation().unwrap();
+    adapter.shutdown().await.unwrap();
+}
+
+/// Scenario: Streaming resets and an outer timeout drops the ensuing unacknowledged cleanup.
+/// Guarantees: Shutdown retains the original redacted transport cause and reuse remains forbidden.
+#[tokio::test(start_paused = true)]
+async fn interrupted_transport_cleanup_retains_cause() {
+    let (config, mut connector) = uncertain_response(ResponseFault::ResetOnceDuringRows);
+    *connector.sessions[0].last_mut().unwrap() = Vec::new();
+    let query = config.query().clone();
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            adapter.execute(&query, &query.watermark().initial()),
+        )
+        .await
+        .is_err()
+    );
+    assert!(adapter.begin_operation().is_err());
+    assert_eq!(adapter.reconnect(&query).await, Err(Error::NotValidated));
+    assert_eq!(
+        adapter.shutdown().await,
+        Err(Error::UnconfirmedTransport(io::ErrorKind::BrokenPipe))
+    );
+}
+
 /// Scenario: Published Tiberius sees split, missing, late, interrupted, or reset cancellation responses.
 /// Guarantees: No partial page escapes; uncertain cleanup blocks every reuse path and stays failed at shutdown.
 #[tokio::test(start_paused = true)]
@@ -1063,6 +1206,9 @@ async fn published_driver_contains_uncertain_cancellation() {
         ResponseFault::LateAttention,
         ResponseFault::DroppedCleanup,
         ResponseFault::ResetDuringRows,
+        ResponseFault::ResetBeforeWrite,
+        ResponseFault::ResetAfterWrite,
+        ResponseFault::ResetDuringCleanup,
     ] {
         let (config, connector) = uncertain_response(fault);
         let query = config.query().clone();
@@ -1081,7 +1227,7 @@ async fn published_driver_contains_uncertain_cancellation() {
                     .is_err()
             );
         } else {
-            assert_eq!(operation.await, Err(Error::Driver), "{fault:?}");
+            assert_eq!(operation.await, Err(uncertain_error(fault)), "{fault:?}");
         }
         assert!(
             started.elapsed() < Duration::from_secs(2),
@@ -1093,7 +1239,13 @@ async fn published_driver_contains_uncertain_cancellation() {
         ) {
             assert!(started.elapsed() >= Duration::from_secs(1));
         }
-        if matches!(fault, ResponseFault::ResetDuringRows) {
+        if matches!(
+            fault,
+            ResponseFault::ResetDuringRows
+                | ResponseFault::ResetBeforeWrite
+                | ResponseFault::ResetAfterWrite
+                | ResponseFault::ResetDuringCleanup
+        ) {
             assert!(
                 calls.resets.load(Ordering::Relaxed) > 0,
                 "streaming actually reset"
@@ -1109,11 +1261,15 @@ async fn published_driver_contains_uncertain_cancellation() {
             adapter.execute(&query, &cursor).await,
             Err(Error::NotValidated)
         );
-        assert_eq!(adapter.shutdown().await, Err(Error::Driver));
+        assert_eq!(adapter.shutdown().await, Err(uncertain_error(fault)));
         assert_eq!(calls.connections.load(Ordering::Relaxed), 1);
         assert_eq!(
             calls.requests.load(Ordering::Relaxed),
-            6,
+            if matches!(fault, ResponseFault::ResetBeforeWrite) {
+                4
+            } else {
+                6
+            },
             "no request after ATTENTION"
         );
     }
@@ -1121,6 +1277,7 @@ async fn published_driver_contains_uncertain_cancellation() {
 
 struct CleanupFailureProbe {
     receiver: otel_arrow_dfe_scraper::DatabaseReceiver<SqlServerAdapter<FixtureConnector>>,
+    expected: Error,
 }
 
 #[async_trait(?Send)]
@@ -1140,6 +1297,10 @@ impl local::Receiver<OtapPdata> for CleanupFailureProbe {
             panic!("cleanup cannot report success")
         };
         assert!(error.to_string().contains("cleanup failed"), "{error}");
+        assert!(
+            error.to_string().contains(&self.expected.to_string()),
+            "{error}"
+        );
         Ok(TerminalState::default())
     }
 }
@@ -1180,7 +1341,10 @@ fn run_uncertain_response(directory: &std::path::Path, fault: ResponseFault) {
     );
     let runtime = TestRuntime::<OtapPdata>::new();
     let wrapper = ReceiverWrapper::local(
-        CleanupFailureProbe { receiver },
+        CleanupFailureProbe {
+            receiver,
+            expected: uncertain_error(fault),
+        },
         test_node(runtime.config().name.clone()),
         Arc::new(NodeUserConfig::new_receiver_config(
             "urn:otel:receiver:sql_server_test",
@@ -1227,7 +1391,11 @@ fn run_uncertain_response(directory: &std::path::Path, fault: ResponseFault) {
     );
     assert_eq!(
         calls.requests.load(Ordering::Relaxed),
-        6,
+        if matches!(fault, ResponseFault::ResetBeforeWrite) {
+            4
+        } else {
+            6
+        },
         "no request after ATTENTION"
     );
     assert!(
@@ -1248,6 +1416,9 @@ fn shared_controller_quarantines_uncertain_driver_responses() {
             ResponseFault::LateAttention,
             ResponseFault::DroppedCleanup,
             ResponseFault::ResetDuringRows,
+            ResponseFault::ResetBeforeWrite,
+            ResponseFault::ResetAfterWrite,
+            ResponseFault::ResetDuringCleanup,
         ]
         .into_iter()
         .enumerate()
@@ -1637,9 +1808,9 @@ fn shared_controller_checkpoints_stock_driver_rows() {
 }
 
 /// Scenario: Normalized bytes allow one incremental row but not two, followed by another poll.
-/// Guarantees: The safe prefix is returned and the discarded stream is replaced before continuing.
+/// Guarantees: Acknowledged prefixes reuse one connection, revalidate metadata, and ignore stale cancellation.
 #[tokio::test]
-async fn byte_limited_prefix_reconnects_before_continuing() {
+async fn byte_limited_prefix_reuses_acknowledged_connection() {
     use otel_arrow_dfe_scraper::database::{CursorRow, Row};
     let row = Row {
         values: vec![CellValue::Int64(1)],
@@ -1647,17 +1818,17 @@ async fn byte_limited_prefix_reconnects_before_continuing() {
     let one_row = row.normalized_size() + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, one_row);
     let query = config.query().clone();
-    let connector = FixtureConnector::new([
-        vec![
-            metadata_response(),
-            metadata_response(),
-            rows_response(&[1, 2]),
-            attention_done(),
-        ],
-        vec![metadata_response(), rows_response(&[2])],
-    ]);
+    let connector = FixtureConnector::new([vec![
+        metadata_response(),
+        metadata_response(),
+        rows_response(&[1, 2]),
+        attention_done(),
+        metadata_response(),
+        rows_response(&[2]),
+    ]]);
+    let calls = Arc::clone(&connector.calls);
     let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
-    _ = adapter.begin_operation().unwrap();
+    let stale = adapter.begin_operation().unwrap();
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let first = adapter
@@ -1666,12 +1837,273 @@ async fn byte_limited_prefix_reconnects_before_continuing() {
         .unwrap();
     assert_eq!(first.rows.len(), 1);
     _ = adapter.begin_operation().unwrap();
+    stale.cancel().await.unwrap();
     let next = adapter
         .execute(&query, &first.rows[0].cursor)
         .await
         .unwrap();
     assert_eq!(next.rows[0].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+    assert_eq!(calls.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(calls.requests.load(Ordering::Relaxed), 8);
     adapter.shutdown().await.unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SafeRecovery {
+    DescribeTimeout,
+    FetchTimeout,
+    ConnectReset,
+    AcknowledgedReset,
+    AcknowledgedPrefix,
+}
+
+struct SafeRecoveryProbe(
+    otel_arrow_dfe_scraper::DatabaseReceiver<SqlServerAdapter<FixtureConnector>>,
+);
+
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for SafeRecoveryProbe {
+    async fn start(
+        self: Box<Self>,
+        controls: local::ControlChannel<OtapPdata>,
+        effects: local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, EngineError> {
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            local::Receiver::start(Box::new(self.0), controls, effects),
+        )
+        .await
+        .expect("bounded recovery fixture")
+    }
+}
+
+fn assert_row_ids(pdata: &OtapPdata, expected: &[i64]) {
+    use otel_arrow_dfe_pdata::{
+        otlp::OtlpProtoBytes,
+        proto::opentelemetry::{common::v1::any_value, logs::v1::LogsData},
+    };
+    use otel_arrow_dfe_pdata_codec::PayloadData;
+    use prost::Message;
+    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
+        pdata.clone().payload().into_data()
+    else {
+        panic!("expected OTLP log bytes");
+    };
+    let logs = LogsData::decode(bytes).unwrap();
+    let actual = logs
+        .resource_logs
+        .iter()
+        .flat_map(|resource| &resource.scope_logs)
+        .flat_map(|scope| &scope.log_records)
+        .map(|record| {
+            let Some(any_value::Value::KvlistValue(body)) =
+                record.body.as_ref().and_then(|body| body.value.as_ref())
+            else {
+                panic!("expected structured row")
+            };
+            let value = body.values.iter().find(|field| field.key == "ID").unwrap();
+            let Some(any_value::Value::IntValue(id)) =
+                value.value.as_ref().and_then(|value| value.value.as_ref())
+            else {
+                panic!("expected exact integer")
+            };
+            *id
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn run_safe_recovery(case: SafeRecovery) {
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::{
+        control::{AckMsg, NodeControlMsg},
+        memory_limiter::{LocalReceiverAdmissionState, MemoryPressureState},
+        receiver::ReceiverWrapper,
+        testing::{receiver::TestRuntime, test_node},
+    };
+    use otel_arrow_dfe_otap::testing::next_ack;
+    use otel_arrow_dfe_scraper::database::{CursorRow, Row};
+    use otel_arrow_dfe_scraper::{CheckpointStore, DatabaseReceiver, SourceBinding};
+
+    let prefix = matches!(case, SafeRecovery::AcknowledgedPrefix);
+    let mut raw = raw_config(false, 4096);
+    raw["query"]["catch_up"] = json!({"max_pages":if prefix { 3 } else { 1 }});
+    if prefix {
+        raw["query"]["max_rows_per_poll"] = json!(5);
+        raw["query"]["max_batch_bytes"] = json!(
+            4 * (Row {
+                values: vec![CellValue::Int64(8)]
+            }
+            .normalized_size()
+                + size_of::<CursorRow>() as u64)
+        );
+    }
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let query = config.query().clone();
+    let recovered = vec![
+        metadata_response(),
+        metadata_response(),
+        rows_response(&[8, 9]),
+    ];
+    let (connector, expected_requests) = match case {
+        SafeRecovery::DescribeTimeout => (
+            FixtureConnector::new([vec![vec![], attention_done()], recovered]),
+            9,
+        ),
+        SafeRecovery::FetchTimeout => (
+            FixtureConnector::new([
+                vec![
+                    metadata_response(),
+                    metadata_response(),
+                    vec![],
+                    attention_done(),
+                ],
+                recovered,
+            ]),
+            11,
+        ),
+        SafeRecovery::ConnectReset => {
+            let mut connector = FixtureConnector::new([recovered]);
+            connector
+                .connect_errors
+                .push_back(Error::Transport(io::ErrorKind::ConnectionReset));
+            (connector, 5)
+        }
+        SafeRecovery::AcknowledgedReset => {
+            let (_, mut connector) = uncertain_response(ResponseFault::ResetOnceDuringRows);
+            connector.sessions.push_back(recovered);
+            (connector, 11)
+        }
+        SafeRecovery::AcknowledgedPrefix => (
+            FixtureConnector::new([vec![
+                metadata_response(),
+                metadata_response(),
+                rows_response(&[8, 9, 10, 11, 12]),
+                attention_done(),
+                metadata_response(),
+                rows_response(&[10, 11, 12]),
+                metadata_response(),
+                rows_response(&[12]),
+            ]]),
+            10,
+        ),
+    };
+    let calls = Arc::clone(&connector.calls);
+    let directory = tempfile::tempdir().unwrap();
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "recovery",
+        "events",
+        config.config_fingerprint().to_owned(),
+    );
+    let source = SourceBinding::acquire(store.clone()).unwrap();
+    let previous = store
+        .write(0, &Cursor::Scalar(ScalarValue::Int64(7)))
+        .unwrap()
+        .0;
+    let receiver = DatabaseReceiver::new(
+        SqlServerAdapter::new(config, connector, Box::new(Credentials)),
+        query,
+        source,
+        Duration::from_millis(1),
+        5,
+        LocalReceiverAdmissionState::from_process_state(&MemoryPressureState::default()),
+        None,
+    );
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        SafeRecoveryProbe(receiver),
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:sql_server_test",
+        )),
+        runtime.config(),
+    );
+    let checkpoint = store.clone();
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(move |mut ctx| async move {
+            let expected_pages = if prefix {
+                // Encoded-page accounting narrows the normalized prefix again;
+                // subsequent requests must resume from the acknowledged cursor.
+                vec![vec![8, 9], vec![10, 11], vec![12]]
+            } else {
+                vec![vec![8, 9]]
+            };
+            let mut committed = previous;
+            for ids in expected_pages {
+                let data = tokio::time::timeout(Duration::from_secs(8), ctx.recv())
+                    .await
+                    .expect("safe recovery emits")
+                    .expect("row page");
+                assert_row_ids(&data, &ids);
+                assert_eq!(
+                    checkpoint.read().unwrap(),
+                    Some(committed.clone()),
+                    "{case:?}: failed operation and unacknowledged page cannot advance progress"
+                );
+                let (_, ack) = next_ack(AckMsg::new(data)).unwrap();
+                ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                    .await
+                    .unwrap();
+                committed.revision += 1;
+                committed.cursor = Cursor::Scalar(ScalarValue::Int64(*ids.last().unwrap()));
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while checkpoint.read().unwrap() != Some(committed.clone()) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .expect("ACK installs exactly the expected revision and cursor");
+            }
+            ctx.send_control_msg(NodeControlMsg::Shutdown {
+                deadline: std::time::Instant::now() + Duration::from_secs(2),
+                reason: "safe recovery complete".into(),
+            })
+            .await
+            .unwrap();
+        });
+    assert_eq!(
+        calls.connections.load(Ordering::Relaxed),
+        if prefix { 1 } else { 2 }
+    );
+    assert_eq!(
+        calls.requests.load(Ordering::Relaxed),
+        expected_requests,
+        "{case:?}"
+    );
+    if matches!(case, SafeRecovery::AcknowledgedReset) {
+        assert_eq!(calls.resets.load(Ordering::Relaxed), 1);
+    }
+    drop(SourceBinding::acquire(store).expect("confirmed shutdown releases ownership"));
+}
+
+/// Scenario: Initial metadata or a fetch times out, but the server acknowledges ATTENTION.
+/// Guarantees: Shared retry recovers on a fresh validated connection and advances saved progress only after downstream ACK.
+#[test]
+fn shared_controller_recovers_acknowledged_query_timeouts() {
+    for case in [SafeRecovery::DescribeTimeout, SafeRecovery::FetchTimeout] {
+        run_safe_recovery(case);
+    }
+}
+
+/// Scenario: Connection establishment resets, or a streaming reset receives explicit cleanup confirmation.
+/// Guarantees: Only safe transport failures reconnect; retried rows start from unchanged durable progress.
+#[test]
+fn shared_controller_recovers_safe_transport_failures() {
+    for case in [SafeRecovery::ConnectReset, SafeRecovery::AcknowledgedReset] {
+        run_safe_recovery(case);
+    }
+}
+
+/// Scenario: A byte-limited page is acknowledged by both server cancellation and downstream delivery.
+/// Guarantees: The same logged-in session emits consecutive nonoverlapping cursor rows with freshly validated metadata.
+#[test]
+fn shared_controller_reuses_acknowledged_prefix_connection() {
+    run_safe_recovery(SafeRecovery::AcknowledgedPrefix);
 }
 
 /// Scenario: An outer deadline interrupts cleanup of an otherwise valid byte-limited prefix.

@@ -56,6 +56,7 @@ pub struct SqlServerAdapter<C: SqlServerConnector> {
     cancellation: SqlServerCancellation,
     stopping: bool,
     response_pending: bool,
+    unconfirmed_transport: Option<std::io::ErrorKind>,
 }
 
 #[derive(Default)]
@@ -104,6 +105,7 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
             cancellation: SqlServerCancellation::default(),
             stopping: false,
             response_pending: false,
+            unconfirmed_transport: None,
         }
     }
 
@@ -187,17 +189,52 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
     }
 
     async fn cancel_client(&mut self, client: &mut Client<C::Stream>) -> Result<(), Error> {
-        // A partial stream is not assumed reusable. Cap ATTENTION and discard the client.
+        // Only a successful ATTENTION acknowledgement establishes response completion.
         // An outer deadline may drop this future before the acknowledgement arrives.
         self.response_pending = true;
         match tokio::time::timeout(Duration::from_secs(1), driver_call(client.cancel_query())).await
         {
             Ok(Ok(())) => {
                 self.response_pending = false;
+                self.unconfirmed_transport = None;
                 Ok(())
             }
-            _ => Err(Error::Driver),
+            Ok(Err(tiberius::error::Error::Io { kind, .. })) => {
+                // Prefer an earlier operation's transport cause over cleanup's
+                // secondary error, but retain a cleanup-only reset as well.
+                _ = self.unconfirmed_transport.get_or_insert(kind);
+                Err(self.cleanup_error())
+            }
+            _ => Err(self.cleanup_error()),
         }
+    }
+
+    async fn finish_failed_operation(
+        &mut self,
+        client: &mut Client<C::Stream>,
+        error: Error,
+    ) -> Error {
+        if !self.response_pending {
+            return error;
+        }
+        if let Error::Transport(kind) = error {
+            // Keep the redacted cause even if an outer deadline drops cleanup.
+            self.unconfirmed_transport = Some(kind);
+        }
+        if self.cancel_client(client).await.is_err() {
+            return self.cleanup_error();
+        }
+        // Connect timeouts never take this path. Only a query whose cancellation
+        // was actually acknowledged may opt into the shared retry loop.
+        match error {
+            Error::Deadline => Error::QueryTimeout,
+            _ => error,
+        }
+    }
+
+    fn cleanup_error(&self) -> Error {
+        self.unconfirmed_transport
+            .map_or(Error::Driver, Error::UnconfirmedTransport)
     }
 
     async fn validate(&mut self, query: &CompiledQuery) -> Result<Vec<ColumnMetadata>, Error> {
@@ -223,12 +260,7 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
                 self.client = Some(client);
                 Ok(columns)
             }
-            Err(error) => {
-                if self.response_pending {
-                    self.cancel_client(&mut client).await?;
-                }
-                Err(error)
-            }
+            Err(error) => Err(self.finish_failed_operation(&mut client, error).await),
         }
     }
 }
@@ -260,6 +292,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
                     | std::io::ErrorKind::BrokenPipe
                     | std::io::ErrorKind::UnexpectedEof
             ) | Error::Server(1205 | 40197 | 40501 | 40613)
+                | Error::QueryTimeout
         )
     }
 
@@ -329,18 +362,19 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
             Ok(page) => {
                 if self.response_pending {
                     self.cancel_client(&mut client).await?;
-                    // Acknowledged prefixes continue on a fresh, revalidated session.
-                } else {
-                    self.client = Some(client);
                 }
+                // Tiberius 0.13.0 guarantees reuse after acknowledged ATTENTION;
+                // its next query drains the response tail before submitting SQL.
+                // Failed/dropped cleanup never reaches this handoff. Re-describe
+                // before the next fetch even when reusing the connection.
+                self.client = Some(client);
                 self.plan = Some(plan);
                 Ok(page)
             }
             Err(error) => {
-                if self.response_pending {
-                    self.cancel_client(&mut client).await?;
-                }
-                Err(error)
+                // Failed operations discard the client even after confirmation.
+                // The shared controller reconnects/revalidates safe retryable errors.
+                Err(self.finish_failed_operation(&mut client, error).await)
             }
         }
     }
@@ -361,7 +395,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
         close?;
         connector?;
         if self.response_pending {
-            Err(Error::Driver)
+            Err(self.cleanup_error())
         } else {
             Ok(())
         }
@@ -369,7 +403,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
 
     fn classify_error(error: &Error) -> ReceiverErrorKind {
         match error {
-            Error::Transport(_) => ReceiverErrorKind::Connect,
+            Error::Transport(_) | Error::UnconfirmedTransport(_) => ReceiverErrorKind::Connect,
             Error::Credentials
             | Error::Metadata
             | Error::Cursor

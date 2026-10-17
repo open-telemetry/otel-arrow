@@ -239,7 +239,7 @@ Cancellation handles are generation-specific: an old handle cannot cancel a
 later operation. Response-completion state is retained by the adapter from
 submission through exhaustion, including early metadata and conversion failures.
 For an unfinished response, the adapter attempts ATTENTION under a one-second
-cap and discards the session. Unconfirmed cleanup blocks subsequent operations
+cap. Unconfirmed cleanup discards the session, blocks subsequent operations,
 and causes shutdown to fail so the shared runtime retains ownership, including
 when an outer deadline drops submission, streaming, or cancellation. Errors
 before submission or after confirmed completion do not cancel an idle session.
@@ -268,12 +268,47 @@ and preserve the last durable checkpoint before a safe single-owner restart;
 socket closure or process restart alone does not establish server termination.
 The [upstream cancellation fix][attention-fix] remains a follow-up through a
 published release. Successful acknowledged cleanup remains distinct: it permits
-a fresh validated connection and acknowledged prefixes can still be delivered.
-This change does not add timeout retries or reuse acknowledged cancelled sessions.
+a fresh validated connection after a failed query. Acknowledged byte-limited
+prefixes retain their synchronized connection instead, with fresh metadata
+validation before the next fetch and a new cancellation generation.
 
-Only allowlisted transient transport failures and server codes are retried by
-the shared controller. SQL, metadata, authorization, conversion, TLS, and
-deadline failures are not automatically retried. Raw driver error text is
+### Recovery Boundaries
+
+The shared controller retries a metadata/fetch timeout only after the server
+acknowledges cancellation. The adapter returns a distinct `QueryTimeout` in
+this case; the generic `Deadline` remains terminal for credential/connection
+timeouts and other unconfirmed deadlines. Retry uses shared bounded backoff,
+reconnects, revalidates metadata, and resumes at the last durable cursor.
+Neither the failed operation nor its retry advances the checkpoint before a
+downstream ACK.
+
+Transport errors are retryable only when there is no outstanding submitted
+response, or when ATTENTION has explicitly confirmed completion. An established
+query is marked pending before submission, so even an error during its write
+is treated conservatively: the adapter cannot infer from the error that no
+bytes reached the server. A reset before the connector returns a session uses
+the connector's cancellation/owned-work contract. A reset after submission or
+during streaming requires cleanup confirmation; socket closure alone never
+permits recovery.
+
+If confirmed, the original allowlisted transport error is preserved for retry
+on a fresh connection. If not confirmed, `UnconfirmedTransport` preserves the
+driver's safe I/O error kind in both the operation and shutdown diagnostic,
+but is terminal and keeps ownership quarantined. Tiberius 0.13.0 maps framed
+read errors to `BrokenPipe`; the adapter retains the kind actually returned by
+the driver, not sensitive raw error strings. Interrupted cleanup preserves this
+cause as well as the pending-response state.
+
+For a successful byte-limited prefix, Tiberius's acknowledged-ATTENTION contract
+permits reuse. The next driver query drains any response tail before sending
+new SQL, and the adapter re-describes metadata before fetching. A failed or
+interrupted acknowledgement never reinserts the client. Failed queries still
+discard their connection even after confirmation. Deterministic tests exercise
+subsequent responses on the same logged-in session, stale cancellation handles,
+and shared normalized/encoded prefix replay from the acknowledged cursor.
+
+SQL, metadata, authorization, conversion, TLS, and unconfirmed failures are not
+automatically retried. Raw driver error text is
 discarded, keeping safe categories and numeric server codes. Tiberius can log
 server error text and row contents, so its futures run with a suppressed tracing
 subscriber; shared redacted diagnostics remain enabled.
@@ -293,7 +328,8 @@ The driver stream is consumed incrementally. A snapshot must fit completely;
 the limit-plus-one probe detects row overflow and no truncated prefix is
 returned. An incremental normalized-byte limit may return a nonempty prefix
 only after cancellation of the unread request. The next page uses a fresh
-session and revalidates metadata. An oversized first row fails explicitly.
+metadata description on the acknowledged reusable session. An oversized first
+row fails explicitly.
 `fetch_size_rows` is a cooperative decode-chunk size, not a TDS packet size.
 
 **These are normalized/encoded page budgets, not driver-internal or RSS

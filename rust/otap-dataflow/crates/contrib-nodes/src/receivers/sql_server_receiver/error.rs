@@ -14,6 +14,9 @@ pub enum SqlServerError {
     /// Connection transport failed.
     #[error("SQL Server transport failed ({0:?})")]
     Transport(std::io::ErrorKind),
+    /// Transport failed after submission and server-side cleanup could not be confirmed.
+    #[error("SQL Server transport failed ({0:?}); response cleanup is unconfirmed")]
+    UnconfirmedTransport(std::io::ErrorKind),
     /// The server reported a numeric error code.
     #[error("SQL Server rejected the operation (code {0})")]
     Server(u32),
@@ -26,6 +29,9 @@ pub enum SqlServerError {
     /// An operation reached its absolute deadline.
     #[error("SQL Server operation deadline expired")]
     Deadline,
+    /// A metadata/fetch deadline expired and the server acknowledged its cancellation.
+    #[error("SQL Server query deadline expired; cancellation was acknowledged")]
+    QueryTimeout,
     /// The current operation was cancelled.
     #[error("SQL Server operation cancelled")]
     Cancelled,
