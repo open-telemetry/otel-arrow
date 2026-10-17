@@ -9,7 +9,7 @@ use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::EncodeError;
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 
 use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
