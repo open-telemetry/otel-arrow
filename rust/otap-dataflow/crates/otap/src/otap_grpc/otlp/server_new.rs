@@ -303,6 +303,9 @@ impl Decoder for OtlpBytesDecoder {
         let len = src.remaining();
         // Use copy_to_bytes so accepted requests copy once while advancing the buffer.
         let bytes = src.copy_to_bytes(len);
+        // SAFETY: PipelineRuntimeServices validates the immutable global
+        // registry before starting receivers; the built-in OTLP codec
+        // is always registered and cannot disappear at runtime.
         let result = otel_arrow_dfe_pdata_codec::builtins::resolve_otlp()
             .expect("validated OTLP codec")
             .admit(self.signal, bytes)

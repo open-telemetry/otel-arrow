@@ -176,9 +176,19 @@ impl PdataPayload {
     }
 
     /// Constructs generalized OTLP storage through the validated registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the linked codec registrations are invalid. Pipeline runtime
+    /// services validate the global registry before starting nodes; standalone
+    /// callers can use [`crate::builtins::resolve_otlp`] to handle that error.
     #[must_use]
     pub fn from_otlp(bytes: OtlpProtoBytes) -> Self {
         let signal = bytes.signal_type();
+        // SAFETY: Pipeline startup has validated the immutable global registry.
+        // Standalone callers must satisfy the documented valid-registration
+        // precondition. The built-in OTLP registration always includes a decoder
+        // for every SignalType, so admission cannot fail or inspect the bytes.
         let encoded = crate::builtins::resolve_otlp()
             .expect("validated OTLP codec")
             .admit(signal, bytes.into_bytes())

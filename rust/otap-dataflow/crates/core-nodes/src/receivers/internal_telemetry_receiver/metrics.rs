@@ -245,6 +245,8 @@ impl MetricExporter {
         effect_handler
             .send_message(OtapPdata::new(
                 Context::default(),
+                // SAFETY: PipelineRuntimeServices validates the immutable global
+                // registry before starting this receiver, including built-in OTLP.
                 resolve_otlp()
                     .expect("validated OTLP codec")
                     .admit(SignalType::Metrics, metrics.replace_bytes(Bytes::new()))

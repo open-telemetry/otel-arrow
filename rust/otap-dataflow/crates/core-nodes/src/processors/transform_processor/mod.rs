@@ -1618,6 +1618,8 @@ mod test {
         test_port_rx
     }
 
+    /// Scenario: A transform routes an entire log batch to a named output.
+    /// Guarantees: The default output is empty and the routed output preserves native OTAP records.
     #[test]
     fn test_simple_route_to() {
         // test ensure it will only operate on all signals
@@ -1654,9 +1656,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                let result = OtapArrowRecords::try_from_with_default(payload)
-                    .expect("expected native OTAP output");
-                assert_eq!(result, input);
+                let result = payload.otap_ref().expect("expected native OTAP output");
+                assert_eq!(result, &input);
                 // TODO when we support Ack/Nack here assert on routed context
             })
             .validate(|_ctx| async move {})
@@ -2043,6 +2044,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: A transform routes logs by severity to named and default outputs.
+    /// Guarantees: Each output remains native OTAP with the expected records and sanitized columns.
     #[test]
     fn test_conditional_route_to() {
         // test ensure it will only operate on all signals
@@ -2058,8 +2061,8 @@ mod test {
         let error_port_rx = set_pdata_sender("error_port", &mut processor);
         let info_port_rx = set_pdata_sender("info_port", &mut processor);
 
-        fn assert_logs_records_equal(otap_batch: OtapArrowRecords, log_record: LogRecord) {
-            let result = otap_to_otlp(&otap_batch);
+        fn assert_logs_records_equal(otap_batch: &OtapArrowRecords, log_record: LogRecord) {
+            let result = otap_to_otlp(otap_batch);
             match result {
                 OtlpProtoMessage::Logs(logs) => {
                     assert_eq!(
@@ -2096,14 +2099,13 @@ mod test {
                     .expect("no process error");
 
                 // check anything not routed get outputted to the default port
-                let out = ctx
-                    .drain_pdata()
-                    .await
-                    .into_iter()
-                    .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from_with_default)
-                    .map(Result::unwrap);
-                let default_result = out.into_iter().next().expect("one result");
+                let out = ctx.drain_pdata().await;
+                let default_result = out
+                    .first()
+                    .expect("one result")
+                    .payload_ref()
+                    .otap_ref()
+                    .expect("expected native OTAP output");
                 assert_logs_records_equal(default_result, other_log_record);
 
                 // check error log record got routed to correct out port
@@ -2113,8 +2115,7 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                let result = OtapArrowRecords::try_from_with_default(payload)
-                    .expect("expected native OTAP output");
+                let result = payload.otap_ref().expect("expected native OTAP output");
                 // ensure the routed record was "sanitized"
                 let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                 let severity_text_col = logs_batch
@@ -2137,8 +2138,7 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                let result = OtapArrowRecords::try_from_with_default(payload)
-                    .expect("expected native OTAP output");
+                let result = payload.otap_ref().expect("expected native OTAP output");
                 assert_logs_records_equal(result, info_log_record);
             })
             .validate(|_ctx| async move {})
@@ -3165,6 +3165,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: A transform routes a batch with sanitization disabled.
+    /// Guarantees: Routed output remains native OTAP and retains unreferenced dictionary values.
     #[test]
     fn test_skip_sanitize() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -3241,8 +3243,7 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                let result = OtapArrowRecords::try_from_with_default(payload)
-                    .expect("expected native OTAP output");
+                let result = payload.otap_ref().expect("expected native OTAP output");
                 // check sanitization was skipped on routed record
                 let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                 let severity_text_col = logs_batch

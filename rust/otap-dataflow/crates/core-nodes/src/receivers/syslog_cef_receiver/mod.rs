@@ -1580,7 +1580,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, TryFromWithOptions};
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {
@@ -1938,7 +1937,8 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let arrow_records = OtapArrowRecords::try_from_with_default(message1_received)
+                let arrow_records = message1_received
+                    .otap_ref()
                     .expect("expected native OTAP logs");
 
                 // Check that the ArrowRecords contains the expected payload types
@@ -2007,7 +2007,8 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let arrow_records = OtapArrowRecords::try_from_with_default(message1_received)
+                let arrow_records = message1_received
+                    .otap_ref()
                     .expect("expected native OTAP logs");
 
                 // Check that the ArrowRecords contains the expected payload types
@@ -2076,16 +2077,17 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let arrow_records =
-                                OtapArrowRecords::try_from_with_default(message.payload())
-                                    .expect("expected native OTAP logs");
+                            let arrow_records = message
+                                .payload_ref()
+                                .otap_ref()
+                                .expect("expected native OTAP logs");
 
                             let logs_record_batch = arrow_records
                                 .get(ArrowPayloadType::Logs)
                                 .expect("Expected Logs record batch to be present");
 
                             total_records += logs_record_batch.num_rows();
-                            received_messages.push(arrow_records);
+                            received_messages.push(arrow_records.clone());
                         }
                         Ok(Err(_)) => break, // Channel closed
                         Err(_) => break,     // Timeout
@@ -2296,9 +2298,11 @@ mod tests {
                     batches.push(message);
                 }
                 for message in batches {
-                    let arrow_records = OtapArrowRecords::try_from_with_default(message.payload())
+                    let arrow_records = message
+                        .payload_ref()
+                        .otap_ref()
                         .expect("expected native OTAP logs");
-                    for resource in decode_logs(arrow_records).resource_logs {
+                    for resource in decode_logs(arrow_records.clone()).resource_logs {
                         for scope in resource.scope_logs {
                             records.extend(scope.log_records);
                         }
@@ -2410,9 +2414,11 @@ mod tests {
                     batches.push(message);
                 }
                 for message in batches {
-                    let arrow_records = OtapArrowRecords::try_from_with_default(message.payload())
+                    let arrow_records = message
+                        .payload_ref()
+                        .otap_ref()
                         .expect("expected native OTAP logs");
-                    for resource in decode_logs(arrow_records).resource_logs {
+                    for resource in decode_logs(arrow_records.clone()).resource_logs {
                         for scope in resource.scope_logs {
                             records.extend(scope.log_records);
                         }
@@ -2513,9 +2519,11 @@ mod tests {
                     batches.push(message);
                 }
                 for message in batches {
-                    let arrow_records = OtapArrowRecords::try_from_with_default(message.payload())
+                    let arrow_records = message
+                        .payload_ref()
+                        .otap_ref()
                         .expect("expected native OTAP logs");
-                    for resource in decode_logs(arrow_records).resource_logs {
+                    for resource in decode_logs(arrow_records.clone()).resource_logs {
                         for scope in resource.scope_logs {
                             records.extend(scope.log_records);
                         }
@@ -2599,9 +2607,9 @@ mod tests {
                     .expect("Timed out waiting for octet-counted message")
                     .expect("No octet-counted message received");
                 let arrow_records = message
-                    .payload()
-                    .try_into_otap(&otel_arrow_dfe_pdata_codec::CodecService::new().unwrap())
-                    .expect("native logs");
+                    .payload_ref()
+                    .otap_ref()
+                    .expect("expected native OTAP logs");
                 let logs_batch = arrow_records
                     .get(ArrowPayloadType::Logs)
                     .expect("Expected Logs batch");
@@ -2698,9 +2706,9 @@ mod tests {
                         .expect("Timed out waiting for truncated message")
                         .expect("No truncated message received");
                     let arrow_records = message
-                        .payload()
-                        .try_into_otap(&otel_arrow_dfe_pdata_codec::CodecService::new().unwrap())
-                        .expect("native logs");
+                        .payload_ref()
+                        .otap_ref()
+                        .expect("expected native OTAP logs");
                     assert_eq!(
                         arrow_records
                             .get(ArrowPayloadType::Logs)
@@ -2786,9 +2794,10 @@ mod tests {
                 loop {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let arrow_records =
-                                OtapArrowRecords::try_from_with_default(message.payload())
-                                    .expect("expected native OTAP logs");
+                            let arrow_records = message
+                                .payload_ref()
+                                .otap_ref()
+                                .expect("expected native OTAP logs");
 
                             let logs_batch = arrow_records
                                 .get(ArrowPayloadType::Logs)

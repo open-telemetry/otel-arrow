@@ -210,6 +210,9 @@ impl Decoder for OtlpBytesDecoder {
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         let buf = src.chunk();
         let bytes = Bytes::copy_from_slice(buf);
+        // SAFETY: PipelineRuntimeServices validates the immutable global
+        // registry before starting receivers; the built-in OTLP codec
+        // is always registered and cannot disappear at runtime.
         let result = otel_arrow_dfe_pdata_codec::builtins::resolve_otlp()
             .expect("validated OTLP codec")
             .admit(self.signal, bytes)

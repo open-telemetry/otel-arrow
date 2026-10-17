@@ -394,13 +394,10 @@ fn producer_validation(
                 match time::timeout(Duration::from_millis(500), ctx.recv()).await {
                     Ok(Ok(pdata)) => {
                         let records = pdata
-                            .payload()
-                            .try_into_otap(
-                                &otel_arrow_dfe_pdata_codec::CodecService::new()
-                                    .expect("valid codec registry"),
-                            )
+                            .payload_ref()
+                            .otap_ref()
                             .expect("expected native OTAP payload from ETW receiver");
-                        batches.push(records);
+                        batches.push(records.clone());
                     }
                     Ok(Err(_)) | Err(_) => { /* channel error or timeout: keep polling */ }
                 }

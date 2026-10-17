@@ -286,6 +286,8 @@ mod tests {
 
     // ==================== Integration Tests ====================
 
+    /// Scenario: Sampling removes one log from a transport-optimized native batch.
+    /// Guarantees: Output remains native OTAP with normalized IDs and matching attributes.
     #[test]
     fn test_transport_optimized_encoding_removed() {
         let config = serde_json::json!({
@@ -327,12 +329,9 @@ mod tests {
                 assert_eq!(msgs.len(), 1);
                 assert_eq!(msgs[0].num_items(), 2);
 
-                let output_payload = msgs[0].clone().into_parts().1.take_payload();
-                let output_otap = output_payload
-                    .try_into_otap(
-                        &otel_arrow_dfe_pdata_codec::CodecService::new()
-                            .expect("valid codec registry"),
-                    )
+                let output_otap = msgs[0]
+                    .payload_ref()
+                    .otap_ref()
                     .expect("expected native OTAP output");
 
                 let output_attrs = output_otap.get(ArrowPayloadType::LogAttrs).unwrap();
