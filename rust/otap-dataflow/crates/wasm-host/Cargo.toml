@@ -45,7 +45,7 @@ otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry", "std"] }
-wat = "1"
+wat = "=1.262.0"
 tempfile.workspace = true
 
 # The end-to-end integration test drives the wasmtime runtime, so it only
