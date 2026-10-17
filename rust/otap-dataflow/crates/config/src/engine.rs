@@ -492,9 +492,6 @@ impl EngineObservabilityPipelineConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPolicies {
-    /// Pdata decoding policy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) pdata: Option<crate::policy::PdataPolicy>,
     /// Channel capacity policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) channel_capacity: Option<ChannelCapacityPolicy>,
@@ -510,7 +507,6 @@ impl EngineObservabilityPolicies {
     #[must_use]
     pub(crate) fn into_policies(self) -> Policies {
         Policies {
-            pdata: self.pdata,
             channel_capacity: self.channel_capacity,
             health: self.health,
             telemetry: self.telemetry,

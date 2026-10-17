@@ -129,7 +129,6 @@ impl<
 
         let channel_capacity_policy = deployment.resolved.policies.channel_capacity.clone();
         let telemetry_policy = deployment.resolved.policies.telemetry.clone();
-        let pdata_policy = deployment.resolved.policies.pdata.clone();
         let rate_limiter_policies = deployment.resolved.policies.rate_limiters.clone();
         let rate_limiter_scope = deployment.resolved.policies.rate_limiter_scope.clone();
         let pipeline_config = deployment.resolved.pipeline.clone();
@@ -168,7 +167,6 @@ impl<
                         pipeline_config,
                         channel_capacity_policy,
                         telemetry_policy,
-                        pdata_policy,
                         rate_limiter_policies,
                         rate_limiter_scope,
                         telemetry_reporting_interval,

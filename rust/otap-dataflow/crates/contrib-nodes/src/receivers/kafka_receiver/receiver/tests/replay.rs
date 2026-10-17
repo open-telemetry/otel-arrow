@@ -622,7 +622,6 @@ fn run_retry_topology_pipeline(bootstrap_servers: String) {
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            Default::default(),
             std::collections::BTreeMap::new(),
             None,
             None,

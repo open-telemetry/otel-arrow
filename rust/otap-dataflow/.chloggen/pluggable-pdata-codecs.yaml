@@ -8,7 +8,7 @@ change_type: enhancement
 component: pdata
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Support encoded telemetry through pluggable codecs, preserving OTLP pass-through and lazy conversion to OTAP, with configurable decode validation.
+note: Support encoded telemetry through pluggable codecs, preserving OTLP pass-through and lazy conversion to OTAP.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3452]
@@ -18,4 +18,4 @@ issues: [3452]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: '`policies.pdata.decode_validation` defaults to `best_effort`; `strict` validates complete nested OTLP messages before conversion at additional CPU and memory cost. Pass-through is unaffected. Decode failures preserve original input for permanent Nacks instead of stopping the pipeline.'
+subtext: OTLP/OTAP exporters and record-mutating processors retain original input for permanent Nacks when decoding fails, instead of stopping the pipeline.
