@@ -55,7 +55,7 @@ use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue;
 use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
 use otel_arrow_dfe_config::policy::MemoryLimiterMode;
 use otel_arrow_dfe_config::policy::{
-    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, PdataPolicy, RateLimiterPolicy,
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimiterPolicy,
     RuntimeRecoveryPolicy, TelemetryPolicy,
 };
 use otel_arrow_dfe_config::topic::{
@@ -2771,7 +2771,6 @@ impl<
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        pdata_policy: PdataPolicy,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
@@ -2832,7 +2831,6 @@ impl<
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
-                    pdata_policy,
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,

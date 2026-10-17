@@ -31,8 +31,8 @@ use async_trait::async_trait;
 use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::{
-    ChannelCapacityPolicy, PdataPolicy, RateLimitAggregation, RateLimitEnforcement,
-    RateLimitPressure, RateLimitUnit, RateLimiterPolicy, TelemetryPolicy, TokenBucketPolicy,
+    ChannelCapacityPolicy, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
+    RateLimitUnit, RateLimiterPolicy, TelemetryPolicy, TokenBucketPolicy,
 };
 use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::ExporterFactory;
@@ -1958,7 +1958,6 @@ fn build_test_runtime_pipeline(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
-            PdataPolicy::default(),
             std::collections::BTreeMap::new(),
             None,
             None,
@@ -1989,7 +1988,6 @@ fn build_test_pipeline_with_unconsumed_explicit_binding(
         config,
         ChannelCapacityPolicy::default(),
         TelemetryPolicy::default(),
-        PdataPolicy::default(),
         std::collections::BTreeMap::from([("ingress".to_owned(), policy)]),
         None,
         None,
@@ -4373,7 +4371,6 @@ fn build_runtime_pipeline_with_ready_gate(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
-            PdataPolicy::default(),
             std::collections::BTreeMap::new(),
             None,
             None,
