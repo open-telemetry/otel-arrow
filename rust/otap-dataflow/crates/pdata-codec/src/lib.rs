@@ -17,7 +17,7 @@ mod view;
 mod codecs;
 
 pub use batching::{
-    BatchPlan, BatchProfile, BatchSizer, BatchingOutput, BatchingSupport, CodecBatches,
+    BatchPlan, BatchSettings, BatchSizer, BatchingOutput, BatchingSupport, CodecBatches,
     PdataBatcher,
 };
 pub use decoder::{DecodePolicy, DecodeValidation, PdataDecoder};

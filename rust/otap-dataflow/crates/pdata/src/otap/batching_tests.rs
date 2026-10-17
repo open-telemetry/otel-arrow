@@ -437,3 +437,32 @@ fn test_comprehensive_batch_metrics() {
         }
     }
 }
+
+/// Scenario: An OTAP split limit exceeds the splitter's u32 row-index range.
+/// Guarantees: Large u64 limits never wrap into small limits and cause spurious splits.
+#[test]
+fn oversized_split_limits_do_not_truncate() {
+    use crate::otap::groups::RecordsGroup;
+    let mut generator = DataGenerator::new(1);
+    let input: OtlpProtoMessage = generator.generate_logs().into();
+    let records = otlp_to_otap(&input);
+    let count = records.num_items();
+    assert!(count > 2);
+    for limit in [
+        u64::from(u32::MAX),
+        u64::from(u32::MAX) + 1,
+        u64::from(u32::MAX) + 2,
+        u64::MAX,
+    ] {
+        let mut origins = vec![0];
+        let output = RecordsGroup::separate_logs(vec![records.clone()])
+            .unwrap()
+            .split(NonZeroU64::new(limit).unwrap(), &mut origins)
+            .unwrap()
+            .into_otap_arrow_records()
+            .unwrap();
+        assert_eq!(origins, [0], "limit {limit}");
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].num_items(), count);
+    }
+}

@@ -12,7 +12,7 @@
 
 The batch processor combines native OTAP records and independently decodable
 encoded batches before forwarding them downstream. Codecs may provide native
-merge/split support; otherwise compatible item-based profiles use OTAP fallback.
+merge/split support; otherwise compatible item-based settings use OTAP fallback.
 The processor owns buffering, flush deadlines, backpressure, and ACK/NACK routing.
 
 Batches are sized against the configured range of acceptable sizes,
@@ -87,18 +87,18 @@ config:
   format: preserve
 ```
 
-### Codec profiles and output selection
+### Codec settings and output selection
 
 `format: preserve` keeps an encoding when its codec supports the requested
-batching unit. Otherwise, an item-based profile decodes to OTAP and emits OTAP.
+batching unit. Otherwise, item-based batching decodes to OTAP and emits OTAP.
 It does not promise byte preservation for every codec or configuration. Choosing
 an explicit format converts to that output representation, re-encoding after
 OTAP fallback when needed. Selecting an encode-only output codec is supported;
 selecting a decode-only codec as an explicit output is rejected at startup.
 
-Use `codecs` to set profiles by registered encoding name. The `otap` and `otlp`
-blocks remain compatible aliases; declaring the same profile twice is an error.
-For example, the following is equivalent to the legacy OTLP profile:
+Use `codecs` to configure batching by registered encoding name. The `otap` and `otlp`
+blocks remain compatible aliases; declaring settings for the same format twice is an error.
+For example, the following is equivalent to the legacy OTLP settings:
 
 ```yaml
 type: processor:batch
@@ -112,10 +112,13 @@ config:
 ```
 
 The available names depend on the codecs linked into the binary. Unknown names,
-unsupported sizing, and missing output capabilities fail at startup. A byte
-profile measures the complete encoded request, including format wrappers and
+unsupported sizing, and missing output capabilities fail at startup. Byte
+sizing measures the complete encoded request, including format wrappers and
 intrinsic compression; HTTP/gRPC framing and transport compression are excluded.
 OTAP fallback supports item sizing, not a prediction of final encoded byte size.
+Batch size thresholds and split budgets are unsigned 64-bit values. A batcher
+caps upper bounds at its internal size limit rather than truncating them; large
+configured limits do not allocate buffers in advance.
 Outputs remain independently decodable: native batching does not imply that any
 encoding can be split at arbitrary byte boundaries or concatenated blindly.
 

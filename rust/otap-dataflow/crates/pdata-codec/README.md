@@ -54,6 +54,7 @@ Native OTAP is the common processing representation, not a registered byte codec
 - `CodecRegistration` supplies decoder, encoder, item-counter, and native
   batching capabilities. A codec may be decode-only or encode-only. A decoder
   must provide an item counter so requested flow metrics remain available.
+  Native item batching also requires a counter, including for encode-only codecs.
 - `CodecRegistry` validates the complete link-time registry once. Duplicate or
   invalid identities fail pipeline runtime construction deterministically.
 - `CodecService` creates mutable implementations lazily and reuses them within
@@ -263,19 +264,23 @@ Registration and duplicate-name policy belong to the registry, not the macro.
 Registration order is not a precedence mechanism, and the default registry
 rejects duplicate identities independently of link order.
 
-An item counter is required for every decoder registration and must be
-stateless. Return `None` when malformed bytes cannot be counted; zero means the
-payload was inspected and contains no primary-signal items. Payloads cache
-successful counts, keeping an unavailable count distinct from zero. Count caches
-are codec-owned; receivers and processors cannot inject arbitrary counts.
+A stateless item counter is required for every registration with a decoder or
+native item batching. Return `None` when malformed bytes cannot be counted; zero
+means the payload was inspected and contains no primary-signal items. Payloads
+cache successful counts, keeping an unavailable count distinct from zero. Count
+caches are codec-owned; receivers and processors cannot inject arbitrary counts.
 
 ## Add native batching
 
 Implement `PdataBatcher` only when encoded batches can be merged or split
 without first materializing OTAP records. Register it with
 `CodecBatcherRegistration::new` and `CodecRegistration::with_batcher`. Its
-`BatchingSupport` declares the supported sizing units and default bounded
-profile.
+`BatchingSupport` declares the supported sizing units and default `BatchSettings`
+(sizing unit, thresholds, and split budgets). Declaring `BatchSizer::Items`
+requires an item counter to measure both
+inputs and outputs, even without a decoder or when the default unit is bytes.
+Registry validation rejects missing counters before pipeline startup;
+encode-only codecs with byte-only batching do not require one.
 
 ### Batching flow
 

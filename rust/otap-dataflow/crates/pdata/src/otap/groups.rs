@@ -127,8 +127,9 @@ impl RecordsGroup {
     /// Split `RecordBatch`es as needed when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
     pub(crate) fn split(self, max_items: NonZeroU64, origins: &mut Vec<usize>) -> Result<Self> {
-        let max_items = NonZeroU32::new(max_items.get() as u32)
-            .unwrap_or(NonZeroU32::try_from(u32::MAX).expect("u32::MAX is not 0"));
+        // The splitter indexes rows with u32. A larger requested upper bound
+        // must not wrap into a small split size; cap it at the internal maximum.
+        let max_items = NonZeroU32::try_from(max_items).unwrap_or(NonZeroU32::MAX);
         Ok(match self {
             RecordsGroup::Logs(mut items) => {
                 RecordsGroup::Logs(split_with_origins::<{ Logs::COUNT }>(

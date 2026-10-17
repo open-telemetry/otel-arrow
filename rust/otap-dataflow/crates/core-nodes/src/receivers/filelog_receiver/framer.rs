@@ -37,6 +37,27 @@ pub struct LineConfig {
     pub oversize: OversizeBehavior,
 }
 
+impl LineConfig {
+    /// Validate encoding-specific minimum bounds and allocation arithmetic.
+    pub fn validate(&self) -> Result<(), LineError> {
+        let minimum = match (self.encoding, self.on_decode_error) {
+            (Encoding::Raw, _) | (Encoding::Ascii, OnDecodeError::Fail) => 1,
+            (Encoding::Ascii, _) => 3,
+            _ => 4,
+        };
+        let limit = self.max_line_bytes.min(self.max_record_bytes);
+        // Two shadows plus their simultaneous old/new growth allocations must fit.
+        if limit < minimum
+            || self.max_line_bytes > isize::MAX as usize
+            || self.max_record_bytes > isize::MAX as usize
+            || limit.checked_mul(4).is_none()
+        {
+            return Err(LineError::InvalidBounds);
+        }
+        Ok(())
+    }
+}
+
 /// Scan-to-LF split coordinates, independent of checkpoint encoding and identity.
 ///
 /// Persistence maps this to `record_end_offset == 0`. Known-end multiline
@@ -226,20 +247,8 @@ pub struct LineFramer {
 impl LineFramer {
     /// Validates bounds and recovery coordinates; does not validate source identity.
     pub fn new(config: LineConfig, start: LineStart) -> Result<Self, LineError> {
-        let minimum = match (config.encoding, config.on_decode_error) {
-            (Encoding::Raw, _) | (Encoding::Ascii, OnDecodeError::Fail) => 1,
-            (Encoding::Ascii, _) => 3,
-            _ => 4,
-        };
+        config.validate()?;
         let limit = config.max_line_bytes.min(config.max_record_bytes);
-        // Two shadows plus their simultaneous old/new growth allocations must fit.
-        if limit < minimum
-            || config.max_line_bytes > isize::MAX as usize
-            || config.max_record_bytes > isize::MAX as usize
-            || limit.checked_mul(4).is_none()
-        {
-            return Err(LineError::InvalidBounds);
-        }
         let (decode_start, offset, state) = match start {
             LineStart::NewStream => (DecodeStart::NewStream, 0, State::Line),
             LineStart::ResumeAt(offset) => (DecodeStart::ResumeAt(offset), offset, State::Line),

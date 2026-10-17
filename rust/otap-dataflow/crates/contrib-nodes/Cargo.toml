@@ -182,6 +182,10 @@ windows-event-forwarding = [
     "dep:quick-xml",
     "dep:chrono",
     "dep:serde_cbor",
+    "dep:uuid",
+    "uuid/v5",
+    "dep:url",
+    "dep:humantime-serde",
 ]
 user-events = [
     "dep:base64",

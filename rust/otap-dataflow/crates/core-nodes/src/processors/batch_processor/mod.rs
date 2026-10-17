@@ -69,8 +69,8 @@ use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension
 use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
 pub use otel_arrow_dfe_pdata_codec::BatchSizer as Sizer;
 use otel_arrow_dfe_pdata_codec::{
-    BatchPlan, BatchProfile, BatchingOutput, CodecError, CodecRegistry, OtapPayload, PdataEncoding,
-    PdataFormat,
+    BatchPlan, BatchSettings, BatchingOutput, CodecError, CodecRegistry, OtapPayload,
+    PdataEncoding, PdataFormat,
 };
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
@@ -79,7 +79,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -88,10 +88,10 @@ use std::time::{Duration, Instant};
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:processor:batch";
 
 /// Default configuration item min-size (OTAP default)
-pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: usize = 8192;
+pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: u64 = 8192;
 
 /// Default configuration item min-size (OTLP default)
-pub const DEFAULT_OTLP_MIN_SIZE_BYTES: usize = 262144;
+pub const DEFAULT_OTLP_MIN_SIZE_BYTES: u64 = 262144;
 
 /// Default max batch duration in milliseconds
 pub const DEFAULT_MAX_BATCH_DURATION_MS: u64 = 200;
@@ -125,20 +125,21 @@ fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(usize, SignalType)> {
     Some((buffer, signal))
 }
 
-/// Min/max size for a specific format
+/// Batching settings for one representation, identified by its containing config key.
+/// The format selects the codec; these settings control sizing and split budgets.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormatConfig {
     /// Lower bound of the acceptable batch size. Measured in the quantity
     /// indicated by `sizer`. When pending data reaches this threshold a
     /// new batch will form and be sent. When unset, defaults to `max_size`.
     /// Zero is allowed and means any input up to `max_size` is forwarded as-is.
-    pub min_size: Option<usize>,
+    pub min_size: Option<u64>,
 
     /// Optionally limit batch sizes to an upper bound. Measured in
     /// the quantity indicated by `sizer`, as described for min_size.
     /// This is a best-effort split target. Indivisible entries or exhausted
     /// split budgets may require an encoded output larger than this value.
-    pub max_size: Option<NonZeroUsize>,
+    pub max_size: Option<NonZeroU64>,
 
     /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
     pub sizer: Sizer,
@@ -151,7 +152,7 @@ pub struct FormatConfig {
     /// worst-case fan-out (and memory) when `max_size` is small relative to a
     /// single indivisible input.
     #[serde(default = "default_max_split_fragments")]
-    pub max_split_fragments: Option<NonZeroUsize>,
+    pub max_split_fragments: Option<NonZeroU64>,
 
     /// Maximum number of duplicated wrapper bytes a single oversize resource
     /// entry may amplify into when byte-splitting (OTLP bytes only). Each
@@ -163,7 +164,7 @@ pub struct FormatConfig {
     /// (best-effort, possibly exceeding `max_size`) and counted in the
     /// `split_budget_fallbacks` metric. `None` means unbounded.
     #[serde(default = "default_max_split_overhead_bytes")]
-    pub max_split_overhead_bytes: Option<NonZeroUsize>,
+    pub max_split_overhead_bytes: Option<NonZeroU64>,
 
     /// Maximum number of output batches a single flush may build from byte
     /// splitting (OTLP bytes only) before further oversize resource entries are
@@ -176,7 +177,7 @@ pub struct FormatConfig {
     /// entry. Over-limit entries are counted in the `split_budget_fallbacks`
     /// metric. `None` means unbounded.
     #[serde(default = "default_max_split_fragments_per_flush")]
-    pub max_split_fragments_per_flush: Option<NonZeroUsize>,
+    pub max_split_fragments_per_flush: Option<NonZeroU64>,
 }
 
 /// Batching format option.
@@ -217,15 +218,15 @@ impl Serialize for BatchingFormat {
     }
 }
 
-/// Batch processor configuration, with compatible built-in profile aliases.
+/// Batch processor configuration, with compatible built-in settings aliases.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "ConfigInput")]
 pub struct Config {
-    /// Native OTAP profile (legacy alias for codecs.otap).
+    /// Native OTAP settings (legacy alias for codecs.otap).
     pub otap: FormatConfig,
-    /// OTLP byte profile (legacy alias for codecs.otlp-bytes).
+    /// OTLP byte settings (legacy alias for codecs.otlp-bytes).
     pub otlp: FormatConfig,
-    /// Explicit profiles indexed by canonical codec name.
+    /// Explicit settings indexed by canonical codec name.
     pub codecs: BTreeMap<String, FormatConfig>,
     /// Maximum age of pending input.
     pub max_batch_duration: Duration,
@@ -262,15 +263,15 @@ impl TryFrom<ConfigInput> for Config {
             .map(PdataFormat::encoded)
             .map_err(|error| error.to_string())?;
         let mut codecs = BTreeMap::new();
-        for (name, profile) in input.codecs {
+        for (name, settings) in input.codecs {
             let format =
                 PdataFormat::resolve(&registry, &name).map_err(|error| error.to_string())?;
             let canonical = format.name().to_owned();
             if (format == PdataFormat::OTAP && input.otap.is_some())
                 || (format == otlp && input.otlp.is_some())
-                || codecs.insert(canonical.clone(), profile).is_some()
+                || codecs.insert(canonical.clone(), settings).is_some()
             {
-                return Err(format!("duplicate batching profile for {canonical}"));
+                return Err(format!("duplicate batching settings for {canonical}"));
             }
         }
         Ok(Self {
@@ -285,11 +286,11 @@ impl TryFrom<ConfigInput> for Config {
     }
 }
 
-const fn default_otap_min_size_items() -> Option<usize> {
+const fn default_otap_min_size_items() -> Option<u64> {
     Some(DEFAULT_OTAP_MIN_SIZE_ITEMS)
 }
 
-const fn default_otap_max_size_items() -> Option<NonZeroUsize> {
+const fn default_otap_max_size_items() -> Option<NonZeroU64> {
     // No upper-bound
     None
 }
@@ -298,11 +299,11 @@ const fn default_otap_sizer_items() -> Sizer {
     Sizer::Items
 }
 
-const fn default_otlp_min_size_bytes() -> Option<usize> {
+const fn default_otlp_min_size_bytes() -> Option<u64> {
     Some(DEFAULT_OTLP_MIN_SIZE_BYTES)
 }
 
-const fn default_otlp_max_size_bytes() -> Option<NonZeroUsize> {
+const fn default_otlp_max_size_bytes() -> Option<NonZeroU64> {
     // No upper-bound
     None
 }
@@ -335,8 +336,8 @@ const fn default_batching_format() -> BatchingFormat {
 /// almost never fire under normal load and is deliberately set well above the
 /// fan-out any legitimate large resource entry produces. Chosen as a round
 /// power of two (2^16) rather than a hard performance limit.
-const fn default_max_split_fragments() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(65_536)
+const fn default_max_split_fragments() -> Option<NonZeroU64> {
+    NonZeroU64::new(65_536)
 }
 
 /// Default cap on the duplicated wrapper bytes a single oversize resource entry
@@ -344,8 +345,8 @@ const fn default_max_split_fragments() -> Option<NonZeroUsize> {
 /// from re-encoding large resource/scope headers across many fragments; entries
 /// whose amplification (measured during greedy packing) exceeds this are emitted
 /// whole. Default: 8 MiB.
-const fn default_max_split_overhead_bytes() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(8 * 1024 * 1024)
+const fn default_max_split_overhead_bytes() -> Option<NonZeroU64> {
+    NonZeroU64::new(8 * 1024 * 1024)
 }
 
 /// Default cap on the number of output batches a single flush may build from
@@ -353,8 +354,8 @@ const fn default_max_split_overhead_bytes() -> Option<NonZeroUsize> {
 /// in-memory output allocation for a flush with many large entries, independent
 /// of Ack/Nack slot accounting; over-limit entries are emitted whole. Chosen as
 /// a round power of two (2^16) backstop, not a hard performance limit.
-const fn default_max_split_fragments_per_flush() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(65_536)
+const fn default_max_split_fragments_per_flush() -> Option<NonZeroU64> {
+    NonZeroU64::new(65_536)
 }
 
 const fn default_otap() -> FormatConfig {
@@ -399,9 +400,9 @@ impl Config {
         self.plans().map(|_| ())
     }
 
-    fn profile(&self, format: PdataFormat) -> BatchProfile {
-        if let Some(profile) = self.codecs.get(format.name()) {
-            return profile.into();
+    fn settings(&self, format: PdataFormat) -> BatchSettings {
+        if let Some(settings) = self.codecs.get(format.name()) {
+            return settings.into();
         }
         if format == PdataFormat::OTAP {
             return (&self.otap).into();
@@ -412,20 +413,20 @@ impl Config {
         {
             return (&self.otlp).into();
         }
-        let mut default = format.default_profile();
-        // A codec without native support uses the configured OTAP fallback profile.
+        let mut default = format.default_settings();
+        // A codec without native support uses the configured OTAP fallback settings.
         if !format.has_native_batching() {
             self.codecs.get("otap").unwrap_or(&self.otap).into()
         } else {
             // Adding a compiled-in codec must not invalidate existing immediate
-            // flush configurations. An implicit profile uses its native threshold
-            // as a split limit; explicit profiles still require valid split settings.
+            // flush configurations. Implicit settings use the native threshold
+            // as a split limit; explicit settings still require valid split settings.
             if self.max_batch_duration == Duration::ZERO
                 && default.min_size.is_some_and(|min| min > 0)
             {
                 default.max_size = default
                     .max_size
-                    .or(default.min_size.and_then(NonZeroUsize::new));
+                    .or(default.min_size.and_then(NonZeroU64::new));
                 default.min_size = None;
             }
             default
@@ -462,15 +463,15 @@ impl Config {
         formats
             .into_iter()
             .map(|format| {
-                let profile = self.profile(format);
+                let settings = self.settings(format);
                 if self.max_batch_duration == Duration::ZERO
-                    && profile.min_size.is_some_and(|min| min > 0)
+                    && settings.min_size.is_some_and(|min| min > 0)
                 {
                     return Err(config_error(
                         "min_size > 0 requires max_batch_duration is set",
                     ));
                 }
-                BatchPlan::new(format, profile, self.format == BatchingFormat::Preserve)
+                BatchPlan::new(format, settings, self.format == BatchingFormat::Preserve)
                     .map(|plan| (format, plan))
                     .map_err(config_error)
             })
@@ -484,25 +485,25 @@ fn config_error(error: impl std::fmt::Display) -> ConfigError {
     }
 }
 
-impl From<&FormatConfig> for BatchProfile {
-    fn from(profile: &FormatConfig) -> Self {
+impl From<&FormatConfig> for BatchSettings {
+    fn from(settings: &FormatConfig) -> Self {
         Self {
-            min_size: profile.min_size,
-            max_size: profile.max_size,
-            sizer: profile.sizer,
-            max_split_fragments: profile.max_split_fragments,
-            max_split_overhead_bytes: profile.max_split_overhead_bytes,
-            max_split_fragments_per_flush: profile.max_split_fragments_per_flush,
+            min_size: settings.min_size,
+            max_size: settings.max_size,
+            sizer: settings.sizer,
+            max_split_fragments: settings.max_split_fragments,
+            max_split_overhead_bytes: settings.max_split_overhead_bytes,
+            max_split_fragments_per_flush: settings.max_split_fragments_per_flush,
         }
     }
 }
 
 impl FormatConfig {
     #[cfg(test)]
-    const fn new_items(min_size: Option<usize>, max_size: usize) -> FormatConfig {
+    const fn new_items(min_size: Option<u64>, max_size: u64) -> FormatConfig {
         FormatConfig {
             min_size,
-            max_size: NonZeroUsize::new(max_size),
+            max_size: NonZeroU64::new(max_size),
             sizer: Sizer::Items,
             max_split_fragments: None,
             max_split_overhead_bytes: None,
@@ -511,10 +512,10 @@ impl FormatConfig {
     }
 
     #[cfg(test)]
-    const fn new_bytes(min_size: Option<usize>, max_size: usize) -> FormatConfig {
+    const fn new_bytes(min_size: Option<u64>, max_size: u64) -> FormatConfig {
         FormatConfig {
             min_size,
-            max_size: NonZeroUsize::new(max_size),
+            max_size: NonZeroU64::new(max_size),
             sizer: Sizer::Bytes,
             max_split_fragments: default_max_split_fragments(),
             max_split_overhead_bytes: default_max_split_overhead_bytes(),
@@ -607,7 +608,7 @@ struct BatchProcessorFormat<'a> {
 struct BatchProcessorSignal<'a> {
     signal: SignalType,
     config: &'a Config,
-    fmtcfg: &'a BatchProfile,
+    fmtcfg: &'a BatchSettings,
     plan: &'a BatchPlan,
     buffer: &'a mut SignalBuffer,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
@@ -716,7 +717,7 @@ impl BatchProcessor {
         let mut formats: Vec<Option<FormatState>> = vec![None, None];
         let mut routes = Vec::new();
         for (source, plan) in plans {
-            if plan.profile().forwards_everything() {
+            if plan.settings().forwards_everything() {
                 otel_warn!(
                     LOG_EVENT_FORWARDS_EVERYTHING,
                     format = source.name(),
@@ -854,7 +855,7 @@ impl<'a> BatchProcessorFormat<'a> {
         BatchProcessorSignal {
             signal,
             config: self.config,
-            fmtcfg: self.plan.profile(),
+            fmtcfg: self.plan.settings(),
             plan: self.plan,
             buffer: match signal {
                 SignalType::Logs => &mut self.signals.logs,
@@ -939,7 +940,7 @@ impl<'a> BatchProcessorSignal<'a> {
         let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
         // Flush based on size when the batch reaches the lower limit.
-        if timeout != Duration::ZERO && pending_size < self.fmtcfg.lower_limit() {
+        if timeout != Duration::ZERO && (pending_size as u64) < self.fmtcfg.lower_limit() {
             if let Some(now) = arrival {
                 self.buffer
                     .set_arrival(self.signal, now, timeout, effect)
@@ -1104,7 +1105,7 @@ impl<'a> BatchProcessorSignal<'a> {
             let (last_payload, range) = output_batches.last().expect("last output");
             if range.start() == range.end() && *range.end() == inputs.context.len() - 1 {
                 let size = self.fmtcfg.sizer.batch_size(last_payload)?;
-                if size > 0 && size < self.fmtcfg.lower_limit() {
+                if size > 0 && (size as u64) < self.fmtcfg.lower_limit() {
                     self.buffer
                         .take_remaining(size, &inputs, &mut output_batches);
                     self.buffer
@@ -1657,7 +1658,7 @@ mod tests {
     static PAGE_SUPPORT: otel_arrow_dfe_pdata_codec::BatchingSupport =
         otel_arrow_dfe_pdata_codec::BatchingSupport {
             sizers: &[Sizer::Bytes],
-            default_profile: BatchProfile::otlp(),
+            default_settings: BatchSettings::otlp(),
         };
     struct PageCodec;
     impl otel_arrow_dfe_pdata_codec::PdataDecoder for PageCodec {
@@ -1673,7 +1674,7 @@ mod tests {
         fn batch(
             &mut self,
             _: SignalType,
-            profile: &BatchProfile,
+            settings: &BatchSettings,
             inputs: Vec<Bytes>,
         ) -> Result<otel_arrow_dfe_pdata_codec::CodecBatches, CodecError> {
             let rows: Vec<_> = inputs
@@ -1686,7 +1687,9 @@ mod tests {
                         .map(move |byte| (*byte, index))
                 })
                 .collect();
-            let size = profile.max_size.map_or(6, |size| size.get().min(6));
+            let size = settings.max_size.map_or(6, |size| {
+                usize::try_from(size.get()).unwrap_or(usize::MAX).min(6)
+            });
             let batches: Vec<_> = rows
                 .chunks(size)
                 .map(|rows| {
@@ -1979,19 +1982,52 @@ mod tests {
     }
 
     /// Scenario: The batch processor is created with its default configuration.
-    /// Guarantees: Default codec profiles and duration limits are accepted.
+    /// Guarantees: Default codec settings and duration limits are accepted.
     #[test]
     fn test_default_config_ok() {
         let cfg: Config = serde_json::from_value(json!({})).unwrap();
         cfg.validate().unwrap();
     }
 
-    /// Scenario: users configure built-in profiles through legacy aliases or
+    /// Scenario: Configuration supplies the full u64 range for batching thresholds and split budgets.
+    /// Guarantees: Startup retains every limit without narrowing; small inputs cannot satisfy a huge minimum.
+    #[test]
+    fn batching_settings_preserve_u64_limits() {
+        let cfg: Config = serde_json::from_value(json!({
+            "format": "otlp",
+            "otlp": {
+                "sizer": "bytes",
+                "min_size": u64::MAX,
+                "max_size": u64::MAX,
+                "max_split_fragments": u64::MAX,
+                "max_split_overhead_bytes": u64::MAX,
+                "max_split_fragments_per_flush": u64::MAX
+            }
+        }))
+        .unwrap();
+        let plans = cfg.plans().unwrap();
+        let settings = plans[0].1.settings();
+        assert_eq!(
+            settings,
+            &BatchSettings {
+                min_size: Some(u64::MAX),
+                max_size: NonZeroU64::new(u64::MAX),
+                sizer: Sizer::Bytes,
+                max_split_fragments: NonZeroU64::new(u64::MAX),
+                max_split_overhead_bytes: NonZeroU64::new(u64::MAX),
+                max_split_fragments_per_flush: NonZeroU64::new(u64::MAX),
+            }
+        );
+        assert_eq!(settings.lower_limit(), u64::MAX);
+        assert!(!settings.in_passthrough_range(2));
+    }
+
+    /// Scenario: users configure built-in settings through legacy aliases or
     /// canonical codec names, or request ambiguous/unsupported configurations.
     /// Guarantees: compatible YAML resolves identically and invalid capabilities
     /// are rejected before the processor buffers any requests.
     #[test]
-    fn codec_profiles_preserve_configuration_compatibility() {
+    fn codec_settings_preserve_configuration_compatibility() {
         let legacy: Config = serde_json::from_value(json!({
             "format": "otlp", "otlp": { "min_size": 32, "max_size": 64, "sizer": "bytes" }
         }))
@@ -2261,7 +2297,7 @@ mod tests {
                 ..Default::default()
             };
             assert!(cfg.validate().is_ok(), "min 0 + max, timeout {timeout:?}");
-            assert!(!BatchProfile::from(&cfg.otap).forwards_everything());
+            assert!(!BatchSettings::from(&cfg.otap).forwards_everything());
 
             // min_size: 0 without max_size: OK (warned at build time).
             let cfg = Config {
@@ -2271,7 +2307,7 @@ mod tests {
                 ..Default::default()
             };
             assert!(cfg.validate().is_ok(), "min 0 only, timeout {timeout:?}");
-            assert!(BatchProfile::from(&cfg.otap).forwards_everything());
+            assert!(BatchSettings::from(&cfg.otap).forwards_everything());
         }
 
         // Non-zero min_size without timeout is still an error.
@@ -2301,25 +2337,25 @@ mod tests {
     /// upper bound when `max_size` is unset.
     #[test]
     fn test_passthrough_range() {
-        let both = BatchProfile::from(&FormatConfig::new_items(Some(5), 10));
+        let both = BatchSettings::from(&FormatConfig::new_items(Some(5), 10));
         assert_eq!(both.lower_limit(), 5);
         assert!(!both.in_passthrough_range(4));
         assert!(!both.in_passthrough_range(11));
         assert!(both.in_passthrough_range(5));
         assert!(both.in_passthrough_range(10));
 
-        let max_only = BatchProfile::from(&FormatConfig::new_items(None, 10));
+        let max_only = BatchSettings::from(&FormatConfig::new_items(None, 10));
         assert_eq!(max_only.lower_limit(), 10);
         assert!(!max_only.in_passthrough_range(9));
         assert!(!max_only.in_passthrough_range(11));
         assert!(max_only.in_passthrough_range(10));
 
-        let min_only = BatchProfile::from(&FormatConfig::new_items(Some(5), 0));
+        let min_only = BatchSettings::from(&FormatConfig::new_items(Some(5), 0));
         assert_eq!(min_only.lower_limit(), 5);
         assert!(!min_only.in_passthrough_range(4));
         assert!(min_only.in_passthrough_range(usize::MAX));
 
-        let zero = BatchProfile::from(&FormatConfig::new_items(Some(0), 10));
+        let zero = BatchSettings::from(&FormatConfig::new_items(Some(0), 10));
         assert_eq!(zero.lower_limit(), 0);
         assert!(zero.in_passthrough_range(1));
         assert!(zero.in_passthrough_range(10));
@@ -4295,17 +4331,17 @@ mod tests {
 
         assert_eq!(
             config.otlp.max_split_fragments,
-            NonZeroUsize::new(65_536),
+            NonZeroU64::new(65_536),
             "omitted max_split_fragments must default to 64k, not None (unbounded)"
         );
         assert_eq!(
             config.otlp.max_split_overhead_bytes,
-            NonZeroUsize::new(8 * 1024 * 1024),
+            NonZeroU64::new(8 * 1024 * 1024),
             "omitted max_split_overhead_bytes must default to 8 MiB, not None (unbounded)"
         );
         assert_eq!(
             config.otlp.max_split_fragments_per_flush,
-            NonZeroUsize::new(65_536),
+            NonZeroU64::new(65_536),
             "omitted max_split_fragments_per_flush must default to 64k, not None (unbounded)"
         );
     }

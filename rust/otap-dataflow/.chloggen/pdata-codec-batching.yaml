@@ -18,4 +18,4 @@ issues: [3452]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Preserve mode retains the input encoding when its codec supports batching. Existing OTAP/OTLP settings remain supported. Split and merged batches preserve delivery acknowledgements and permanent rejections, with output metrics reflecting the emitted encoding."
+subtext: "Preserve mode retains the input encoding when its codec supports batching. Existing OTAP/OTLP settings remain supported. Split and merged batches preserve delivery acknowledgements and permanent rejections, with output metrics reflecting the emitted encoding. Large batch limits no longer wrap."

@@ -6,7 +6,7 @@
 //! This layer owns conversion, sizing, and in-line merge/split operations.
 //! Scheduling, bounded request tracking, and Ack/Nack routing belong to the node.
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroU64;
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
@@ -25,7 +25,7 @@ use crate::{
 /// order within a call; the processor's in-range passthrough can overtake buffered
 /// inputs, so this is not a pipeline-wide ordering guarantee.
 ///
-/// Honor the sizing and split-amplification budgets in [`BatchProfile`]. Sizes
+/// Honor the sizing and split-amplification budgets in [`BatchSettings`]. Sizes
 /// are measured before transport compression. Indivisible entries and exhausted
 /// budgets may produce outputs above the best-effort maximum. Return their count
 /// in [`CodecBatches::budget_fallbacks`]. A failure must leave the batcher usable
@@ -39,7 +39,7 @@ pub trait PdataBatcher: Send {
     fn batch(
         &mut self,
         signal: SignalType,
-        profile: &BatchProfile,
+        settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError>;
 }
@@ -73,36 +73,41 @@ impl BatchSizer {
     }
 }
 
-/// Sizing and bounded split amplification policy shared by native batchers.
+/// Sizing thresholds and bounded split amplification shared by native batchers.
+///
+/// These settings control batching behavior, not representation identity (see
+/// [`PdataFormat`]). Limits use u64 independently of the target pointer width;
+/// batchers must cap or reject upper bounds that exceed their internal size types.
+/// Narrowing must never wrap a large limit into a smaller value.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct BatchProfile {
+pub struct BatchSettings {
     /// Lower bound for flushing and passthrough in the selected sizing unit.
     /// Defaults to `max_size` when unset; zero allows any input up to `max_size`.
-    pub min_size: Option<usize>,
+    pub min_size: Option<u64>,
     /// Optional best-effort maximum output size in that same unit.
-    pub max_size: Option<NonZeroUsize>,
+    pub max_size: Option<NonZeroU64>,
     /// Unit supported by the selected native batcher or OTAP fallback.
     pub sizer: BatchSizer,
     /// Per-entry split fragment budget; indivisible/over-budget entries remain whole.
     #[serde(default = "default_fragments")]
-    pub max_split_fragments: Option<NonZeroUsize>,
+    pub max_split_fragments: Option<NonZeroU64>,
     /// Maximum duplicated wrapper bytes per split entry.
     #[serde(default = "default_overhead")]
-    pub max_split_overhead_bytes: Option<NonZeroUsize>,
+    pub max_split_overhead_bytes: Option<NonZeroU64>,
     /// Per-flush additional split fan-out budget, excluding mandatory whole entries.
     #[serde(default = "default_fragments")]
-    pub max_split_fragments_per_flush: Option<NonZeroUsize>,
+    pub max_split_fragments_per_flush: Option<NonZeroU64>,
 }
 
-const fn default_fragments() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(65536)
+const fn default_fragments() -> Option<NonZeroU64> {
+    NonZeroU64::new(65536)
 }
-const fn default_overhead() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(8 * 1024 * 1024)
+const fn default_overhead() -> Option<NonZeroU64> {
+    NonZeroU64::new(8 * 1024 * 1024)
 }
 
-impl BatchProfile {
+impl BatchSettings {
     /// Existing native OTAP defaults, also used by the item-based fallback.
     #[must_use]
     pub const fn otap() -> Self {
@@ -149,17 +154,19 @@ impl BatchProfile {
     ///
     /// # Panics
     /// Panics if neither size bound is set. Call [`Self::validate`] first;
-    /// [`BatchPlan::new`] validates before exposing a profile to a processor.
+    /// [`BatchPlan::new`] validates before exposing settings to a processor.
     #[must_use]
-    pub fn lower_limit(&self) -> usize {
+    pub fn lower_limit(&self) -> u64 {
         self.min_size
-            .or(self.max_size.map(NonZeroUsize::get))
-            .expect("validated batching profile has at least one size bound")
+            .or(self.max_size.map(NonZeroU64::get))
+            .expect("validated batching settings have at least one size bound")
     }
 
     /// Whether an input is already within the inclusive accepted size range.
     #[must_use]
     pub fn in_passthrough_range(&self, size: usize) -> bool {
+        // Measurements fit in u64 on supported targets; widen instead of narrowing limits.
+        let size = size as u64;
         size >= self.lower_limit() && self.max_size.is_none_or(|max| size <= max.get())
     }
 
@@ -174,9 +181,11 @@ impl BatchProfile {
 #[derive(Debug)]
 pub struct BatchingSupport {
     /// Supported units; declaring a unit promises in-line merge and split support.
+    /// Declaring [`BatchSizer::Items`] requires a registered item counter,
+    /// even when another unit is the default or the codec has no decoder.
     pub sizers: &'static [BatchSizer],
-    /// Default policy when the node has no explicit codec profile.
-    pub default_profile: BatchProfile,
+    /// Default policy when the node has no explicit codec settings.
+    pub default_settings: BatchSettings,
 }
 
 /// Independently decodable outputs with inclusive input ranges and explicit
@@ -215,13 +224,13 @@ impl PdataFormat {
         )
     }
 
-    /// Declared native profile, or the standard OTAP item fallback profile.
+    /// Declared native settings, or the standard OTAP item fallback settings.
     #[must_use]
-    pub fn default_profile(self) -> BatchProfile {
+    pub fn default_settings(self) -> BatchSettings {
         self.codec()
             .and_then(|codec| codec.batching_support())
-            .map_or_else(BatchProfile::otap, |support| {
-                support.default_profile.clone()
+            .map_or_else(BatchSettings::otap, |support| {
+                support.default_settings.clone()
             })
     }
 
@@ -294,28 +303,28 @@ pub struct BatchPlan {
     working: PdataFormat,
     output: PdataFormat,
     encoding: Option<EncodingPlan>,
-    profile: BatchProfile,
+    settings: BatchSettings,
 }
 
 impl BatchPlan {
     /// Resolves native batching or the OTAP fallback before buffering input.
     pub fn new(
         format: PdataFormat,
-        profile: BatchProfile,
+        settings: BatchSettings,
         preserve: bool,
     ) -> Result<Self, CodecError> {
-        profile.validate()?;
+        settings.validate()?;
         let native = match format.codec() {
-            None => profile.sizer == BatchSizer::Items,
+            None => settings.sizer == BatchSizer::Items,
             Some(codec) => codec
                 .batching_support()
-                .is_some_and(|support| support.sizers.contains(&profile.sizer)),
+                .is_some_and(|support| support.sizers.contains(&settings.sizer)),
         };
-        if !native && profile.sizer != BatchSizer::Items {
+        if !native && settings.sizer != BatchSizer::Items {
             return Err(format_error(format!(
                 "{} does not support {:?} batching; OTAP fallback requires items",
                 format.name(),
-                profile.sizer
+                settings.sizer
             )));
         }
         // Only fallback from an encoded input requires its decoder. Explicit
@@ -347,14 +356,14 @@ impl BatchPlan {
             working,
             output,
             encoding,
-            profile,
+            settings,
         })
     }
 
-    /// The validated profile used for thresholds and output retention.
+    /// The validated settings used for thresholds and output retention.
     #[must_use]
-    pub const fn profile(&self) -> &BatchProfile {
-        &self.profile
+    pub const fn settings(&self) -> &BatchSettings {
+        &self.settings
     }
 
     /// Logical output format, also used to select a bounded buffer at startup.
@@ -378,7 +387,7 @@ impl BatchPlan {
         }
         self.working
             .materialize(payload, service, self.encoding.as_ref())?;
-        if self.profile.sizer == BatchSizer::Items && payload.known_item_count().is_none() {
+        if self.settings.sizer == BatchSizer::Items && payload.known_item_count().is_none() {
             let view = payload
                 .encoded_view()
                 .ok_or_else(|| format_error("item count is unavailable for native batching"))?;
@@ -430,13 +439,10 @@ impl BatchPlan {
                             .map_err(|error| error.into_parts().0)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let limit = self.profile.max_size.map(|size| {
-                    // SAFETY: supported targets have at most 64-bit usize,
-                    // so widening preserves a nonzero value.
-                    NonZeroU64::new(size.get() as u64).expect("nonzero size")
-                });
                 let result = otel_arrow_dfe_pdata::otap::batching::make_item_batches_with_ranges(
-                    signal, limit, records,
+                    signal,
+                    self.settings.max_size,
+                    records,
                 )
                 .map_err(|error| format_error(error.to_string()))?;
                 BatchingOutput {
@@ -458,13 +464,13 @@ impl BatchPlan {
                             .ok_or_else(|| format_error("batch input is not encoded"))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let result = service.batch(codec, signal, &self.profile, inputs)?;
+                let result = service.batch(codec, signal, &self.settings, inputs)?;
                 BatchingOutput {
                     batches: result
                         .batches
                         .into_iter()
                         .map(|(bytes, inputs)| {
-                            let count = if self.profile.sizer == BatchSizer::Items {
+                            let count = if self.settings.sizer == BatchSizer::Items {
                                 Some(codec.count_items(signal, &bytes).ok_or_else(|| {
                                     format_error(
                                         "native item batching requires an exact output item count",
@@ -589,10 +595,10 @@ mod tests {
             let bytes = Bytes::from(bytes);
             let plan = BatchPlan::new(
                 PdataFormat::encoded(codec),
-                BatchProfile {
+                BatchSettings {
                     min_size: Some(0),
-                    max_size: NonZeroUsize::new(bytes.len() / 2),
-                    ..BatchProfile::otlp()
+                    max_size: NonZeroU64::new((bytes.len() / 2) as u64),
+                    ..BatchSettings::otlp()
                 },
                 true,
             )
@@ -622,6 +628,98 @@ mod tests {
         }
     }
 
+    /// Scenario: Native item batching prepares an uncounted encoded input and splits off a short tail.
+    /// Guarantees: Inputs and every output cache item counts distinct from byte lengths,
+    /// retain their encoding, and reuse batching state without creating a decoder.
+    #[test]
+    fn native_item_batching_caches_counts_without_decoding() {
+        use crate::{CodecBatcherRegistration, CodecMetadata, CodecRegistration};
+        use std::sync::Arc;
+
+        // Each independently decodable item occupies two bytes.
+        struct PairBatcher;
+        impl PdataBatcher for PairBatcher {
+            fn batch(
+                &mut self,
+                _: SignalType,
+                settings: &BatchSettings,
+                inputs: Vec<Bytes>,
+            ) -> Result<CodecBatches, CodecError> {
+                assert_eq!(settings.max_size, NonZeroU64::new(2));
+                Ok(CodecBatches {
+                    batches: inputs
+                        .into_iter()
+                        .enumerate()
+                        .flat_map(|(index, bytes)| {
+                            (0..bytes.len()).step_by(4).map(move |start| {
+                                (
+                                    bytes.slice(start..(start + 4).min(bytes.len())),
+                                    index..=index,
+                                )
+                            })
+                        })
+                        .collect(),
+                    completed_inputs: Vec::new(),
+                    budget_fallbacks: 0,
+                })
+            }
+        }
+        static METADATA: CodecMetadata =
+            CodecMetadata::new(PdataEncoding::new("test-pairs"), &[SignalType::Logs]);
+        static SUPPORT: BatchingSupport = BatchingSupport {
+            sizers: &[BatchSizer::Items],
+            default_settings: BatchSettings::otap(),
+        };
+        static REGISTRATIONS: [CodecRegistration; 1] = [CodecRegistration::new(&METADATA)
+            .with_decoder(|_| panic!("native item batching must not create a decoder"))
+            .with_item_counter(|_, bytes| Some(bytes.len() / 2))
+            .with_batcher(CodecBatcherRegistration::new(&SUPPORT, || {
+                Box::new(PairBatcher)
+            }))];
+        let service = CodecServiceBuilder::from_registry(Arc::new(
+            CodecRegistry::validate(&REGISTRATIONS).unwrap(),
+        ))
+        .build();
+        let codec = service.registry().resolve(METADATA.encoding()).unwrap();
+        let plan = BatchPlan::new(
+            PdataFormat::encoded(codec),
+            BatchSettings {
+                min_size: Some(2),
+                max_size: NonZeroU64::new(2),
+                ..BatchSettings::otap()
+            },
+            true,
+        )
+        .unwrap();
+        let bytes = Bytes::from_static(b"aabbcc");
+        for instance_count in [0, 1] {
+            let mut input =
+                PdataPayload::from_encoded(codec.admit(SignalType::Logs, bytes.clone()).unwrap());
+            assert_eq!(input.known_item_count(), None);
+            plan.prepare(&mut input, &service).unwrap();
+            assert_eq!(input.known_item_count(), Some(3));
+            assert_eq!(input.format(), PdataFormat::encoded(codec));
+            assert_eq!(input.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+            assert_eq!(service.test_instance_count().unwrap(), instance_count);
+            let result = plan.batch(SignalType::Logs, vec![input], &service).unwrap();
+            assert_eq!(result.batches.len(), 2);
+            for ((output, owners), (expected, count)) in result
+                .batches
+                .iter()
+                .zip([(&b"aabb"[..], 2), (&b"cc"[..], 1)])
+            {
+                assert_eq!(output.format(), PdataFormat::encoded(codec));
+                assert_eq!(output.signal_type(), SignalType::Logs);
+                assert_eq!(output.encoded_bytes().unwrap().as_ref(), expected);
+                assert_eq!(output.known_item_count(), Some(count));
+                assert_eq!(plan.settings().sizer.batch_size(output).unwrap(), count);
+                assert_eq!(*owners, 0..=0);
+            }
+            assert!(result.completed_inputs.is_empty());
+            assert_eq!(service.test_instance_count().unwrap(), 1);
+        }
+    }
+
     /// Scenario: A decode-only input needs OTAP fallback, or native records target an encode-only codec.
     /// Guarantees: Plans require only the capabilities used and reject incompatible output plans.
     #[test]
@@ -631,7 +729,7 @@ mod tests {
         let output_codec = service.registry().resolve(&ENCODE_ONLY_ENCODING).unwrap();
         let fallback = BatchPlan::new(
             PdataFormat::encoded(input_codec),
-            BatchProfile::otap(),
+            BatchSettings::otap(),
             true,
         )
         .unwrap();
@@ -639,7 +737,7 @@ mod tests {
         assert!(
             BatchPlan::new(
                 PdataFormat::encoded(input_codec),
-                BatchProfile::otap(),
+                BatchSettings::otap(),
                 false
             )
             .is_err()
@@ -667,7 +765,7 @@ mod tests {
                 .is_err()
         );
         assert!(input.otap_ref().is_some());
-        let plan = BatchPlan::new(output, BatchProfile::otap(), false).unwrap();
+        let plan = BatchPlan::new(output, BatchSettings::otap(), false).unwrap();
         plan.prepare(&mut input, &service).unwrap();
         plan.finish(&mut input, &service).unwrap();
         assert_eq!(input.format(), output);
@@ -687,7 +785,8 @@ mod tests {
     fn fallback_failure_preserves_payload_and_recovers() {
         let service = strict_service();
         let codec = service.registry().resolve(&DECODE_ONLY_ENCODING).unwrap();
-        let plan = BatchPlan::new(PdataFormat::encoded(codec), BatchProfile::otap(), true).unwrap();
+        let plan =
+            BatchPlan::new(PdataFormat::encoded(codec), BatchSettings::otap(), true).unwrap();
         let bytes = Bytes::from_static(&[0x0a, 0x01, 0xff]);
         let mut input =
             PdataPayload::from_encoded(codec.admit(SignalType::Logs, bytes.clone()).unwrap())
@@ -772,7 +871,7 @@ mod tests {
         use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
         use std::sync::Arc;
         let service = strict_service();
-        let plan = BatchPlan::new(PdataFormat::OTAP, BatchProfile::otap(), true).unwrap();
+        let plan = BatchPlan::new(PdataFormat::OTAP, BatchSettings::otap(), true).unwrap();
         for surviving in [true, false] {
             let make = || {
                 let mut metrics = Metrics::default();

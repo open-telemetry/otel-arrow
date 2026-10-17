@@ -7,7 +7,7 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::{
-    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
     CodecMetadata, CodecRegistration, CodecRegistry, PdataBatcher, PdataDecoder, PdataEncoding,
     register_pdata_codec,
 };
@@ -35,7 +35,7 @@ impl PdataBatcher for ExternalDecoder {
     fn batch(
         &mut self,
         _signal: SignalType,
-        _profile: &BatchProfile,
+        _settings: &BatchSettings,
         _inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
         panic!("the registration hygiene test does not batch payloads")
@@ -44,7 +44,7 @@ impl PdataBatcher for ExternalDecoder {
 
 static EXTERNAL_BATCHING: BatchingSupport = BatchingSupport {
     sizers: &[BatchSizer::Bytes],
-    default_profile: BatchProfile::otlp(),
+    default_settings: BatchSettings::otlp(),
 };
 
 register_pdata_codec!(

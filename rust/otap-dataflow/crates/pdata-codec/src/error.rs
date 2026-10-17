@@ -55,8 +55,10 @@ pub enum RegistryError {
         /// Invalid registration identity.
         encoding: PdataEncoding,
     },
-    /// A decoder registration cannot report primary-signal item counts.
-    #[error("pdata encoding `{encoding}` has a decoder but no item counter")]
+    /// A decoder or native item batcher cannot report primary-signal item counts.
+    #[error(
+        "pdata encoding `{encoding}` requires an item counter for decoding or native item batching"
+    )]
     MissingItemCounter {
         /// Invalid registration identity.
         encoding: PdataEncoding,

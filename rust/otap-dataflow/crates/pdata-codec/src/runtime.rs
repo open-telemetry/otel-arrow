@@ -29,7 +29,7 @@ use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    AcceptedEncodings, BatchProfile, CodecBatches, CodecError, CodecOperation, CodecRegistry,
+    AcceptedEncodings, BatchSettings, CodecBatches, CodecError, CodecOperation, CodecRegistry,
     DecodePolicy, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher, PdataDecoder,
     PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
@@ -233,7 +233,7 @@ impl CodecService {
         &self,
         codec: ResolvedCodec,
         signal: otel_arrow_dfe_config::SignalType,
-        profile: &BatchProfile,
+        settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
         codec.require_batcher(signal)?;
@@ -242,7 +242,7 @@ impl CodecService {
             error.with_operation_context(codec.encoding(), CodecOperation::Batch)
         })?;
         batcher
-            .batch(signal, profile, inputs)
+            .batch(signal, settings, inputs)
             .map_err(|error| error.with_operation_context(codec.encoding(), CodecOperation::Batch))
     }
 

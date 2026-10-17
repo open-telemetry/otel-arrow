@@ -592,7 +592,9 @@ pub fn make_bytes_batches_owned(
 
     let max_size = match max_bytes {
         None => return Ok(single(inputs)),
-        Some(max_nz) => max_nz.get() as usize,
+        // A limit beyond the addressable size cannot constrain an in-memory batch.
+        // Saturate at the platform bound rather than truncating it on 32-bit targets.
+        Some(max_nz) => usize::try_from(max_nz.get()).unwrap_or(usize::MAX),
     };
 
     // Fast path: a single input that already fits is returned unchanged,
@@ -601,14 +603,16 @@ pub fn make_bytes_batches_owned(
         return Ok(single(inputs));
     }
 
+    // Budgets are upper bounds too: values above usize::MAX are effectively
+    // unbounded for addressable data, not small budgets after truncation.
     let fragment_budget = fragment_budget
-        .map(|n| n.get() as usize)
+        .map(|n| usize::try_from(n.get()).unwrap_or(usize::MAX))
         .unwrap_or(usize::MAX);
     let overhead_budget = overhead_budget
-        .map(|n| n.get() as usize)
+        .map(|n| usize::try_from(n.get()).unwrap_or(usize::MAX))
         .unwrap_or(usize::MAX);
     let flush_fragment_budget = flush_fragment_budget
-        .map(|n| n.get() as usize)
+        .map(|n| usize::try_from(n.get()).unwrap_or(usize::MAX))
         .unwrap_or(usize::MAX);
 
     let mut writer = BatchWriter {

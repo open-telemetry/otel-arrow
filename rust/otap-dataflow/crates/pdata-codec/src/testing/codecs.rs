@@ -7,7 +7,7 @@ use otel_arrow_dfe_config::SignalType;
 
 use crate::codecs::otlp::{OtlpBatcher, OtlpEncoder, create_decoder};
 use crate::{
-    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecMetadata,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecMetadata,
     CodecRegistration, PdataEncoding,
 };
 
@@ -29,7 +29,7 @@ static ENCODE_METADATA: CodecMetadata =
     CodecMetadata::new(ENCODE_ONLY_ENCODING, &[SignalType::Logs]);
 static NATIVE_BATCHING: BatchingSupport = BatchingSupport {
     sizers: &[BatchSizer::Bytes],
-    default_profile: BatchProfile::otlp(),
+    default_settings: BatchSettings::otlp(),
 };
 
 crate::register_pdata_codec!(
