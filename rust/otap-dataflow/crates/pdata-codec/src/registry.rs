@@ -463,7 +463,7 @@ fn validate_registration(registration: &CodecRegistration) -> Result<(), Registr
     if let Some(batcher) = &registration.batcher {
         batcher
             .support
-            .default_profile
+            .default_settings
             .validate()
             .map_err(|error| RegistryError::InvalidBatching {
                 encoding: encoding.clone(),
@@ -477,7 +477,7 @@ fn validate_registration(registration: &CodecRegistration) -> Result<(), Registr
             || !batcher
                 .support
                 .sizers
-                .contains(&batcher.support.default_profile.sizer)
+                .contains(&batcher.support.default_settings.sizer)
         {
             return Err(RegistryError::InvalidBatching {
                 encoding: encoding.clone(),
@@ -546,15 +546,15 @@ mod tests {
     /// validates the registration without instantiating encoder or batcher state.
     #[test]
     fn native_item_batching_requires_counter_without_decoder() {
-        use crate::{BatchProfile, BatchSizer};
+        use crate::{BatchSettings, BatchSizer};
         static SUPPORT: [BatchingSupport; 2] = [
             BatchingSupport {
                 sizers: &[BatchSizer::Items],
-                default_profile: BatchProfile::otap(),
+                default_settings: BatchSettings::otap(),
             },
             BatchingSupport {
                 sizers: &[BatchSizer::Bytes, BatchSizer::Items],
-                default_profile: BatchProfile::otlp(),
+                default_settings: BatchSettings::otlp(),
             },
         ];
         for support in &SUPPORT {
@@ -589,7 +589,7 @@ mod tests {
     fn output_only_byte_batching_does_not_require_item_counter() {
         static SUPPORT: BatchingSupport = BatchingSupport {
             sizers: &[crate::BatchSizer::Bytes],
-            default_profile: crate::BatchProfile::otlp(),
+            default_settings: crate::BatchSettings::otlp(),
         };
         let registration = CodecRegistration::new(&EMPTY_METADATA).with_encoder(|_| {
             unreachable!("registration validation must not create encoder state")
@@ -606,19 +606,19 @@ mod tests {
     /// Guarantees: Registry construction rejects the declaration before any pipeline starts.
     #[test]
     fn rejects_inconsistent_batching_units() {
-        use crate::{BatchProfile, BatchSizer};
+        use crate::{BatchSettings, BatchSizer};
         static SUPPORT: [BatchingSupport; 3] = [
             BatchingSupport {
                 sizers: &[],
-                default_profile: BatchProfile::otlp(),
+                default_settings: BatchSettings::otlp(),
             },
             BatchingSupport {
                 sizers: &[BatchSizer::Items],
-                default_profile: BatchProfile::otlp(),
+                default_settings: BatchSettings::otlp(),
             },
             BatchingSupport {
                 sizers: &[BatchSizer::Bytes, BatchSizer::Requests],
-                default_profile: BatchProfile::otlp(),
+                default_settings: BatchSettings::otlp(),
             },
         ];
         for support in &SUPPORT {

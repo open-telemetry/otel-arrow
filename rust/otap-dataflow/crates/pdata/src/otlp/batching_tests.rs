@@ -1121,3 +1121,57 @@ fn test_packing_input_ranges_with_empty_inputs() {
     assert_eq!(result.batches[1].1, 1..=3);
     assert_eq!(result.batches[1].0.as_bytes(), &[0x10, 1, 0x10, 2]);
 }
+
+/// Scenario: Byte and amplification limits exceed 32-bit addressable sizes.
+/// Guarantees: Large u64 limits preserve fitting inputs and allow bounded splitting
+/// without wrapping into tiny limits or budgets, including on 32-bit targets.
+#[test]
+fn oversized_byte_limits_and_budgets_do_not_truncate() {
+    let input = otlp_message_to_bytes(&single_resource_logs("wide-limits", 20).into());
+    let split_limit = NonZeroU64::new((input.num_bytes() / 4) as u64);
+    let expected = make_bytes_batches_owned(
+        SignalType::Logs,
+        split_limit,
+        None,
+        None,
+        None,
+        vec![input.clone()],
+    )
+    .unwrap();
+    assert!(expected.batches.len() > 1);
+    assert_eq!(expected.budget_fallbacks, 0);
+    for limit in [u64::from(u32::MAX) + 1, u64::from(u32::MAX) + 2, u64::MAX] {
+        let large = NonZeroU64::new(limit);
+        let fitting = make_bytes_batches_owned(
+            SignalType::Logs,
+            large,
+            large,
+            large,
+            large,
+            vec![input.clone()],
+        )
+        .unwrap();
+        assert_eq!(fitting.batches.len(), 1);
+        assert_eq!(
+            fitting.batches[0].0.as_bytes().as_ptr(),
+            input.as_bytes().as_ptr()
+        );
+        let split = make_bytes_batches_owned(
+            SignalType::Logs,
+            split_limit,
+            large,
+            large,
+            large,
+            vec![input.clone()],
+        )
+        .unwrap();
+        assert_eq!(split.budget_fallbacks, 0);
+        assert_eq!(split.batches.len(), expected.batches.len());
+        for ((actual, owners), (expected, expected_owners)) in
+            split.batches.iter().zip(&expected.batches)
+        {
+            assert_eq!(actual.as_bytes(), expected.as_bytes());
+            assert_eq!(owners, expected_owners);
+        }
+    }
+}

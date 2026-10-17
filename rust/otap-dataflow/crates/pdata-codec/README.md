@@ -275,8 +275,9 @@ caches are codec-owned; receivers and processors cannot inject arbitrary counts.
 Implement `PdataBatcher` only when encoded batches can be merged or split
 without first materializing OTAP records. Register it with
 `CodecBatcherRegistration::new` and `CodecRegistration::with_batcher`. Its
-`BatchingSupport` declares the supported sizing units and default bounded
-profile. Declaring `BatchSizer::Items` requires an item counter to measure both
+`BatchingSupport` declares the supported sizing units and default `BatchSettings`
+(sizing unit, thresholds, and split budgets). Declaring `BatchSizer::Items`
+requires an item counter to measure both
 inputs and outputs, even without a decoder or when the default unit is bytes.
 Registry validation rejects missing counters before pipeline startup;
 encode-only codecs with byte-only batching do not require one.

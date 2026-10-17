@@ -35,7 +35,7 @@ use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOption
 use prost::Message;
 
 use crate::{
-    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
     CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, DecodeValidation, EncodeOutput,
     EncodePolicy, PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding,
 };
@@ -251,7 +251,7 @@ static OTLP_METADATA: CodecMetadata = CodecMetadata::new(
 
 static OTLP_BATCHING: BatchingSupport = BatchingSupport {
     sizers: &[BatchSizer::Bytes],
-    default_profile: BatchProfile::otlp(),
+    default_settings: BatchSettings::otlp(),
 };
 
 pub(crate) struct OtlpBatcher;
@@ -260,20 +260,15 @@ impl PdataBatcher for OtlpBatcher {
     fn batch(
         &mut self,
         signal: SignalType,
-        profile: &BatchProfile,
+        settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
-        // SAFETY: usize is at most 64 bits on supported targets, so widening
-        // a nonzero usize preserves nonzeroness for each size or split budget.
-        let limit = |value: Option<std::num::NonZeroUsize>| {
-            value.map(|value| std::num::NonZeroU64::new(value.get() as u64).expect("nonzero"))
-        };
         let result = otel_arrow_dfe_pdata::otlp::batching::make_bytes_batches_owned(
             signal,
-            limit(profile.max_size),
-            limit(profile.max_split_fragments),
-            limit(profile.max_split_overhead_bytes),
-            limit(profile.max_split_fragments_per_flush),
+            settings.max_size,
+            settings.max_split_fragments,
+            settings.max_split_overhead_bytes,
+            settings.max_split_fragments_per_flush,
             inputs
                 .into_iter()
                 .map(|bytes| OtlpProtoBytes::new_from_bytes(signal, bytes))
