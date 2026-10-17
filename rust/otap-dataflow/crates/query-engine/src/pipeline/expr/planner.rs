@@ -22,7 +22,6 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::logical_expr::{ScalarUDFImpl, cast};
-use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_contrib_data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
@@ -36,6 +35,7 @@ use otel_arrow_contrib_data_engine_expressions::{
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
+use regex::Regex;
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -58,6 +58,7 @@ use crate::pipeline::expr::{
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
+use crate::pipeline::functions::regex_match::RegexMatchFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
@@ -101,9 +102,7 @@ impl ExprPlanner {
     /// should return the record scope identifying this data.
     fn record_scope(&self) -> RecordScope {
         match &self.record_type {
-            RecordType::Child(child) => match child {
-                ChildRecordKind::DataPoint => RecordScope::Child(ChildRecordKind::DataPoint),
-            },
+            RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
             // In attributes mode the attributes batch IS the "root" for evaluation,
             // so we use Signal scope -- same as the top-level signal case.
             _ => RecordScope::Signal,
@@ -1514,9 +1513,7 @@ impl ExprPlanner {
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let pattern = match matches_expr.get_pattern() {
-            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
-                lit(regex.get_value().as_str().to_string())
-            }
+            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => regex.get_value(),
             _ => {
                 return Err(Error::InvalidPipelineError {
                     cause: "expected pattern to be a static regex".into(),
@@ -1529,7 +1526,7 @@ impl ExprPlanner {
         // Try fused attribute matches optimization: when haystack is attributes["key"]
         // and pattern is a static regex.
         if !self.record_type.is_attribute()
-            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, &pattern)?
+            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, pattern)?
         {
             return Ok(fused);
         }
@@ -1561,12 +1558,12 @@ impl ExprPlanner {
 
         let eval = if has_body_field {
             LeafEval::new_df_expr_anyval_as_struct(
-                binary_expr(haystack_expr, Operator::RegexMatch, pattern),
+                regex_match_expr(pattern, haystack_expr),
                 haystack.requires_dict_downcast,
             )?
         } else {
             LeafEval::new_df_expr_with_key_case(
-                binary_expr(haystack_expr, Operator::RegexMatch, pattern),
+                regex_match_expr(pattern, haystack_expr),
                 haystack.requires_dict_downcast,
                 self.attr_key_case_sensitive,
             )?
@@ -1582,7 +1579,7 @@ impl ExprPlanner {
     fn try_plan_fused_attr_matches(
         &self,
         haystack: &PlannedOp,
-        pattern: &Expr,
+        pattern: &Regex,
     ) -> Result<Option<ScopedExpr>> {
         let (attrs_id, key) = match haystack.expr.eval_scope() {
             Some(DataScope::Attribute(id, key, path)) if path.is_empty() => (*id, key.clone()),
@@ -1599,11 +1596,7 @@ impl ExprPlanner {
             col(consts::ATTRIBUTE_KEY).ilike(lit(escape_like_pattern(&key)))
         };
 
-        let value_regex = binary_expr(
-            col(consts::ATTRIBUTE_STR),
-            Operator::RegexMatch,
-            pattern.clone(),
-        );
+        let value_regex = regex_match_expr(pattern, col(consts::ATTRIBUTE_STR));
 
         let fused_expr = key_filter.and(value_regex);
 
@@ -1627,11 +1620,9 @@ impl ExprPlanner {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
-                if let RecordType::Child(child_kind) = &self.record_type {
+                if let RecordType::DataPoint(_) = &self.record_type {
                     return Err(Error::NotYetSupportedError {
-                        message: format!(
-                            "Checking record type for {child_kind:?} not yet supported"
-                        ),
+                        message: "Checking record type for data points not yet supported".into(),
                     });
                 }
 
@@ -2080,7 +2071,7 @@ impl ScopedExpr {
 
                 if *align_children_to_record {
                     let record_scope = match record_type {
-                        RecordType::Child(child) => RecordScope::Child(*child),
+                        RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                         _ => RecordScope::Signal,
                     };
                     return Ok(Cow::Owned(DataScope::Record(record_scope)));
@@ -2130,7 +2121,7 @@ impl ScopedExpr {
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
                 let record_scope = match record_type {
-                    RecordType::Child(child_kind) => RecordScope::Child(*child_kind),
+                    RecordType::DataPoint(_) => RecordScope::Child(ChildRecordKind::DataPoint),
                     _ => RecordScope::Signal,
                 };
                 Ok(Cow::Owned(DataScope::Record(record_scope)))
@@ -2161,6 +2152,17 @@ impl ScopedExpr {
             _ => None,
         }
     }
+}
+
+/// Build `regex_match(haystack)` with the pattern compiled once here rather than per batch
+/// (DataFusion's `Operator::RegexMatch` recompiles a scalar pattern on every evaluation).
+fn regex_match_expr(pattern: &Regex, haystack: Expr) -> Expr {
+    Expr::ScalarFunction(ScalarFunction::new_udf(
+        Arc::new(ScalarUDF::new_from_impl(RegexMatchFunc::new(
+            pattern.clone(),
+        ))),
+        vec![haystack],
+    ))
 }
 
 fn is_literal_eval(plan: &PlannedOp) -> bool {
@@ -2492,7 +2494,7 @@ mod test {
     use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
-    use crate::pipeline::planner::AttributesIdentifier;
+    use crate::pipeline::planner::{AttributesIdentifier, SignalContext};
 
     fn ql() -> QueryLocation {
         QueryLocation::new_fake()
@@ -2561,7 +2563,7 @@ mod test {
 
     #[test]
     fn test_plan_column_reference() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_column_expr("severity_text");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2594,7 +2596,7 @@ mod test {
 
     #[test]
     fn test_plan_attribute_access() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_attr_expr("x");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2632,7 +2634,7 @@ mod test {
 
     #[test]
     fn test_plan_static_literal() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let expr = make_int_literal(42);
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2664,7 +2666,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_number");
         let right = make_int_literal(2);
         let binary = BinaryMathematicalScalarExpression::new(ql(), left, right);
@@ -2707,7 +2709,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_number");
         let right = make_attr_expr("x");
         let binary = BinaryMathematicalScalarExpression::new(ql(), left, right);
@@ -2721,7 +2723,7 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_comparison() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
         let left = make_column_expr("severity_text");
         let right = make_string_literal("WARN");
 
@@ -2759,7 +2761,7 @@ mod test {
 
     #[test]
     fn test_plan_and_two_root_predicates() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" AND severity_number > 10
         let left_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -2808,7 +2810,7 @@ mod test {
 
     #[test]
     fn test_plan_signal_type_check() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let get_record_type =
             ScalarExpression::GetRecordType(GetRecordTypeScalarExpression::new(ql()));
@@ -2840,7 +2842,7 @@ mod test {
 
     #[test]
     fn test_plan_scalar_logical() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // Logical(severity_text == "WARN") as a scalar expression
         let inner = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -2876,7 +2878,7 @@ mod test {
 
     #[test]
     fn test_plan_not() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let inner = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -2913,7 +2915,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_string() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["x"] == "a"
         let attr_expr = make_attr_expr("x");
@@ -2953,7 +2955,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_literal_on_left() {
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // "a" == attributes["x"] (literal on left)
         let literal_expr = make_string_literal("a");
@@ -3012,7 +3014,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["count"] > 7
         let attr_expr = make_attr_expr("count");
@@ -3053,7 +3055,7 @@ mod test {
         // attributes["x"] == "a" AND attributes["x"] == "a" (same key, same value)
         // Both should use fused paths and then BitmapAnd combines them
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         let left = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -3115,7 +3117,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal);
+        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
 
         // attributes["num"] + 2 > 5
         let attr_expr = make_attr_expr("num");
@@ -3168,7 +3170,7 @@ mod test {
     /// the left child is all-false.
     #[test]
     fn test_plan_cross_scope_and_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(true, RecordType::Signal);
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" AND attributes["x"] == "a"
         // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
@@ -3212,7 +3214,7 @@ mod test {
     /// the left child is all-true.
     #[test]
     fn test_plan_cross_scope_or_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(true, RecordType::Signal);
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_text == "WARN" OR attributes["x"] == "a"
         // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
@@ -3259,7 +3261,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(true, RecordType::Signal);
+        let planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
 
         // severity_number + attributes["x"]
         let binary = BinaryMathematicalScalarExpression::new(

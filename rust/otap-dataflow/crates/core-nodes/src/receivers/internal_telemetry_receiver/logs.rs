@@ -496,6 +496,8 @@ impl LogExportState {
         )?;
         Ok(OtapPdata::new(
             Context::default(),
+            // SAFETY: PipelineRuntimeServices validates the immutable global
+            // registry before starting this receiver, including built-in OTLP.
             resolve_otlp()
                 .expect("validated OTLP codec")
                 .admit(SignalType::Logs, buf.into_bytes())

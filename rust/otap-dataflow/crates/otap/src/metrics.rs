@@ -225,12 +225,6 @@ impl ReceiverMetrics {
         }
     }
 
-    /// Registers the shared receiver metric sets with an entity-bound registrar.
-    #[must_use]
-    pub fn register_with(registrar: &impl MetricSetRegistrar, interests: Interests) -> Self {
-        Self::register_with_distribution(registrar, interests, DistributionTier::Normal)
-    }
-
     /// Registers the shared receiver metric sets with an entity-bound registrar and duration tier.
     #[must_use]
     pub fn register_with_distribution(
@@ -556,16 +550,27 @@ impl ExporterMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         let interests = pipeline_ctx.node_interests();
+        Self::register_with_distribution(
+            pipeline_ctx,
+            interests,
+            pipeline_ctx.node_duration_distribution(),
+        )
+    }
+
+    /// Registers the shared exporter metric sets with an entity-bound registrar and duration tier.
+    #[must_use]
+    pub fn register_with_distribution(
+        registrar: &impl MetricSetRegistrar,
+        interests: Interests,
+        duration_distribution: DistributionTier,
+    ) -> Self {
         Self {
-            attempted: ExporterAttemptedMetrics::register(pipeline_ctx),
+            attempted: ExporterAttemptedMetrics::register(registrar),
             duration: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
-                ExporterAttemptedDurationMetricSet::register(
-                    pipeline_ctx,
-                    pipeline_ctx.node_duration_distribution(),
-                )
+                ExporterAttemptedDurationMetricSet::register(registrar, duration_distribution)
             }),
-            payload: ExporterAttemptedPayloadMetrics::register(pipeline_ctx),
-            items: ExporterAttemptedItemsMetrics::register(pipeline_ctx),
+            payload: ExporterAttemptedPayloadMetrics::register(registrar),
+            items: ExporterAttemptedItemsMetrics::register(registrar),
             interests,
         }
     }
@@ -674,16 +679,33 @@ impl ExporterAttempt {
         }
     }
 
-    /// Runs one exporter attempt and captures its terminal result.
+    /// Runs async work and completes the attempt from its terminal result.
     ///
     /// `Ok(value)` records success. Return errors through [`Self::failed`] or
     /// [`Self::refused`] to classify their terminal outcome.
+    ///
+    /// Use [`Self::complete`] instead when the operation is driven externally
+    /// and its terminal result is already available.
     #[must_use = "the completed exporter attempt must be recorded"]
     pub async fn run<T, E>(
         mut self,
         work: impl AsyncFnOnce(&mut ExporterAttempt) -> Result<T, ErrorWithOutcome<E>>,
     ) -> CompletedExporterAttempt<T, E> {
-        let (outcome, result) = match work(&mut self).await {
+        let result = work(&mut self).await;
+        self.complete(result)
+    }
+
+    /// Completes an attempt from a terminal result produced by externally
+    /// managed control flow.
+    ///
+    /// This preserves timing from when the attempt was created. Prefer
+    /// [`Self::run`] when this attempt can directly own and await the operation.
+    #[must_use = "the completed exporter attempt must be recorded"]
+    pub fn complete<T, E>(
+        self,
+        result: Result<T, ErrorWithOutcome<E>>,
+    ) -> CompletedExporterAttempt<T, E> {
+        let (outcome, result) = match result {
             Ok(value) => (Outcome::Success, Ok(value)),
             Err(ErrorWithOutcome { outcome, error, .. }) => (outcome, Err(error)),
         };

@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::otap::parse_utc_timestamp;
 use super::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
@@ -25,7 +26,7 @@ fn encoded_page_debug_redacts_direct_and_nested_payloads() {
             ],
         }],
     );
-    let candidate = CompositeCursor::new("2037-04-05T06:07:08.987654321Z".to_owned(), 719_283_465);
+    let candidate = Cursor::composite("2037-04-05T06:07:08.987654321Z".to_owned(), 719_283_465);
     input.rows[0].cursor = candidate.clone();
     let encoded = encode_page(
         input,
@@ -58,8 +59,16 @@ fn encoded_page_debug_redacts_direct_and_nested_payloads() {
             source.to_owned(),
             "customer-private-binary".to_owned(),
             format!("{binary:?}"),
-            candidate.timestamp.clone(),
-            candidate.tie_breaker.to_string(),
+            candidate
+                .as_composite()
+                .expect("composite fixture")
+                .timestamp
+                .clone(),
+            candidate
+                .as_composite()
+                .expect("composite fixture")
+                .tie_breaker
+                .to_string(),
         ] {
             assert!(
                 !debug.contains(&sentinel),
@@ -88,8 +97,8 @@ fn column(name: &str, source_type: &str) -> ColumnMetadata {
     }
 }
 
-fn cursor(tie_breaker: i64) -> CompositeCursor {
-    CompositeCursor::new("2026-08-28 12:30:00".to_owned(), tie_breaker)
+fn cursor(tie_breaker: i64) -> Cursor {
+    Cursor::composite("2026-08-28 12:30:00".to_owned(), tie_breaker)
 }
 
 fn page(columns: Vec<ColumnMetadata>, rows: Vec<Row>) -> QueryPage {

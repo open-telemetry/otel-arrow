@@ -19,6 +19,7 @@ workspace = true
 
 [dev-dependencies]
 otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-contrib-extensions = { workspace = true, features = ["contrib-extensions"] }
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-contrib-nodes = { workspace = true, features = ["contrib-nodes"] }
 otel-arrow-dfe-dev-nodes = { workspace = true }

@@ -115,6 +115,19 @@ steps:
               raise_for_status: false
     action:
       no_op: {}
+  # Stop monitoring and destroy rotel before the backend goes away. Leaving it
+  # running after the backend pipeline stops floods the logs with
+  # connection-retry and metrics-scrape errors.
+  - name: Stop Monitoring Rotel
+    action:
+      component_action:
+        phase: stop_monitoring
+        target: rotel
+  - name: Stop Rotel
+    action:
+      component_action:
+        phase: destroy
+        target: rotel
   - name: Stop Backend
     hooks:
       run:
@@ -139,14 +152,12 @@ steps:
         targets:
           - backend-service
           - load-generator
-          - rotel
   - name: Destroy All
     action:
       multi_component_action:
         phase: destroy
         targets:
           - load-generator
-          - rotel
           - backend-service
   - name: Run Report
     action:

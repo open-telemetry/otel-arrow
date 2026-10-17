@@ -3,38 +3,13 @@
 
 //! Registered OTLP-compatible test codecs for generic pdata paths.
 
-use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
 
-use crate::codecs::otlp::{OtlpBatcher, OtlpBestEffortDecoder, OtlpEncoder, count_items};
+use crate::codecs::otlp::{OtlpBatcher, OtlpEncoder, create_decoder};
 use crate::{
-    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecError, CodecMetadata,
-    CodecOperation, CodecRegistration, PdataDecoder, PdataEncoding,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecMetadata,
+    CodecRegistration, PdataEncoding,
 };
-
-struct TestDecoder(OtlpBestEffortDecoder);
-
-impl PdataDecoder for TestDecoder {
-    fn decode(
-        &mut self,
-        signal: SignalType,
-        bytes: &Bytes,
-    ) -> Result<OtapArrowRecords, CodecError> {
-        let validation = match signal {
-            SignalType::Logs => RawLogsData::try_new(bytes).map(|_| ()),
-            SignalType::Metrics => RawMetricsData::try_new(bytes).map(|_| ()),
-            SignalType::Traces => RawTraceData::try_new(bytes).map(|_| ()),
-        };
-        validation.map_err(|source| {
-            CodecError::operation(&TEST_ENCODING, CodecOperation::Decode, source)
-        })?;
-        self.0.decode(signal, bytes)
-    }
-}
 
 /// Registered encoding with OTAP fallback batching.
 pub const TEST_ENCODING: PdataEncoding = PdataEncoding::new("test-otlp-codec");
@@ -54,33 +29,39 @@ static ENCODE_METADATA: CodecMetadata =
     CodecMetadata::new(ENCODE_ONLY_ENCODING, &[SignalType::Logs]);
 static NATIVE_BATCHING: BatchingSupport = BatchingSupport {
     sizers: &[BatchSizer::Bytes],
-    default_profile: BatchProfile::otlp(),
+    default_settings: BatchSettings::otlp(),
 };
 
 crate::register_pdata_codec!(
     FALLBACK,
     CodecRegistration::new(&FALLBACK_METADATA)
-        .with_decoder(|_| Box::new(TestDecoder(OtlpBestEffortDecoder)))
+        .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
-        .with_item_counter(|signal, bytes| Some(count_items(signal, bytes))),
+        .with_item_counter(|signal, bytes| Some(otel_arrow_dfe_pdata::count_otlp_items(
+            signal, bytes
+        ))),
 );
 
 crate::register_pdata_codec!(
     DECODE,
     CodecRegistration::new(&DECODE_METADATA)
-        .with_decoder(|_| Box::new(TestDecoder(OtlpBestEffortDecoder)))
-        .with_item_counter(|signal, bytes| Some(count_items(signal, bytes))),
+        .with_decoder(create_decoder)
+        .with_item_counter(|signal, bytes| Some(otel_arrow_dfe_pdata::count_otlp_items(
+            signal, bytes
+        ))),
 );
 
 crate::register_pdata_codec!(
     NATIVE,
     CodecRegistration::new(&NATIVE_METADATA)
-        .with_decoder(|_| Box::new(TestDecoder(OtlpBestEffortDecoder)))
+        .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
         .with_batcher(CodecBatcherRegistration::new(&NATIVE_BATCHING, || {
             Box::new(OtlpBatcher)
         }))
-        .with_item_counter(|signal, bytes| Some(count_items(signal, bytes))),
+        .with_item_counter(|signal, bytes| Some(otel_arrow_dfe_pdata::count_otlp_items(
+            signal, bytes
+        ))),
 );
 
 crate::register_pdata_codec!(

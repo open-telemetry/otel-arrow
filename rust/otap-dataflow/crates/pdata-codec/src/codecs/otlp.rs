@@ -37,7 +37,7 @@ use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOption
 use prost::Message;
 
 use crate::{
-    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
     CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, DecodeValidation, EncodeOutput,
     EncodePolicy, PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding, RegistryError,
     ResolvedCodec,
@@ -112,7 +112,7 @@ impl PdataDecoder for OtlpStrictDecoder {
     }
 }
 
-fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
+pub(crate) fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
     match policy.validation() {
         DecodeValidation::BestEffort => Box::new(OtlpBestEffortDecoder),
         DecodeValidation::Strict => Box::new(OtlpStrictDecoder),
@@ -263,7 +263,7 @@ static OTLP_METADATA: CodecMetadata = CodecMetadata::new(
 
 static OTLP_BATCHING: BatchingSupport = BatchingSupport {
     sizers: &[BatchSizer::Bytes],
-    default_profile: BatchProfile::otlp(),
+    default_settings: BatchSettings::otlp(),
 };
 
 pub(crate) struct OtlpBatcher;
@@ -272,18 +272,15 @@ impl PdataBatcher for OtlpBatcher {
     fn batch(
         &mut self,
         signal: SignalType,
-        profile: &BatchProfile,
+        settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
-        let limit = |value: Option<std::num::NonZeroUsize>| {
-            value.map(|value| std::num::NonZeroU64::new(value.get() as u64).expect("nonzero"))
-        };
         let result = otel_arrow_dfe_pdata::otlp::batching::make_bytes_batches_owned(
             signal,
-            limit(profile.max_size),
-            limit(profile.max_split_fragments),
-            limit(profile.max_split_overhead_bytes),
-            limit(profile.max_split_fragments_per_flush),
+            settings.max_size,
+            settings.max_split_fragments,
+            settings.max_split_overhead_bytes,
+            settings.max_split_fragments_per_flush,
             inputs
                 .into_iter()
                 .map(|bytes| OtlpProtoBytes::new_from_bytes(signal, bytes))
@@ -294,8 +291,9 @@ impl PdataBatcher for OtlpBatcher {
             batches: result
                 .batches
                 .into_iter()
-                .map(|(mut bytes, weight)| (bytes.replace_bytes(Bytes::new()), weight))
+                .map(|(mut bytes, inputs)| (bytes.replace_bytes(Bytes::new()), inputs))
                 .collect(),
+            completed_inputs: result.completed_inputs,
             budget_fallbacks: result.budget_fallbacks,
         })
     }
@@ -309,82 +307,10 @@ crate::register_pdata_codec!(
         .with_batcher(CodecBatcherRegistration::new(&OTLP_BATCHING, || {
             Box::new(OtlpBatcher)
         }))
-        .with_item_counter(|signal, bytes| Some(count_items(signal, bytes))),
+        .with_item_counter(|signal, bytes| Some(otel_arrow_dfe_pdata::count_otlp_items(
+            signal, bytes
+        ))),
 );
-
-pub(crate) fn count_items(signal: SignalType, bytes: &[u8]) -> usize {
-    match signal {
-        SignalType::Logs => {
-            let view = RawLogsData::new(bytes);
-            use otel_arrow_dfe_pdata_views::views::logs::{
-                LogsDataView, ResourceLogsView, ScopeLogsView,
-            };
-            view.resources()
-                .map(|resource| {
-                    resource
-                        .scopes()
-                        .map(|scope| scope.log_records().count())
-                        .sum::<usize>()
-                })
-                .sum()
-        }
-        SignalType::Traces => {
-            let view = RawTraceData::new(bytes);
-            use otel_arrow_dfe_pdata_views::views::trace::{
-                ResourceSpansView, ScopeSpansView, TracesView,
-            };
-            view.resources()
-                .map(|resource| {
-                    resource
-                        .scopes()
-                        .map(|scope| scope.spans().count())
-                        .sum::<usize>()
-                })
-                .sum()
-        }
-        SignalType::Metrics => {
-            let view = RawMetricsData::new(bytes);
-            use otel_arrow_dfe_pdata_views::views::metrics::{
-                DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
-                MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
-            };
-            view.resources()
-                .map(|resource| {
-                    resource
-                        .scopes()
-                        .map(|scope| {
-                            scope
-                                .metrics()
-                                .map(|metric| {
-                                    metric
-                                        .data()
-                                        .map(|data| {
-                                            if let Some(gauge) = data.as_gauge() {
-                                                gauge.data_points().count()
-                                            } else if let Some(sum) = data.as_sum() {
-                                                sum.data_points().count()
-                                            } else if let Some(histogram) = data.as_histogram() {
-                                                histogram.data_points().count()
-                                            } else if let Some(histogram) =
-                                                data.as_exponential_histogram()
-                                            {
-                                                histogram.data_points().count()
-                                            } else if let Some(summary) = data.as_summary() {
-                                                summary.data_points().count()
-                                            } else {
-                                                0
-                                            }
-                                        })
-                                        .unwrap_or(0)
-                                })
-                                .sum::<usize>()
-                        })
-                        .sum::<usize>()
-                })
-                .sum()
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -394,8 +320,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CodecRegistry, CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation,
-        EncodingPlan, InspectionPlan, PdataView,
+        AcceptedEncodings, CodecRegistry, CodecService, CodecServiceBuilder, DecodePolicy,
+        DecodeValidation, EncodingPlan, PdataView,
     };
     use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
@@ -447,13 +373,16 @@ mod tests {
         let encoded = codec.admit(SignalType::Logs, logs_bytes()).unwrap();
         let pointer = encoded.bytes().as_ptr();
         match service
-            .view(&encoded, &InspectionPlan::accept_encoded([codec]))
+            .view(&encoded, &AcceptedEncodings::accept_encoded([codec]))
             .unwrap()
         {
             PdataView::Encoded(view) => assert_eq!(view.bytes().as_ptr(), pointer),
             PdataView::Native(_) => panic!("the accepted representation must remain encoded"),
         }
-        match service.view(&encoded, &InspectionPlan::native()).unwrap() {
+        match service
+            .view(&encoded, &AcceptedEncodings::native())
+            .unwrap()
+        {
             PdataView::Native(records) => assert_eq!(records.num_items(), 4),
             PdataView::Encoded(_) => panic!("native fallback must decode"),
         }

@@ -29,8 +29,8 @@ use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    BatchProfile, CodecBatches, CodecError, CodecOperation, CodecRegistry, DecodePolicy,
-    EncodeOutput, EncodedPdata, EncodingPlan, InspectionPlan, PdataBatcher, PdataDecoder,
+    AcceptedEncodings, BatchSettings, CodecBatches, CodecError, CodecOperation, CodecRegistry,
+    DecodePolicy, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher, PdataDecoder,
     PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
 
@@ -170,13 +170,13 @@ impl CodecService {
     pub fn view<'a>(
         &self,
         encoded: &'a EncodedPdata,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
         self.view_parts(
             encoded.codec(),
             encoded.signal_type(),
             encoded.bytes(),
-            plan,
+            accepted_encodings,
         )
     }
 
@@ -186,10 +186,10 @@ impl CodecService {
         codec: ResolvedCodec,
         signal: otel_arrow_dfe_config::SignalType,
         bytes: &'a Bytes,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
         codec.require_decoder(signal)?;
-        if plan.accepts(codec) {
+        if accepted_encodings.accepts(codec) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
                 codec.encoding(),
                 signal,
@@ -233,7 +233,7 @@ impl CodecService {
         &self,
         codec: ResolvedCodec,
         signal: otel_arrow_dfe_config::SignalType,
-        profile: &BatchProfile,
+        settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
         codec.require_batcher(signal)?;
@@ -242,7 +242,7 @@ impl CodecService {
             error.with_operation_context(codec.encoding(), CodecOperation::Batch)
         })?;
         batcher
-            .batch(signal, profile, inputs)
+            .batch(signal, settings, inputs)
             .map_err(|error| error.with_operation_context(codec.encoding(), CodecOperation::Batch))
     }
 

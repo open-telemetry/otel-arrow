@@ -71,6 +71,9 @@ pub struct DebugProcessor {
     metrics: MeasurementMetricSet<DebugMetrics>,
     compute_duration: ComputeDuration,
     sampler: Sampler,
+    /// Resolved on first use because processors currently receive codec services
+    /// only while processing messages. A future PR will expose the pipeline registry
+    /// at construction so this plan can be required instead of optional.
     encoding_plan: Option<EncodingPlan>,
 }
 
@@ -361,6 +364,9 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?,
                     );
                 }
+                // SAFETY: If absent, the plan is set to Some above; resolution errors
+                // return via `?`. There is no intervening mutation or await.
+                // A future PR will resolve plans at construction and remove this expect.
                 let encoding_plan = self.encoding_plan.expect("encoding plan initialized");
                 let bytes = effect_handler
                     .encode_owned(&mut payload, &encoding_plan)

@@ -1,12 +1,19 @@
 version: otel_dataflow/v1
 policies:
+  telemetry:
+    runtime_metrics: normal
   channel_capacity:
     control:
       pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
       node: {{ default_node_ctrl_msg_channel_size | default(100) }}
     pdata: {{ default_pdata_channel_size | default(100) }}
 
+{% if push_metrics_endpoint is defined and push_metrics_endpoint -%}
+{%- set push_service_name = "load-generator" %}
+{% include "push_metrics_engine.yaml.j2" %}
+{%- else -%}
 engine: {}
+{%- endif %}
 
 groups:
   default:
@@ -15,9 +22,14 @@ groups:
         nodes:
           receiver:
             type: "urn:otel:receiver:traffic_generator"
+            policies:
+              telemetry:
+                item_counts: true
+                size: true
             config:
               data_source: {{ data_source | default("semantic_conventions") }}
               generation_strategy: {{ generation_strategy | default("pre_generated") }}
+              registry_path: "{{ registry_path | default("https://github.com/open-telemetry/semantic-conventions.git@v1.44.0[model]") }}"
               traffic_config:
                 max_batch_size: {{ max_batch_size | default(512) }}
                 signals_per_second: {% if signals_per_second is none %}null{% else %}{{ signals_per_second | default(100000) }}{% endif %}

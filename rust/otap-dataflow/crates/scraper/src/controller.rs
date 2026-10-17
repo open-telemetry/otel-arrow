@@ -1,9 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared ACK-driven composite watermark receiver core.
+//! Shared ACK-driven snapshot, scalar, and composite receiver core.
 //!
-//! Delivery is at least once. A page is emitted with a unique batch ID, and the
+//! Keyset delivery is at least once subject to source retention. Snapshots are
+//! periodic full observations; retries query current data, not a stored result.
+//! A page is emitted with a unique batch ID, and the
 //! durable cursor advances only after a matching ACK is followed by a
 //! successful checkpoint write. A retryable NACK replays from the durable cursor
 //! after a fixed backoff; a permanent NACK pauses this source by default or
@@ -11,9 +13,8 @@
 
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
-    CatchUpConfig, ColumnMetadata, CompiledQuery, CompositeCursor, DriverAdapter,
-    DriverCancellation, EncodedPage, OnPermanentNack, OtlpPageEncoder, parse_utc_timestamp,
-    validate_mapping,
+    CatchUpConfig, ColumnMetadata, CompiledQuery, Cursor, DriverAdapter, DriverCancellation,
+    EncodedPage, OnPermanentNack, OtlpPageEncoder, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -265,7 +266,7 @@ where
 #[derive(Clone, Debug)]
 struct PendingPage {
     id: u64,
-    candidate: CompositeCursor,
+    candidate: Cursor,
 }
 
 #[derive(Clone, Debug)]
@@ -283,12 +284,13 @@ struct RejectionState {
 /// Committed cursor plus in-flight and scheduling state.
 #[derive(Clone, Debug)]
 struct ReceiverState {
-    committed: CompositeCursor,
+    committed: Cursor,
     revision: u64,
     pending: Option<PendingPage>,
     next_batch_id: u64,
     next_poll: Instant,
     draining: bool,
+    source_paused: bool,
     rejection: Option<RejectionState>,
     catch_up: CatchUpConfig,
     cycle: Option<PollCycle>,
@@ -298,23 +300,38 @@ struct ReceiverState {
 enum ProgressError {
     #[error("database query returned a page that did not advance the committed cursor")]
     NonAdvancingCursor,
-    #[error("database cursor timestamp is not a supported UTC timestamp")]
-    InvalidTimestamp,
+    #[error(transparent)]
+    InvalidCursor(#[from] crate::database::CursorError),
 }
 
-fn ensure_cursor_advanced(
-    committed: &CompositeCursor,
-    candidate: &CompositeCursor,
-) -> Result<(), ProgressError> {
-    let candidate_time =
-        parse_utc_timestamp(&candidate.timestamp).map_err(|_| ProgressError::InvalidTimestamp)?;
-    let committed_time =
-        parse_utc_timestamp(&committed.timestamp).map_err(|_| ProgressError::InvalidTimestamp)?;
-    if (candidate_time, candidate.tie_breaker) <= (committed_time, committed.tie_breaker) {
-        Err(ProgressError::NonAdvancingCursor)
-    } else {
-        Ok(())
+fn ensure_cursor_advanced(committed: &Cursor, candidate: &Cursor) -> Result<(), ProgressError> {
+    // Snapshots have no row ordering; only matching no-position markers are valid.
+    if matches!((committed, candidate), (Cursor::Snapshot, Cursor::Snapshot)) {
+        return Ok(());
     }
+    if candidate.compare(committed)? != std::cmp::Ordering::Greater {
+        return Err(ProgressError::NonAdvancingCursor);
+    }
+    Ok(())
+}
+
+fn ensure_page_advanced(
+    committed: &Cursor,
+    page: &crate::database::QueryPage,
+) -> Result<(), ProgressError> {
+    let mut previous = committed;
+    for row in &page.rows {
+        ensure_cursor_advanced(previous, &row.cursor)?;
+        previous = &row.cursor;
+    }
+    Ok(())
+}
+
+fn should_pause_encoding_error(error: &crate::database::OtlpMappingError) -> bool {
+    matches!(
+        error,
+        crate::database::OtlpMappingError::SnapshotByteLimit { .. }
+    )
 }
 
 impl ReceiverState {
@@ -326,6 +343,7 @@ impl ReceiverState {
             next_batch_id: 1,
             next_poll: now,
             draining: false,
+            source_paused: false,
             rejection: None,
             catch_up,
             cycle: None,
@@ -337,7 +355,13 @@ impl ReceiverState {
     /// At most one page is in flight per source, so a pending ACK/NACK blocks
     /// the next poll and prevents overlapping database work.
     fn can_poll(&self) -> bool {
-        !self.draining && self.pending.is_none() && !self.rejection_paused()
+        !self.draining && !self.source_paused && self.pending.is_none() && !self.rejection_paused()
+    }
+
+    fn pause_source(&mut self) {
+        self.pending = None;
+        self.cycle = None;
+        self.source_paused = true;
     }
 
     fn rejection_paused(&self) -> bool {
@@ -376,6 +400,11 @@ impl ReceiverState {
     }
 
     fn can_continue_cycle(&self, now: Instant) -> bool {
+        // Re-executing a snapshot immediately would emit the same full result
+        // repeatedly rather than make keyset progress. Always cool down.
+        if matches!(self.committed, Cursor::Snapshot) {
+            return false;
+        }
         self.cycle.as_ref().is_some_and(|cycle| {
             cycle.pages_started < self.catch_up.max_pages
                 && now.saturating_duration_since(cycle.started) < self.catch_up.max_duration
@@ -395,7 +424,7 @@ impl ReceiverState {
         }
     }
 
-    fn record_sent(&mut self, candidate: CompositeCursor) {
+    fn record_sent(&mut self, candidate: Cursor) {
         debug_assert!(self.pending.is_none());
         let id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.saturating_add(1);
@@ -403,7 +432,7 @@ impl ReceiverState {
     }
 
     /// Returns the candidate only when the feedback matches the in-flight page.
-    fn ack_candidate(&self, batch_id: u64) -> Option<CompositeCursor> {
+    fn ack_candidate(&self, batch_id: u64) -> Option<Cursor> {
         self.pending
             .as_ref()
             .filter(|pending| pending.id == batch_id)
@@ -519,11 +548,14 @@ where
         let mut state = ReceiverState::new(
             loaded.unwrap_or_else(|| CheckpointState {
                 revision: 0,
-                cursor: query.watermark().initial.clone(),
+                cursor: query.watermark().initial(),
             }),
             Instant::now(),
             query.catch_up(),
         );
+        query.watermark().validate_cursor(&state.committed).map_err(|error| {
+            receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
+        })?;
         if let Some(metrics) = metrics.as_mut() {
             metrics.starts.add(1);
         }
@@ -567,7 +599,7 @@ where
         let mut consecutive_checkpoint_failures = 0_u32;
         let mut deferred_feedback = None;
 
-        loop {
+        'receiver: loop {
             if let Some(metrics) = metrics.as_mut() {
                 metrics.rejection_paused.set(u64::from(state.rejection_paused()));
             }
@@ -793,6 +825,18 @@ where
                                 if let Some(metrics) = metrics.as_mut() {
                                     metrics.query_failures.add(1);
                                 }
+                                if A::should_pause_source(&error) {
+                                    state.pause_source();
+                                    admission.interrupt_cycle();
+                                    encoder.release_scratch();
+                                    otel_warn!(
+                                        "database_receiver.source_paused",
+                                        source_id = source_id.as_str(),
+                                        error = %error,
+                                        message = "Database query exceeded a source-local bound; source paused with checkpoint unchanged. Repair the query or limits and restart this source to resume"
+                                    );
+                                    continue 'receiver;
+                                }
                                 database_retry.failed::<A>(
                                     error, "execute", &source_id, &effect_handler,
                                 )?;
@@ -819,8 +863,10 @@ where
                     // must not monopolize the thread-per-core engine runtime.
                     // Move the single-owner cache into the job and back, avoiding
                     // per-poll configuration clones or a shared mutable cache.
+                    let validation_cursor = state.committed.clone();
                     let encoding = worker.run(move || {
-                        let encoded = encoder.encode_page(page, observed_time, limit);
+                        let encoded = ensure_page_advanced(&validation_cursor, &page)
+                            .map(|()| encoder.encode_page(page, observed_time, limit));
                         (encoder, encoded)
                     }).map_err(|error| receiver_error(
                         &effect_handler, ReceiverErrorKind::Other, error,
@@ -837,6 +883,9 @@ where
                     if admission.state.should_shed_ingress() {
                         encoder.release_scratch();
                     }
+                    let encoded = encoded.map_err(|error| {
+                        receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
+                    })?;
                     let encoded = match encoded {
                         Ok(Some(encoded)) => encoded,
                         Ok(None) => {
@@ -844,6 +893,18 @@ where
                             continue;
                         }
                         Err(error) => {
+                            if should_pause_encoding_error(&error) {
+                                state.pause_source();
+                                admission.interrupt_cycle();
+                                encoder.release_scratch();
+                                otel_warn!(
+                                    "database_receiver.source_paused",
+                                    source_id = source_id.as_str(),
+                                    error = %error,
+                                    message = "Snapshot encoding exceeded a source-local bound; source paused with checkpoint unchanged. Repair the query or limits and restart this source to resume"
+                                );
+                                continue 'receiver;
+                            }
                             // An oversized first row or an invalid mapping
                             // cannot be skipped without losing data.
                             return Err(receiver_error(
@@ -1269,7 +1330,7 @@ async fn commit_checkpoint(
     worker: &ScraperWorker,
     store: &CheckpointStore,
     revision: u64,
-    candidate: &CompositeCursor,
+    candidate: &Cursor,
     max_failures: u32,
     retry_backoff: Duration,
     consecutive_failures: &mut u32,

@@ -40,7 +40,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Barrier, Semaphore, watch};
+use tokio::task::JoinSet;
 
 // =========================================================================
 // Balanced mode - single group
@@ -2294,8 +2295,34 @@ async fn broadcast_all_mode_topic_close_resolves_topic_closed() {
     );
 }
 
-/// Scenario: Publishing, subscribing, and acknowledging run concurrently in `all` mode.
-/// Guarantees: Registry and tracker contention does not deadlock or strand receipts.
+/// Receives and acks every message until `stop` is signalled, so the
+/// subscriber never owes an unserviced `all`-mode consensus ack. Returns the
+/// number of messages acked.
+async fn ack_until_stopped(mut sub: Subscription<u64>, mut stop: watch::Receiver<bool>) -> u64 {
+    let mut acked = 0;
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.wait_for(|stopped| *stopped) => return acked,
+            item = sub.recv() => match item {
+                Ok(RecvItem::Message(env)) => {
+                    sub.ack(env.id).expect("received message must still be tracked");
+                    acked += 1;
+                }
+                Ok(RecvItem::Lagged { missed }) => panic!("unexpected lag of {missed} messages"),
+                Err(err) => panic!("unexpected recv error: {err:?}"),
+            },
+        }
+    }
+}
+
+/// Scenario: In `all` mode, each tracked publish races with a new subscriber
+/// joining in the same round, while three long-lived subscribers and every
+/// joined subscriber keep receiving and acking until all receipts resolve.
+/// Guarantees: Registry and tracker contention does not deadlock; every
+/// receipt resolves as Ack within a bounded wait; and each subscriber acks
+/// exactly the messages published after it joined (the racing message may
+/// fall on either side).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn broadcast_all_mode_concurrent_publish_subscribe_resolves() {
     let broker = TopicBroker::<u64>::new();
@@ -2309,60 +2336,49 @@ async fn broadcast_all_mode_concurrent_publish_subscribe_resolves() {
 
     const MESSAGES: u64 = 64;
 
-    // Long-lived subscribers that ack every message they receive.
-    let mut ackers = Vec::new();
+    // Created before any subscriber task so none can miss the stop signal.
+    let (stop_tx, stop_rx) = watch::channel(false);
+
+    // Publisher and joiner meet before every round, then subscribe and publish
+    // concurrently. Joiner `i` therefore races message `i` but is registered
+    // before message `i + 1` and after message `i - 1`.
+    let round = Arc::new(Barrier::new(2));
+
+    // Multi-threaded tasks are needed to contend on the registry and tracker
+    // locks. Dropping a `JoinSet` aborts its tasks, so a failed assertion below
+    // still cleans up every spawned task.
+    let mut ackers = JoinSet::new();
     for _ in 0..3 {
-        let mut sub = topic
+        let sub = topic
             .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
             .unwrap();
-        ackers.push(tokio::spawn(async move {
-            let mut acked = 0u64;
-            while acked < MESSAGES {
-                match sub.recv().await {
-                    Ok(RecvItem::Message(env)) => {
-                        let _ = sub.ack(env.id);
-                        acked += 1;
-                    }
-                    Ok(RecvItem::Lagged { .. }) => {}
-                    Err(_) => break,
-                }
-            }
-            // Keep the subscriber alive until every message is acked so it is
-            // never the cause of a Nack.
-            sub
-        }));
+        let _ = ackers.spawn(ack_until_stopped(sub, stop_rx.clone()));
     }
 
-    // Subscribers joining concurrently with the publishes, each acking what it
-    // receives, to exercise the subscribe-vs-publish linearization.
     let topic_for_joins = topic.clone();
-    let joiner = tokio::spawn(async move {
-        let mut subs = Vec::new();
-        for _ in 0..MESSAGES {
-            let mut sub = topic_for_joins
+    let round_for_joins = Arc::clone(&round);
+    let mut joiner = JoinSet::new();
+    let _ = joiner.spawn(async move {
+        let mut joined = JoinSet::new();
+        for i in 0..MESSAGES {
+            let _ = round_for_joins.wait().await;
+            let sub = topic_for_joins
                 .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
                 .unwrap();
-            // Drain without blocking forever; ack whatever is immediately ready.
-            while let Ok(Ok(item)) =
-                tokio::time::timeout(Duration::from_millis(1), sub.recv()).await
-            {
-                if let RecvItem::Message(env) = item {
-                    let _ = sub.ack(env.id);
-                }
-            }
-            subs.push(sub);
-            tokio::task::yield_now().await;
+            let stop = stop_rx.clone();
+            let _ = joined.spawn(async move { (i, ack_until_stopped(sub, stop).await) });
         }
-        subs
+        joined
     });
 
-    let mut receipts = Vec::new();
-    for i in 0..MESSAGES {
-        receipts.push(handle.publish(Arc::new(i)).await.unwrap());
-    }
-
-    // Every receipt must reach a terminal outcome without hanging.
+    // Every publish and receipt must complete; the timeout only bounds a
+    // failure (including a joiner that never reaches the barrier).
     let outcomes = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut receipts = Vec::new();
+        for i in 0..MESSAGES {
+            let _ = round.wait().await;
+            receipts.push(handle.publish(Arc::new(i)).await.unwrap());
+        }
         let mut outcomes = Vec::new();
         for receipt in receipts {
             outcomes.push(receipt.wait_for_outcome().await);
@@ -2370,21 +2386,35 @@ async fn broadcast_all_mode_concurrent_publish_subscribe_resolves() {
         outcomes
     })
     .await
-    .expect("receipts did not resolve before timeout");
+    .expect("publishes and receipts did not complete before timeout");
 
+    // Every subscriber stays alive and acks, so no receipt may Nack.
     for outcome in &outcomes {
-        assert!(
-            matches!(
-                outcome,
-                TrackedPublishOutcome::Ack | TrackedPublishOutcome::Nack { .. }
-            ),
-            "unexpected non-terminal outcome: {outcome:?}"
-        );
+        assert_eq!(outcome, &TrackedPublishOutcome::Ack);
     }
 
-    // Keep subscribers alive until all outcomes are collected.
-    let _ackers = ackers;
-    let _joined = joiner.await.unwrap();
+    let mut joined = joiner
+        .join_next()
+        .await
+        .expect("joiner task was spawned")
+        .expect("joiner task failed");
+    stop_tx
+        .send(true)
+        .expect("subscriber tasks hold stop receivers");
+
+    while let Some(result) = ackers.join_next().await {
+        assert_eq!(result.expect("acker task failed"), MESSAGES);
+    }
+    let mut joined_count = 0;
+    while let Some(result) = joined.join_next().await {
+        let (i, acked) = result.expect("joined subscriber task failed");
+        assert!(
+            (MESSAGES - 1 - i..=MESSAGES - i).contains(&acked),
+            "joiner {i} acked {acked} messages"
+        );
+        joined_count += 1;
+    }
+    assert_eq!(joined_count, MESSAGES);
 }
 
 // =========================================================================

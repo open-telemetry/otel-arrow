@@ -19,8 +19,8 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::state::ExecutionState;
+use crate::pipeline::{ParentBehavior, PipelineStage};
 
 /// A trait for routing OTAP (OpenTelemetry Arrow Protocol) batch records to some destination.
 ///
@@ -103,6 +103,11 @@ impl PipelineStage for RouteToPipelineStage {
             _ => OtapArrowRecords::Metrics(Default::default()),
         })
     }
+
+    // Routing consumes output without changing parent identities returned for branch merging.
+    fn parent_behavior(&self) -> ParentBehavior {
+        ParentBehavior::Preserves
+    }
 }
 
 #[cfg(test)]
@@ -115,7 +120,7 @@ mod test {
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
     use otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs;
 
-    use crate::pipeline::Pipeline;
+    use crate::pipeline::{Pipeline, PipelineOptions, SignalContext, SignalKind};
 
     use super::*;
 
@@ -158,7 +163,13 @@ mod test {
             .with_expressions(vec![DataExpression::Output(output_expr)])
             .build()
             .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                signal_context: SignalContext::Single(SignalKind::Logs),
+                ..Default::default()
+            },
+        );
 
         let mut exec_state = ExecutionState::new();
         let test_router = TestRouter { routed: vec![] };
@@ -203,7 +214,13 @@ mod test {
             .with_expressions(vec![DataExpression::Output(output_expr)])
             .build()
             .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new_with_options(
+            pipeline_expr,
+            PipelineOptions {
+                signal_context: SignalContext::Single(SignalKind::Logs),
+                ..Default::default()
+            },
+        );
         let mut exec_state = ExecutionState::new();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
         let result = pipeline

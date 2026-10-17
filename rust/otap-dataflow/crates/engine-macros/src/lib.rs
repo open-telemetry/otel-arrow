@@ -21,18 +21,30 @@ mod pipeline_factory;
 ///
 /// # Usage
 ///
-/// Simply declare a XYZ_FACTORY_PIPELINE static and annotate it with a prefix and data type:
+/// Declare a XYZ_FACTORY_PIPELINE static and annotate it with a prefix and data type.
+/// An optional third argument installs the data-type-specific context materializer:
 /// ```rust,ignore
 /// use otel_arrow_dfe_engine::{PipelineFactory, build_factory};
+/// use otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan;
 /// use otel_arrow_dfe_engine_macros::pipeline_factory;
 ///
 /// // Define your data type (this would be defined elsewhere)
 /// struct MyData;
 ///
+/// fn materialize_context(data: &mut MyData, plan: &ContextMaterializationPlan) {
+///     // Store the selected materialized context on `data`.
+/// }
+///
 /// // Declare and initialize the factory of pipelines
-/// #[pipeline_factory(MY_PREFIX, MyData)]
+/// #[pipeline_factory(MY_PREFIX, MyData, materialize_context)]
 /// static XYZ_FACTORY_PIPELINE: PipelineFactory<MyData> = build_factory();
 /// ```
+///
+/// The materializer must have the signature
+/// `fn(&mut PData, &ContextMaterializationPlan)`. It may be omitted for data
+/// types that do not support context materialization. If a pipeline selects a
+/// constant or randomness composite without a registered materializer,
+/// pipeline construction fails with an invalid-user-configuration error.
 ///
 /// Note: You need to import both `PipelineFactory` and `build_factory`. The
 /// `build_registry()` call is a placeholder that gets replaced by the macro, but

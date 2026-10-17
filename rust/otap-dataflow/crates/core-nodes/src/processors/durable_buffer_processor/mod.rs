@@ -1036,7 +1036,7 @@ impl DurableBuffer {
                     }
                 }
             } else {
-                let arrow_pdata = match effect_handler.try_into_otap(data).await {
+                let arrow_pdata = match effect_handler.materialize_otap(data).await {
                     Ok(arrow_pdata) => arrow_pdata,
                     Err(error) => {
                         self.metrics

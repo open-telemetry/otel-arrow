@@ -17,14 +17,14 @@
 //! copies message frames and coalesces adjacent timestamp runs without parsing
 //! their syslog contents.
 
-use std::num::NonZeroUsize;
+use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::{
-    BatchProfile, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
     CodecMetadata, CodecOperation, CodecRegistration, CodecRegistry, PdataBatcher, PdataDecoder,
     PdataEncoding, RegistryError, ResolvedCodec, register_pdata_codec,
 };
@@ -42,9 +42,9 @@ const FRAME_HEADER_LEN: usize = 4;
 const MAX_NATIVE_LOGS: usize = 65_535;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
 
-const SYSLOG_BATCH_PROFILE: BatchProfile = BatchProfile {
+const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
     min_size: Some(8192),
-    max_size: NonZeroUsize::new(MAX_NATIVE_LOGS),
+    max_size: NonZeroU64::new(MAX_NATIVE_LOGS as u64),
     sizer: BatchSizer::Items,
     max_split_fragments: None,
     max_split_overhead_bytes: None,
@@ -361,7 +361,7 @@ impl PdataBatcher for SyslogBatcher {
     fn batch(
         &mut self,
         signal: SignalType,
-        profile: &BatchProfile,
+        settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
         if signal != SignalType::Logs {
@@ -371,17 +371,22 @@ impl PdataBatcher for SyslogBatcher {
                 signal,
             });
         }
-        if profile.sizer != BatchSizer::Items {
+        if settings.sizer != BatchSizer::Items {
             return Err(CodecError::invalid_batch(
                 "syslog native batching supports items only",
             ));
         }
-        let max_items = profile
-            .max_size
-            .map_or(MAX_NATIVE_LOGS, |size| size.get().min(MAX_NATIVE_LOGS));
+        let max_items = settings.max_size.map_or(MAX_NATIVE_LOGS, |size| {
+            // Oversized limits still cap at the native log batch limit on 32-bit targets.
+            usize::try_from(size.get())
+                .unwrap_or(MAX_NATIVE_LOGS)
+                .min(MAX_NATIVE_LOGS)
+        });
         let mut outputs = Vec::new();
         let mut output = RawBatchWriter::new();
-        for input in inputs {
+        let mut first_input = 0;
+        let mut last_input = 0;
+        for (input_index, input) in inputs.into_iter().enumerate() {
             let (_, frames) = validated_frames(&input)
                 .map_err(|error| operation_error(CodecOperation::Batch, error))?;
             for frame in frames {
@@ -390,10 +395,15 @@ impl PdataBatcher for SyslogBatcher {
                     outputs.push(
                         output
                             .finish()
+                            .map(|(bytes, _)| (bytes, first_input..=last_input))
                             .map_err(|error| operation_error(CodecOperation::Batch, error))?,
                     );
                     output = RawBatchWriter::new();
                 }
+                if output.is_empty() {
+                    first_input = input_index;
+                }
+                last_input = input_index;
                 output
                     .append(frame)
                     .map_err(|error| operation_error(CodecOperation::Batch, error))?;
@@ -403,11 +413,14 @@ impl PdataBatcher for SyslogBatcher {
             outputs.push(
                 output
                     .finish()
+                    .map(|(bytes, _)| (bytes, first_input..=last_input))
                     .map_err(|error| operation_error(CodecOperation::Batch, error))?,
             );
         }
         Ok(CodecBatches {
             batches: outputs,
+            // Framing rejects empty inputs; every accepted input contributes to an output.
+            completed_inputs: Vec::new(),
             budget_fallbacks: 0,
         })
     }
@@ -486,7 +499,7 @@ static SYSLOG_CEF_METADATA: CodecMetadata =
 
 static SYSLOG_BATCHING_SUPPORT: BatchingSupport = BatchingSupport {
     sizers: &[BatchSizer::Items],
-    default_profile: SYSLOG_BATCH_PROFILE,
+    default_settings: SYSLOG_BATCH_SETTINGS,
 };
 
 register_pdata_codec!(
@@ -747,9 +760,9 @@ mod tests {
     fn native_batching_coalesces_adjacent_timestamp_runs() {
         let first = batch(&[b"one", b"two"], 11);
         let second = batch(&[b"three"], 11);
-        let profile = BatchProfile {
+        let settings = BatchSettings {
             min_size: Some(4),
-            max_size: NonZeroUsize::new(4),
+            max_size: NonZeroU64::new(4),
             sizer: BatchSizer::Items,
             max_split_fragments: None,
             max_split_overhead_bytes: None,
@@ -757,12 +770,13 @@ mod tests {
         };
 
         let output = SyslogBatcher
-            .batch(SignalType::Logs, &profile, vec![first, second])
+            .batch(SignalType::Logs, &settings, vec![first, second])
             .expect("batch encoded syslog");
 
         assert_eq!(output.batches.len(), 1);
-        let (bytes, item_count) = &output.batches[0];
-        assert_eq!(*item_count, 3);
+        let (bytes, input_range) = &output.batches[0];
+        assert_eq!(*input_range, 0..=1);
+        assert_eq!(validated_item_count(bytes).unwrap(), 3);
         assert_eq!(
             read_u32(&bytes[BATCH_HEADER_LEN + 8..BATCH_HEADER_LEN + RUN_HEADER_LEN]),
             3
@@ -781,14 +795,14 @@ mod tests {
     }
 
     /// Scenario: Native batching combines inputs and splits at an item limit.
-    /// Guarantees: Output weights, order, original bytes, and observed timestamps are preserved.
+    /// Guarantees: Input ranges, order, original bytes, and observed timestamps are preserved.
     #[test]
     fn native_batching_splits_by_item_count() {
         let first = batch(&[b"one", b"two"], 11);
         let second = batch(&[b"three"], 22);
-        let profile = BatchProfile {
+        let settings = BatchSettings {
             min_size: Some(2),
-            max_size: NonZeroUsize::new(2),
+            max_size: NonZeroU64::new(2),
             sizer: BatchSizer::Items,
             max_split_fragments: None,
             max_split_overhead_bytes: None,
@@ -796,13 +810,15 @@ mod tests {
         };
 
         let output = SyslogBatcher
-            .batch(SignalType::Logs, &profile, vec![first, second])
+            .batch(SignalType::Logs, &settings, vec![first, second])
             .expect("batch encoded syslog");
 
         assert_eq!(output.budget_fallbacks, 0);
         assert_eq!(output.batches.len(), 2);
-        assert_eq!(output.batches[0].1, 2);
-        assert_eq!(output.batches[1].1, 1);
+        assert_eq!(output.batches[0].1, 0..=0);
+        assert_eq!(output.batches[1].1, 1..=1);
+        assert_eq!(validated_item_count(&output.batches[0].0).unwrap(), 2);
+        assert_eq!(validated_item_count(&output.batches[1].0).unwrap(), 1);
         let (_, first_frames) = validated_frames(&output.batches[0].0).expect("first output");
         let (_, second_frames) = validated_frames(&output.batches[1].0).expect("second output");
         let first_frames = first_frames
@@ -816,5 +832,46 @@ mod tests {
         assert!(first_frames.iter().all(|frame| frame.observed_time == 11));
         assert_eq!(second_frames[0].message, b"three");
         assert_eq!(second_frames[0].observed_time, 22);
+    }
+
+    /// Scenario: Splitting spans multiple syslog inputs and a limit exceeds a 32-bit size.
+    /// Guarantees: Output ranges track original inputs and wide limits never wrap or truncate.
+    #[test]
+    fn native_batching_tracks_split_inputs_and_wide_limits() {
+        let inputs = vec![
+            batch(&[b"one", b"two", b"three"], 11),
+            batch(&[b"four", b"five"], 22),
+        ];
+        let mut settings = SYSLOG_BATCH_SETTINGS;
+        settings.min_size = Some(2);
+        settings.max_size = NonZeroU64::new(2);
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &settings, inputs.clone())
+            .unwrap();
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(_, range)| range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..=0, 0..=1, 1..=1]
+        );
+        assert!(result.completed_inputs.is_empty());
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(bytes, _)| validated_item_count(bytes).unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+
+        settings.max_size = NonZeroU64::new(u64::MAX);
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &settings, inputs)
+            .unwrap();
+        assert_eq!(result.batches.len(), 1);
+        assert_eq!(result.batches[0].1, 0..=1);
+        assert_eq!(validated_item_count(&result.batches[0].0).unwrap(), 5);
     }
 }

@@ -40,7 +40,7 @@ implementations.
 
 The design is scheduled, read-only query polling, not Change Data Capture
 (CDC). The [database receiver RFC][database-rfc] remains broader than the initial
-single-query, composite-watermark runtime.
+single-query runtime with snapshot, scalar, and composite modes.
 
 ## Architecture and Responsibilities
 
@@ -64,7 +64,7 @@ Existing Dataflow host
 | Responsibility | Shared scraper | Vendor receiver / host |
 | --- | --- | --- |
 | Query policy | Common limits and validated plan | Operator-authored SQL and dialect-specific validation |
-| Cursor parameters | Logical bind names and a composite cursor | Binding through the driver's parameter API |
+| Cursor parameters | Logical bind names and a typed scalar or composite cursor | Binding through the driver's parameter API |
 | Row representation | Database-neutral values, metadata, and page contract | Native type inspection and precision-preserving conversion |
 | Timing and lifecycle | Common scheduling, control-message handling, and worker cleanup coordination | Native timeout, cancellation, and connection cleanup |
 | Progress | Common checkpoint policy, concrete file store, and source lease | Stable source identity and vendor-specific compatibility inputs |
@@ -188,11 +188,41 @@ Earlier pre-release configurations must rename `fetch_size` to
 `fetch_size_rows`; the old name is not accepted as an alias. The row-count
 meaning and bounds are unchanged.
 
+### Snapshot Polling
+
+Use `watermark: { mode: snapshot }` for a complete result on each polling
+interval. No cursor column, initial value, bind, uniqueness, or ordering is
+required. Snapshot results may include duplicate or null values. All selected
+columns are still mapped to the log body; no column is tracked as progress.
+
+A nonempty snapshot is one pending batch. Only its matching ACK followed by a
+successful checkpoint write advances the durable revision. The cursor is JSON
+`null` (no source position), not a row offset, hash, or stored copy of the data.
+The next poll starts after `interval`, regardless of catch-up budgets. An empty
+snapshot emits nothing, leaves the checkpoint unchanged, and waits the interval.
+
+Adapters must return a complete bounded snapshot or fail. They must detect
+results exceeding `max_rows_per_poll` or the normalized-byte limit, rather than
+silently return a prefix. The shared encoder rejects snapshots exceeding the
+serialized-byte limit; it never emits or checkpoints a prefix. Split an oversized
+source into independently configured queries or increase the supported bounds.
+An adapter can classify deterministic overflow as source-pausing: the receiver
+retains ownership and its checkpoint, emits nothing, and remains responsive to
+drain and shutdown while unrelated pipeline sources continue.
+
+NACKs, crashes before commit, and restarts re-execute the full query. Retries read
+the data available at that time; no historical result is retained. Unchanged rows
+are emitted again on every interval, and changes between polls can be missed.
+This is periodic observation, not CDC, deduplication, or guaranteed replay of
+transient rows. The existing source lease, checkpoint identity checks, permanent
+rejection policy, and worker cleanup rules still apply.
+
 ### Watermark Configuration
 
-Only `mode: composite` is represented by the current enum. `scalar` and
-`snapshot` are RFC proposals, not supported modes. The RFC's conceptual
-`composite_watermark` spelling is not an accepted value for this schema.
+`mode: snapshot`, `mode: scalar`, and `mode: composite` are supported.
+Vendor receivers must explicitly support
+and validate a mode before executing it; these examples are shared contract
+values, not complete runnable receiver configurations.
 
 ```yaml
 # A WatermarkConfig value.
@@ -210,7 +240,7 @@ tie_breaker:
 
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
-| `mode` | string | **required** | Only `composite`. |
+| `mode` | string | **required** | `composite` for the fields below; `scalar` uses the separate schema below. |
 | `timestamp.column` | string | **required** | Non-empty result-column name. Must differ from the tie-breaker column, ignoring ASCII case. |
 | `timestamp.bind` | string | **required** | Logical bind name without a leading colon. Must differ from the tie-breaker bind, ignoring ASCII case. |
 | `timestamp.initial` | string | **required** | Non-empty initial timestamp text. Parsing and normalization are adapter responsibilities. |
@@ -225,6 +255,74 @@ representation and deterministic ordering.
 `CompositeCursor` deliberately has no `Ord` or `PartialOrd` implementation:
 timestamp strings with different offsets or fractional precision cannot be
 ordered safely as text. The polling controller compares validated UTC instants.
+
+#### Scalar Watermarks
+
+Scalar mode uses one non-null, unique, strictly increasing key. It does not
+manufacture a timestamp or a hidden tie-breaker. Configure the value type
+explicitly; integer-looking strings remain strings.
+
+```yaml
+mode: scalar
+column: EVENT_ID
+bind: last_key
+initial:
+  type: int64
+  value: 0
+```
+
+| Field | Requirement |
+| --- | --- |
+| `column` | Non-empty result-column name. |
+| `bind` | Named parameter without `:`; ASCII letters, digits, and underscores, starting with a letter or underscore. |
+| `initial.type` | One of `int64`, `uint64`, `string`, or `timestamp`. |
+| `initial.value` | Exact value of the declared type; required, never null. |
+
+| Type | Example initial value | Ordering |
+| --- | --- | --- |
+| `int64` | `-1` | Signed 64-bit numeric order. |
+| `uint64` | `18446744073709551615` | Unsigned 64-bit numeric order; no signed or floating-point conversion. |
+| `string` | `""` | Binary UTF-8 order, not numeric, locale-aware, or case-insensitive order. |
+| `timestamp` | `"2026-01-01T00:00:00.123456789Z"` | Chronological UTC instants; original text is retained for binding and checkpoints. |
+
+Text values are bounded to 1024 UTF-8 bytes. Empty strings are valid; malformed
+timestamps are not. Timestamp formats match the composite timestamp parser;
+timezone-less values have UTC semantics. Floating-point, decimal, boolean,
+binary, and null cursors are not supported by this scalar contract.
+
+For a dialect using colon-prefixed named parameters, an illustrative query is:
+
+```sql
+SELECT EVENT_ID, MESSAGE
+FROM EVENTS
+WHERE EVENT_ID > :last_key
+ORDER BY EVENT_ID ASC
+```
+
+The adapter must bind the native declared type, validate the complete read-only
+keyset predicate and ordering, check metadata and nullability, and reject any
+unsupported type or collation. String ordering must agree with Rust UTF-8 byte
+ordering, including trailing spaces. SQL text interpolation is never permitted.
+
+The initial value is an **exclusive** lower bound, so a source row equal to it
+is not collected. Scalar timestamps must be unique; use composite mode when
+several rows can share a timestamp. Uniqueness must hold over the result, not
+just the currently fetched page, because page or byte limits can split ties.
+Strictly increasing IDs alone do not prove commit-visible ordering: late commits
+below an acknowledged key can still be missed. Stable keys, source retention,
+and the existing downstream acknowledgement requirements continue to apply.
+
+Every returned row must advance beyond the prior cursor with the same type.
+Duplicate, backward, malformed, or mismatched positions fail closed, even if
+the final row would advance. The last **emitted** row is checkpointed only after
+ACK and durable write; NACK retains the committed position for replay.
+
+Existing composite checkpoints retain their version-1 representation and
+checksum. Scalar checkpoints carry explicit type tags and preserve full-width
+integers and timestamp text. Startup rejects a checkpoint with a different
+mode or scalar type before fetching rows. Receiver configuration fingerprints
+must include the mode, column, bind, and typed initial value; changing them
+requires an intentional checkpoint migration or a new checkpoint identity.
 
 ### Checkpoint Configuration
 
@@ -316,6 +414,7 @@ support does not by itself implement database login.
 | `begin_operation` | Reset operation cancellation state and return a cancellation handle before native work begins. |
 | `validate_query` | Validate single-statement/read-only SQL, cursor binds, keyset predicate, ordering, and non-null cursor metadata before polling. |
 | `execute` | Execute the validated query with bound cursor parameters and return a bounded `QueryPage` strictly after the committed cursor. |
+| `should_pause_source` | Classify deterministic source-local failures that should pause polling without terminating the pipeline; the default is `false`. |
 | `shutdown` | Stop workers and destroy native resources off the pipeline thread. The default is a no-op; an adapter owning such resources must override it. |
 | `classify_error` | Translate an adapter error into an engine `ReceiverErrorKind`; the default is `Other`. |
 | `DriverCancellation::cancel` | Request interruption of one active operation. The handle is cloneable and its future is local (`?Send`). |
@@ -332,6 +431,8 @@ materializing an arbitrary result set.
 | `ColumnMetadata` | Column name, adapter-reported type name, and nullability, shared by the page. |
 | `Row` | Ordered values corresponding to the result metadata. |
 | `CompositeCursor` | Timestamp text plus a signed 64-bit tie-breaker. |
+| `Cursor` | Scalar or composite position carried through polling, encoding, and checkpointing. |
+| `ScalarValue` | Explicitly typed signed integer, unsigned integer, string, or timestamp position. |
 | `CursorRow` | A row paired with its own source position. |
 | `QueryPage` | Shared column metadata and an ordered vector of cursor-bearing rows. |
 
@@ -422,7 +523,7 @@ memory was much larger. The measured peak includes the test process and
 encoding allocations, not native database or downstream buffers. It is a
 workload-specific sizing example, not a portable peak-memory bound.
 
-`CellValue` and `CompositeCursor` debug output redact their values; nested
+`CellValue`, `ScalarValue`, and `CompositeCursor` debug output redact their values; nested
 cursor rows/pages therefore do not reveal the cursor through their debug
 representation. `CompiledQuery` also redacts SQL and its initial cursor.
 Timestamp and tie-breaker configuration debug output redacts `initial`,
@@ -498,9 +599,9 @@ rejections are not implicitly treated as transient failures. Both policies retai
 only bounded controller state, not an encoded-page replay buffer. Replay still
 requires the documented source-retention and stable-row guarantees.
 
-The `database_receiver.source_paused` event explains operator recovery, and the
-`rejection_paused` gauge remains `1` on successive scrapes while paused (`0`
-otherwise). Retry scheduling and recovery emit
+The `database_receiver.source_paused` event explains operator recovery. For
+permanent downstream rejection, the `rejection_paused` gauge remains `1` on
+successive scrapes while paused (`0` otherwise). Retry scheduling and recovery emit
 `database_receiver.rejection_retry_scheduled` and
 `database_receiver.rejection_recovered`. These events never include downstream
 rejection text, which may contain customer data. During drain, either policy
@@ -513,6 +614,11 @@ failure during operation setup, startup validation, query execution, or reconnec
 stays inside the receiver instead of exhausting pipeline/controller recovery.
 Retries continue until the database recovers or the receiver stops. Delays are
 1, 2, 4, 8, 16, then 30 seconds between attempts, capped at 30 seconds thereafter.
+
+`DriverAdapter::should_pause_source` classifies deterministic operation failures
+that should stop only this source. A source-local pause emits and checkpoints
+nothing, retains ownership, and remains alive for telemetry, drain, and shutdown.
+Repair the source query or limits, then restart or reconfigure the receiver.
 These are shared runtime defaults, not configurable fields in this slice.
 The delay resets only after a successful query page, including an empty result,
 not merely after reconnect succeeds.
@@ -739,8 +845,10 @@ leases do not emit these runtime metrics by themselves.
 | `checkpoint_commits`, `checkpoint_failures`, `checkpoint_cleanup_failures` | Durable progress and persistence/cleanup failures. |
 | `cancellations`, `drains`, `shutdowns` | Cancellation attempts and received drain/shutdown requests, including during checkpoint writes and retries; not counts of successful cleanup. |
 
-The `rejection_paused` gauge is `1` while permanent rejection has paused the source
-and `0` otherwise. It remains observable even after counters have been scraped.
+The `rejection_paused` gauge is `1` while permanent rejection has paused the
+source and `0` otherwise. Adapter-classified source pauses do not set this
+downstream-rejection-specific gauge. It remains observable even after counters
+have been scraped.
 
 Measurement attributes are intentionally omitted to keep cardinality bounded.
 The RFC's duration histograms, lag gauges, and broader health signals are not
@@ -750,9 +858,9 @@ error messages must not become metric dimensions.
 ## Limits
 
 - This is not a runnable generic receiver, SQL Agent binary, installer, or exporter.
-- Only composite cursor configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
+- Snapshot, scalar, and composite configuration and `on_nack: rewind` are accepted; permanent rejection separately supports `on_permanent_nack: pause | retry`.
 - File checkpoints, leases, scheduling, mapping, and feedback are shared library functionality; database I/O and node registration remain vendor responsibilities.
-- Multiple named queries, jitter, snapshot/scalar polling, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
+- Multiple named queries, jitter, richer output mapping, collection of database metrics as an output signal, and CDC are not implemented. Internal runtime counters are implemented.
 - Byte-limit validation does not bound RSS or native allocations. Local memory-pressure state gates new fetches, but full global `MemoryAdmission` accounting is not implemented.
 - Authentication capabilities, credential rotation, TLS configuration, distributed ownership, and automatic source partitioning require separate work.
 - Bounded immediate catch-up is the default, with configurable cycle budgets and memory-pressure new-fetch gating. Whole-poll and normal-operation ACK deadlines are not; elapsed catch-up budgets only gate the next fetch.

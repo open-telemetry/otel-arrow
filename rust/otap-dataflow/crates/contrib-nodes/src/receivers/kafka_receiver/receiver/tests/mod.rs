@@ -39,7 +39,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLo
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload, PdataEncoding};
+use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use prost::Message;
 use rdkafka::ClientConfig;
@@ -58,7 +58,7 @@ use otel_arrow_dfe_config::SignalType;
 
 // Test-only imports for symbols the split test files reference but the
 // receiver implementation no longer imports directly.
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_SYSLOG};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG};
 use crate::receivers::kafka_receiver::identity::DeliveryGeneration;
 use bytes::Bytes;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8};
@@ -71,6 +71,7 @@ const REBALANCE_TEST_PARTITIONS: i32 = 2;
 const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
 
 mod construction;
+mod credentials;
 mod decode;
 mod lifecycle;
 mod offsets;
@@ -242,11 +243,8 @@ fn arrow_records_to_bytes(arrow_records: &mut OtapArrowRecords) -> Vec<u8> {
 /// first step for tests that assert on the delivered signal's OTLP-proto bytes
 /// (e.g. via `matches!` on the request variant or `decode`).
 fn take_otlp_proto(pdata: &mut OtapPdata) -> OtlpProtoBytes {
-    let encoded = pdata
-        .take_payload()
-        .into_encoded_for_test(PdataEncoding::OTLP, Default::default())
-        .expect("OTLP encoding");
-    OtlpProtoBytes::new_from_bytes(encoded.signal_type(), encoded.into_bytes())
+    otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(pdata.take_payload())
+        .expect("OTLP encoding")
 }
 
 /// Convert an `OtapPdata` (containing OTAP Arrow records) back to an OTLP

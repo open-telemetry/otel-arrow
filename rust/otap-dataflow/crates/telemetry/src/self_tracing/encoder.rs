@@ -6,8 +6,7 @@
 use super::{LogRecord, SavedCallsite};
 use crate::attributes::AttributeValue;
 use crate::event::LogEvent;
-use crate::registry::EntityKey;
-use crate::registry::TelemetryRegistryHandle;
+use crate::registry::{EntityKey, TelemetryRegistryHandle};
 use bytes::Bytes;
 use otel_arrow_dfe_config::pipeline::telemetry::{
     AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
@@ -122,138 +121,43 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         self.dropped_count
     }
 
-    /// Encode a string attribute, truncating the value if it doesn't fit.
-    ///
-    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
-    /// value was truncated (with a `[...]` suffix), or `Err(EncodeFailure)` if even
-    /// a truncated form would not fit. On `Err`, the buffer is left in a state
-    /// that is invalid for OTLP (an unfinished partial KeyValue may have been
-    /// written), so callers must invoke this within a [`BoundedBuf::try_encode`]
-    /// transaction so the partial bytes are rolled back.
-    #[inline]
-    fn encode_string_attribute_truncating_to(
-        buf: &mut B,
-        key: &str,
-        value: &str,
-    ) -> Result<bool, EncodeFailure> {
-        let mut truncated = false;
-        // Use _partial variants so the wrapper length placeholders are patched
-        // even when the inner truncating encoder writes partial bytes (it
-        // signals truncation to the caller via the captured `truncated` flag,
-        // not via Err, so wrappers complete cleanly).
-        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
-                match buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value) {
-                    Ok(was_truncated) => {
-                        truncated = was_truncated;
-                        Ok(())
-                    }
-                    Err(failure) => Err(failure),
-                }
-            })
-        })?;
-        Ok(truncated)
-    }
-
-    /// Encode an i64 attribute into a buffer.
-    #[inline]
-    fn encode_int_attribute_to(buf: &mut B, key: &str, value: i64) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                buf.encode_varint(value as u64)
-            })
-        })
-    }
-
-    /// Encode a bool attribute into a buffer.
-    #[inline]
-    fn encode_bool_attribute_to(buf: &mut B, key: &str, value: bool) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-                buf.encode_varint(u64::from(value))
-            })
-        })
-    }
-
-    /// Encode a double attribute into a buffer.
-    #[inline]
-    fn encode_double_attribute_to(buf: &mut B, key: &str, value: f64) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-                buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
-                buf.extend_from_slice(&value.to_le_bytes())
-            })
-        })
-    }
-
-    /// Encode a Debug attribute into a buffer, truncating the value with a
-    /// `[...]` suffix if it does not fit.
-    ///
-    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
-    /// value was truncated, or `Err(Dropped)` if even a truncated form would
-    /// not fit.
-    #[inline]
-    fn encode_debug_attribute_to(
-        buf: &mut B,
-        key: &str,
-        value: &dyn std::fmt::Debug,
-    ) -> Result<bool, EncodeFailure> {
-        let mut truncated = false;
-        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
-                match encode_debug_string(buf, value) {
-                    Ok(was_truncated) => {
-                        truncated = was_truncated;
-                        Ok(())
-                    }
-                    Err(failure) => Err(failure),
-                }
-            })
-        })?;
-        Ok(truncated)
-    }
-
-    /// Encode the body as a string. Empty strings are skipped.
-    ///
-    /// Wrapped in `try_encode` so that any partial wire bytes written before
-    /// hitting the buffer's limit are rolled back. Otherwise an unpatched
-    /// length placeholder + leftover content bytes would corrupt subsequent
-    /// fields (e.g. `dropped_attributes_count`) appended to the buffer later.
-    #[inline]
-    pub fn encode_body_string(&mut self, value: &str) {
-        if value.is_empty() {
-            return;
+    /// Encodes one attribute within the per-attribute budget, counting a hard
+    /// failure or a truncation as one dropped attribute. A hard failure rolls
+    /// back any partial bytes; `Ok(true)` from `encode` reports truncation.
+    fn write_attribute(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
+        if bounded(self.buf, encode).unwrap_or(true) {
+            self.dropped_count += 1;
         }
-        let _ = self.buf.try_encode(|buf| {
-            buf.encode_len_delimited(LOG_RECORD_BODY, |buf| {
-                buf.encode_string(ANY_VALUE_STRING_VALUE, value)
-            })
+    }
+
+    /// Encodes the field as an attribute; scalar values of the `message`
+    /// field have no body representation and are ignored.
+    fn record_attribute(
+        &mut self,
+        field: &tracing::field::Field,
+        encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+    ) {
+        if field.name() != "message" {
+            self.write_value_attribute(field.name(), encode);
+        }
+    }
+
+    /// Encodes one attribute whose AnyValue payload is written by `encode`.
+    fn write_value_attribute(
+        &mut self,
+        key: &str,
+        encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+    ) {
+        self.write_attribute(|buf| {
+            write_encoded_key_value(buf, LOG_RECORD_ATTRIBUTES, key, encode)
         });
     }
 
-    /// Encode the body from a Debug value without allocation.
-    ///
-    /// Uses `encode_len_delimited_partial` so the length placeholder is patched
-    /// even when truncation occurs. Wrapped in `try_encode` so a hard failure
-    /// (nothing fits at all) rolls back partial bytes; see
-    /// [`Self::encode_body_string`] for rationale.
-    #[inline]
-    pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
-        let _ = self.buf.try_encode(|buf| {
-            buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
-                match encode_debug_string(buf, value) {
-                    Ok(_truncated) => Ok(()),
-                    Err(failure) => Err(failure),
-                }
-            })
-        });
+    /// Encodes a body payload, rolling it back if it cannot fit.
+    fn write_body(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
+        let _ = self
+            .buf
+            .try_encode(|buf| write_encoded_value(buf, LOG_RECORD_BODY, encode).map(drop));
     }
 }
 
@@ -355,9 +259,6 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 /// buffer, the value is truncated with a `[...]` suffix and `Ok(true)` is
 /// returned. `Err(Dropped)` is returned only when even a minimal truncated
 /// form cannot fit (nothing useful was written).
-///
-/// This function is separate from `DirectFieldVisitor` to avoid borrow
-/// conflicts with the macro.
 #[inline]
 fn encode_debug_string<B: BoundedBuf>(
     buf: &mut B,
@@ -395,119 +296,251 @@ fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
     buf.remaining().div_ceil(2)
 }
 
+/// Runs `encode` transactionally within the per-attribute budget. `Ok(true)`
+/// means it succeeded but truncated; `Err` means it was rolled back.
+fn bounded<B: BoundedBuf>(
+    buf: &mut B,
+    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+) -> Result<bool, EncodeFailure> {
+    let budget = attr_budget(buf);
+    let mut truncated = false;
+    buf.with_max_remaining(budget, |buf| {
+        buf.try_encode(|buf| {
+            truncated = encode(buf)?;
+            Ok::<_, EncodeFailure>(())
+        })
+    })?;
+    Ok(truncated)
+}
+
+fn write_tagged<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    wire_type: u64,
+    encode: impl FnOnce(&mut B) -> EncodeResult,
+) -> Result<bool, EncodeFailure> {
+    buf.encode_field_tag(field, wire_type)
+        .and_then(|()| encode(buf))
+        .map(|()| false)
+}
+
+fn write_encoded_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited_partial(field, |buf| {
+        lost = encode(buf)?;
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(lost)
+}
+
+fn write_encoded_key_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    key: &str,
+    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited_partial(field, |buf| {
+        buf.encode_string(KEY_VALUE_KEY, key)?;
+        lost = write_encoded_value(buf, KEY_VALUE_VALUE, encode)?;
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(lost)
+}
+
+/// Encodes `f`'s value as a length-delimited `field`. `Ok(true)`
+/// means part of the value was lost; `Err` means it could not be written and
+/// must be rolled back.
+fn write_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited(field, |buf| {
+        let mut writer = ValueEncoder {
+            buf,
+            outcome: Ok(false),
+            #[cfg(debug_assertions)]
+            wrote_value: false,
+        };
+        f(&mut writer);
+        writer.outcome.map(|writer_lost| lost = writer_lost)
+    })?;
+    Ok(lost)
+}
+
+/// Encodes a `KeyValue` as a length-delimited `field`; see [`write_value`].
+fn write_key_value<B: BoundedBuf>(
+    buf: &mut B,
+    field: u64,
+    key: &str,
+    f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
+) -> Result<bool, EncodeFailure> {
+    let mut lost = false;
+    buf.encode_len_delimited(field, |buf| {
+        buf.encode_string(KEY_VALUE_KEY, key)?;
+        lost = write_value(buf, KEY_VALUE_VALUE, f)?;
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(lost)
+}
+
+/// Writes one AnyValue into a bounded buffer.
+struct ValueEncoder<'a, B: BoundedBuf> {
+    buf: &'a mut B,
+    /// `Ok(true)` once any part of the value was lost; a sticky `Err` once
+    /// part of it could not be written.
+    outcome: Result<bool, EncodeFailure>,
+    #[cfg(debug_assertions)]
+    wrote_value: bool,
+}
+
+impl<B: BoundedBuf> ValueEncoder<'_, B> {
+    fn put(&mut self, result: Result<bool, EncodeFailure>) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(
+                !self.wrote_value,
+                "value callback must write at most one AnyValue variant"
+            );
+            self.wrote_value = true;
+        }
+        self.outcome = self.outcome.and_then(|lost| Ok(lost | result?));
+    }
+
+    /// Writes a length-delimited container; `body` reports lost content.
+    fn nested(&mut self, field: u64, body: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
+        let mut lost = false;
+        let result = self.buf.encode_len_delimited(field, |buf| {
+            lost = body(buf)?;
+            Ok::<_, EncodeFailure>(())
+        });
+        self.put(result.map(|()| lost));
+    }
+
+    fn write_str(&mut self, value: &str) {
+        let result = self
+            .buf
+            .encode_string_truncating(ANY_VALUE_STRING_VALUE, value);
+        self.put(result);
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        let result = write_tagged(self.buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
+            buf.encode_varint(value as u64)
+        });
+        self.put(result);
+    }
+
+    fn write_f64(&mut self, value: f64) {
+        let result = write_tagged(
+            self.buf,
+            ANY_VALUE_DOUBLE_VALUE,
+            wire_types::FIXED64,
+            |buf| buf.extend_from_slice(&value.to_le_bytes()),
+        );
+        self.put(result);
+    }
+
+    fn write_bool(&mut self, value: bool) {
+        let result = write_tagged(self.buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
+            buf.encode_varint(u64::from(value))
+        });
+        self.put(result);
+    }
+
+    fn map(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
+        self.nested(ANY_VALUE_KVLIST_VALUE, |buf| {
+            let mut writer = NestedEncoder {
+                buf,
+                outcome: Ok(false),
+            };
+            f(&mut writer);
+            writer.outcome
+        });
+    }
+
+    fn array(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
+        self.nested(ANY_VALUE_ARRAY_VALUE, |buf| {
+            let mut writer = NestedEncoder {
+                buf,
+                outcome: Ok(false),
+            };
+            f(&mut writer);
+            writer.outcome
+        });
+    }
+}
+
+/// Writes the members of a nested map or array.
+struct NestedEncoder<'a, B: BoundedBuf> {
+    buf: &'a mut B,
+    outcome: Result<bool, EncodeFailure>,
+}
+
+impl<B: BoundedBuf> NestedEncoder<'_, B> {
+    fn entry(&mut self, key: &str, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
+        self.outcome = self.outcome.and_then(|lost| {
+            write_key_value(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f).map(|v| lost | v)
+        });
+    }
+
+    fn element(&mut self, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
+        self.outcome = self
+            .outcome
+            .and_then(|lost| write_value(self.buf, ARRAY_VALUE_VALUES, &mut f).map(|v| lost | v));
+    }
+}
+
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                DirectFieldVisitor::encode_double_attribute_to(b, field.name(), value)
+        self.record_attribute(field, |buf| {
+            write_tagged(buf, ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, |buf| {
+                buf.extend_from_slice(&value.to_le_bytes())
             })
         });
-        if fit.is_err() {
-            self.dropped_count += 1;
-        }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value))
+        self.record_attribute(field, |buf| {
+            write_tagged(buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
+                buf.encode_varint(value as u64)
+            })
         });
-        if fit.is_err() {
-            self.dropped_count += 1;
-        }
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                DirectFieldVisitor::encode_int_attribute_to(b, field.name(), value as i64)
-            })
-        });
-        if fit.is_err() {
-            self.dropped_count += 1;
-        }
+        self.record_i64(field, value as i64);
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        if field.name() == "message" {
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| DirectFieldVisitor::encode_bool_attribute_to(b, field.name(), value))
+        self.record_attribute(field, |buf| {
+            write_tagged(buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
+                buf.encode_varint(u64::from(value))
+            })
         });
-        if fit.is_err() {
-            self.dropped_count += 1;
-        }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        if field.name() == "message" {
-            self.encode_body_string(value);
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let key = field.name();
-        let mut truncated = false;
-        // Attempt the encoding (with truncation as needed) within the scoped
-        // budget, transactionally so a hard failure rolls back any partial
-        // KeyValue bytes. Truncation status is reported via the captured
-        // `truncated` flag rather than via Err, so the transaction commits.
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                truncated =
-                    DirectFieldVisitor::encode_string_attribute_truncating_to(b, key, value)?;
-                Ok::<(), EncodeFailure>(())
-            })
-        });
-        match (fit, truncated) {
-            (Ok(()), false) => {} // Fully encoded.
-            (Ok(()), true) => {
-                // Truncated; bytes were preserved.
-                self.dropped_count += 1;
-            }
-            (Err(_), _) => {
-                // Hard failure; everything rolled back.
-                self.dropped_count += 1;
-            }
+        if field.name() != "message" {
+            self.write_value_attribute(field.name(), |buf| {
+                buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value)
+            });
+        } else if !value.is_empty() {
+            self.write_body(|buf| buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value));
         }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.encode_body_debug(value);
-            return;
-        }
-        let budget = attr_budget(self.buf);
-        let key = field.name();
-        let mut truncated = false;
-        let fit = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_encode(|b| {
-                truncated = DirectFieldVisitor::encode_debug_attribute_to(b, key, value)?;
-                Ok::<(), EncodeFailure>(())
-            })
-        });
-        match (fit, truncated) {
-            (Ok(()), false) => {} // Fully encoded.
-            (Ok(()), true) => {
-                // Truncated; bytes were preserved with [...] suffix.
-                self.dropped_count += 1;
-            }
-            (Err(_), _) => {
-                // Hard failure; everything rolled back.
-                self.dropped_count += 1;
-            }
+        if field.name() != "message" {
+            self.write_value_attribute(field.name(), |buf| encode_debug_string(buf, value));
+        } else {
+            self.write_body(|buf| encode_debug_string(buf, value));
         }
     }
 }
@@ -540,89 +573,53 @@ pub(crate) fn encode_config_resource_field(
     let mut buf = ProtoBuffer::with_capacity(256);
     let _: EncodeResult = buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
         for (key, value) in resource_attributes {
-            encode_config_resource_attribute(buf, key, value)?;
+            encode_attribute(buf, RESOURCE_ATTRIBUTES, key, |w| {
+                write_config_value(w, value)
+            })?;
         }
         Ok(())
     });
     buf.into_bytes()
 }
 
-/// Encode one configured resource attribute as an OTLP `KeyValue`.
-fn encode_config_resource_attribute(
-    buf: &mut ProtoBuffer,
-    key: &str,
-    value: &ConfigAttributeValue,
-) -> EncodeResult {
-    buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |buf| {
-        buf.encode_string(KEY_VALUE_KEY, key)?;
-        buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-            encode_config_resource_value(buf, value)
-        })
-    })
-}
-
-/// Encode one configured resource value as an OTLP `AnyValue` payload.
-fn encode_config_resource_value(
-    buf: &mut ProtoBuffer,
-    value: &ConfigAttributeValue,
-) -> EncodeResult {
+/// Writes one configured resource value.
+fn write_config_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &ConfigAttributeValue) {
     match value {
-        ConfigAttributeValue::String(value) => {
-            buf.encode_string(ANY_VALUE_STRING_VALUE, value)?;
-        }
-        ConfigAttributeValue::Bool(value) => {
-            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-            buf.encode_varint(u64::from(*value))?;
-        }
-        ConfigAttributeValue::I64(value) => {
-            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-            buf.encode_varint(*value as u64)?;
-        }
-        ConfigAttributeValue::F64(value) => {
-            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
-            buf.extend_from_slice(&value.to_le_bytes())?;
-        }
-        ConfigAttributeValue::Array(values) => {
-            buf.encode_len_delimited(ANY_VALUE_ARRAY_VALUE, |buf| match values {
-                ConfigAttributeValueArray::Bool(values) => {
-                    encode_config_resource_array(buf, values, |buf, value| {
-                        buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-                        buf.encode_varint(u64::from(*value))
-                    })
-                }
-                ConfigAttributeValueArray::I64(values) => {
-                    encode_config_resource_array(buf, values, |buf, value| {
-                        buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                        buf.encode_varint(*value as u64)
-                    })
-                }
-                ConfigAttributeValueArray::F64(values) => {
-                    encode_config_resource_array(buf, values, |buf, value| {
-                        buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
-                        buf.extend_from_slice(&value.to_le_bytes())
-                    })
-                }
-                ConfigAttributeValueArray::String(values) => {
-                    encode_config_resource_array(buf, values, |buf, value| {
-                        buf.encode_string(ANY_VALUE_STRING_VALUE, value)
-                    })
-                }
-            })?;
-        }
+        ConfigAttributeValue::String(v) => w.write_str(v),
+        ConfigAttributeValue::Bool(v) => w.write_bool(*v),
+        ConfigAttributeValue::I64(v) => w.write_i64(*v),
+        ConfigAttributeValue::F64(v) => w.write_f64(*v),
+        ConfigAttributeValue::Array(values) => w.array(|a| match values {
+            ConfigAttributeValueArray::Bool(vs) => elements(a, vs, |w, v| w.write_bool(*v)),
+            ConfigAttributeValueArray::I64(vs) => elements(a, vs, |w, v| w.write_i64(*v)),
+            ConfigAttributeValueArray::F64(vs) => elements(a, vs, |w, v| w.write_f64(*v)),
+            ConfigAttributeValueArray::String(vs) => elements(a, vs, |w, v| w.write_str(v)),
+        }),
     }
-    Ok(())
 }
 
-/// Encode a homogeneous configured array as repeated OTLP `AnyValue` entries.
-fn encode_config_resource_array<T>(
-    buf: &mut ProtoBuffer,
+/// Writes a homogeneous slice as array elements.
+fn elements<B: BoundedBuf, T>(
+    a: &mut NestedEncoder<'_, B>,
     values: &[T],
-    mut encode_value: impl FnMut(&mut ProtoBuffer, &T) -> EncodeResult,
-) -> EncodeResult {
+    write: impl Fn(&mut ValueEncoder<'_, B>, &T),
+) {
     for value in values {
-        buf.encode_len_delimited(ARRAY_VALUE_VALUES, |buf| encode_value(buf, value))?;
+        a.element(|w| write(w, value));
     }
-    Ok(())
+}
+
+/// Encodes a `KeyValue` as `field`, with the value written by `f`.
+fn encode_attribute(
+    buf: &mut ProtoBuffer,
+    field: u64,
+    key: &str,
+    mut f: impl FnMut(&mut ValueEncoder<'_, ProtoBuffer>),
+) -> EncodeResult {
+    buf.try_encode(|buf| match write_key_value(buf, field, key, &mut f)? {
+        false => Ok(()),
+        true => Err(EncodeFailure::Dropped),
+    })
 }
 
 // Field numbers for ExportLogsServiceRequest and related messages
@@ -693,76 +690,28 @@ fn encode_scope_attributes<'k, 'v>(
     attrs: impl IntoIterator<Item = (&'k str, &'v AttributeValue)>,
 ) -> Result<Bytes, EncodeFailure> {
     let mut buf = ProtoBuffer::with_capacity(128);
-    for (attr_key, attr_value) in attrs {
-        encode_scope_attribute(&mut buf, attr_key, attr_value)?;
+    for (key, value) in attrs {
+        encode_attribute(&mut buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, |w| {
+            write_attribute_value(w, value)
+        })?;
     }
     Ok(buf.into_bytes())
 }
 
-/// Encode a single scope attribute as a KeyValue message for InstrumentationScope.attributes.
-#[inline]
-fn encode_scope_attribute(
-    buf: &mut ProtoBuffer,
-    key: &str,
-    value: &AttributeValue,
-) -> EncodeResult {
-    encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value)
-}
-
-/// Encode a KeyValue message wrapped in the given outer field tag.
-///
-/// The outer field tag determines context:
-/// - `INSTRUMENTATION_SCOPE_ATTRIBUTES` (field 3) for scope attributes
-/// - `KEY_VALUE_LIST_VALUES` (field 1) for entries inside a kvlist
-#[inline]
-fn encode_key_value(
-    buf: &mut ProtoBuffer,
-    outer_field: u64,
-    key: &str,
-    value: &AttributeValue,
-) -> EncodeResult {
-    buf.encode_len_delimited(outer_field, |buf| {
-        buf.encode_string(KEY_VALUE_KEY, key)?;
-        buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| encode_any_value(buf, value))
-    })
-}
-
-/// Encode an `AttributeValue` as an OTLP AnyValue (the inner value without key wrapping).
-#[inline]
-fn encode_any_value(buf: &mut ProtoBuffer, value: &AttributeValue) -> EncodeResult {
+/// Writes an `AttributeValue`; maps become kvlists.
+fn write_attribute_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &AttributeValue) {
     match value {
-        AttributeValue::String(s) => {
-            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str())?;
-        }
-        AttributeValue::Boolean(b) => {
-            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-            buf.encode_varint(u64::from(*b))?;
-        }
-        AttributeValue::Int(i) => {
-            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-            buf.encode_varint(*i as u64)?;
-        }
-        AttributeValue::UInt(u) => {
-            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-            buf.encode_varint(*u)?;
-        }
-        AttributeValue::Double(f) => {
-            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
-            buf.extend_from_slice(&f.to_le_bytes())?;
-        }
-        AttributeValue::Map(m) => {
-            // Encode as kvlist: AnyValue.kvlist_value (field 6) containing
-            // KeyValueList with repeated KeyValue entries (field 1).
-            buf.encode_len_delimited(ANY_VALUE_KVLIST_VALUE, |buf| {
-                for (k, v) in m {
-                    encode_key_value(buf, KEY_VALUE_LIST_VALUES, k, v)?;
-                }
-                Ok(())
-            })?;
-        }
+        AttributeValue::String(v) => w.write_str(v),
+        AttributeValue::Boolean(v) => w.write_bool(*v),
+        AttributeValue::Int(v) => w.write_i64(*v),
+        AttributeValue::UInt(v) => w.write_i64(*v as i64),
+        AttributeValue::Double(v) => w.write_f64(*v),
+        AttributeValue::Map(m) => w.map(|mw| {
+            for (k, v) in m {
+                mw.entry(k, |w| write_attribute_value(w, v));
+            }
+        }),
     }
-
-    Ok(())
 }
 
 fn encode_scope_logs(
@@ -851,7 +800,6 @@ pub fn encode_export_logs_request(
         Ok(())
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,22 +807,17 @@ mod tests {
     use crate::LogContext;
     use crate::attributes::AttributeSetHandler;
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-    use crate::event::LogEvent;
-    use crate::self_tracing::formatter::format_log_record_to_string;
-    use otel_arrow_dfe_config::pipeline::telemetry::{
-        AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
-    };
+    use crate::self_tracing::format_log_record_to_string;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ScopeLogs;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs, SeverityNumber,
+    };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime};
     use tracing::Level;
 
@@ -1005,6 +948,8 @@ mod tests {
         assert!(decoded.scope_logs.is_empty());
     }
 
+    /// Scenario: one log carries registered scope attributes.
+    /// Guarantees: the request preserves the scope, record, timestamp, and resource.
     #[test]
     fn encode_export_logs_request_with_scope_attributes() {
         let registry = TelemetryRegistryHandle::new();
@@ -1230,9 +1175,8 @@ mod tests {
         }
     }
 
-    /// Validate that Map attributes encode as OTLP kvlist values in
-    /// InstrumentationScope.attributes. This mirrors what CustomAttributeSet
-    /// does for user-defined node/pipeline attributes.
+    /// Scenario: a registered scope attribute contains a map.
+    /// Guarantees: the map is encoded as an OTLP kvlist with all entries preserved.
     #[test]
     fn encode_export_logs_request_with_map_scope_attribute() {
         let registry = TelemetryRegistryHandle::new();
@@ -1298,12 +1242,24 @@ mod tests {
         assert_eq!(expected, decoded);
     }
 
-    /// Verify the fair-budget halving policy for string attributes.
-    ///
-    /// With a 256-byte inline buffer and 4 attributes whose values are 1000
-    /// bytes each, every attribute should consume roughly half of whatever
-    /// remained, leaving each successive value smaller than the previous.
-    /// All four values are truncated, so `dropped_attributes_count` is 4.
+    /// Scenario: one value callback writes two AnyValue variants.
+    /// Guarantees: debug builds reject ambiguous oneof encodings.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "value callback must write at most one AnyValue variant")]
+    fn value_encoder_rejects_multiple_variants() {
+        let mut buf = ProtoBuffer::with_capacity(32);
+        let mut write = |writer: &mut ValueEncoder<'_, ProtoBuffer>| {
+            writer.write_i64(1);
+            writer.write_bool(true);
+        };
+
+        let _ = write_value(&mut buf, LOG_RECORD_BODY, &mut write);
+    }
+
+    /// Scenario: four large string attributes compete for a 256-byte buffer.
+    /// Guarantees: each uses at most half the remaining budget, is truncated,
+    /// and increments `dropped_attributes_count`.
     #[test]
     fn record_str_halves_remaining_budget_across_attributes() {
         use crate::self_tracing::encoder::DirectFieldVisitor;
@@ -1420,10 +1376,8 @@ mod tests {
         );
     }
 
-    /// Verify `record_debug` formats a Debug value directly into the buffer
-    /// (via the `BoundedBufFmt` adapter) and produces a decodable KeyValue
-    /// whose string matches `format!("{:?}", value)` -- i.e. no truncation
-    /// when the value comfortably fits.
+    /// Scenario: a Debug value fits in the attribute budget.
+    /// Guarantees: its direct encoding is decodable and matches `format!("{:?}")`.
     #[test]
     fn record_debug_writes_fmt_output_without_intermediate_string() {
         use otel_arrow_dfe_pdata::otlp::common::StackProtoBuffer;
@@ -1580,6 +1534,127 @@ mod tests {
             "buffer must be rolled back to its pre-call length on hard drop"
         );
     }
+
+    /// Scenario: a bare `&str` `message` body overflows the available buffer.
+    /// Guarantees: the decoded body ends with `[...]` without incrementing
+    /// OTLP `dropped_attributes_count`.
+    #[test]
+    fn record_str_message_overflow_truncates_with_suffix() {
+        use otel_arrow_dfe_pdata::otlp::common::{StackProtoBuffer, TRUNCATION_SUFFIX};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        let meta = &MESSAGE_TEST_METADATA;
+        let fields = meta.fields();
+        let message = fields.field("message").unwrap();
+
+        // 4 KiB of content into a 64-byte buffer.
+        let huge = "x".repeat(4096);
+
+        let mut buf = StackProtoBuffer::<64>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_str(&message, &huge);
+        assert_eq!(
+            visitor.dropped_count(),
+            0,
+            "body truncation must not be counted as a dropped attribute"
+        );
+
+        assert!(
+            buf.len() > 0,
+            "buffer should contain a truncated body, not be empty"
+        );
+
+        let record = LogRecord::decode(buf.as_ref()).expect("log record should decode");
+        assert_eq!(record.dropped_attributes_count, 0);
+        let s = match record.body.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        assert!(
+            s.ends_with(suffix),
+            "truncated body should end with {suffix}, got: {s}"
+        );
+        assert!(
+            s.len() > suffix.len(),
+            "truncated body should have content before the suffix"
+        );
+    }
+
+    /// Scenario: a Debug-formatted `message` body overflows the available buffer.
+    /// Guarantees: the decoded body ends with `[...]` without incrementing
+    /// OTLP `dropped_attributes_count`.
+    #[test]
+    fn record_debug_message_overflow_truncates_with_suffix() {
+        use otel_arrow_dfe_pdata::otlp::common::{StackProtoBuffer, TRUNCATION_SUFFIX};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        struct Huge;
+        impl std::fmt::Debug for Huge {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for _ in 0..512 {
+                    f.write_str("xxxxxxxx")?;
+                }
+                Ok(())
+            }
+        }
+
+        let fields = MESSAGE_TEST_METADATA.fields();
+        let message = fields.field("message").unwrap();
+        let mut buf = StackProtoBuffer::<64>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&message, &Huge);
+        assert_eq!(
+            visitor.dropped_count(),
+            0,
+            "body truncation must not be counted as a dropped attribute"
+        );
+
+        let record = LogRecord::decode(buf.as_ref()).expect("log record should decode");
+        assert_eq!(record.dropped_attributes_count, 0);
+        let s = match record.body.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        assert!(
+            s.ends_with(suffix),
+            "truncated body should end with {suffix}, got: {s}"
+        );
+        assert!(
+            s.len() > suffix.len(),
+            "truncated body should have content before the suffix"
+        );
+    }
+
+    static MESSAGE_TEST_CALLSITE: MessageTestCallsite = MessageTestCallsite;
+
+    struct MessageTestCallsite;
+
+    impl tracing::Callsite for MessageTestCallsite {
+        fn set_interest(&self, _: tracing::subscriber::Interest) {}
+        fn metadata(&self) -> &tracing::Metadata<'_> {
+            &MESSAGE_TEST_METADATA
+        }
+    }
+
+    static MESSAGE_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
+        "message_test",
+        "otel-arrow-dfe-telemetry",
+        Level::INFO,
+        Some(file!()),
+        Some(line!()),
+        Some(module_path!()),
+        tracing::field::FieldSet::new(
+            &["message"],
+            tracing::callsite::Identifier(&MESSAGE_TEST_CALLSITE),
+        ),
+        tracing::metadata::Kind::EVENT,
+    );
 
     /// Scenario: four Debug values compete for a 256-byte buffer with the
     /// halving budget policy.

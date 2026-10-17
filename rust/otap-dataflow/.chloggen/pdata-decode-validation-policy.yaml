@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pdata
-note: Allow pipelines to choose best-effort or strict validation when encoded telemetry is decoded.
-issues: [3452]
-subtext: Best-effort remains the default for existing performance. Strict mode validates complete nested payloads before returning records and can use more CPU and memory. Encoded pass-through is unaffected.

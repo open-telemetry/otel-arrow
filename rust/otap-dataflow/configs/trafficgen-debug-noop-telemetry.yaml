@@ -16,8 +16,8 @@ engine:
               interval: 6s
               views:
                 - selector:
-                    scope_name: "receiver.traffic_generator"
-                    instrument_name: "logs.produced"
+                    scope_name: "node.output"
+                    instrument_name: "items"
                   stream:
                     name: "otlp.logs.produced.count"
                     description: "Count of logs produced"
@@ -39,6 +39,8 @@ groups:
     pipelines:
       main:
         policies:
+          telemetry:
+            runtime_metrics: detailed
           channel_capacity:
             control:
               node: 100

@@ -12,8 +12,8 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes}
 use prost::Message;
 
 use crate::{
-    CodecError, CodecService, EncodeOutput, EncodedPdata, EncodingPlan, InspectionPlan,
-    PdataEncoding, PdataView, ResolvedCodec,
+    AcceptedEncodings, CodecError, CodecService, EncodeOutput, EncodedPdata, EncodedView,
+    EncodingPlan, PdataEncoding, PdataView, ResolvedCodec,
 };
 
 /// Concrete inline storage hidden behind representation-independent capabilities.
@@ -22,28 +22,28 @@ enum PayloadStorage {
     /// Independently decodable bytes and their resolved codec identity.
     Encoded(EncodedPdata),
     /// Native mutable OTAP Arrow records.
-    OtapArrowRecords(OtapArrowRecords),
+    OtapRecords(OtapArrowRecords),
 }
 
 impl PayloadStorage {
     fn signal_type(&self) -> SignalType {
         match self {
             Self::Encoded(encoded) => encoded.signal_type(),
-            Self::OtapArrowRecords(records) => records.signal_type(),
+            Self::OtapRecords(records) => records.signal_type(),
         }
     }
 
     fn is_empty(&self) -> bool {
         match self {
             Self::Encoded(encoded) => encoded.bytes().is_empty(),
-            Self::OtapArrowRecords(records) => records.is_empty(),
+            Self::OtapRecords(records) => records.is_empty(),
         }
     }
 
     fn retained_memory_bytes(&self) -> usize {
         match self {
             Self::Encoded(encoded) => encoded.bytes().len(),
-            Self::OtapArrowRecords(records) => records.retained_memory_bytes(),
+            Self::OtapRecords(records) => records.retained_memory_bytes(),
         }
     }
 }
@@ -77,6 +77,12 @@ impl PdataFormat {
     }
 }
 
+/// A one-word cache that distinguishes unknown from a known zero.
+///
+/// On the current 64-bit target, `Option<usize>` occupies 16 bytes instead of 8.
+/// Using a sentinel for both measurement caches keeps `PdataPayload` at 64 bytes
+/// rather than 80, reducing per-message storage in queues. `usize::MAX` is reserved
+/// for unknown and cannot be cached as a measurement; zero remains a valid value.
 #[derive(Clone, Copy, Debug)]
 struct CachedMeasurement(usize);
 
@@ -121,12 +127,22 @@ pub type OtapPayload = PdataPayload;
 #[error(transparent)]
 pub struct PdataPayloadDecodeError(Box<PdataPayloadDecodeErrorInner>);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 #[error("{source}")]
 struct PdataPayloadDecodeErrorInner {
     #[source]
     source: CodecError,
     payload: PdataPayload,
+}
+
+// Diagnostics may be logged or sent upstream; retained telemetry is for recovery only.
+impl std::fmt::Debug for PdataPayloadDecodeErrorInner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PdataPayloadDecodeErrorInner")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PdataPayloadDecodeError {
@@ -160,9 +176,19 @@ impl PdataPayload {
     }
 
     /// Constructs generalized OTLP storage through the validated registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the linked codec registrations are invalid. Pipeline runtime
+    /// services validate the global registry before starting nodes; standalone
+    /// callers can use [`crate::builtins::resolve_otlp`] to handle that error.
     #[must_use]
     pub fn from_otlp(bytes: OtlpProtoBytes) -> Self {
         let signal = bytes.signal_type();
+        // SAFETY: Pipeline startup has validated the immutable global registry.
+        // Standalone callers must satisfy the documented valid-registration
+        // precondition. The built-in OTLP registration always includes a decoder
+        // for every SignalType, so admission cannot fail or inspect the bytes.
         let encoded = crate::builtins::resolve_otlp()
             .expect("validated OTLP codec")
             .admit(signal, bytes.into_bytes())
@@ -173,7 +199,7 @@ impl PdataPayload {
     /// Constructs native OTAP storage.
     #[must_use]
     pub fn from_otap(records: OtapArrowRecords) -> Self {
-        Self::from_storage(PayloadStorage::OtapArrowRecords(records))
+        Self::from_storage(PayloadStorage::OtapRecords(records))
     }
 
     /// Wraps admitted encoded bytes without copying or decoding them.
@@ -182,9 +208,10 @@ impl PdataPayload {
         Self::from_storage(PayloadStorage::Encoded(encoded))
     }
 
-    /// Supplies a receiver-known item count without parsing encoded bytes.
+    /// Caches a count established by codec-owned counting or batching logic.
+    /// Incorrect counts can cause premature completion, so nodes cannot set this.
     #[must_use]
-    pub fn with_item_count(mut self, item_count: usize) -> Self {
+    pub(crate) fn with_item_count(mut self, item_count: usize) -> Self {
         self.item_count.set(item_count);
         self
     }
@@ -194,7 +221,7 @@ impl PdataPayload {
     pub fn format(&self) -> PdataFormat {
         match &self.storage {
             PayloadStorage::Encoded(encoded) => PdataFormat::encoded(encoded.codec()),
-            PayloadStorage::OtapArrowRecords(_) => PdataFormat::OTAP,
+            PayloadStorage::OtapRecords(_) => PdataFormat::OTAP,
         }
     }
 
@@ -209,7 +236,25 @@ impl PdataPayload {
     pub fn encoded_bytes(&self) -> Option<&Bytes> {
         match &self.storage {
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes()),
-            PayloadStorage::OtapArrowRecords(_) => None,
+            PayloadStorage::OtapRecords(_) => None,
+        }
+    }
+
+    /// Borrows the existing encoding identity, signal, and bytes; returns `None` for native OTAP.
+    ///
+    /// This does not consult the registry, create a codec, validate or decode the
+    /// content, clone the buffer, or allocate. The caller must check the identity
+    /// and signal before interpreting the bytes. Use [`AcceptedEncodings`] when
+    /// unsupported encodings should instead fall back to native OTAP decoding.
+    #[must_use]
+    pub fn encoded_view(&self) -> Option<EncodedView<'_>> {
+        match &self.storage {
+            PayloadStorage::Encoded(encoded) => Some(EncodedView::new(
+                encoded.encoding(),
+                encoded.signal_type(),
+                encoded.bytes(),
+            )),
+            PayloadStorage::OtapRecords(_) => None,
         }
     }
 
@@ -218,7 +263,7 @@ impl PdataPayload {
     pub fn into_encoded_bytes(self) -> Option<Bytes> {
         match self.storage {
             PayloadStorage::Encoded(encoded) => Some(encoded.into_bytes()),
-            PayloadStorage::OtapArrowRecords(_) => None,
+            PayloadStorage::OtapRecords(_) => None,
         }
     }
 
@@ -226,7 +271,7 @@ impl PdataPayload {
     #[must_use]
     pub fn otap_ref(&self) -> Option<&OtapArrowRecords> {
         match &self.storage {
-            PayloadStorage::OtapArrowRecords(records) => Some(records),
+            PayloadStorage::OtapRecords(records) => Some(records),
             _ => None,
         }
     }
@@ -247,7 +292,7 @@ impl PdataPayload {
     #[must_use]
     pub fn known_item_count(&self) -> Option<usize> {
         match &self.storage {
-            PayloadStorage::OtapArrowRecords(records) => Some(records.num_items()),
+            PayloadStorage::OtapRecords(records) => Some(records.num_items()),
             _ => self.item_count.get(),
         }
     }
@@ -271,7 +316,7 @@ impl PdataPayload {
                 };
                 count
             }
-            PayloadStorage::OtapArrowRecords(records) => records.num_items(),
+            PayloadStorage::OtapRecords(records) => records.num_items(),
         };
         self.item_count.set(count);
         count
@@ -281,7 +326,7 @@ impl PdataPayload {
     pub fn num_bytes(&mut self) -> Option<usize> {
         match &self.storage {
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes().len()),
-            PayloadStorage::OtapArrowRecords(records) => {
+            PayloadStorage::OtapRecords(records) => {
                 if let Some(size) = self.size.get() {
                     return Some(size);
                 }
@@ -297,9 +342,7 @@ impl PdataPayload {
     pub fn measured_bytes(&self) -> Option<usize> {
         match &self.storage {
             PayloadStorage::Encoded(encoded) => Some(encoded.bytes().len()),
-            PayloadStorage::OtapArrowRecords(records) => {
-                self.size.get().or_else(|| records.num_bytes())
-            }
+            PayloadStorage::OtapRecords(records) => self.size.get().or_else(|| records.num_bytes()),
         }
     }
 
@@ -321,8 +364,8 @@ impl PdataPayload {
                 );
                 PayloadStorage::Encoded(std::mem::replace(encoded, empty))
             }
-            PayloadStorage::OtapArrowRecords(records) => {
-                PayloadStorage::OtapArrowRecords(records.take_payload())
+            PayloadStorage::OtapRecords(records) => {
+                PayloadStorage::OtapRecords(records.take_payload())
             }
         };
         Self {
@@ -343,7 +386,7 @@ impl PdataPayload {
             size,
         } = self;
         match storage {
-            PayloadStorage::OtapArrowRecords(records) => Ok(records),
+            PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::Encoded(encoded) => {
                 let payload = Self {
                     storage: PayloadStorage::Encoded(encoded.clone()),
@@ -361,13 +404,11 @@ impl PdataPayload {
     pub fn view<'a>(
         &'a self,
         codecs: &CodecService,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
         match &self.storage {
-            PayloadStorage::Encoded(encoded) => codecs.view(encoded, plan),
-            PayloadStorage::OtapArrowRecords(records) => {
-                Ok(PdataView::Native(Cow::Borrowed(records)))
-            }
+            PayloadStorage::Encoded(encoded) => codecs.view(encoded, accepted_encodings),
+            PayloadStorage::OtapRecords(records) => Ok(PdataView::Native(Cow::Borrowed(records))),
         }
     }
 
@@ -381,9 +422,13 @@ impl PdataPayload {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
             PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
+                plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
             }
-            PayloadStorage::OtapArrowRecords(records) => {
+            PayloadStorage::OtapRecords(records) => {
+                // Encoders can normalize transport IDs even when encoding fails.
+                // Invalidate before exposing mutable records, not just on success.
+                self.size = CachedMeasurement::unknown();
                 codecs.with_encoded_output(records, plan, consume)
             }
             PayloadStorage::Encoded(encoded) => {
@@ -421,24 +466,6 @@ impl PdataPayload {
     pub fn test_has_cached_size(&self) -> bool {
         self.size.get().is_some()
     }
-
-    /// Converts through a fresh service for compatibility-only tests.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn into_encoded_for_test(
-        mut self,
-        encoding: PdataEncoding,
-        _options: otel_arrow_dfe_config::ConversionOptions,
-    ) -> Result<EncodedPdata, CodecError> {
-        let service = CodecService::new().map_err(CodecError::from)?;
-        let plan = EncodingPlan::resolve(
-            service.registry(),
-            &encoding,
-            crate::EncodePolicy::default(),
-        )?;
-        let signal = self.signal_type();
-        let bytes = self.encode_bytes(&service, &plan)?;
-        plan.codec().admit(signal, bytes)
-    }
 }
 
 fn decode_error(source: CodecError, payload: PdataPayload) -> PdataPayloadDecodeError {
@@ -474,7 +501,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords
         _options: otel_arrow_dfe_config::ConversionOptions,
     ) -> Result<Self, Self::Error> {
         match value.storage {
-            PayloadStorage::OtapArrowRecords(records) => Ok(records),
+            PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::Encoded(encoded) => {
                 let service = CodecService::new().map_err(CodecError::from)?;
                 Ok(service.decode(&encoded)?)
@@ -502,7 +529,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
                     OtapArrowRecords,
                 >>::try_from_with_options(records, options)?)
             }
-            PayloadStorage::OtapArrowRecords(records) => {
+            PayloadStorage::OtapRecords(records) => {
                 Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
                     OtapArrowRecords,
                 >>::try_from_with_options(records, options)?)
@@ -548,11 +575,30 @@ impl TryFrom<OtlpProtoMessage> for PdataPayload {
 #[cfg(test)]
 mod tests {
     use std::mem::size_of;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
     use super::*;
-    use crate::{CodecMetadata, CodecRegistration, CodecRegistry};
+    use crate::{
+        CodecMetadata, CodecRegistration, CodecRegistry, CodecServiceBuilder, DecodePolicy,
+        DecodeValidation, EncodePolicy,
+    };
+    use otel_arrow_dfe_pdata::arrow::{
+        array::RecordBatch,
+        compute::cast,
+        datatypes::{DataType, Schema},
+    };
     use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
+        arrow::v1::ArrowPayloadType,
+        common::v1::{AnyValue, KeyValue},
+        metrics::v1::metric::Data,
+    };
+    use otel_arrow_dfe_pdata::schema::consts::PARENT_ID;
+    use otel_arrow_dfe_pdata::testing::fixtures::{
+        logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
+        traces_with_full_resource_and_scope,
+    };
 
     const UNCOUNTABLE_ENCODING: PdataEncoding = PdataEncoding::new("uncountable-test-v1");
     static UNCOUNTABLE_METADATA: CodecMetadata =
@@ -572,6 +618,46 @@ mod tests {
         ) -> Result<OtapArrowRecords, CodecError> {
             unreachable!("item counting must not instantiate the decoder")
         }
+    }
+
+    /// Scenario: OTLP compatibility adapters, admitted OTLP, and another encoding contain opaque bytes.
+    /// Guarantees: Direct views preserve identity, signal, and buffer without validation;
+    /// native OTAP has no encoded view.
+    #[test]
+    fn encoded_view_borrows_existing_storage() {
+        let otlp = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let registry = CodecRegistry::validate(&UNCOUNTABLE_REGISTRATIONS).unwrap();
+        let other = registry.resolve(&UNCOUNTABLE_ENCODING).unwrap();
+        // Invalid protobuf is still borrowable: a view does not validate content.
+        let bytes = Bytes::from_static(b"\xff");
+        for (payload, encoding, signal) in [
+            (
+                PdataPayload::from(OtlpProtoBytes::ExportMetricsRequest(bytes.clone())),
+                &PdataEncoding::OTLP,
+                SignalType::Metrics,
+            ),
+            (
+                PdataPayload::from(otlp.admit(SignalType::Traces, bytes.clone()).unwrap()),
+                &PdataEncoding::OTLP,
+                SignalType::Traces,
+            ),
+            (
+                PdataPayload::from(other.admit(SignalType::Logs, bytes.clone()).unwrap()),
+                &UNCOUNTABLE_ENCODING,
+                SignalType::Logs,
+            ),
+        ] {
+            let view = payload.encoded_view().unwrap();
+            assert_eq!(view.encoding(), encoding);
+            assert_eq!(view.signal_type(), signal);
+            assert_eq!(view.bytes(), bytes.as_ref());
+            assert_eq!(view.bytes().as_ptr(), bytes.as_ptr());
+        }
+        let native = PdataPayload::from(OtapArrowRecords::Logs(Logs::default()));
+        assert!(native.encoded_view().is_none());
     }
 
     /// Scenario: Generalized encoded and native storage is built on 64 bit.
@@ -613,5 +699,179 @@ mod tests {
 
         assert_eq!(payload.num_items(), 0);
         assert_eq!(payload.known_item_count(), None);
+    }
+
+    /// Scenario: Legacy and generalized encoded OTLP fail conversion with private telemetry.
+    /// Guarantees: Display and Debug omit the retained body while recovery preserves its buffer.
+    #[test]
+    fn decode_error_diagnostics_omit_recoverable_payload() {
+        let service = CodecService::new().unwrap();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+        for payload in [
+            PdataPayload::from(OtlpProtoBytes::ExportTracesRequest(bytes.clone())),
+            PdataPayload::from(codec.admit(SignalType::Traces, bytes.clone()).unwrap()),
+        ] {
+            let error = payload.try_into_otap(&service).unwrap_err();
+            assert_eq!(error.to_string(), error.error().to_string());
+            for diagnostic in [
+                error.to_string(),
+                format!("{error:?}"),
+                format!("{error:#?}"),
+            ] {
+                assert!(!diagnostic.contains("SECRET_TELEMETRY_VALUE"));
+            }
+            assert_eq!(error.payload().encoded_bytes().unwrap(), &bytes);
+            let (_, recovered) = error.into_parts();
+            assert_eq!(recovered.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+        }
+    }
+
+    /// Scenario: Both OTLP byte representations are forwarded with bounded and unbounded plans.
+    /// Guarantees: Oversized output never reaches the consumer; accepted output shares bytes
+    /// without creating codec instances, in either validation mode and for every signal.
+    #[test]
+    fn matching_forwarding_enforces_size_without_creating_codecs() {
+        let inputs = [
+            OtlpProtoBytes::ExportLogsRequest(
+                logs_with_full_resource_and_scope().encode_to_vec().into(),
+            ),
+            OtlpProtoBytes::ExportMetricsRequest(
+                metrics_sum_with_full_resource_and_scope()
+                    .encode_to_vec()
+                    .into(),
+            ),
+            OtlpProtoBytes::ExportTracesRequest(
+                traces_with_full_resource_and_scope().encode_to_vec().into(),
+            ),
+        ];
+        for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+            let service = CodecServiceBuilder::from_global_registry()
+                .unwrap()
+                .with_decode_policy(DecodePolicy::new(validation))
+                .build();
+            let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+            for input in &inputs {
+                let bytes = input.bytes();
+                let encoded = codec.admit(input.signal_type(), bytes.clone()).unwrap();
+                for mut payload in [PdataPayload::from(input.clone()), encoded.into()] {
+                    let items = payload.num_items();
+                    let size = payload.num_bytes();
+                    for limit in [
+                        Some(bytes.len() - 1),
+                        Some(bytes.len()),
+                        Some(bytes.len() + 1),
+                        None,
+                    ] {
+                        let plan = EncodingPlan::new(
+                            codec,
+                            EncodePolicy {
+                                max_encoded_size: limit.and_then(NonZeroUsize::new),
+                            },
+                        )
+                        .unwrap();
+                        let mut consumed = false;
+                        let result = payload.with_encoded_output(&service, &plan, |output| {
+                            consumed = true;
+                            output.into_bytes()
+                        });
+                        if let Some(limit) = limit.filter(|limit| *limit < bytes.len()) {
+                            assert!(matches!(result, Err(CodecError::EncodedSizeLimitExceeded {
+                                encoding, actual, limit: reported_limit,
+                            }) if encoding == PdataEncoding::OTLP && actual == bytes.len() && reported_limit == limit));
+                            assert!(!consumed);
+                        } else {
+                            let output = result.unwrap();
+                            assert!(consumed);
+                            assert_eq!(&output, bytes);
+                            assert_eq!(output.as_ptr(), bytes.as_ptr());
+                        }
+                        assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                        assert_eq!(payload.num_items(), items);
+                        assert_eq!(payload.num_bytes(), size);
+                        assert_eq!(service.test_instance_count().unwrap(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    // A transport-optimized attribute batch whose dictionary grows when OTLP
+    // encoding reconstructs absolute parent IDs. This changes its logical size.
+    fn metrics_with_dictionary_parent_ids(service: &CodecService) -> OtapArrowRecords {
+        let mut metrics = metrics_sum_with_full_resource_and_scope();
+        let Some(Data::Sum(sum)) =
+            &mut metrics.resource_metrics[0].scope_metrics[0].metrics[0].data
+        else {
+            unreachable!("fixture contains a sum");
+        };
+        let mut point = sum.data_points[0].clone();
+        point.attributes = vec![KeyValue::new(
+            "same-key",
+            AnyValue::new_string("same-value"),
+        )];
+        sum.data_points = (0..100)
+            .map(|i| {
+                let mut point = point.clone();
+                point.time_unix_nano = i + 1;
+                point
+            })
+            .collect();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let encoded = codec
+            .admit(SignalType::Metrics, metrics.encode_to_vec().into())
+            .unwrap();
+        let mut records = service.decode(&encoded).unwrap();
+        records.encode_transport_optimized().unwrap();
+        let attrs = records.get(ArrowPayloadType::NumberDpAttrs).unwrap();
+        let index = attrs.schema().index_of(PARENT_ID).unwrap();
+        let dtype = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32));
+        let mut columns = attrs.columns().to_vec();
+        columns[index] = cast(&columns[index], &dtype).unwrap();
+        let mut fields = attrs.schema().fields().to_vec();
+        fields[index] = Arc::new(fields[index].as_ref().clone().with_data_type(dtype));
+        let attrs = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        records.set(ArrowPayloadType::NumberDpAttrs, attrs).unwrap();
+        records
+    }
+
+    /// Scenario: OTLP encoding normalizes native IDs, either succeeding or exceeding its limit.
+    /// Guarantees: Size caches refresh on both outcomes, clones stay isolated, and retry succeeds.
+    #[test]
+    fn native_encoding_invalidates_size_cache_even_on_failure() {
+        let service = CodecService::new().unwrap();
+        let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let normal = EncodingPlan::new(codec, EncodePolicy::default()).unwrap();
+        for limit in [None, NonZeroUsize::new(1)] {
+            let mut payload = PdataPayload::from(metrics_with_dictionary_parent_ids(&service));
+            let before = payload.num_bytes();
+            let count = payload.num_items();
+            let mut untouched = payload.clone();
+            let plan = EncodingPlan::new(
+                codec,
+                EncodePolicy {
+                    max_encoded_size: limit,
+                },
+            )
+            .unwrap();
+            let result = payload.encode_bytes(&service, &plan);
+            assert_eq!(result.is_err(), limit.is_some());
+            assert!(payload.size.get().is_none());
+            let actual = payload.otap_ref().unwrap().num_bytes();
+            assert_ne!(
+                actual, before,
+                "fixture must exercise a logical size change"
+            );
+            assert_eq!(payload.num_bytes(), actual);
+            assert_eq!(payload.num_items(), count);
+            assert_eq!(untouched.size.get(), before);
+            assert_eq!(untouched.num_bytes(), before);
+            assert_eq!(untouched.otap_ref().unwrap().num_bytes(), before);
+
+            let output = payload.encode_bytes(&service, &normal).unwrap();
+            let encoded = codec.admit(SignalType::Metrics, output).unwrap();
+            assert_eq!(service.decode(&encoded).unwrap().num_items(), count);
+            assert_eq!(payload.num_bytes(), payload.otap_ref().unwrap().num_bytes());
+        }
     }
 }
