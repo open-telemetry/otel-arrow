@@ -1138,6 +1138,10 @@ impl PipelineStage for AssignPipelineStage {
                 }
                 ColumnAccessor::StructCol(struct_col_name, field_name) => {
                     otap_batch = match eval_result {
+                        // as above, an all-null result is assigned as null
+                        Some(eval_result) if eval_result.values.data_type() == DataType::Null => {
+                            self.assign_null_struct_field(otap_batch, struct_col_name, field_name)
+                        }
                         Some(eval_result) => self.assign_to_struct_column(
                             otap_batch,
                             eval_result,
@@ -9098,6 +9102,49 @@ mod test {
                 records.iter().all(|r| r.severity_text == expected),
                 "{query}: {records:?}"
             );
+        }
+    }
+
+    /// Scenario: assign `coalesce` to the `instrumentation_scope.name` struct field where every
+    /// argument is absent from the whole batch, and where absent arguments are followed by a
+    /// literal.
+    /// Guarantees: the all-absent result is assigned as null (clearing the scope name) without
+    /// a type error, and the literal fallback is assigned to the scope.
+    #[tokio::test]
+    async fn test_set_struct_field_coalesce_absent_args() {
+        for (query, expected) in [
+            (
+                r#"logs | set instrumentation_scope.name = coalesce(instrumentation_scope.attributes["missing"], resource.attributes["missing"])"#,
+                "",
+            ),
+            (
+                r#"logs | set instrumentation_scope.name = coalesce(instrumentation_scope.attributes["missing"], "foo")"#,
+                "foo",
+            ),
+        ] {
+            let logs_data = LogsData::new(vec![ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope1").finish(),
+                    vec![
+                        LogRecord::build().event_name("event1").finish(),
+                        LogRecord::build().event_name("event2").finish(),
+                    ],
+                )],
+            )]);
+            let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+            let scope_logs = &result.resource_logs[0].scope_logs[0];
+            assert_eq!(
+                scope_logs.log_records.len(),
+                2,
+                "no logs should be dropped: {query}"
+            );
+            let scope_name = scope_logs
+                .scope
+                .as_ref()
+                .map(|s| s.name.as_str())
+                .unwrap_or_default();
+            assert_eq!(scope_name, expected, "{query}");
         }
     }
 
