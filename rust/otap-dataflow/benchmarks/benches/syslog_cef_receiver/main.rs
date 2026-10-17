@@ -244,7 +244,7 @@ fn bench_receiver_pdata_paths(c: &mut Criterion) {
     });
 
     let _ = group.bench_function("codec_materialize_preframed_100_msgs", |b| {
-        b.iter(|| black_box(codec.materialize_framed(black_box(&framed), BATCH_SIZE)));
+        b.iter(|| black_box(codec.materialize_framed(black_box(&framed))));
     });
 
     let _ = group.bench_function("codec_admit_and_materialize_100_msgs", |b| {
@@ -263,7 +263,7 @@ fn bench_rfc3164_codec_materialization(c: &mut Criterion) {
         let framed = codec.frame(&messages);
         _ = group.throughput(Throughput::Elements(count as u64));
         let _ = group.bench_function(format!("{count}_msgs"), |b| {
-            b.iter(|| black_box(codec.materialize_framed(black_box(&framed), count)));
+            b.iter(|| black_box(codec.materialize_framed(black_box(&framed))));
         });
     }
     group.finish();

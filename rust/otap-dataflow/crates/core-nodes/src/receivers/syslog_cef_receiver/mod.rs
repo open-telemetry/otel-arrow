@@ -32,7 +32,9 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ReceiverMetrics;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata_codec::{OtapPayload, ResolvedCodec};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
+use otel_arrow_dfe_pdata_codec::ResolvedCodec;
 use otel_arrow_dfe_telemetry::common_attributes::{
     ReceiverRejectionErrorType, SignalRegistrationAttributes,
 };
@@ -538,16 +540,14 @@ fn seal_syslog_batch(
     batch_builder: &mut SyslogBatchBuilder,
     codec: ResolvedCodec,
 ) -> Result<OtapPdata, String> {
-    let item_count = batch_builder.len() as usize;
     let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-    let (bytes, _) = batch_builder
+    let batch = batch_builder
         .take()
         .finish(observed_time)
         .map_err(|error| error.to_string())?;
-    let encoded = codec
-        .admit(SignalType::Logs, bytes)
+    let payload = codec
+        .admit_built(batch)
         .map_err(|error| error.to_string())?;
-    let payload = OtapPayload::from_encoded(encoded).with_item_count(item_count);
     Ok(OtapPdata::new_todo_context(payload))
 }
 

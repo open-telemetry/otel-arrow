@@ -85,6 +85,14 @@ pub enum CodecError {
     /// Registry validation or lookup failed.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// A codec-owned constructed batch violated its admission contract.
+    #[error("invalid constructed pdata for `{encoding}`: {reason}")]
+    InvalidConstruction {
+        /// Target codec identity.
+        encoding: PdataEncoding,
+        /// Contract violation, without telemetry contents.
+        reason: String,
+    },
     /// A registered codec does not implement the requested operation.
     #[error("pdata codec `{encoding}` cannot {operation}")]
     UnsupportedCodecOperation {

@@ -270,6 +270,29 @@ means the payload was inspected and contains no primary-signal items. Payloads
 cache successful counts, keeping an unavailable count distinct from zero. Count
 caches are codec-owned; receivers and processors cannot inject arbitrary counts.
 
+### Construct batches without recounting
+
+When a codec builds bytes from individual messages, its builder already knows
+the count. Return an opaque type implementing `EncodedPdataBatch`, with private
+bytes and count fields, then let the receiver call `codec.admit_built(batch)`.
+The syslog codec's `SyslogBatchBuilder` and `SyslogBatch` demonstrate this path.
+
+`admit_built` checks the encoding identity, decoder support for the signal, and
+count range. It moves the buffer and caches the count without invoking the
+counter or decoder, copying bytes, or allocating another envelope. This is a
+static extension interface; it does not add mutable codec state or a registry
+factory. The ordinary payload count setter remains private.
+Knowing the count does not validate record contents or bypass the selected
+decoder when a consumer requests OTAP.
+
+The codec must guarantee independently decodable bytes and a count consistent
+with its registered counter. This is a trusted extension contract, like the
+counter itself, not a proof against a faulty codec implementation. Test the
+builder against the counter and decoder, including rejected input and empty
+batches. Keep constructors that accept arbitrary bytes and claimed counts out
+of the codec's public API. For externally supplied bytes, continue to use
+`codec.admit(signal, bytes)`; that path leaves the count unknown until measured.
+
 ## Add native batching
 
 Implement `PdataBatcher` only when encoded batches can be merged or split

@@ -25,8 +25,8 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::{
     BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
-    CodecMetadata, CodecOperation, CodecRegistration, CodecRegistry, PdataBatcher, PdataDecoder,
-    PdataEncoding, RegistryError, ResolvedCodec, register_pdata_codec,
+    CodecMetadata, CodecOperation, CodecRegistration, CodecRegistry, EncodedPdataBatch,
+    PdataBatcher, PdataDecoder, PdataEncoding, RegistryError, ResolvedCodec, register_pdata_codec,
 };
 
 use super::arrow_records_encoder::ArrowRecordsBuilder;
@@ -87,6 +87,28 @@ pub(crate) struct SyslogBatchBuilder {
     bytes: BytesMut,
     item_count: u32,
     max_items_hint: usize,
+}
+
+/// A batch sealed by the syslog codec, retaining the count established while framing.
+///
+/// Only the codec builder can construct this value. Its bytes and count cannot
+/// be replaced independently. Cloning shares the bytes and preserves the count.
+#[derive(Clone)]
+pub struct SyslogBatch {
+    bytes: Bytes,
+    item_count: usize,
+}
+
+impl EncodedPdataBatch for SyslogBatch {
+    const ENCODING: PdataEncoding = SYSLOG_CEF_ENCODING;
+
+    fn signal_type(&self) -> SignalType {
+        SignalType::Logs
+    }
+
+    fn into_parts(self) -> (Bytes, usize) {
+        (self.bytes, self.item_count)
+    }
 }
 
 impl Default for SyslogBatchBuilder {
@@ -165,10 +187,7 @@ impl SyslogBatchBuilder {
     }
 
     /// Seals a non-empty batch with one timestamp run for the flush.
-    pub(crate) fn finish(
-        mut self,
-        observed_time: i64,
-    ) -> Result<(Bytes, usize), SyslogFramingError> {
+    pub(crate) fn finish(mut self, observed_time: i64) -> Result<SyslogBatch, SyslogFramingError> {
         if self.is_empty() {
             return Err(framing_error("cannot seal an empty syslog batch"));
         }
@@ -178,7 +197,10 @@ impl SyslogBatchBuilder {
         self.bytes[BATCH_HEADER_LEN + 8..BATCH_HEADER_LEN + RUN_HEADER_LEN]
             .copy_from_slice(&self.item_count.to_be_bytes());
         let item_count = self.item_count as usize;
-        Ok((self.bytes.freeze(), item_count))
+        Ok(SyslogBatch {
+            bytes: self.bytes.freeze(),
+            item_count,
+        })
     }
 }
 
@@ -555,12 +577,12 @@ pub mod bench_support {
         /// Runs receiver framing and lazy encoded admission for one message batch.
         #[must_use]
         pub fn admit(&self, messages: &[&[u8]]) -> OtapPayload {
-            self.admit_framed(self.frame(messages), messages.len())
+            self.admit_framed(self.frame(messages))
         }
 
         /// Frames one receiver batch without resolving or invoking mutable codec state.
         #[must_use]
-        pub fn frame(&self, messages: &[&[u8]]) -> Bytes {
+        pub fn frame(&self, messages: &[&[u8]]) -> SyslogBatch {
             let mut builder = SyslogBatchBuilder::with_max_items(messages.len());
             for message in messages {
                 builder
@@ -568,27 +590,23 @@ pub mod bench_support {
                     .expect("benchmark message must fit syslog framing");
             }
             let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-            let (bytes, item_count) = builder
+            builder
                 .finish(observed_time)
-                .expect("benchmark batch must not be empty");
-            debug_assert_eq!(item_count, messages.len());
-            bytes
+                .expect("benchmark batch must not be empty")
         }
 
         /// Admits an already framed batch without creating mutable codec state.
         #[must_use]
-        pub fn admit_framed(&self, bytes: Bytes, item_count: usize) -> OtapPayload {
-            let encoded = self
-                .codec
-                .admit(SignalType::Logs, bytes)
-                .expect("benchmark bytes must be admitted");
-            OtapPayload::from_encoded(encoded).with_item_count(item_count)
+        pub fn admit_framed(&self, batch: SyslogBatch) -> OtapPayload {
+            self.codec
+                .admit_built(batch)
+                .expect("benchmark batch must be admitted")
         }
 
         /// Materializes an already framed batch through reusable codec state.
         #[must_use]
-        pub fn materialize_framed(&mut self, bytes: &Bytes, item_count: usize) -> OtapArrowRecords {
-            self.admit_framed(bytes.clone(), item_count)
+        pub fn materialize_framed(&mut self, batch: &SyslogBatch) -> OtapArrowRecords {
+            self.admit_framed(batch.clone())
                 .try_into_otap(&self.service)
                 .expect("benchmark syslog batch must decode")
         }
@@ -618,7 +636,10 @@ mod tests {
         for message in messages {
             builder.append(message).expect("append test message");
         }
-        builder.finish(observed_time).expect("seal test batch").0
+        builder
+            .finish(observed_time)
+            .expect("seal test batch")
+            .bytes
     }
 
     /// Scenario: the syslog receiver codec is checked by the shared codec harness.
@@ -670,6 +691,34 @@ mod tests {
             bytes.len(),
             BATCH_HEADER_LEN + RUN_HEADER_LEN + 2 * FRAME_HEADER_LEN + 11
         );
+    }
+
+    /// Scenario: The codec builder seals messages and the receiver admits its opaque result.
+    /// Guarantees: The established count and buffer survive admission; framing and timestamps
+    /// remain valid, an empty builder fails, and the next nonempty batch still succeeds.
+    #[test]
+    fn constructed_batch_preserves_count_and_buffer() {
+        let codec = resolve_syslog().unwrap();
+        let mut builder = SyslogBatchBuilder::new();
+        assert!(builder.take().finish(42).is_err());
+        builder.append(b"first").unwrap();
+        builder.append(b"second").unwrap();
+        let batch = builder.take().finish(42).unwrap();
+        let pointer = batch.bytes.as_ptr();
+        let payload = codec.admit_built(batch).unwrap();
+        assert_eq!(payload.known_item_count(), Some(2));
+        assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+        assert_eq!(payload.signal_type(), SignalType::Logs);
+        let bytes = payload.encoded_bytes().unwrap();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(validated_item_count(bytes).unwrap(), 2);
+        let (_, frames) = validated_frames(bytes).unwrap();
+        assert!(
+            frames
+                .map(Result::unwrap)
+                .all(|frame| frame.observed_time == 42)
+        );
+        assert!(builder.is_empty());
     }
 
     /// Scenario: A receiver starts a homogeneous batch with a configured item target.
