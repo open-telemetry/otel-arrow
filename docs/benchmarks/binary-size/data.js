@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792194360478,
+  "lastUpdate": 1792196874355,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -65262,6 +65262,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.23,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "149d90e4a8a244906b085108a54ff66f1c166701",
+          "message": "perf(batching): Optimize concatenation kernel's same_values function to avoid to_data calls (#4427)\n\n# Change summary\n\nSimilar to #4426, we have performance problems for small batch sizes\nduring concatenation by calling to_data which allocates. This PR\nimplements a new version of same_values which avoids to_data calls in\nmost circumstances.\n\n## Validation\n```\n➜  otap-dataflow git:(concatenate-same-values) ✗ cargo bench -p otel-arrow-dfe-pdata --bench concatenate --features testing 8items\n   Compiling otel-arrow-dfe-pdata v0.61.0 (/home/jakedern/repos/otel-arrow-concat/rust/otap-dataflow/crates/pdata)\n    Finished `bench` profile [optimized] target(s) in 1m 07s\n     Running benches/concatenate.rs (target/release/deps/concatenate-2e7e784795eff9b8)\nconcatenate/8items/1r1s/contiguous/metrics\n                        time:   [43.021 µs 43.355 µs 43.714 µs]\n                        change: [−52.076% −51.529% −50.860%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 1 outliers among 100 measurements (1.00%)\n  1 (1.00%) high severe\nconcatenate/8items/1r1s/contiguous/logs\n                        time:   [30.592 µs 30.838 µs 31.111 µs]\n                        change: [−52.694% −52.388% −52.093%] (p = 0.00 < 0.05)\n                        Performance has improved.\nconcatenate/8items/1r1s/contiguous/traces\n                        time:   [55.116 µs 55.742 µs 56.404 µs]\n                        change: [−51.304% −50.800% −50.344%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 1 outliers among 100 measurements (1.00%)\n  1 (1.00%) high severe\n\nconcatenate/8items/1r1s/presplit/logs\n                        time:   [79.293 µs 79.690 µs 80.066 µs]\n                        change: [−30.679% −30.248% −29.764%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 3 outliers among 100 measurements (3.00%)\n  1 (1.00%) high mild\n  2 (2.00%) high severe\nconcatenate/8items/1r1s/presplit/traces\n                        time:   [127.10 µs 127.59 µs 128.08 µs]\n                        change: [−31.710% −31.418% −31.124%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 9 outliers among 100 measurements (9.00%)\n  1 (1.00%) low mild\n  7 (7.00%) high mild\n  1 (1.00%) high severe\n\nconcatenate/8items/3r2s/contiguous/metrics\n                        time:   [43.882 µs 44.151 µs 44.428 µs]\n                        change: [−52.588% −52.373% −52.165%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 5 outliers among 100 measurements (5.00%)\n  5 (5.00%) high mild\nconcatenate/8items/3r2s/contiguous/logs\n                        time:   [31.844 µs 31.960 µs 32.095 µs]\n                        change: [−52.148% −51.933% −51.704%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 7 outliers among 100 measurements (7.00%)\n  4 (4.00%) high mild\n  3 (3.00%) high severe\nconcatenate/8items/3r2s/contiguous/traces\n                        time:   [54.389 µs 54.663 µs 54.959 µs]\n                        change: [−51.235% −50.891% −50.548%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 2 outliers among 100 measurements (2.00%)\n  2 (2.00%) high mild\n\nconcatenate/8items/3r2s/presplit/metrics\n                        time:   [171.24 µs 172.25 µs 173.19 µs]\n                        change: [−23.384% −22.632% −21.844%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 2 outliers among 100 measurements (2.00%)\n  2 (2.00%) high severe\nconcatenate/8items/3r2s/presplit/logs\n                        time:   [67.037 µs 67.328 µs 67.687 µs]\n                        change: [−33.677% −33.282% −32.763%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 2 outliers among 100 measurements (2.00%)\n  1 (1.00%) high mild\n  1 (1.00%) high severe\nconcatenate/8items/3r2s/presplit/traces\n                        time:   [106.93 µs 107.25 µs 107.61 µs]\n                        change: [−37.502% −36.250% −35.480%] (p = 0.00 < 0.05)\n                        Performance has improved.\nFound 15 outliers among 100 measurements (15.00%)\n  1 (1.00%) low severe\n  1 (1.00%) low mild\n  8 (8.00%) high mild\n  5 (5.00%) high severe\n```\n## User-facing changes\n\nBetter concatenation performance\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-16T22:38:45Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/149d90e4a8a244906b085108a54ff66f1c166701"
+        },
+        "date": 1792196856465,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.23,
             "unit": "MB"
           },
           {
