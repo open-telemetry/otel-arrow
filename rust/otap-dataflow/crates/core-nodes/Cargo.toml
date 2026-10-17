@@ -155,7 +155,7 @@ otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
-otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["test-codecs"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 flate2.workspace = true
 http-body-util.workspace = true

@@ -7811,7 +7811,10 @@ dependencies = [
  "crc",
  "dhat",
  "hex",
+ "nix 0.31.3",
+ "rustix",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -7938,6 +7941,7 @@ dependencies = [
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
+ "serde",
  "thiserror 2.0.21",
 ]
 
