@@ -11,6 +11,10 @@ time, and keep mutable decoder, encoder, or batcher state inside one pipeline
 runtime. A payload carries only its encoding identity, signal, bytes, and cached
 metadata; it never owns a codec instance.
 
+Operators: see the [codec user guide](../../docs/codecs.md) for available
+encodings, `codecs.defaults.decode.validation`, inheritance, and pass-through
+limitations. This README describes the developer extension contract.
+
 ## Architecture overview
 
 ![PData forwarding, views, conversion, batching, and codec lifecycle][codec-diagram]
@@ -41,7 +45,8 @@ service that lazily creates and reuses decoder, encoder, and batcher instances.
 Nodes access that service through effect handlers; stateless item counters do
 not require an instance.
 
-The syslog encoding is marked as upcoming in PR5, not part of PR3.
+The overview image marks syslog as upcoming; the syslog codec is now available
+when the syslog/CEF receiver is linked.
 Native OTAP is the common processing representation, not a registered byte codec.
 
 ## Design model
@@ -152,6 +157,47 @@ sends anything, and dropping the owner does not acknowledge automatically.
 without materializing it. `OtapPdata::into_delivery()` transfers an already-used
 input into delivery ownership without cloning, retaining or discarding its
 payload according to `RETURN_DATA`.
+
+## Configuration and decoder lifecycle
+
+The configuration crate parses `codecs.defaults.decode.validation` without
+depending on concrete codec implementations. It resolves declarations once
+into a `ResolvedCodecsConfig` for each regular or observability pipeline. The
+engine maps that snapshot to the existing `DecodePolicy` in
+`PipelineRuntimeServices`; codec factories and traits are unchanged.
+
+```mermaid
+flowchart LR
+    scopes["Top-level / group / pipeline codec settings"] --> resolved["ResolvedCodecsConfig"]
+    resolved --> policy["Immutable DecodePolicy"]
+    policy --> service["PipelineRuntimeServices / CodecService"]
+    service -->|"First decode only"| factory["DecoderFactory(policy)"]
+    factory --> decoder["Reusable decoder instance"]
+```
+
+Decoder authors must honor `Strict`: malformed nested content must produce a
+`CodecError` before any records are returned. `BestEffort` permits a relaxed
+implementation, but does not require one; using the strict implementation for
+both modes is valid. Select the implementation in the factory, not per field
+or record. The built-in OTLP codec selects borrowed-view or Prost decoding;
+the syslog codec uses the same parser for both settings.
+
+The runtime retains original bytes for recovery. Decoders must remain usable
+after errors and must not retain input bytes or depend on an earlier batch.
+Configuration changes redeploy the pipeline rather than mutating live decoder
+state. Effective settings participate in both runtime equality and resize
+classification; changing declaration scope alone does not redeploy it.
+
+Admission, matching-format forwarding, and directly borrowed views do not
+instantiate a decoder. Counters and native batchers retain their own validation
+contracts; they do not receive `DecodePolicy`. Output encoding settings still
+come from an `EncodingPlan`, and transport compression remains node-owned.
+The YAML section does not register codecs or configure individual encodings.
+
+For a new codec, run the conformance harness with strict policy and malformed
+nested input. If it implements a relaxed path, test both policies, repeated
+failure recovery, and unchanged forwarding separately. Benchmark the two
+decoders separately; do not hide strict validation cost in a combined result.
 
 ## Implement a codec
 

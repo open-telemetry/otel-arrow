@@ -13,7 +13,20 @@
 //! owners. This boundary keeps the service bundle focused and avoids turning it
 //! into a container for unrelated runtime objects.
 
-use otel_arrow_dfe_pdata_codec::{CodecService, CodecServiceBuilder, DecodePolicy, RegistryError};
+use otel_arrow_dfe_config::codecs::{
+    DecodeValidation as ConfigDecodeValidation, ResolvedCodecsConfig,
+};
+use otel_arrow_dfe_pdata_codec::{
+    CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation, RegistryError,
+};
+
+/// Maps resolved settings without coupling the configuration crate to codec runtime types.
+pub(crate) const fn decode_policy_from_config(config: ResolvedCodecsConfig) -> DecodePolicy {
+    DecodePolicy::new(match config.decode_validation {
+        ConfigDecodeValidation::BestEffort => DecodeValidation::BestEffort,
+        ConfigDecodeValidation::Strict => DecodeValidation::Strict,
+    })
+}
 
 /// Runtime-owned services shared by every effect handler in one pipeline.
 ///
@@ -90,5 +103,25 @@ mod tests {
                 .codec_service()
                 .shares_state_with(shared.codec_service())
         );
+    }
+
+    /// Scenario: Resolved configuration selects each supported decode validation mode.
+    /// Guarantees: The runtime receives the selected policy without eagerly creating codec instances.
+    #[test]
+    fn resolved_codecs_config_maps_to_lazy_runtime_service() {
+        for (configured, expected) in [
+            (
+                ConfigDecodeValidation::BestEffort,
+                DecodeValidation::BestEffort,
+            ),
+            (ConfigDecodeValidation::Strict, DecodeValidation::Strict),
+        ] {
+            let policy = decode_policy_from_config(ResolvedCodecsConfig {
+                decode_validation: configured,
+            });
+            let services = PipelineRuntimeServices::new(policy).unwrap();
+            assert_eq!(services.codecs().decode_policy().validation(), expected);
+            assert_eq!(services.codecs().test_instance_count().unwrap(), 0);
+        }
     }
 }
