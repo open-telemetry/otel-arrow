@@ -13,6 +13,7 @@
 //! only to the normal drain path. Fix in a follow-up PR by making
 //! pipeline shutdown orchestrated.
 
+use crate::clock;
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionShutdownChannel, ShutdownPayload};
 use crate::error::Error;
@@ -30,7 +31,6 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinError, JoinHandle, LocalSet};
-use tokio::time::Instant as TokioInstant;
 
 /// Cleanup window granted to extensions after the data path has drained.
 pub(crate) const EXTENSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -308,7 +308,7 @@ impl ExtensionLifecycle {
         for (key, probe) in probes {
             let timeout = probe.timeout();
             waiters.push(async move {
-                let outcome = tokio::time::timeout(timeout, probe.wait_ready()).await;
+                let outcome = clock::timeout(timeout, probe.wait_ready()).await;
                 (key, timeout, outcome)
             });
         }
@@ -458,7 +458,7 @@ impl ExtensionLifecycle {
             return;
         }
 
-        let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
+        let deadline = clock::now() + EXTENSION_SHUTDOWN_GRACE;
         self.phase = LifecyclePhase::ShuttingDown { deadline };
 
         let reason = reason.unwrap_or(DEFAULT_SHUTDOWN_REASON).to_string();
@@ -490,12 +490,12 @@ impl ExtensionLifecycle {
         let deadline = match self.phase {
             LifecyclePhase::ShuttingDown { deadline } => deadline,
             LifecyclePhase::Running => {
-                let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
+                let deadline = clock::now() + EXTENSION_SHUTDOWN_GRACE;
                 self.phase = LifecyclePhase::ShuttingDown { deadline };
                 deadline
             }
         };
-        let drain_deadline = TokioInstant::from_std(deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK);
+        let drain_deadline = deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK;
 
         let futures = &mut self.futures;
         let task_id_to_key = &mut self.task_id_to_key;
@@ -544,10 +544,7 @@ impl ExtensionLifecycle {
             }
         };
 
-        if tokio::time::timeout_at(drain_deadline, drain)
-            .await
-            .is_err()
-        {
+        if clock::timeout_at(drain_deadline, drain).await.is_err() {
             otel_warn!(
                 "extension.shutdown.timeout",
                 grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
@@ -1591,7 +1588,7 @@ mod tests {
                 laggard_probe,
             ));
 
-            let started = TokioInstant::now();
+            let started = tokio::time::Instant::now();
             let outcome = lifecycle.wait_all_ready().await;
             let elapsed = started.elapsed();
             drop(laggard_sig);
@@ -1646,7 +1643,7 @@ mod tests {
                 short_probe,
             ));
 
-            let started = TokioInstant::now();
+            let started = tokio::time::Instant::now();
             let outcome = lifecycle.wait_all_ready().await;
             let elapsed = started.elapsed();
             drop(short_sig);

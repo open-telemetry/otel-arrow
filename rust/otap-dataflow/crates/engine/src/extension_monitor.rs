@@ -5,6 +5,7 @@
 //! tick cadence; the host plugs `next_tick()` into its `select!` and
 //! feeds events via [`ExtensionLifecycleEvent`].
 
+use crate::clock::{self, Interval};
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::extension::wrapper::ExtensionVariant;
@@ -18,7 +19,6 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::future;
 use std::time::{Duration, Instant};
-use tokio::time::{Interval, MissedTickBehavior, interval_at};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExtensionRuntimeState {
@@ -131,9 +131,7 @@ impl ExtensionMetricsMonitor {
     ) -> Self {
         let registry = host_ctx.metrics_registry();
 
-        let start = tokio::time::Instant::now() + tick_interval;
-        let mut interval = interval_at(start, tick_interval);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let interval = clock::interval(tick_interval);
 
         Self {
             registry,
@@ -283,7 +281,7 @@ impl ExtensionMetricsMonitor {
     /// Awaits the next monitor tick. Never resolves when disabled.
     pub(crate) async fn next_tick(&mut self) -> Instant {
         match self.interval.as_mut() {
-            Some(interval) => interval.tick().await.into_std(),
+            Some(interval) => interval.tick().await,
             None => future::pending::<Instant>().await,
         }
     }
