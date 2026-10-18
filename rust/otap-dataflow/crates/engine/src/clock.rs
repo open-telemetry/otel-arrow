@@ -24,7 +24,7 @@
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 /// Boxed sleep future used by the engine control plane.
@@ -126,12 +126,29 @@ pub async fn timeout_at<F: Future>(deadline: Instant, future: F) -> Result<F::Ou
     let mut future = std::pin::pin!(future);
     let mut sleep = sleep_until(deadline);
     std::future::poll_fn(|cx| {
+        let had_budget_before = tokio::task::coop::has_budget_remaining();
         if let Poll::Ready(output) = future.as_mut().poll(cx) {
             return Poll::Ready(Ok(output));
         }
-        sleep.as_mut().poll(cx).map(|()| Err(Elapsed))
+        poll_deadline(&mut sleep, had_budget_before, cx).map(|()| Err(Elapsed))
     })
     .await
+}
+
+/// Polls a timeout's deadline after its wrapped future returned `Pending`.
+///
+/// Tokio sleeps (and the `SimClock` waiters) spend tokio's cooperative
+/// budget. If the wrapped future used up a budget it had before its poll, the
+/// deadline is polled without the budget, as `tokio::time::timeout` does, so
+/// a future that exhausts the budget on every poll can't block expiry.
+/// Outside a tokio runtime the budget is always available and this is a plain
+/// poll.
+fn poll_deadline(sleep: &mut Sleep, had_budget_before: bool, cx: &mut Context<'_>) -> Poll<()> {
+    if had_budget_before && !tokio::task::coop::has_budget_remaining() {
+        Pin::new(&mut tokio::task::coop::unconstrained(sleep.as_mut())).poll(cx)
+    } else {
+        sleep.as_mut().poll(cx)
+    }
 }
 
 /// Runs `future` until it completes or `duration` passes on the active clock.
@@ -448,6 +465,26 @@ mod tests {
             interval.tick().now_or_never(),
             Some(start + Duration::from_secs(3))
         );
+    }
+
+    /// Scenario: `timeout` wraps a future that spends the task's whole tokio
+    /// cooperative budget on every poll and never completes.
+    /// Guarantees: the timeout still expires, because the deadline is polled
+    /// without the budget once the wrapped future has used it up (as
+    /// `tokio::time::timeout` does).
+    #[tokio::test]
+    async fn timeout_expires_when_wrapped_future_exhausts_coop_budget() {
+        let budget_hog = async {
+            loop {
+                tokio::task::coop::consume_budget().await;
+            }
+        };
+        let guarded = tokio::time::timeout(
+            Duration::from_secs(5),
+            timeout(Duration::from_millis(10), budget_hog),
+        )
+        .await;
+        assert_eq!(guarded, Ok(Err(Elapsed)), "clock::timeout never expired");
     }
 
     /// Scenario: an `Interval` with a 10ms period ticks on schedule, then is
