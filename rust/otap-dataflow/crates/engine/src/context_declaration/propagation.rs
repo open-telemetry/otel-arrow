@@ -202,7 +202,27 @@ impl PreparedHeaderPropagationPolicy {
         &self,
         name: &ContextEntryName,
     ) -> (PropagationAction, NameStrategy) {
-        resolve_static_action_for_name(&self.default, &self.overrides, name)
+        if let Some(override_policy) = self.overrides.iter().find(|override_policy| {
+            override_policy
+                .match_rule
+                .stored_names
+                .iter()
+                .any(|stored| name.as_str().eq_ignore_ascii_case(stored.as_str()))
+        }) {
+            return (
+                override_policy.action,
+                override_policy.name.unwrap_or(self.default.name),
+            );
+        }
+        if self.prepared_named.iter().any(|binding| {
+            binding
+                .source_name
+                .as_ref()
+                .is_some_and(|source_name| name.as_str().eq_ignore_ascii_case(source_name.as_str()))
+        }) {
+            return (self.default.action, self.default.name);
+        }
+        resolve_static_action_for_name(&self.default, &[], name)
     }
 }
 
@@ -433,7 +453,9 @@ mod tests {
         MaterializedContextValue, MaterializedContextValues,
     };
     use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
-    use otel_arrow_dfe_config::transport_headers_policy::{PropagationMatch, PropagationSelector};
+    use otel_arrow_dfe_config::transport_headers_policy::{
+        CaptureDefaults, CaptureRule, HeaderCapturePolicy, PropagationMatch, PropagationSelector,
+    };
     use otel_arrow_dfe_config::{context_policy, transport_headers};
     use uuid::Uuid;
 
@@ -985,6 +1007,78 @@ default:
 
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "workspace");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: only a qualified transport member requires preserving a distinct ingress name.
+    /// Guarantees: capture retains the wire name and qualified export emits it unchanged.
+    #[test]
+    fn qualified_preserve_retains_original_name_from_capture_to_export() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  tenant:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let propagation: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [tenant:workspace_id]
+  name: preserve
+"#,
+        )
+        .expect("valid propagation policy");
+        let prepared = PreparedHeaderPropagationPolicy::compile(
+            propagation,
+            std::slice::from_ref(&declaration),
+        )
+        .expect("qualified propagation policy compiles");
+        let capture = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("x-workspace")],
+                store_as: Some(context_name("workspace")),
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|name| prepared.propagates_original_name(name));
+        let mut headers = TransportHeaders::new();
+
+        assert_eq!(
+            capture.capture_from_pairs(
+                [("X-Workspace", b"acme".as_slice())].into_iter(),
+                &mut headers,
+            ),
+            None
+        );
+        assert_eq!(
+            headers.get(0).expect("captured workspace").wire_name(),
+            "X-Workspace"
+        );
+
+        let plan = ContextMaterializationPlan::compile(&[declaration])
+            .expect("materialization plan compiles");
+        let policy = prepared.bind(&plan).expect("prepared policy binds");
+        let materialized = materialize(&policy, &headers);
+        let propagated = policy
+            .propagate_materialized(&headers, Some(&materialized))
+            .collect::<Vec<_>>();
+
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "X-Workspace");
         assert_eq!(propagated[0].value, b"acme");
     }
 
