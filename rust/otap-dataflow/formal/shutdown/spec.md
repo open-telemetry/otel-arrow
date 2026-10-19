@@ -544,6 +544,33 @@ configs list every fix that has landed.
   open split context at `Shutdown`.
 - Revisit when: follow-up issue under #4395.
 
+### D8. Forced cancellation can leave node cleanup unfinished
+
+- Observation: with the L6 fix, a receiver or exporter that has not stopped
+  1s after the deadline (`NODE_FORCED_SHUTDOWN_GRACE`) is cancelled. Its
+  task's futures are dropped wherever they are, so cleanup it had not
+  finished never runs. From the inventory (code reading, not reproduced):
+  - Kafka receiver: offsets are committed synchronously when it handles
+    `DrainIngress` or `Shutdown` (`kafka_receiver/receiver.rs` 653-722),
+    so they are lost only if it is cancelled before it handles either (for
+    example the L8 case). Uncommitted offsets are redelivered on restart:
+    duplicates, not loss.
+  - Parquet exporter: `flush_all` already races the deadline (277-324) and
+    gives up with `TimedOut`, which can leave a partial file. This predates
+    the fix; the cancel 1s later adds little.
+  - Exporters that waited with no bound (OTLP gRPC/HTTP, OTAP, Azure
+    Monitor): requests still in flight are dropped, and the server may
+    already have them (D1).
+- Decision: accepted. Before the fix these nodes kept the pipeline running
+  forever; a bounded stop with possible duplicates or a partial file is the
+  better failure. Waiting receivers were already force-Nacked at the
+  deadline.
+- Revisit when: a node needs guaranteed cleanup at shutdown. It should then
+  bound its own cleanup by the `Shutdown` deadline, as parquet, file, Kafka
+  exporter and ClickHouse already do, so it finishes before the grace runs
+  out. Follow-up candidates for the node owners: Kafka receiver offsets on
+  forced stop, parquet partial files.
+
 ## Appendix: shutdown-handling inventory
 
 Every receiver, processor and exporter in `crates/core-nodes` and
