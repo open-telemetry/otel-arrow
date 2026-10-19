@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 /// Top-level filter processor configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub metrics: MetricFilterConfig,
@@ -155,6 +156,7 @@ fn compile_values(
 
 /// Log filter configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogFilterConfig {
     include: Option<LogMatchPropertiesConfig>,
     exclude: Option<LogMatchPropertiesConfig>,
@@ -181,6 +183,7 @@ impl LogFilterConfig {
 
 /// Log match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogMatchPropertiesConfig {
     #[serde(default)]
     match_type: MatchType,
@@ -229,6 +232,7 @@ impl LogMatchPropertiesConfig {
 
 /// Log severity number match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogSeverityNumberConfig {
     min: i32,
     match_undefined: bool,
@@ -253,6 +257,7 @@ impl LogSeverityNumberConfig {
 
 /// Metric filter configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricFilterConfig {
     include: Option<MetricMatchPropertiesConfig>,
     exclude: Option<MetricMatchPropertiesConfig>,
@@ -278,6 +283,7 @@ impl MetricFilterConfig {
 
 /// Metric match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricMatchPropertiesConfig {
     #[serde(default)]
     match_type: MatchType,
@@ -307,6 +313,7 @@ impl MetricMatchPropertiesConfig {
 
 /// Trace filter configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraceFilterConfig {
     include: Option<TraceMatchPropertiesConfig>,
     exclude: Option<TraceMatchPropertiesConfig>,
@@ -332,6 +339,7 @@ impl TraceFilterConfig {
 
 /// Trace match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraceMatchPropertiesConfig {
     #[serde(default)]
     match_type: MatchType,
@@ -450,6 +458,54 @@ mod tests {
             }
         });
         let config: Config = serde_json::from_value(value).expect("valid config");
+        let _ = config.compile().expect("compiles");
+    }
+
+    /// Scenario: a config with an unknown top-level field is deserialized.
+    /// Guarantees: deserialization fails (naming the field) rather than silently
+    /// ignoring the unknown key, so a typo such as `__bogus__` is rejected by
+    /// `--validate-and-exit`.
+    #[test]
+    fn test_deserialize_rejects_unknown_top_level_field() {
+        let value = json!({ "__bogus__": 1 });
+        let err =
+            serde_json::from_value::<Config>(value).expect_err("unknown field must be rejected");
+        assert!(
+            err.to_string().contains("__bogus__"),
+            "error should name the unknown field: {err}"
+        );
+    }
+
+    /// Scenario: a config with an unknown nested field is deserialized.
+    /// Guarantees: unknown keys inside per-signal match blocks are rejected too,
+    /// so a typo in e.g. `logs.include.record_attributes` fails validation.
+    #[test]
+    fn test_deserialize_rejects_unknown_nested_field() {
+        let value = json!({
+            "logs": {
+                "include": {
+                    "match_type": "strict",
+                    "record_attribtues": [
+                        { "key": "k", "value": "v" }
+                    ]
+                }
+            }
+        });
+        let err =
+            serde_json::from_value::<Config>(value).expect_err("unknown nested field must be rejected");
+        assert!(
+            err.to_string().contains("record_attribtues"),
+            "error should name the unknown field: {err}"
+        );
+    }
+
+    /// Scenario: an empty config is deserialized.
+    /// Guarantees: the strict setting does not reject the valid empty shape
+    /// (all signal filters default), which existing pipelines rely on.
+    #[test]
+    fn test_deserialize_accepts_empty_config() {
+        let value = json!({});
+        let config: Config = serde_json::from_value(value).expect("empty config is valid");
         let _ = config.compile().expect("compiles");
     }
 }
