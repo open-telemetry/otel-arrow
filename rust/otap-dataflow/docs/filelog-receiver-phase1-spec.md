@@ -1151,7 +1151,8 @@ distinguished binding under the selected link policy:
   currently validated eligible name, authorizes exclusion handling without a
   complete pass. Examples are a stable lookup identifying a different locator,
   or `ENOENT` with the binding parent available and unchanged and no detected
-  environment failure. A failed or unstable lookup is not positive evidence.
+  environment failure. Other lookup failures or unstable results are not
+  positive evidence.
 - A truncated, inaccessible, or unstable binding does not establish ineligibility.
   Fall back to a complete pass establishing no other validated eligible name;
   until then reading continues, potentially indefinitely during a stall.
