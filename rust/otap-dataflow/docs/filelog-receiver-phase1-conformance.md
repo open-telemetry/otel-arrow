@@ -632,7 +632,7 @@ is an operational condition, not proof against continuing namespace movement.
 | Discovery | A final symlink is dangling or cyclic but is not followed under `follow_symlinks: false` | Not admitted; the unattempted target resolution does not itself make the pass incomplete |
 | Discovery | Tracked file is now observed only through a lexically excluded name | Required locator evidence supports exclusion and presence accounting without read-open; missing evidence makes the pass incomplete, not proof of disappearance |
 | Discovery | A persistent resolution failure spans retention deadlines | Bounded reason remains observable; no fabricated absence or capacity-driven checkpoint removal |
-| Discovery | Policy passed and locator presence is known, but content access fails | No admission or cancellation; presence blocks confirmation for that locator without invalidating unrelated coverage |
+| Discovery | Policy passed and locator presence is known, but content access fails | No admission or cancellation; presence blocks discovery-derived confirmation for that locator without invalidating unrelated coverage |
 | Discovery | Bind-mount alias contains an excluded `x.secret` and allowed `x.log` under a `*.secret` exclusion | Full root mapping excludes only `x.secret`; no whole-subtree rejection |
 | Discovery | Target path fills its bounded buffer, is unreachable, or verification detects a rename/intermediate symlink substitution | No admission from truncated or inconsistent evidence; policy failure reported |
 | Discovery | A live name ends in `" (deleted)"` | Apply normal path verification; no filename-text rejection |
