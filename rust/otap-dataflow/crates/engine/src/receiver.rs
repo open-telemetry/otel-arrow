@@ -793,11 +793,7 @@ mod tests {
     use crate::PipelineFactory;
     use crate::capability::registry::Capabilities;
     use crate::context::ControllerContext;
-    use crate::context_declaration::{
-        ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-        ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTarget,
-        ContextMaterializationPlan, NodeContextDeclarations,
-    };
+    use crate::context_declaration::ContextMaterializationPlan;
     use crate::exporter::ExporterWrapper;
     use crate::local::receiver as local;
     use crate::node::NodeId;
@@ -839,26 +835,6 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     struct WiringContextConfig {}
-
-    impl ConfigNodeContextDeclaration for WiringContextConfig {
-        fn context_declarations(&self) -> NodeContextDeclarations {
-            [ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: vec![ContextEntrySelector {
-                        target: ContextEntryTarget::CompositeMember {
-                            composite: ContextEntryName::try_from("tenant")
-                                .expect("valid composite name"),
-                            member: ContextEntryName::try_from("route").expect("valid member name"),
-                        },
-                        form: ContextEntrySelectorForm::Value,
-                    }]
-                    .into_boxed_slice(),
-                },
-            }]
-            .into_iter()
-            .collect()
-        }
-    }
 
     struct WiringReceiver;
 
@@ -936,11 +912,7 @@ mod tests {
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
-            context_declarations: Some(
-                crate::context_declaration::ContextDeclarationProvider::from_typed_config::<
-                    WiringContextConfig,
-                >(),
-            ),
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
@@ -949,11 +921,7 @@ mod tests {
         ReceiverFactory {
             name: SHARED_WIRING_RECEIVER_URN,
             create: create_shared_wiring_receiver,
-            context_declarations: Some(
-                crate::context_declaration::ContextDeclarationProvider::from_typed_config::<
-                    WiringContextConfig,
-                >(),
-            ),
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
@@ -990,6 +958,12 @@ nodes:
     config: {{}}
   exporter:
     type: "{WIRING_EXPORTER_URN}"
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: [tenant:route]
+        name: stored_name
     config: {{}}
 connections:
   - from: receiver
@@ -1352,15 +1326,17 @@ connections:
             .run_validation(validation_procedure());
     }
 
-    /// Scenario: a local receiver is created from a pipeline with a selected constant composite.
-    /// Guarantees: factory creation, wrapper start, and the local effect handler apply the plan.
+    /// Scenario: only an exporter selects a constant composite in a local-receiver pipeline.
+    /// Guarantees: factory compilation propagates the exporter requirement to the receiver, and
+    /// the local effect handler applies the materialization plan before sending its first message.
     #[test]
     fn local_receiver_factory_wires_context_materialization() {
         run_context_materialization_wiring_test(LOCAL_WIRING_RECEIVER_URN);
     }
 
-    /// Scenario: a shared receiver is created from a pipeline with a selected constant composite.
-    /// Guarantees: factory creation, wrapper start, and the shared effect handler apply the plan.
+    /// Scenario: only an exporter selects a constant composite in a shared-receiver pipeline.
+    /// Guarantees: factory compilation propagates the exporter requirement to the receiver, and
+    /// the shared effect handler applies the materialization plan before sending its first message.
     #[test]
     fn shared_receiver_factory_wires_context_materialization() {
         run_context_materialization_wiring_test(SHARED_WIRING_RECEIVER_URN);
