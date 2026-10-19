@@ -14,8 +14,8 @@ groups:
           pg-credentials:
             type: urn:otel:extension:flat_file_user_pass_auth
             config:
-              username_file: '${env:PG_USERNAME_FILE:-/run/secrets/postgresql/username}'
-              password_secret_file: '${env:PG_PASSWORD_FILE:-/run/secrets/postgresql/password}'
+              username_file: '${env:PG_USERNAME_FILE:-crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/out/username}'
+              password_secret_file: '${env:PG_PASSWORD_FILE:-crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/out/password}'
               password_secret_file_refresh: 1m
         nodes:
           pg:
@@ -31,7 +31,7 @@ groups:
                 tls:
                   enabled: true
                   # Private CA bundle for the TLS walkthrough; platform roots remain included.
-                  ca_file: '${env:PG_CA_FILE:-.secrets/postgresql/ca.crt}'
+                  ca_file: '${env:PG_CA_FILE:-crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/out/ca.pem}'
               query:
                 statement: >
                   SELECT e.event_ts, e.event_id, e.actor

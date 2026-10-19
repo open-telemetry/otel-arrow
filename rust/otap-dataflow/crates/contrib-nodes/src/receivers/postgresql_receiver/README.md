@@ -14,13 +14,54 @@ releases.
 - Output: OTLP logs, one log record per selected database row
 - Execution: One query per receiver, in a single-core pipeline
 
-## Getting started
+## Quick walkthrough
 
-Use the [Windows TLS walkthrough](TLS_WALKTHROUGH.md) to run the
-[console example](../../../../../configs/postgresql-console.yaml) against a
-disposable PostgreSQL 15.19 server with a generated private CA. The walkthrough
-creates the source data, runs the receiver, verifies the live TLS session, and
-cleans up the Docker and checkpoint artifacts.
+The [console example](../../../../../configs/postgresql-console.yaml) works with
+the included Docker Compose fixture on Windows and Linux. It creates a
+TLS-enabled PostgreSQL 15.19 database, private CA, reader, table, and sample
+rows. PostgreSQL binds only to `127.0.0.1`. Run from `rust/otap-dataflow`.
+
+```sh
+docker compose --file crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/compose.yaml up --build --detach --wait
+```
+
+The fixture writes the username, password, and CA to its `out` directory. 
+
+Run the receiver:
+
+```sh
+cargo run --no-default-features --features postgresql,crypto-ring --bin df_engine -- --config configs/postgresql-console.yaml
+```
+
+No OTLP endpoint is needed. The console emits three OTLP logs shaped like:
+
+```text
+RESOURCE v1.Resource [db.system.name=postgresql, receiver.database.source_id=orders-audit]
+INFO database.query.row: {event_ts=2026-10-05T00:00:01.000000Z, event_id=1, actor=alice}
+INFO database.query.row: {event_ts=2026-10-05T00:00:01.000000Z, event_id=2, actor=bob}
+INFO database.query.row: {event_ts=2026-10-05T00:00:02.123456Z, event_id=3, actor=carol}
+```
+
+Console output is not durable downstream storage. In another terminal, verify
+the live connection is encrypted:
+
+```sh
+docker compose --file crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/compose.yaml exec postgres psql -U postgres -d receiver_fixture -c "SELECT usename, ssl, version, cipher FROM pg_stat_ssl JOIN pg_stat_activity USING (pid) WHERE usename = 'otel_reader';"
+```
+
+The result must show `ssl` as `t`. Stop the receiver with Ctrl+C, then clean up:
+
+```sh
+docker compose --file crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/compose.yaml down --volumes --remove-orphans
+rm -rf crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/out .otap-state/postgresql
+```
+
+In PowerShell, replace the final `rm -rf` with:
+
+```powershell
+Remove-Item -Recurse -Force crates\contrib-nodes\src\receivers\postgresql_receiver\fixtures\tls\out -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .otap-state\postgresql -ErrorAction SilentlyContinue
+```
 
 ## Configuration
 
