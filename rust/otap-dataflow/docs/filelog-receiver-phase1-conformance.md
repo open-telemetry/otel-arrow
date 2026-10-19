@@ -666,6 +666,8 @@ is an operational condition, not proof against continuing namespace movement.
 | Discovery | Locator changes between stability probes | Pass incomplete; inconsistent observation does not become locator presence |
 | Discovery | Excluded leaf-name lookup returns ENOENT or hits an ordinary link loop | Apply the same contextual miss/rejection rules as nonexcluded lookups; no automatic pass-wide failure |
 | Rotation | Unverifiable alias repeatedly reports presence for a qualified resident handle with fresh zero-link evidence | Presence does not block independent unlink confirmation; it still blocks retention aging; validated eligible sighting can cancel before cutoff |
+| Discovery | Incomplete pass has validated positive evidence or a successful exclusion binding check | Observed, metadata Updated, and fast-path Excluded transitions remain available; no Disappeared or binding replacement from partial coverage |
+| Discovery | Only an earlier-pass eligible alias is known during exclusion binding check | Revalidate it before using it to prevent revocation; do not infer current eligibility from stale evidence |
 | Discovery | New growing file | Admitted without waiting for close |
 | Discovery | Exclude overlaps include | Excluded; lexical rejection may precede pinning while preserving required retained-state evidence; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |

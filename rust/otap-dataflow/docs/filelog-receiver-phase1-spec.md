@@ -689,9 +689,9 @@ immediate disk-space release is not guaranteed. Pinned readers remain charged
 to descriptor and memory limits; new readers wait rather than evicting them.
 Retained records can also accumulate against `max_tracked_files`. Use
 node-appropriate includes rather than optional absent roots in fleet configs.
-Report bounded diagnostics that distinguish root changes, lost coverage,
-exclusion failures, and descriptor
-exhaustion, with rate-limited path context where available.
+Report bounded diagnostics that distinguish absent configured roots, root
+changes, lost coverage, exclusion failures, and descriptor exhaustion, with
+rate-limited path context where available.
 
 ### Compilation and path semantics
 
@@ -1108,7 +1108,12 @@ capacity and are not ordinary retention candidates.
 
 ### Reconciliation transitions
 
-A complete pass produces one ordered transition stream:
+Each pass may produce an ordered transition stream. Incomplete passes can emit
+validated Observed transitions, Updated metadata, and binding-check Excluded
+transitions. They do not authorize Disappeared or the complete-pass exclusion
+fallback. Path-rebound publication and distinguished-binding replacement retain
+the complete-pass ordering rules above; partial path observations may be retained
+without publishing those transitions.
 
 | Transition | Preconditions | Effect |
 | --- | --- | --- |
@@ -1129,8 +1134,8 @@ observation ordered after the initial miss cancels pending disappearance when
 its locator matches the still-held validated resident handle. Fingerprint-only
 matching is insufficient; cancellation does not bypass truncation or unresolved
 source-delta handling. Locator presence without eligible validation still blocks
-discovery-derived confirmation for that locator. After permanent EOF, preserve presence but block competing
-admission until ownership is released. After finalization, a later observation
+discovery-derived confirmation for that locator. After permanent EOF, preserve
+presence but block competing admission until ownership is released. After finalization, a later observation
 follows new-identity rules; descriptor-free containment instead permits normal
 validated reconnection of the retained `Active` record.
 
@@ -1139,10 +1144,14 @@ Resolved-target exclusions still take precedence when evaluating each candidate.
 When an inspected excluded name identifies an active locator, check its
 distinguished binding under the selected link policy:
 
-- A validated eligible binding or another known validated eligible name keeps
-  the reader eligible.
+- A currently validated eligible binding or another currently validated
+  eligible name keeps the reader eligible; an earlier-pass sighting alone
+  does not establish current eligibility.
 - Positive evidence that the binding is no longer eligible, with no other known
-  validated eligible name, authorizes exclusion handling without a complete pass.
+  currently validated eligible name, authorizes exclusion handling without a
+  complete pass. Examples are a stable lookup identifying a different locator,
+  or `ENOENT` with the binding parent available and unchanged and no detected
+  environment failure. A failed or unstable lookup is not positive evidence.
 - A truncated, inaccessible, or unstable binding does not establish ineligibility.
   Fall back to a complete pass establishing no other validated eligible name;
   until then reading continues, potentially indefinitely during a stall.
@@ -1152,8 +1161,8 @@ before rediscovery. Keeping its Active checkpoint preserves possible recovery,
 not the source bytes. This trade-off and delayed revocation are exclusion
 limitations; exclusion is not an instantaneous privacy boundary. Before
 confirmed permanent EOF, an observation meeting the Excluded preconditions
-replaces pending
-disappearance with exclusion handling, without D17. After the cutoff, it
+replaces pending disappearance with exclusion handling, without D17. After the
+cutoff, it
 preserves locator presence but cannot undo finalization.
 
 Exclusion is not disappearance or rotation. After the
