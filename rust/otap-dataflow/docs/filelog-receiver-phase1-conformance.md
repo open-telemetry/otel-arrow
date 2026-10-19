@@ -648,6 +648,7 @@ schedules and injected lookup failures. Operator limitations are described in
 | Rotation | Zero-link evidence comes from an unqualified filesystem backend | No unlink shortcut based on that count; preserve the ordinary path |
 | Resource | Resident pool is full of readers awaiting confirmation, with adequate OS descriptor headroom | Discovery directory and shared transient probes still progress; no pinned-reader eviction |
 | Resource | Actual `EMFILE` or `ENFILE` prevents a required probe | Backoff and diagnostic; unfinished pass cannot confirm; pinned readers preserved |
+| Performance | Steady state after warm-up: unchanged paths/bindings, no rotation, both idle and continuously appended files | Compare identical workloads/configuration against a stated baseline; report p50/p99 append-to-emission and read/control latency, scan time, allocation count/bytes and retained/peak heap across many passes; no heap growth with pass count or rotation-only allocations; resolve material regressions |
 | Qualification | Pod-directory churn in symlink and direct-path deployments | Release qualification records confirmation delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission |
 | Discovery | Excluded alias and another validated eligible name identify the same locator | Reject excluded name without revoking the eligible reader |
 | Discovery | Excluded name encountered during normal traversal identifies a retained locator | Metadata lookup may preserve presence without read-open; no recursive search of pruned excluded subtrees |

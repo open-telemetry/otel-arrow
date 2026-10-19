@@ -742,6 +742,14 @@ infer support from a platform name or a successful metadata call. Where required
 evidence is unavailable, use the specified failure or ordinary lifecycle path,
 not an undocumented weaker fallback.
 
+Steady-state performance is a qualification requirement. With unchanged names
+and bindings and no rotation, keep reconciliation work off the per-record read
+path, reuse bounded scan storage, and avoid allocating rotation-only state.
+Required identity and exclusion checks still apply. Measure latency and heap
+cost against an explicitly described baseline; bounded memory alone does not
+establish acceptable performance. Report fixed retained-state costs separately
+from ongoing allocations and resolve material regressions before qualification.
+
 ### Compilation and path semantics
 
 Discovery receives validated, precompiled include and exclude matchers. It does not
