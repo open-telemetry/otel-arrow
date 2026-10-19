@@ -442,8 +442,13 @@ rotation:
 ### Structural and relationship validation
 
 Validation completes before threads start or a checkpoint namespace is opened.
-Arithmetic used for counts, byte sums, products, deadlines, and conversions is checked.
-Overflow rejects configuration; values are never wrapped or saturated.
+Arithmetic used for counts, byte sums, products, deadlines, and conversions is
+checked. Overflow rejects configuration; values are never wrapped. The sole
+saturation exception is the intermediate transaction-byte product in the
+[capped WAL bound](#publication-compaction-cleanup-and-recovery): saturation
+is permitted only before taking the minimum with the configured byte threshold.
+It preserves the exact mathematical bound and does not saturate configured
+values, prospective append increments, or subsequent file/recovery sums.
 
 The following relationships are enforced:
 
@@ -1700,7 +1705,11 @@ Every source offset counts original bytes. The processing order is:
 6. construct an OTAP record or fragment; and
 7. attach a progress delta owning the complete frame range.
 
-Text newline and regex framing always follow decoding. Raw mode performs no decoding.
+Text newline and regex framing always follow decoding. With `preserve_raw`, text
+patterns see the decoded line with U+FFFD for malformed units, even when the
+emitted record uses exact source bytes. With `replace`, patterns see that same
+replacement text. With `fail`, malformed input stops decoding before matching.
+Raw-mode patterns inspect source bytes directly, without decoding.
 
 ### Encoding behavior
 
@@ -1876,6 +1885,16 @@ In `seeking`:
 - a complete nonmatching line is emitted under newline framing; and
 - each such fallback increments bounded `pattern_not_matched` telemetry.
 
+Match complete physical lines within `max_line_bytes` even when they exceed
+`max_record_bytes` in seeking state. An unmatched line still counts as one
+fallback when it must split or truncate. Fallback evidence is independent of
+completion reason: byte-limited fragments retain their byte-limit reason, and
+only the first emitted frame carries the fallback observation. Do not count
+both that observation and the completion reason. Stored continuations do not
+reconstruct the original match result or produce another fallback observation.
+Partial lines completed by idle/permanent EOF and oversized physical lines do
+not produce this complete-line fallback evidence.
+
 In `buffering`:
 
 - a nonmatching line is appended with its internal LF;
@@ -1907,7 +1926,8 @@ End-pattern mode begins buffering with the first physical line.
 - Perl classes `\d`, `\s`, `\w`, their negations, and word boundaries use RE2's
   ASCII semantics.
 - Counted repetition limits are at most 1,000.
-- Text patterns run over validated decoded UTF-8.
+- Text patterns run over decoded UTF-8, including U+FFFD replacements for
+  malformed units under `preserve_raw` or `replace`.
 - Raw patterns use non-Unicode byte semantics. Fixed and braced hex escapes
   denote bytes (`\xFF` and `\x{FF}` both denote byte `FF`); values above `FF`
   are rejected in raw mode, including in classes and range endpoints.
@@ -2023,10 +2043,20 @@ When a physical line crosses `max_line_bytes`:
 
 No unbounded physical-line buffer is created.
 
-When adding a complete physical line would make a multiline body exceed
-`max_record_bytes`, the deterministic logical boundary is the LF of that first
-overflow-triggering line. Regex and line-count decisions are suppressed until that
-line ends. The framer then resets multiline state.
+In start-pattern mode, match a physical line within `max_line_bytes` before
+checking whether appending it would exceed the buffered record's byte limit.
+A matching line first completes the previous record immediately before that line,
+then begins a new record. The previous record ends cleanly at its own LF and
+requires no continuation state. A matching line that exceeds `max_record_bytes`
+on its own is split or truncated as its own record, with its own start and end.
+Oversized physical lines remain isolated and are never matched.
+
+For a line that belongs to the current record (including a new record's first
+line), if adding it would exceed `max_record_bytes`, the deterministic logical
+boundary is the LF of that overflow-triggering line. End-pattern and line-count
+decisions are suppressed for that line, and no further pattern decisions occur
+during its split/truncate replay. The framer then resets multiline state.
+An authorized partial-line completion uses its source end in place of the LF.
 
 For a body exactly equal to `max_record_bytes`, retaining another internal separator
 would overflow. The current body is emitted as a clean forced boundary before any later
@@ -2105,6 +2135,18 @@ that end. For the zero-ended scan-to-LF form, source framing establishes the
 boundary at runtime; a nonzero-delta update preserves the same start and mode
 until that proof exists, and any later continuation starts at or after the
 prior committed frontier. Zero-delta updates remain bit-for-bit preserving.
+
+Continuation stores no completion reason. For a recovered known-end sequence,
+the stored boundary makes the final fragment eligible; the original idle or
+permanent-EOF reason is not reconstructed. Do not infer
+`terminal_unterminated` from a stored end alone. This follows the
+[record-reproduction contract](#crash-recovery-and-record-reproduction):
+stored continuation coordinates remain authoritative, but completion metadata
+can change
+across a crash. In-process retries still preserve the retained batch unchanged.
+A scan-to-LF continuation that reaches LF retains its oversized-line reason;
+new idle or permanent-EOF authority is reported only when it actually completes
+that recovered pending frame.
 
 The committed prefix is neither reread nor re-emitted. For a nonzero stored end,
 a current source size below `record_end_offset` is detected truncation and
@@ -2646,6 +2688,14 @@ inspection/backup/reset procedure; it is never softened into automatic prefix
 recovery. Operators requiring the strongest available checkpoint crash
 durability keep the default `sync_interval: 0s`.
 
+A failed required synchronization is terminal, with either interval. Preserve
+retained work and fail the receiver; never release a batch based on a later
+successful fsync alone. This includes periodic/drain sync and recovery,
+publication, repair, or cleanup barriers. The
+[format failure contract](filelog-checkpoint-format.md#wal-append-failure-and-repair)
+defines the storage-remediation boundary and the limits of recovery after an
+earlier process's writeback error.
+
 ### Delivery retry
 
 Phase 1 treats every aggregate downstream Nack uniformly. The current topic
@@ -3008,8 +3058,9 @@ unchanged. It writes and publishes the filtered snapshot and fresh WAL through
 the ordinary compaction state machine. The filtered table becomes live only
 after the replacement `checkpoint.db` is durably published. Failure before
 replacement leaves the prior table and generation authoritative. An ambiguous
-replacement or sync failure blocks the store until recovery establishes which
-complete file is authoritative; it never assumes rollback. Recovery of the
+replacement failure blocks the store until recovery establishes which
+complete file is authoritative; it never assumes rollback. A failed required
+sync instead poisons the store under the terminal sync-failure policy. Recovery of the
 new file observes the complete filtered set. The vetted set is therefore
 atomic regardless of its size and is never divided into `remove_file`
 transactions or partially durable chunks. An empty set does not compact.
@@ -3069,9 +3120,26 @@ maximum_wal_transactions =
   )
 ```
 
-These are allocation and recovery bounds, not claims that every byte/count
-combination is reachable. An append that cannot satisfy the preconditions is
-refused before live state advances.
+Evaluate the capped transaction-byte product without wrapping. Saturating
+multiplication followed by the minimum preserves this bound: when the product
+exceeds `u64::MAX`, the representable byte threshold is necessarily smaller.
+That intermediate overflow alone does not reject configuration. Subsequent
+file-size and recovery-memory sums, and prospective append increments, still
+use checked arithmetic and must satisfy their respective limits.
+
+These bound newly written WALs under the selected configuration; they are not
+claims that every byte/count combination is reachable. An append that cannot
+satisfy the preconditions is refused before live state advances.
+
+Lowering either compaction threshold must not make an otherwise valid existing
+namespace unreadable. Startup streams the complete existing WAL under the
+fixed 1 GiB complete-file ceiling and the configured snapshot, record, and
+per-transaction bounds, even if its WAL exceeds the new append thresholds.
+Checksums, sequence ordering, and transition validation remain mandatory.
+Before the next append, an over-threshold store requires compaction of the
+recovered state. No new source progress is applied until that compaction and
+append succeed. Recovery never allocates the whole older WAL; aggregate
+memory admission still includes bounded replay state and transaction staging.
 
 For an Ack-authorized transaction that requires pre-append compaction, the
 retained batch remains owned and unresolved while compaction publishes the new
@@ -3103,10 +3171,12 @@ replacement. Source work remains subject to the existing retained-batch rules.
    the filtered table become live. Open/validate the new `checkpoint.db` for
    appending, with the new `wal_offset`, zero WAL bytes/transactions, and next
    transaction sequence one. Never reuse a handle to the replaced inode.
-5. Resume checkpoint work only after all these steps succeed. A failure after
-   replacement may have changed authority: mark the live store unavailable and
-   reopen through recovery before retrying any mutation or publication. Do not
-   append to the old file, assume rollback, or report successful compaction.
+5. Resume checkpoint work only after all these steps succeed. A failed sync
+   poisons the store and requires storage remediation. Other recoverable
+   failures after replacement may have changed authority: mark the live store
+   unavailable and reopen through recovery before retrying mutation or
+   publication. Do not append to the old file, assume rollback, or report
+   successful compaction.
 
 Before replacement, `checkpoint.db` remains authoritative. The replacement
 contains all current logical state, so once its publication is durable the old
@@ -3122,9 +3192,10 @@ creation and compaction temporary names. Under exclusive ownership, after
 validating `checkpoint.db`, replay, and the recovery barrier, remove a recognized
 leftover temporary, treat already-absent as success, and sync the directory.
 Never delete `checkpoint.db` or `ownership.lock`. Unexpected artifacts fail
-closed for inspection. A cleanup or cleanup-sync failure blocks another
-publication; bounded retries use the checkpoint-store failure/backpressure
-policy. This protocol admits no normal accumulation of retired files.
+closed for inspection. A cleanup failure blocks another publication and uses
+bounded store retries when recoverable. A cleanup-sync failure poisons the
+store; another fsync or reopen is not a repair. This protocol admits no normal
+accumulation of retired files.
 
 #### Recovery and publication barrier
 
@@ -3161,11 +3232,19 @@ file or an older generation to bypass a missing or corrupt authoritative file.
 8. Install recovered state and resume appends only through the validated active
    file handle, with the exact next sequence and WAL byte/transaction counts.
 
-Barrier failure follows bounded checkpoint-store retries and ultimately fails
-the receiver; no protected work is admitted in between. Reopening repeats
-validation and the barrier. It applies to both first publication and compaction,
-independently of `checkpoint.sync_interval`. Read-only inspection does not grant
-mutation authority. File sync before replacement, tail-repair sync, and cleanup
+A failed synchronization barrier poisons the store and fails the receiver;
+no protected work or sync-only retry is admitted afterward. Reopening is not
+an escape from a known sync failure. The checkpoint store enforces this only
+within an instance; it has no durable or process-wide poison history.
+The receiver and lifecycle supervisor must preserve the terminal condition
+outside that instance and block automatic reopen, including after startup
+errors, reconfiguration, and supervisor-driven restart. This remains a
+required integration gate.
+Ordinary recovery after process interruption repeats validation and the barrier, but cannot prove that an
+earlier process never observed a writeback error during the same boot. The
+[terminal sync-failure contract](filelog-checkpoint-format.md#wal-append-failure-and-repair)
+applies to first publication and compaction independently of
+`checkpoint.sync_interval`. Read-only inspection does not grant mutation authority. File sync before replacement, tail-repair sync, and cleanup
 sync are additional requirements. Platform crash qualification must cover the
 replacement protocol and repeated process exits before its directory barrier.
 
@@ -3647,7 +3726,8 @@ evidence, not merely an OS error number:
 | Aggregate downstream Nack | Receiver-wide batch | Retain and retry uniformly within delivery bounds |
 | Retry exhaustion | Receiver-wide delivery | Apply `on_retry_exhaustion`; default observable pause with periodic retries and no new source reads |
 | Invalid startup topology/configuration | Receiver | Fail before source admission; downstream permanent-refusal handling is deferred until typed Nack metadata survives end to end |
-| Checkpoint append/sync/compaction failure, including checkpoint-side `ENOSPC` | Receiver | Bounded consecutive store failures, then terminal; never per-file quarantine |
+| Recoverable checkpoint append/compaction I/O failure, including checkpoint-side `ENOSPC` without a failed sync | Receiver | Bounded consecutive store failures, then terminal; never per-file quarantine |
+| Failed required checkpoint file or directory sync | Receiver | Poison the store and fail immediately; no sync-only retry or automatic reopen; require explicit storage incident recovery |
 | Structurally complete checkpoint CRC failure, namespace mismatch, impossible transition, or other checkpoint/namespace corruption | Receiver startup or receiver | Fail closed; never quarantine one file and never recover an automatic WAL prefix |
 | Namespace lock timeout | Receiver startup | Terminal without reading |
 | Lease-registry integrity failure | Receiver | Fail closed |

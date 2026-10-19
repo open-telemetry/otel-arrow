@@ -58,6 +58,17 @@ impl ColumnarEngine {
         mut pipeline: PipelineExpression,
         options: ColumnarEngineOptions,
     ) -> ColumnarEngine {
+        for expression in pipeline.get_expressions_mut() {
+            if let DataExpression::Discard(d) = expression
+                && let Some(predicate) = d.get_predicate_mut()
+            {
+                // Note: The arrow filter operation used for discard by the
+                // engine works inversely to what the expression tree is set up
+                // to express so we invert the predicate once at construction.
+                predicate.invert();
+            }
+        }
+
         Self {
             diagnostic_level: options.diagnostic_level,
             pipeline,
@@ -132,7 +143,7 @@ impl<const BATCH_SIZE: usize> Display for ColumnarEngineResults<'_, BATCH_SIZE> 
     }
 }
 
-fn format_diagnostics(
+pub(crate) fn format_diagnostics(
     query: &str,
     diagnostics: &[ColumnarEngineDiagnostic<'_>],
     output: &mut dyn Write,

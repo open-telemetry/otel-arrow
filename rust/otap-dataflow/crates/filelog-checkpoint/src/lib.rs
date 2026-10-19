@@ -5,8 +5,8 @@
 //!
 //! The version 1 on-disk representation is the compatibility contract. This
 //! crate's Rust API remains internal and experimental under repository policy.
-//! It contains no filesystem, publication, receiver-runtime, or
-//! administration implementation.
+//! Linux storage is available through the `store` module on Linux. Receiver runtime and
+//! administration remain separate layers.
 
 mod checkpoint;
 mod error;
@@ -15,6 +15,9 @@ mod primitives;
 mod replay;
 mod snapshot;
 mod wal;
+
+#[cfg(target_os = "linux")]
+pub mod store;
 
 pub use checkpoint::{
     CHECKPOINT_HEADER_BYTES, CheckpointHeader, decode_checkpoint_header,

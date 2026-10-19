@@ -198,6 +198,7 @@ regex-syntax = "0.8.11"
 ring = "0.17"
 roaring = "0.11.2"
 ryu = "1"
+rustix = { version = "1.1.5", features = ["fs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
 rustls-pki-types = { version = "1.11", features = ["std"] }
 rustls-webpki = { version = "0.103.15", default-features = false, features = ["std"] }
@@ -266,7 +267,7 @@ weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=8.6.0"
+zip = "=9.0.5"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 clickhouse = { version = "0.15.3", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
 clickhouse-ext-arrow = "0.2.0"

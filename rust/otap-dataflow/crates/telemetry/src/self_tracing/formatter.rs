@@ -307,7 +307,7 @@ impl StyledBufWriter<'_> {
         let mut attrs = record.attributes().peekable();
         // Treat an empty-string body as absent. The otel_*! macros produce
         // an empty body because tracing requires at least a format string.
-        // See also: `encode_body_string` in encoder.rs.
+        // See also: `DirectFieldVisitor::record_str` in encoder.rs.
         let has_body = body
             .as_ref()
             .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));

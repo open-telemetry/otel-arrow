@@ -72,6 +72,13 @@ pub(super) enum ValueFormat {
     Double,
 }
 
+/// Checked native fields used to validate receiver-side sampling state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RawSample {
+    second_value: i64,
+    multi_count: u32,
+}
+
 /// Owns an open query and its counters; dropping the adapter closes the query.
 /// No raw native handle crosses this boundary.
 pub(super) trait PdhApi {
@@ -82,8 +89,8 @@ pub(super) trait PdhApi {
     fn counter_type(&mut self, counter: &Self::Counter, path: &str) -> Result<u32, Error>;
     /// Returns whether collection has data; an expected omission returns false.
     fn collect(&mut self) -> Result<bool, Error>;
-    /// Returns a checked raw base, an expected omission, or a validated failure.
-    fn raw(&mut self, counter: &Self::Counter, path: &str) -> Result<Option<i64>, Error>;
+    /// Returns checked raw sampling fields, an expected omission, or a validated failure.
+    fn raw(&mut self, counter: &Self::Counter, path: &str) -> Result<Option<RawSample>, Error>;
     /// Returns an unscaled value, an expected omission, or a validated failure.
     fn formatted(
         &mut self,
@@ -109,9 +116,12 @@ impl<C> CounterHandle<C> {
     }
 
     fn read(&mut self, api: &mut impl PdhApi<Counter = C>) -> Result<SampleValue, Error> {
-        if self.kind != CounterKind::Direct {
-            let base = match api.raw(&self.handle, &self.path) {
-                Ok(Some(base)) => base,
+        if !matches!(
+            self.kind,
+            CounterKind::Direct | CounterKind::FormattedSingleSample
+        ) {
+            let raw = match api.raw(&self.handle, &self.path) {
+                Ok(Some(raw)) => raw,
                 Ok(None) => {
                     self.reset_readiness();
                     return Ok(SampleValue::NoObservation);
@@ -122,6 +132,7 @@ impl<C> CounterHandle<C> {
                 }
             };
             if self.kind == CounterKind::RawFraction {
+                let base = raw.second_value;
                 if base <= 0 {
                     return Err(Error::Calculation {
                         path: self.path.clone(),
@@ -129,11 +140,23 @@ impl<C> CounterHandle<C> {
                     });
                 }
             } else {
-                let Some(previous) = self.previous_base.replace(base) else {
+                // The next interval uses its own current MultiCount, so even
+                // a zero-base sample must advance the raw baseline.
+                let previous = self.previous_base.replace(raw.second_value);
+                if self.kind == CounterKind::CalculatedTwoSampleWithMultiBase
+                    && raw.multi_count == 0
+                {
+                    return Err(Error::Calculation {
+                        path: self.path.clone(),
+                        message: "multi-counter base denominator must be positive, got 0"
+                            .to_owned(),
+                    });
+                }
+                let Some(previous) = previous else {
                     return Ok(SampleValue::NoObservation);
                 };
                 if self.kind == CounterKind::CalculatedTwoSampleWithBase {
-                    match base.cmp(&previous) {
+                    match raw.second_value.cmp(&previous) {
                         std::cmp::Ordering::Less => {
                             self.reset_readiness();
                             return Ok(SampleValue::NoObservation);
