@@ -45,8 +45,8 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_pdata_codec::{
-    AcceptedEncodings, CodecError, EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding,
-    PdataPayloadDecodeError, PdataView,
+    AcceptedEncodings, BatchPlan, BatchingOutput, CodecError, EncodePolicy, EncodingPlan,
+    OtapPayload, PdataEncoding, PdataPayloadDecodeError, PdataView,
 };
 
 mod delivery;
@@ -1699,6 +1699,28 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
         payload: &mut OtapPayload,
         plan: &EncodingPlan,
     ) -> Result<bytes::Bytes, CodecError>;
+
+    /// Prepares one payload for a startup-resolved batching plan.
+    async fn prepare_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
+
+    /// Merges or splits prepared payloads through a batching plan.
+    async fn batch(
+        &self,
+        plan: &BatchPlan,
+        signal: SignalType,
+        inputs: Vec<OtapPayload>,
+    ) -> Result<BatchingOutput, CodecError>;
+
+    /// Converts a flushed working batch to the plan's output representation.
+    async fn finish_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
 }
 
 /// Processor capability for algorithms that always require mutable native OTAP.
@@ -1811,6 +1833,31 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &EncodingPlan,
             ) -> Result<bytes::Bytes, CodecError> {
                 payload.encode_bytes(self.codec_service(), plan)
+            }
+
+            async fn prepare_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.prepare(payload, self.codec_service())
+            }
+
+            async fn batch(
+                &self,
+                plan: &BatchPlan,
+                signal: SignalType,
+                inputs: Vec<OtapPayload>,
+            ) -> Result<BatchingOutput, CodecError> {
+                plan.batch(signal, inputs, self.codec_service())
+            }
+
+            async fn finish_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.finish(payload, self.codec_service())
             }
         }
     };
@@ -2142,8 +2189,8 @@ mod test {
             codec
                 .admit(SignalType::Logs, bytes)
                 .expect("lazy admission"),
-        )
-        .with_item_count(9);
+        );
+        let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9);
         let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
 
         let error = handler
@@ -2382,9 +2429,11 @@ mod test {
                 OtapPayload::from(legacy),
                 codec.admit(signal, bytes.clone()).unwrap().into(),
             ] {
-                let pdata = OtapPdata::new_default(payload.with_item_count(9))
-                    .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
-                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let pdata = OtapPdata::new_default(
+                    otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9),
+                )
+                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
+                .with_peer_addr("127.0.0.1:1234".parse().unwrap());
                 let context = pdata.context.clone();
                 let format = pdata.payload_ref().format();
                 let error = handler

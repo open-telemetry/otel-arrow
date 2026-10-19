@@ -4,6 +4,7 @@
 pub(crate) mod columnar_records;
 pub(crate) mod engine;
 pub(crate) mod engine_diagnostic;
+pub(crate) mod execution_context;
 pub(crate) mod primitives;
 
 pub use columnar_records::*;
