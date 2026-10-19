@@ -5,6 +5,7 @@
 
 use otel_arrow_contrib_data_engine_kql_parser::Parser;
 use otel_arrow_dfe_pdata::{
+    OtapArrowRecords,
     proto::{
         OtlpProtoMessage,
         opentelemetry::{
@@ -14,7 +15,7 @@ use otel_arrow_dfe_pdata::{
                 Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
                 HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
                 ScopeMetrics, Sum, Summary, SummaryDataPoint,
-                exponential_histogram_data_point::Buckets, metric::Data,
+                exponential_histogram_data_point::Buckets, metric::Data, number_data_point::Value,
                 summary_data_point::ValueAtQuantile,
             },
             resource::v1::Resource,
@@ -25,7 +26,11 @@ use otel_arrow_dfe_pdata::{
 };
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-use crate::{error::Error, parser::default_parser_options, pipeline::Pipeline};
+use crate::{
+    error::{Error, Result},
+    parser::default_parser_options,
+    pipeline::Pipeline,
+};
 
 /// Helper function to compare the metrics & their data points on left right data.
 ///
@@ -1658,18 +1663,16 @@ async fn test_filter_data_point_by_nested_attribute() {
     .await;
 }
 
-/// In a handful of tests below, we want to ensure that values are assigned to all data point types
-/// with the correct key / value from sources involving various types of expressions. This helper
-/// simply populates each type of data point, evaluates the expression, and ensures the correct
-/// attribute was assigned. The motivation for this is to reduce the boilerplate of creating
-/// fixtures and asserting the result of each test case.
-async fn run_assign_to_all_data_point_type_test(
+/// Creates a single OTAP batch of metrics, containing a single metric of each type each containing
+/// one single data point with the specified flags and values. It then applies the query and returns
+/// the resulting OTAP batch. This can be used to ensure the query-engine is correctly applied to
+/// all data point types.
+async fn evaluate_query_on_all_data_point_batch(
     query: &str,
-    flags: u32,
+    time_unix_nano: Option<u64>,
+    flags: Option<u32>,
     attributes: Option<Vec<KeyValue>>,
-    expected_key: &str,
-    expected_value: AnyValue,
-) {
+) -> OtapArrowRecords {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
@@ -1681,7 +1684,8 @@ async fn run_assign_to_all_data_point_type_test(
             .data_gauge(Gauge {
                 data_points: vec![
                     NumberDataPoint::build()
-                        .flags(flags)
+                        .time_unix_nano(time_unix_nano.unwrap_or_default())
+                        .flags(flags.unwrap_or_default())
                         .attributes(attributes.clone().unwrap_or_default())
                         .finish(),
                 ],
@@ -1692,7 +1696,8 @@ async fn run_assign_to_all_data_point_type_test(
             .data_sum(Sum {
                 data_points: vec![
                     NumberDataPoint::build()
-                        .flags(flags)
+                        .time_unix_nano(time_unix_nano.unwrap_or_default())
+                        .flags(flags.unwrap_or_default())
                         .attributes(attributes.clone().unwrap_or_default())
                         .finish(),
                 ],
@@ -1704,7 +1709,8 @@ async fn run_assign_to_all_data_point_type_test(
             .data_histogram(Histogram {
                 data_points: vec![
                     HistogramDataPoint::build()
-                        .flags(flags)
+                        .time_unix_nano(time_unix_nano.unwrap_or_default())
+                        .flags(flags.unwrap_or_default())
                         .attributes(attributes.clone().unwrap_or_default())
                         .finish(),
                 ],
@@ -1716,7 +1722,8 @@ async fn run_assign_to_all_data_point_type_test(
             .data_exponential_histogram(ExponentialHistogram {
                 data_points: vec![
                     ExponentialHistogramDataPoint::build()
-                        .flags(flags)
+                        .time_unix_nano(time_unix_nano.unwrap_or_default())
+                        .flags(flags.unwrap_or_default())
                         .attributes(attributes.clone().unwrap_or_default())
                         .finish(),
                 ],
@@ -1728,7 +1735,8 @@ async fn run_assign_to_all_data_point_type_test(
             .data_summary(Summary {
                 data_points: vec![
                     SummaryDataPoint::build()
-                        .flags(flags)
+                        .time_unix_nano(time_unix_nano.unwrap_or_default())
+                        .flags(flags.unwrap_or_default())
                         .attributes(attributes.clone().unwrap_or_default())
                         .finish(),
                 ],
@@ -1736,8 +1744,34 @@ async fn run_assign_to_all_data_point_type_test(
             .finish(),
     ];
 
-    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
-    let result = pipeline.execute(input_batch).await.unwrap();
+    let mut metrics_data = to_metrics_data(metrics);
+    metrics_data.resource_metrics[0].resource = Some(
+        Resource::build()
+            .attributes(attributes.clone().unwrap_or_default())
+            .finish(),
+    );
+    metrics_data.resource_metrics[0].scope_metrics[0].scope = Some(
+        InstrumentationScope::build()
+            .attributes(attributes.clone().unwrap_or_default())
+            .finish(),
+    );
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
+    pipeline.execute(input_batch).await.unwrap()
+}
+
+/// Creates one metric of each type, each containing a single data point with the specified
+/// flags and values. It then applies the query to transform the batch, and runs validate
+/// function on the "data" field from each metric.
+async fn run_all_data_point_type_test(
+    query: &str,
+    time_unix_nano: Option<u64>,
+    flags: Option<u32>,
+    attributes: Option<Vec<KeyValue>>,
+    validate: impl Fn(Data),
+) {
+    let result =
+        evaluate_query_on_all_data_point_batch(query, time_unix_nano, flags, attributes).await;
 
     let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
         panic!("invalid signal type")
@@ -1751,11 +1785,283 @@ async fn run_assign_to_all_data_point_type_test(
             .len(),
         5
     );
+
     for metric in metrics_result.resource_metrics[0].scope_metrics[0]
         .metrics
         .iter()
     {
-        let attrs = match metric.data.as_ref().unwrap() {
+        let data = metric.data.clone().unwrap();
+        validate(data)
+    }
+}
+
+/// Scenario: assign a field to all metric data point types from a constant
+/// Guarantees: the query-engine supports this type of assignment where the result will be a scalar
+#[tokio::test]
+async fn test_assign_metrics_data_point_all_field_from_constant() {
+    let query = "metrics | apply data_points {
+        set flags = 5
+    }";
+    run_all_data_point_type_test(query, None, Some(6), None, |data| {
+        let new_flags = match &data {
+            Data::Gauge(g) => g.data_points[0].flags,
+            Data::Sum(s) => s.data_points[0].flags,
+            Data::Histogram(h) => h.data_points[0].flags,
+            Data::ExponentialHistogram(e) => e.data_points[0].flags,
+            Data::Summary(s) => s.data_points[0].flags,
+        };
+        assert_eq!(new_flags, 5);
+    })
+    .await
+}
+
+/// Scenario: assign the value of a field, which is supported on all data point types, to only a
+/// single type of metric.
+/// Guarantees: only the specified metric type has the assignment applied to it
+#[tokio::test]
+async fn test_assign_metrics_data_point_one_type_only() {
+    let query = "gauges | apply data_points {
+        set flags = 5
+    }";
+
+    run_all_data_point_type_test(query, None, Some(6), None, |data| {
+        let flags = match &data {
+            Data::Gauge(g) => {
+                assert_eq!(g.data_points[0].flags, 5);
+                return;
+            }
+            Data::Sum(s) => s.data_points[0].flags,
+            Data::Histogram(h) => h.data_points[0].flags,
+            Data::ExponentialHistogram(e) => e.data_points[0].flags,
+            Data::Summary(s) => s.data_points[0].flags,
+        };
+        assert_eq!(flags, 6);
+    })
+    .await
+}
+
+/// Scenario: assign a field to all metric data point types from a constant.
+/// Guarantees: the query-engine supports this type of assignment where the result will be an array
+/// that is already aligned to the assignment target
+#[tokio::test]
+async fn test_assign_metrics_data_point_all_from_other_root_scoped_field() {
+    let query = "metrics | apply data_points {
+        set start_time_unix_nano = time_unix_nano
+    }";
+    run_all_data_point_type_test(query, Some(5), Some(6), None, |data| {
+        let new_start_ts = match &data {
+            Data::Gauge(g) => g.data_points[0].start_time_unix_nano,
+            Data::Sum(s) => s.data_points[0].start_time_unix_nano,
+            Data::Histogram(h) => h.data_points[0].start_time_unix_nano,
+            Data::ExponentialHistogram(e) => e.data_points[0].start_time_unix_nano,
+            Data::Summary(s) => s.data_points[0].start_time_unix_nano,
+        };
+        assert_eq!(new_start_ts, 5);
+    })
+    .await
+}
+
+/// Creates a batch containing a single metric of type Gauge containing a single data point with
+/// the specified flags, attrs and int value. It then applies the query and returns the result.
+async fn evaluate_query_on_gauge(
+    query: &str,
+    flags: Option<u32>,
+    attributes: Option<Vec<KeyValue>>,
+    int_value: Option<i64>,
+) -> Result<OtapArrowRecords> {
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+
+    let mut dp_builder = NumberDataPoint::build()
+        .flags(flags.unwrap_or_default())
+        .attributes(attributes.clone().unwrap_or_default());
+    if let Some(int_value) = int_value {
+        dp_builder = dp_builder.value_int(int_value)
+    }
+
+    let metrics = vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![dp_builder.finish()],
+            })
+            .finish(),
+    ];
+
+    let mut metrics_data = to_metrics_data(metrics);
+    metrics_data.resource_metrics[0].resource = Some(
+        Resource::build()
+            .attributes(attributes.clone().unwrap_or_default())
+            .finish(),
+    );
+    metrics_data.resource_metrics[0].scope_metrics[0].scope = Some(
+        InstrumentationScope::build()
+            .attributes(attributes.clone().unwrap_or_default())
+            .finish(),
+    );
+
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_data));
+    pipeline.execute(input_batch).await
+}
+
+/// Runs the query applying the pipeline a batch of metrics with a gauge metric with a single data
+/// point and calls validate on the gauge.
+async fn run_gauge_assign_test(
+    query: &str,
+    flags: Option<u32>,
+    attributes: Option<Vec<KeyValue>>,
+    int_value: Option<i64>,
+    validate: impl Fn(&Gauge),
+) {
+    let result = evaluate_query_on_gauge(query, flags, attributes, int_value)
+        .await
+        .unwrap();
+    let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+
+    assert_eq!(metrics_result.resource_metrics.len(), 1);
+    assert_eq!(metrics_result.resource_metrics[0].scope_metrics.len(), 1);
+    assert_eq!(
+        metrics_result.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .len(),
+        1
+    );
+
+    for metric in metrics_result.resource_metrics[0].scope_metrics[0]
+        .metrics
+        .iter()
+    {
+        let data = metric.data.clone().unwrap();
+        let Data::Gauge(g) = &data else {
+            panic!("invalid metric data type {data:?}");
+        };
+        validate(g)
+    }
+}
+
+/// Scenario: assign the field on the data point type from an attribute.
+/// Guarantees: the evaluation result, which must be re-aligned to the match the row order of the
+/// data point types is successfully applied to the data point
+#[tokio::test]
+async fn test_assign_metrics_data_point_from_attribute_v2() {
+    let query = "gauges | apply data_points {
+        set int_value = attributes[\"x\"]
+    }";
+    let attrs = vec![KeyValue::new("x", AnyValue::new_int(5))];
+    run_gauge_assign_test(query, None, Some(attrs), Some(10), |gauge| {
+        let value = gauge.data_points[0].value.unwrap();
+        assert_eq!(value, Value::AsInt(5));
+    })
+    .await
+}
+
+/// Scenario: assign the field on the data point type from an attribute on resource / scope.
+/// Guarantees: the evaluation result, which must be re-aligned to the match the row order of the
+/// data point types by a multi-hop join involving the parent metric record batch is successfully
+/// applied to the data point
+#[tokio::test]
+async fn test_assign_metrics_data_point_from_root_parent_attributes() {
+    let query = "gauges | apply data_points {
+        set int_value = resource.attributes[\"x\"]
+    }";
+    let attrs = vec![KeyValue::new("x", AnyValue::new_int(5))];
+    run_gauge_assign_test(query, None, Some(attrs.clone()), None, |gauge| {
+        let value = gauge.data_points[0].value.unwrap();
+        assert_eq!(value, Value::AsInt(5));
+    })
+    .await;
+
+    let query = "gauges | apply data_points {
+        set int_value = instrumentation_scope.attributes[\"x\"]
+    }";
+    run_gauge_assign_test(query, None, Some(attrs), None, |gauge| {
+        let value = gauge.data_points[0].value.unwrap();
+        assert_eq!(value, Value::AsInt(5));
+    })
+    .await;
+}
+
+/// Scenario: assign the nullable (e.g. optional) field on the data point from an expression that
+/// will evaluate to null
+/// Guarantees: the evaluation will cause the optional column to be removed.
+#[tokio::test]
+async fn test_assign_metrics_data_point_to_null() {
+    let query = "gauges | apply data_points { set int_value = attributes[\"missing\"] }";
+    let result = evaluate_query_on_gauge(query, None, None, Some(5))
+        .await
+        .unwrap();
+    let dp_rb = result.get(ArrowPayloadType::NumberDataPoints).unwrap();
+    assert!(dp_rb.column_by_name(consts::INT_VALUE).is_none());
+}
+
+/// Scenario: assign metric data points with a field name which is not valid
+/// Guarantees: an error explaining why the pipeline cannot be evaluated is produced
+#[tokio::test]
+async fn test_assign_metrics_data_point_invalid_field_name() {
+    let query = "metrics | apply data_points { set invalid_field = 5 }";
+    let error = evaluate_query_on_gauge(query, None, None, Some(5))
+        .await
+        .unwrap_err();
+
+    let err_message = error.to_string();
+    assert!(
+        err_message.contains("cannot assign field 'invalid_field' to data point type"),
+        "unexpected error message {err_message:?}",
+    )
+}
+
+/// Scenario: assign metric data points with a field name which is only valid on some data point
+/// types but not all
+/// Guarantees: an error explaining why the pipeline cannot be evaluated is produced
+#[tokio::test]
+async fn test_assign_metrics_data_point_invalid_field_name_for_all_dp_types() {
+    let query = "metrics | apply data_points { set int_value = 5 }";
+    let error = evaluate_query_on_gauge(query, None, None, Some(5))
+        .await
+        .unwrap_err();
+
+    let err_message = error.to_string();
+    assert!(
+        err_message.contains("cannot assign field 'int_value' to data point type"),
+        "unexpected error message {err_message:?}",
+    )
+}
+
+/// Scenario: assign metric data points with a field name which is not valid for the specified
+/// data piont type
+/// Guarantees: an error explaining why the pipeline cannot be evaluated is produced
+#[tokio::test]
+async fn test_assign_metrics_data_point_invalid_field_name_single_dp_type() {
+    let query = "gauges | apply data_points { set sum = 5 }";
+    let error = evaluate_query_on_gauge(query, None, None, Some(5))
+        .await
+        .unwrap_err();
+
+    let err_message = error.to_string();
+    assert!(
+        err_message.contains("cannot assign field 'sum' to data point type"),
+        "unexpected error message {err_message:?}",
+    )
+}
+
+/// In a handful of tests below, we want to ensure that values are assigned to all data point types
+/// with the correct key / value from sources involving various types of expressions. This helper
+/// simply populates each type of data point, evaluates the expression, and ensures the correct
+/// attribute was assigned. The motivation for this is to reduce the boilerplate of creating
+/// fixtures and asserting the result of each test case.
+async fn run_assign_to_all_data_point_type_test(
+    query: &str,
+    flags: u32,
+    attributes: Option<Vec<KeyValue>>,
+    expected_key: &str,
+    expected_value: AnyValue,
+) {
+    run_all_data_point_type_test(query, None, Some(flags), attributes, |data| {
+        let attrs = match &data {
             Data::Gauge(g) => {
                 assert_eq!(g.data_points.len(), 1);
                 &g.data_points[0].attributes
@@ -1780,7 +2086,8 @@ async fn run_assign_to_all_data_point_type_test(
 
         let expected_attr = attrs.iter().find(|kv| kv.key == expected_key).unwrap();
         assert_eq!(expected_attr.value.as_ref().unwrap(), &expected_value);
-    }
+    })
+    .await;
 }
 
 /// Scenario: test creating a new attribute from a scalar value
@@ -2595,12 +2902,6 @@ async fn test_not_supported_queries_return_error() {
                 if (flags > 0) {
                     drop
                 }
-            }",
-        },
-        // assignment to metric data point fields or attributes is not yet supported
-        TestCase {
-            query: "metrics | apply data_points {
-                set flags = 0
             }",
         },
         // nested apply pipeline to modify data point attributes is not yet supported
