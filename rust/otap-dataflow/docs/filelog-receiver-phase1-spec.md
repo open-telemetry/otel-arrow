@@ -643,55 +643,95 @@ truncate durable state.
 
 ## Discovery reconciliation
 
-### Discovery evidence and limitations
+### Discovery contract
 
-Discovery reports traversal coverage, observed locator presence, policy
-eligibility, and identity evidence separately. A missing observation is not
-proof that a file ceased to exist: concurrent moves can evade a traversal.
-The [rotation policy](#late-writes-and-finalization) uses a later qualifying
-pass and EOF inactivity to reduce this risk, not to establish a filesystem
-snapshot. Repeated movement or an undetected mount outage can still cause false
-finalization; later discovery may replay or skip content under the start policy.
+- Report coverage, locator presence, policy eligibility, and identity evidence
+  separately. None substitutes for another.
+- A scan miss is not proof of permanent absence. Resident finalization requires
+  the [confirmation policy](#late-writes-and-finalization).
+- Reappearance can cancel pending disappearance only before confirmed permanent
+  EOF, which precedes D17 terminal framing and the finalization WAL append.
+- Required exclusions fail closed before read-open. Unverifiable evidence does
+  not authorize admission or automatically revoke an existing reader.
+- Observed locator presence prevents retention absence aging and
+  discovery-derived confirmation; it does not defeat qualified resident unlink.
+- Keep traversal, observations, handles, and delivery bounded. Resource pressure
+  never authorizes discarding unresolved source progress.
 
-Retain bounded identity evidence for include roots and tracked-binding parent
-directories. A root absent at startup has no baseline identity; its first
-successful validation establishes one. Until then, that missing root supplies
-no qualifying coverage: the whole pass is incomplete, including for recovered
-records. Discovery-based finalization and retention absence aging are blocked
-receiver-wide, not positive discovery/reading or qualified resident-unlink
-handling. A previously established root that becomes unavailable is likewise
-a coverage failure, never an empty successful scan.
-A binding parent returning `ENOENT` is a miss only when root availability and
-traversal context permit it; absence is not replacement by a different identity.
+The policies below are proposed for maintainer review, with their operator costs
+listed in [Discovery policy review](filelog-receiver.md#discovery-policy-review).
+Source review establishes neither filesystem qualification nor runtime results.
+Implementation may choose mechanisms, but changes to these behavior contracts
+require an explicit specification and conformance update.
 
-A different directory at an established root or binding-parent path invalidates
-pending confirmations and absence history and blocks discovery-based negative
-conclusions receiver-wide. This includes ordinary directory recreation or
-rename-away followed by recreation. Do not automatically adopt the replacement,
-even on the same device. Resume after expected identities return and fresh
-evidence is collected, or after receiver recreation. Diagnostics identify the
-changed directory; narrower coverage scoping is outside this design.
+### Complete and incomplete inventories
 
-To reinitialize discovery, restore or verify the intended filesystem environment,
-then restart or use supported reconfiguration that recreates the receiver.
-This clears runtime discovery evidence, not checkpoints or committed progress;
-normal ownership handoff and the terminal sync-failure block still apply.
-Automatic restart can baseline an unexpected environment, so deployments must
-make the intended storage available before startup. Root identity checks do not
-detect every mount change. No new mount-check option or checkpoint field is
-required by this policy.
+A complete pass finishes the required traversal with no coverage or policy
+failure below and retains the observations needed to reconcile bounded state.
+Identity and fingerprint-multiplicity evidence have their own validity; a
+complete traversal does not authorize reconnection.
 
-Persistent coverage or policy failure can delay discovery-based finalization
-and retention indefinitely. The resident-handle unlink path below is independent
-of these failures, including directory-change blocks. Deleted files can still
-remain pinned for continuing writes, framing, delivery, or checkpoint failures;
-immediate disk-space release is not guaranteed. Pinned readers remain charged
-to descriptor and memory limits; new readers wait rather than evicting them.
-Retained records can also accumulate against `max_tracked_files`. Use
-node-appropriate includes rather than optional absent roots in fleet configs.
-Report bounded diagnostics that distinguish absent configured roots, root
-changes, lost coverage, exclusion failures, and descriptor exhaustion, with
-rate-limited path context where available.
+| Outcome | Evidence and action |
+| --- | --- |
+| Individual candidate lookup returns `ENOENT`, including a missing component of a followed link target | No admission; record a miss, unless a detected environment or traversal failure invalidates the context. |
+| Leaf-candidate link chain fails with an ordinary resolution loop or nesting limit | Reject this candidate without eligible-name or locator-presence evidence; this alone does not invalidate unrelated coverage or prove physical absence. |
+| Root missing at startup / established root unavailable | Establish the first baseline on successful validation / report coverage failure until recovery or reinitialization. |
+| Subdirectory vanishes during traversal; directory open/listing fails; reopen cannot resume reliably | Coverage failure; pass cannot confirm disappearance. |
+| Detected root or tracked-binding-parent identity change | Invalidate pending confirmations and absence history; follow discovery reinitialization rules. |
+| Required exclusion mapping or pinned-target policy check cannot be completed | Policy failure; no dependent admission; pass cannot confirm disappearance. Preserve locator presence. |
+| Policy passed and locator presence established, but read-open or fingerprint read fails | Candidate-local failure: no admission or cancellation; preserve presence and block discovery-derived disappearance confirmation for that locator. Retry without invalidating unrelated coverage. |
+| Locator, size, or fingerprint observations are unstable | Pass incomplete; retain only observations whose locator stayed consistent as locator presence, without claiming identity continuity. |
+| Descriptor exhaustion prevents required probing | Retry with backoff; unfinished pass cannot confirm. Never drop unresolved pinned readers to recover capacity. |
+| Cancellation, depth/cycle limit, or bounded-state overflow loses required reconciliation evidence | Pass incomplete. |
+| Known locator reappears during terminal finalization | Preserve presence; block competing admission until release. This lifecycle block alone does not invalidate the pass. |
+
+A non-followed final symlink is rejected without resolving its target. Leaf-only
+rejection must not skip required subtree traversal: unknown directory targets,
+directory cycles, and fixed-prefix failures invalidate coverage. It does not
+cover magic-link policy rejection or failed pinned-target exclusion checks.
+Classify by operation and context, not errno alone. Persistent failures retain
+the pass-wide rule; qualified resident unlink remains independent.
+
+Pending overflow alone does not invalidate coverage when every retained locator
+can still be accounted for. Missing fingerprint-multiplicity diagnostics do not
+block unrelated finalization and must not be presented as complete counts.
+
+An incomplete pass cannot infer removal from non-observation, evict unseen
+pending evidence, or admit stale pending evidence as current. Valid positive
+observations remain usable. Phase 1 never transfers progress across locators
+using either complete or incomplete fingerprint populations.
+
+### Root baselines and reinitialization
+
+Retain bounded identity evidence for include roots and tracked-binding parents.
+An absent startup root has no identity until first validation and makes the
+pass incomplete receiver-wide, including for recovered records. An established
+root becoming unavailable is also a coverage failure. Parent `ENOENT` is a miss
+only when root availability and traversal context permit; it is not a
+replacement identity.
+
+A different directory at an established path clears pending confirmations and
+absence history and blocks discovery-based negative conclusions receiver-wide.
+Do not automatically adopt it, even on the same device. Resume after expected
+identities return and fresh evidence is collected, or after receiver recreation.
+A new instance resets runtime discovery evidence, not checkpoints or committed
+progress; ownership handoff and terminal sync-failure handling still apply.
+Positive reading and qualified resident unlink remain available during these
+blocks. See the design document for diagnostics and operator recovery.
+
+### Implementation qualification
+
+The scanner must qualify pin-bound target evidence under rename, intermediate
+symlink changes, unreachable targets, truncation, and exclusion-root aliases.
+Alias mapping must preserve full glob semantics, including an excluded file and
+an allowed sibling. No syscall sequence is prescribed or prequalified here.
+
+The resident-unlink shortcut requires qualification for the opened object's
+filesystem/backend; report the tested filesystems and conditions. Root and
+binding-parent checks also require mutation and mount-change tests. Do not
+infer support from a platform name or a successful metadata call. Where required
+evidence is unavailable, use the specified failure or ordinary lifecycle path,
+not an undocumented weaker fallback.
 
 ### Compilation and path semantics
 
@@ -733,13 +773,10 @@ supply evidence identifying this namespace through aliases; the narrow identity
 interface is implementation work and must not widen exclusion to the whole
 state root.
 
-Required exclusion checks are fail-closed. If the matched target cannot be
-verified sufficiently to evaluate them, discovery must not admit or read
-content through that observation; mark the pass incomplete. This is not a
-positive exclusion or an instruction to revoke an existing reader solely
-because another alias is unverifiable. Obtaining a runtime locator does not waive a
-path-resolution or evidence failure. A zero link count or a pathname ending
-in `" (deleted)"` does not establish an exception to this rule.
+If required target exclusion checks cannot be completed, reject admission and
+mark the pass incomplete; locator equality does not waive the failure. Neither
+zero link count nor a name ending in `" (deleted)"` creates an admission exception.
+An unverifiable alias alone does not authorize revoking an existing reader.
 
 Locator presence, including an excluded, age-filtered, or unreadable
 candidate, clears or withholds `absence_since` for the retained locator; it does
@@ -873,52 +910,26 @@ regular files on otherwise eligible storage still require resolved-target
 policy and least-privilege access. Network and unstable-locator filesystem
 qualification remains governed by the platform requirements.
 
-Lexical exclusion may reject a candidate pathname before pinning or read-open.
-That early rejection does not itself prove absence of a retained identity.
-For excluded names encountered during normal traversal, collect bounded locator
-presence for retained identities under the selected link policy. A metadata
-lookup without read-open may supply this point-in-time evidence; it does not
-authorize admission or reconnection. Uncertain evidence cannot revoke a reader
-supported by a validated eligible name. If required retained-state evidence
-cannot be obtained, use the same operation-specific outcomes as other lookups:
-`ENOENT` can be a miss, a leaf-link loop can be candidate-local rejection, and
-required traversal/policy failures invalidate the pass. Never turn uncertainty
-into disappearance.
+Lexical exclusion may reject a name before pinning. For excluded names met
+in normal traversal, a bounded metadata lookup may supply locator presence,
+not admission or reconnection. Apply the outcome table to lookup failures.
+Do not search pruned excluded subtrees for aliases; presence and exclusion
+handling cover inspected names only.
 
-Do not recursively search pruned excluded subtrees for aliases. Exclusion and
-presence guarantees cover inspected names only: a file moved into an uninspected
-subtree may instead follow disappearance handling, continue reading bytes after
-the move, and eventually become retention-eligible. This is an exclusion/privacy
-limitation, not a guarantee that moving a file there stops collection. Exclusion
-does not retrospectively identify an alias the scan never observes.
+For remaining candidates, evaluate target policy after pin/type/filesystem
+validation and before read-open or fingerprint reads. Keep the pin alive through
+verification and read-open. Path evidence must be bounded, untruncated, and
+associated with the pin; a full buffer is potentially truncated. Preserve full
+patterns through root mappings. Detected substitution, inconsistent ancestry,
+or unverifiable evidence fails closed. A final-component no-follow check alone
+does not validate intermediate components. A positively excluded object needs
+no read-open.
 
-For candidates not already rejected, discovery must have a policy decision
-point after safe pin/type/filesystem validation and before read-open or
-fingerprint reads. Evaluate resolved-target exclusions against evidence tied
-to that pinned object. Independent canonicalization of the original pathname
-is insufficient unless its association with the pinned object is validated
-under the following evidence contract. Keep the pin alive through verification
-and read-open. Path evidence must be bounded and untruncated; a full result
-buffer is treated as potentially truncated and unverifiable. Verify the path's
-association with the pin and preserve full pattern semantics through root
-mappings. Detected substitution, inconsistent ancestry evidence, or an
-unverifiable target fails closed.
-
-These checks provide point-in-time evidence, not an atomic ancestry snapshot
-or protection against every later namespace change. A final-component
-no-follow check alone does not validate intermediate components. Syscall choice
-is implementation-specific and must be qualified against this contract;
-undetected concurrent namespace changes and hardlinks outside excluded roots
-remain limitations, not permission to skip checks.
-A positively excluded object does not require a read-open merely to discover
-that it is excluded.
-
-This ordering governs discovery admission, not continued reads from an already
-validated resident handle. An unverifiable alias does not by itself establish
-the positive exclusion required for exclusion revocation.
-Any future restriction on untrusted magic-link resolution must preserve the
-trusted pinned reopening below. Kernel/support behavior must be explicit;
-an unrestricted retry cannot silently bypass an enforced resolution policy.
+This admission check does not prohibit continued reads from a validated resident
+handle; an unverifiable alias alone is not a positive exclusion. Restrictions
+on untrusted candidate resolution must preserve the trusted pinned reopen below,
+without an unrestricted retry that bypasses policy. Qualification must establish
+the mechanism's guarantees and the limitations listed in the design document.
 
 Reopen only the pinned regular file through trusted Linux `/proc/self/fd`,
 keeping the pin alive until the read handle is acquired and checked. Validate
@@ -1008,51 +1019,6 @@ Modification time is source-controlled metadata, not trusted security evidence.
 Enabling this filter intentionally permits an application to defer its own
 unrelated file by presenting an old timestamp.
 
-### Complete and incomplete inventories
-
-A complete pass finishes the required traversal with no coverage or policy
-failure below and retains the observations needed to reconcile bounded state.
-It is not a snapshot or proof of permanent absence. Candidate identity evidence
-and fingerprint-multiplicity diagnostics have their own validity; neither
-locator presence nor a complete traversal authorizes identity reconnection.
-
-| Outcome | Evidence and action |
-| --- | --- |
-| Individual candidate lookup returns `ENOENT`, including a missing component of a followed link target | No admission; record a miss, unless a detected environment or traversal failure invalidates the context. |
-| Leaf-candidate link chain fails with an ordinary resolution loop or nesting limit | Reject this candidate without eligible-name or locator-presence evidence; this alone does not invalidate unrelated coverage or prove physical absence. |
-| Root missing at startup / established root unavailable | Establish the first baseline on successful validation / report coverage failure until recovery or reinitialization. |
-| Subdirectory vanishes during traversal; directory open/listing fails; reopen cannot resume reliably | Coverage failure; pass cannot confirm disappearance. |
-| Detected root or tracked-binding-parent identity change | Invalidate pending confirmations and absence history; follow discovery reinitialization rules. |
-| Required exclusion mapping or pinned-target policy check cannot be completed | Policy failure; no dependent admission; pass cannot confirm disappearance. Preserve locator presence. |
-| Policy passed and locator presence established, but read-open or fingerprint read fails | Candidate-local failure: no admission or cancellation; preserve presence and block discovery-derived disappearance confirmation for that locator. Retry without invalidating unrelated coverage. |
-| Locator, size, or fingerprint observations are unstable | Pass incomplete; retain only observations whose locator stayed consistent as locator presence, without claiming identity continuity. |
-| Descriptor exhaustion prevents required probing | Retry with backoff; unfinished pass cannot confirm. Never drop unresolved pinned readers to recover capacity. |
-| Cancellation, depth/cycle limit, or bounded-state overflow loses required reconciliation evidence | Pass incomplete. |
-| Known locator reappears during terminal finalization | Preserve presence; block competing admission until release. This lifecycle block alone does not invalidate the pass. |
-
-A non-followed final symlink is rejected without resolving its target; a dangling
-target does not itself invalidate that pass. Directory traversal cycles and
-fixed-prefix resolution failures invalidate coverage. Candidate-local
-loop/nesting rejection does not cover magic-link policy rejection or a pinned
-target whose exclusion checks cannot be completed.
-Candidate-local rejection applies only where no required subtree traversal
-is being skipped. If the unresolved target may be a directory required by the
-include pattern, unknown type is a coverage failure, not a rejected leaf.
-Classify by operation and context, not errno alone.
-A persistent link loop under a followed recursive include can therefore block
-discovery-based finalization and retention absence aging receiver-wide. Report
-a bounded diagnostic identifying the link; qualified resident-unlink handling
-remains independent of this coverage failure.
-
-Pending overflow alone does not invalidate coverage when every retained locator
-can still be accounted for. Missing fingerprint-multiplicity diagnostics do not
-block unrelated finalization and must not be presented as complete counts.
-
-An incomplete pass cannot infer removal from non-observation, evict unseen
-pending evidence, or admit stale pending evidence as current. Valid positive
-observations remain usable. Phase 1 never transfers progress across locators
-using either complete or incomplete fingerprint populations.
-
 ### Bounded populations
 
 | Population | Bound |
@@ -1135,8 +1101,8 @@ its locator matches the still-held validated resident handle. Fingerprint-only
 matching is insufficient; cancellation does not bypass truncation or unresolved
 source-delta handling. Locator presence without eligible validation still blocks
 discovery-derived confirmation for that locator. After permanent EOF, preserve
-presence but block competing admission until ownership is released. After finalization, a later observation
-follows new-identity rules; descriptor-free containment instead permits normal
+presence but block competing admission until ownership is released. After
+finalization, a later observation follows new-identity rules; descriptor-free containment instead permits normal
 validated reconnection of the retained `Active` record.
 
 A lexical exclusion rejects that name, not every alias of its locator.
@@ -1157,14 +1123,10 @@ distinguished binding under the selected link policy:
   Fall back to a complete pass establishing no other validated eligible name;
   until then reading continues, potentially indefinitely during a stall.
 
-A mistaken revocation can lose access to unread bytes if the source disappears
-before rediscovery. Keeping its Active checkpoint preserves possible recovery,
-not the source bytes. This trade-off and delayed revocation are exclusion
-limitations; exclusion is not an instantaneous privacy boundary. Before
-confirmed permanent EOF, an observation meeting the Excluded preconditions
-replaces pending disappearance with exclusion handling, without D17. After the
-cutoff, it
-preserves locator presence but cannot undo finalization.
+Before permanent EOF, an authorized Excluded transition replaces pending
+disappearance without D17. After the cutoff, it preserves locator presence but
+cannot undo finalization. The data-loss and delayed-revocation trade-offs are
+listed in the [design document](filelog-receiver.md#discovery-policy-review).
 
 Exclusion is not disappearance or rotation. After the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering) is satisfied,
@@ -3507,45 +3469,35 @@ follows ordinary `start_at`.
 A removed resident handle remains pinned. After each EOF, `rotate_wait` begins or
 restarts. New bytes cancel the wait before framing continues.
 
-For a still-linked resident file, confirmation requires a later complete pass
-that started after the initial missing pass finished and again found neither an
-eligible name nor locator presence. A subsequent coverage/policy failure
-invalidates that confirmation. One fresh qualifying pass, started after the
-failed pass finishes, can replace it; failure alone does not restart the whole
-sequence. Actual validated eligible reappearance cancels pending disappearance,
-so a later miss starts a new sequence. Locator presence too weak to cancel
-still blocks confirmation until a fresh qualifying pass observes no presence.
-New source bytes restart the EOF inactivity wait; no deadline ties the
-confirming pass to `rotate_wait`.
+Both confirmation paths require EOF inactivity and the framing, delivery, Ack,
+and checkpoint conditions below:
 
-For discovery-derived confirmation, the latest completed pass processed by
-the lifecycle owner must qualify. Already-delivered failures or presence from
-an unfinished pass cannot be ignored.
-These checks apply before permanent-EOF confirmation, not after its cutoff.
+| Path | Confirmation evidence |
+| --- | --- |
+| Still-linked resident file | A complete pass started after the initial missing pass finished and found no eligible name or locator presence. |
+| Qualified resident unlink | Fresh zero-link evidence from the validated resident handle, rechecked at confirmation; no discovery event or qualifying pass required. |
 
-Fresh zero-link evidence from the validated resident handle can independently
-start pending unlink handling, without a discovery Disappeared event or either qualifying
-pass. This path is exempt from discovery coverage/policy and directory-change
-blocks. It requires a backend explicitly qualified for this resident unlink
-evidence; platform qualification must name the filesystems tested, rather than
-assuming support for every filesystem. Determine eligibility per opened object
-using its filesystem/backend evidence and the implementation's qualification
-coverage, not user configuration or filesystem type alone. Otherwise retain
-the ordinary path. Locator presence from an unverifiable alias does not block
-this independent unlink path, though it still blocks retention absence aging.
-Recheck that resident unlink evidence when confirming permanent EOF; if it no
-longer holds, require the ordinary discovery path. Validated eligible reappearance
-can still cancel before permanent EOF. EOF inactivity, D17, delivery, Ack, and
-checkpoint conditions remain mandatory.
-This is not a zero-link exception for newly discovered candidates.
+A later coverage/policy failure invalidates discovery-derived confirmation.
+One qualifying pass started after that failed pass finishes can restore it;
+failure alone does not restart the sequence. Locator presence also blocks this
+path until fresh qualifying evidence. Validated eligible reappearance cancels
+pending disappearance, so a later miss starts a new sequence. New bytes restart
+EOF inactivity; confirmation need not fit within `rotate_wait`.
 
-Before confirming permanent EOF, the lifecycle owner processes discovery
-batches already delivered to it and serializes the confirmation against their
-ordered observations. An empty-channel check alone is not that ordering
-contract. Confirmation is the cancellation cutoff, before D17 terminal framing:
-once entered, terminal delivery and checkpoint work cannot be undone by a
-later observation. Observations ordered after the cutoff may therefore lead
-to replay or skipped content after finalization; `RotatedFinalized` is terminal.
+The unlink shortcut is selected per opened object from backend qualification,
+not configuration or filesystem type alone. Without that qualification or fresh
+unlink evidence, use the ordinary path. Discovery coverage/policy/root blocks
+and presence-only aliases do not block this shortcut. Presence still blocks
+retention aging, and validated eligible reappearance can cancel before the
+cutoff. This does not permit admission of unverifiable zero-link candidates.
+
+The lifecycle owner processes already-delivered observations and failures,
+including unfinished-pass evidence, before confirming permanent EOF. The latest
+processed completed pass must qualify for the discovery-derived path. Serialize
+confirmation against ordered delivery; an empty-channel check is insufficient.
+Confirmed permanent EOF is the cancellation cutoff, before D17. Later
+observations cannot undo terminal delivery or checkpoint work;
+`RotatedFinalized` remains terminal.
 
 The read/checkpoint worker is the sole originator of an
 `update_progress(finalize = 0x01)` transaction. It may originate that operation

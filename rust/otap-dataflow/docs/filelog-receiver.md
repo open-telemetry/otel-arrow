@@ -196,6 +196,9 @@ related inventory and identity terms.
 Reviewers are asked to approve or challenge all of the following decisions and
 accepted compromises:
 
+The discovery changes additionally request review of the
+[policy and operator-cost table](#discovery-policy-review).
+
 | ID | Decision | Rationale or consequence |
 | --- | --- | --- |
 | D1 | Run one filelog receiver instance in Phase 1 | Engine-scoped assignment and fencing do not exist yet |
@@ -844,33 +847,44 @@ follow_symlinks: false
 Resolved-target exclusions still apply in the symlink form, so an exclusion
 matching the corresponding `/var/log/pods/...` target prevents admission.
 
-A dangling candidate link can count as a miss, but failed directory traversal
-invalidates a pass. Qualify both layouts under pod churn: measure confirmation
-delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission.
-Polling can miss repeated moves or an undetected mount outage; a file found
-after permanent finalization may be treated as new and replay or skip content.
+### Discovery policy review
 
-For late-write capture and terminal framing after rotation, prefer an include
-pattern that stops matching the rotated name. Explicitly excluding a rotated
-name that discovery inspects instead requests exclusion handling: no further
-reads or D17 solely for exclusion, and checkpoint state stays Active. An excluded
-alias does not revoke a reader supported by another validated eligible name.
-Pruned excluded subtrees are not searched for aliases. Moving a file there may
-not stop collection: disappearance handling can still read bytes written after
-the move. This is an exclusion/privacy limitation. A known ineligible binding
-can authorize prompt revocation; an unverifiable binding needs a complete-pass
-fallback, so revocation can be delayed during a stall.
+The discovery/rotation changes are a design proposal, not implementation or
+filesystem qualification. Maintainers should explicitly review these choices:
 
-An include root absent at startup also blocks discovery-based finalization and
-retention receiver-wide. Positive reading and qualified resident-unlink handling
-continue, but pinned readers and checkpoint records can exhaust their limits.
-Use node-appropriate include patterns rather than optional absent roots.
+| Proposed policy | Why | Operator cost or limitation |
+| --- | --- | --- |
+| Later qualifying pass plus EOF inactivity before still-linked finalization; cancellation ends before D17 | Avoid irreversible finalization from one missed scan | Handles and framing state can remain pinned indefinitely; repeated moves or undetected outages can still cause false finalization and replay/skip on rediscovery |
+| Pass-wide blocking for missing roots, replaced directories, or required traversal/policy failures | Do not turn lost coverage into absence without a reviewed narrower model | Cleanup can stall across the receiver, exhausting resident or tracked capacity; positive reading and qualified resident unlink remain available |
+| Binding-check exclusion fast path, with complete-pass fallback for uncertain bindings | Revoke confirmed exclusions without waiting for unrelated scanning | Wrong revocation can lose unread source bytes; uncertain bindings can delay revocation indefinitely |
+| Bounded alias inspection and point-in-time target evidence | Keep scanning bounded without claiming an atomic namespace snapshot | Uninspected excluded aliases and later namespace changes may escape detection; exclusions are not an instantaneous privacy boundary |
 
-Directory recreation at an established root or binding-parent path blocks
-discovery-based confirmation receiver-wide. Verify the environment, then
-restart/recreate the receiver to establish a new baseline. Qualified resident
-unlink handling remains available during this stall, but pending writes,
-delivery, or checkpoint failure can still delay descriptor and disk release.
+For late-write capture and terminal framing, prefer include patterns that stop
+matching rotated names. Explicit exclusion of an inspected rotated name instead
+requests revocation without D17, preserving Active checkpoint state. Moving an
+already tracked file into an uninspected excluded subtree may not stop reading
+new bytes and may eventually lose its checkpoint association through retention.
+A separate eligible alias prevents revocation under the specified binding rules.
+
+Use node-appropriate includes; absent optional roots also block negative
+conclusions. Directory removal/recreation, persistent loops under followed
+recursive includes, or unavailable exclusion mappings can stall cleanup. Emit
+bounded diagnostics naming the reason and relevant path, and report pinned-handle
+pressure and delayed admission. Pinned readers are never evicted to hide a stall.
+Qualified unlink handling bypasses discovery stalls, but writes, framing,
+delivery, or checkpoint failure can still delay disk-space release.
+
+After a detected environment change, restore or verify the intended storage,
+then restart or use supported reconfiguration that recreates the receiver.
+Checkpoints and progress remain intact, and restart does not bypass sync-failure
+handling. Automatic startup can baseline an unexpected environment; root
+identity checks do not detect every mount change. Deployment must provide the
+expected storage before startup.
+
+These are the limitations of the proposed policy, not evidence that its Linux
+mechanisms already satisfy it. Qualification must measure both Kubernetes path
+layouts under pod churn: confirmation delay, incomplete-pass frequency,
+pinned-handle pressure, and delayed admission.
 
 ## Normative architecture examples
 

@@ -568,8 +568,11 @@ while their semantic and format definitions remain normative from version 1.
 
 Cases below distinguish coverage, presence, policy, and identity evidence under
 the [discovery rules](filelog-receiver-phase1-spec.md#complete-and-incomplete-inventories).
-Use controlled rename schedules and injected lookup failures. A qualifying pass
-is an operational condition, not proof against continuing namespace movement.
+Use controlled rename schedules and injected lookup failures. These cases specify
+required evidence; listing them does not claim they have passed. Maintainer
+review of the [policy trade-offs](filelog-receiver.md#discovery-policy-review)
+is separate from implementation qualification. Changes to proposed behavior
+must update the specification and these cases together.
 
 ### Required cases
 
