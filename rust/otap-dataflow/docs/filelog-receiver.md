@@ -855,8 +855,16 @@ pattern that stops matching the rotated name. Explicitly excluding a rotated
 name that discovery inspects instead requests exclusion handling: no further
 reads or D17 solely for exclusion, and checkpoint state stays Active. An excluded
 alias does not revoke a reader supported by another validated eligible name.
-Pruned excluded subtrees are not searched for aliases; moving a file there can
-instead follow disappearance handling and continue late-write capture.
+Pruned excluded subtrees are not searched for aliases. Moving a file there may
+not stop collection: disappearance handling can still read bytes written after
+the move. This is an exclusion/privacy limitation. A known ineligible binding
+can authorize prompt revocation; an unverifiable binding needs a complete-pass
+fallback, so revocation can be delayed during a stall.
+
+An include root absent at startup also blocks discovery-based finalization and
+retention receiver-wide. Positive reading and qualified resident-unlink handling
+continue, but pinned readers and checkpoint records can exhaust their limits.
+Use node-appropriate include patterns rather than optional absent roots.
 
 Directory recreation at an established root or binding-parent path blocks
 discovery-based confirmation receiver-wide. Verify the environment, then

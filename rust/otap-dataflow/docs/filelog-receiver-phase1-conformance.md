@@ -649,7 +649,7 @@ is an operational condition, not proof against continuing namespace movement.
 | Qualification | Pod-directory churn in symlink and direct-path deployments | Release qualification records confirmation delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission |
 | Discovery | Excluded alias and another validated eligible name identify the same locator | Reject excluded name without revoking the eligible reader |
 | Discovery | Excluded name encountered during normal traversal identifies a retained locator | Metadata lookup may preserve presence without read-open; no recursive search of pruned excluded subtrees |
-| Discovery | Root absent at startup, including with recovered records | No qualifying coverage or confirmed-empty result; first successful validation establishes identity without a replacement event |
+| Discovery | Root absent at startup, including with recovered records | Pass incomplete receiver-wide for discovery-based finalization and retention; positive reading and qualified unlink handling remain available; first successful validation establishes identity |
 | Discovery | Unresolved symlink might lead to a subtree required by the include pattern | Coverage failure; unknown target kind is not a rejected leaf candidate |
 | Discovery | Established root unavailable or replaced | Coverage failure or identity-change block; never an empty successful scan |
 | Discovery | Binding parent returns `ENOENT` with otherwise valid root/traversal context | Classify absence by context, not as a replacement directory identity |
@@ -659,6 +659,12 @@ is an operational condition, not proof against continuing namespace movement.
 | Rotation | File is renamed to an inspected excluded name, with no other eligible name | Excluded handling, no D17 solely for exclusion, durable state remains Active |
 | Rotation | Pending disappearance meets Excluded preconditions before permanent EOF | Exclusion handling replaces pending disappearance without D17; after cutoff the observation preserves presence only |
 | Rotation | File moves into a pruned excluded subtree that discovery does not inspect | No promise of exclusion detection; disappearance policy can capture late writes and eventual retention can remove state |
+| Discovery | Excluded name identifies an active locator whose distinguished binding remains validated and eligible | Do not revoke the reader |
+| Discovery | Excluded name identifies an active locator; binding is positively ineligible and no other validated eligible name is known | Prompt exclusion handling without waiting for complete discovery, under unresolved-delta ordering |
+| Discovery | Excluded name identifies an active locator but its binding is truncated, inaccessible, or unstable | No inference of ineligibility; complete-pass fallback required; reading continues until revocation is authorized |
+| Discovery | Locator changes between stability probes | Pass incomplete; inconsistent observation does not become locator presence |
+| Discovery | Excluded leaf-name lookup returns ENOENT or hits an ordinary link loop | Apply the same contextual miss/rejection rules as nonexcluded lookups; no automatic pass-wide failure |
+| Rotation | Unverifiable alias repeatedly reports presence for a qualified resident handle with fresh zero-link evidence | Presence does not block independent unlink confirmation; it still blocks retention aging; validated eligible sighting can cancel before cutoff |
 | Discovery | New growing file | Admitted without waiting for close |
 | Discovery | Exclude overlaps include | Excluded; lexical rejection may precede pinning while preserving required retained-state evidence; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |
