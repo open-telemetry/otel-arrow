@@ -125,6 +125,23 @@ impl<PData> TestContext<PData> {
         }
     }
 
+    /// Latches shutdown on the processor's local scheduler, as the inbox does
+    /// when it latches a `Shutdown` control message.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn begin_local_shutdown(&mut self, now: Instant) {
+        let scheduler = match &self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler.core.local_scheduler.as_ref()
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler.core.local_scheduler.as_ref()
+            }
+        };
+        if let Some(scheduler) = scheduler {
+            scheduler.begin_shutdown(now);
+        }
+    }
+
     /// Sets whether outgoing messages need source node tagging on the effect handler.
     pub fn set_source_tagging(&mut self, value: SourceTagging) {
         match &mut self.runtime {

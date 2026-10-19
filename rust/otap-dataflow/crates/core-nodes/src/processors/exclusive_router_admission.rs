@@ -125,6 +125,9 @@ pub(crate) struct ExclusiveRouteScheduler<PData, Meta> {
     pause_candidate_ports: HashSet<PortName>,
     pending_by_port: HashMap<PortName, PendingRoute<PData, Meta>>,
     armed_wakeup: Option<ArmedWakeup>,
+    /// The local scheduler refused to arm a re-probe wakeup because shutdown
+    /// has latched. Parked messages can no longer be retried.
+    rearm_refused: bool,
 }
 
 impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
@@ -135,6 +138,7 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
             pause_candidate_ports: HashSet::new(),
             pending_by_port: HashMap::new(),
             armed_wakeup: None,
+            rearm_refused: false,
         }
     }
 
@@ -267,10 +271,21 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
             }
             Err(WakeupError::ShuttingDown) => {
                 self.armed_wakeup = None;
+                self.rearm_refused = true;
                 Ok(())
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// Returns whether parked messages are stranded: they still need a
+    /// re-probe, but the local scheduler has latched shutdown and refused to
+    /// arm one. The router must then NACK them (`drain_for_shutdown`) instead
+    /// of keeping them parked, which would also keep admission closed until
+    /// the shutdown deadline.
+    #[must_use]
+    pub fn parked_unprobeable(&self) -> bool {
+        self.rearm_refused && !self.pending_by_port.is_empty()
     }
 
     /// Drain all locally parked messages for shutdown entry.

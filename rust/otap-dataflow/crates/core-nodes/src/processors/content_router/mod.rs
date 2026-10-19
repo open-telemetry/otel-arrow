@@ -759,7 +759,7 @@ impl ContentRouter {
                 self.emit_route_full_nack(effect_handler, port.as_ref(), data)
                     .await
             }
-            FullRouteHandling::Parked => Ok(()),
+            FullRouteHandling::Parked => self.nack_unprobeable_parked(effect_handler).await,
         }
     }
 
@@ -808,6 +808,23 @@ impl ContentRouter {
         self.admission
             .sync_armed_wakeup(effect_handler)
             .map_err(|error| Self::wakeup_error(effect_handler, error))?;
+        self.nack_unprobeable_parked(effect_handler).await
+    }
+
+    /// NACK parked messages that can no longer be re-probed.
+    ///
+    /// Once the local scheduler has latched shutdown it refuses new wakeups,
+    /// so a message that stays parked would never be retried and would keep
+    /// admission closed until the shutdown deadline. Turning it into a
+    /// retryable shutdown NACK now lets the drain finish.
+    async fn nack_unprobeable_parked(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        if self.admission.parked_unprobeable() {
+            self.handle_shutdown(effect_handler, "node is shutting down")
+                .await?;
+        }
         Ok(())
     }
 
@@ -2131,6 +2148,90 @@ mod tests {
                             nack_c.reason
                         );
                         assert!(!nack_c.permanent);
+                    })
+                });
+
+            validation.validate(|_| async {});
+        }
+
+        /// Scenario: every selectable route is parked under `backpressure`
+        /// (admission closed) when the local scheduler latches shutdown, and
+        /// the routes are still full when the re-probe wakeup fires.
+        /// Guarantees: the wakeup is delivered once after the latch, the
+        /// parked messages that can no longer be re-probed are NACKed with
+        /// `cause = NodeShutdown`, and admission reopens so buffered input can
+        /// drain before the deadline (formal/shutdown spec.md S7, lead L7).
+        #[test]
+        fn test_shutdown_latch_nacks_parked_routes_that_cannot_be_reprobed() {
+            let test_runtime = TestRuntime::new();
+            let node_id = test_node(test_runtime.config().name.clone());
+            let config = make_policy_config(OnFullPolicy::Backpressure);
+            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
+            let mut wrapper = ProcessorWrapper::local(
+                ContentRouter::new(config),
+                node_id.clone(),
+                user_cfg,
+                test_runtime.config(),
+            );
+
+            let (tx_a, _rx_a) = mpsc::Channel::new(1);
+            tx_a.send(logs_pdata("/sub/a"))
+                .expect("prefill should occupy tenant_a");
+            wrapper
+                .set_pdata_sender(
+                    node_id.clone(),
+                    "tenant_a".into(),
+                    Sender::Local(LocalSender::mpsc(tx_a)),
+                )
+                .expect("tenant_a sender should attach");
+
+            let (tx_c, _rx_c) = mpsc::Channel::new(1);
+            tx_c.send(logs_pdata("/sub/c"))
+                .expect("prefill should occupy tenant_c");
+            wrapper
+                .set_pdata_sender(
+                    node_id,
+                    "tenant_c".into(),
+                    Sender::Local(LocalSender::mpsc(tx_c)),
+                )
+                .expect("tenant_c sender should attach");
+
+            let validation = test_runtime
+                .set_processor(wrapper)
+                .run_test(move |mut ctx| {
+                    Box::pin(async move {
+                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                        ctx.set_pipeline_completion_sender(completion_tx);
+
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 95)))
+                            .await
+                            .expect("backpressure should park tenant_a");
+                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 95)))
+                            .await
+                            .expect("backpressure should park tenant_c");
+                        assert!(
+                            !ctx.accept_pdata(),
+                            "admission should close once every route is parked"
+                        );
+
+                        ctx.begin_local_shutdown(Instant::now());
+                        let wakeup = ctx
+                            .take_due_local_control(Instant::now())
+                            .expect("the pending re-probe wakeup should fire once after the latch");
+                        assert!(matches!(wakeup, NodeControlMsg::Wakeup { .. }));
+                        ctx.process(Message::Control(wakeup))
+                            .await
+                            .expect("wakeup should process");
+
+                        for _ in 0..2 {
+                            let nack = expect_nack(&mut completion_rx, 95).await;
+                            assert_eq!(nack.cause, NackCause::NodeShutdown);
+                            assert!(!nack.permanent);
+                        }
+                        assert!(
+                            ctx.accept_pdata(),
+                            "admission should reopen once parked routes are released"
+                        );
                     })
                 });
 

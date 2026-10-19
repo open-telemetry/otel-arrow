@@ -503,12 +503,16 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 break;
             }
 
-            let next_earliest = if is_draining_ingress {
+            // Timers keep running while receivers drain: downstream nodes may
+            // still resolve in-flight work only on `TimerTick` (for example
+            // fanout timeouts), and receivers wait for that outcome. They are
+            // frozen once downstream `Shutdown` is sent.
+            let next_earliest = if downstream_shutdown_sent {
                 shutdown_deadline
             } else {
                 let next_expiry = self.tick_timers.next_expiry();
                 let next_tel_expiry = self.telemetry_timers.next_expiry();
-                opt_min(next_expiry, next_tel_expiry)
+                opt_min(opt_min(next_expiry, next_tel_expiry), shutdown_deadline)
             };
 
             // Runtime-control traffic can burst during shutdown or completion
@@ -544,16 +548,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             pending_receivers = self.control_senders.receiver_ids().into_iter().collect();
                             self.runtime_control_metrics
                                 .record_shutdown_received(now, pending_receivers.len());
-                            // Receiver-first shutdown freezes timer-driven work
-                            // before any downstream Shutdown is sent. Receivers
-                            // get DrainIngress first so they stop admitting new
-                            // work at the pipeline boundary.
-                            self.tick_timers.cancel_all();
-                            self.telemetry_timers.cancel_all();
-                            self.runtime_control_metrics.set_timer_counts(
-                                self.tick_timers.timer_states.len(),
-                                self.telemetry_timers.timer_states.len(),
-                            );
+                            // Receivers get DrainIngress first so they stop
+                            // admitting new work at the pipeline boundary.
+                            // Timer-driven work keeps running until downstream
+                            // Shutdown is sent (`freeze_timers`), so in-flight
+                            // work that resolves on TimerTick can still answer
+                            // the draining receivers.
 
                             for node_id in pending_receivers.iter().copied() {
                                 self.send(
@@ -583,6 +583,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                         },
                                     );
                                 }
+                                self.freeze_timers();
                                 downstream_shutdown_sent = true;
                                 self.runtime_control_metrics.record_downstream_shutdown_sent();
                                 self.event_reporter.report(
@@ -629,6 +630,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                         },
                                     );
                                 }
+                                self.freeze_timers();
                                 downstream_shutdown_sent = true;
                                 self.runtime_control_metrics.record_downstream_shutdown_sent();
                                 self.event_reporter.report(
@@ -646,7 +648,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         }
                         RuntimeControlMsg::StartTimer { node_id, duration } => {
                             self.runtime_control_metrics.record_start_timer_received();
-                            if is_draining_ingress {
+                            if downstream_shutdown_sent {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_timer",
                                     node_id = node_id,
@@ -661,7 +663,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         }
                         RuntimeControlMsg::CancelTimer { node_id } => {
                             self.runtime_control_metrics.record_cancel_timer_received();
-                            if !is_draining_ingress {
+                            if !downstream_shutdown_sent {
                                 self.tick_timers.cancel(node_id);
                                 self.runtime_control_metrics.set_timer_counts(
                                     self.tick_timers.timer_states.len(),
@@ -672,7 +674,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         RuntimeControlMsg::StartTelemetryTimer { node_id, duration } => {
                             self.runtime_control_metrics
                                 .record_start_telemetry_timer_received();
-                            if is_draining_ingress {
+                            if downstream_shutdown_sent {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_telemetry_timer",
                                     node_id = node_id,
@@ -689,7 +691,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         RuntimeControlMsg::CancelTelemetryTimer { node_id, .. } => {
                             self.runtime_control_metrics
                                 .record_cancel_telemetry_timer_received();
-                            if !is_draining_ingress {
+                            if !downstream_shutdown_sent {
                                 self.telemetry_timers.cancel(node_id);
                                 self.runtime_control_metrics.set_timer_counts(
                                     self.tick_timers.timer_states.len(),
@@ -717,7 +719,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         }
                 }, if next_earliest.is_some() => {
                     consecutive_runtime_ctrl = 0;
-                    if !is_draining_ingress {
+                    if !downstream_shutdown_sent {
                         self.handle_due_events(clock::now(), &mut pipeline_metrics_monitor);
                     }
                 }
@@ -958,6 +960,18 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         }
         self.runtime_control_metrics
             .set_pending_sends_buffered(self.pending_sends.len());
+    }
+
+    /// Cancels every runtime and telemetry timer. Called when downstream
+    /// `Shutdown` is sent: from then on no new `TimerTick` is generated, and
+    /// later `StartTimer` requests are ignored.
+    fn freeze_timers(&mut self) {
+        self.tick_timers.cancel_all();
+        self.telemetry_timers.cancel_all();
+        self.runtime_control_metrics.set_timer_counts(
+            self.tick_timers.timer_states.len(),
+            self.telemetry_timers.timer_states.len(),
+        );
     }
 
     fn report_runtime_control_metrics(&mut self) {
@@ -2873,6 +2887,101 @@ mod tests {
                 assert!(
                     msg.is_err(),
                     "StartTelemetryTimer should be ignored during draining"
+                );
+
+                drop(pipeline_tx);
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Scenario: a processor has a running runtime timer (for example fanout
+    /// destination timeouts) when shutdown is requested while a receiver is
+    /// still draining ingress.
+    /// Guarantees: the processor keeps receiving `TimerTick` until downstream
+    /// `Shutdown` is sent, so work that resolves only on ticks can still
+    /// answer the draining receiver; once downstream `Shutdown` is sent no
+    /// further tick is generated (formal/shutdown spec.md S2, lead L3).
+    #[tokio::test]
+    async fn test_timer_keeps_firing_until_downstream_shutdown() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let RuntimeControlTelemetryHarness {
+                    manager,
+                    pipeline_tx,
+                    mut control_receivers,
+                    nodes,
+                    ..
+                } = setup_runtime_control_telemetry_harness::<String>(
+                    vec![
+                        ("receiver", NodeType::Receiver, 16),
+                        ("processor", NodeType::Processor, 16),
+                    ],
+                    MetricLevel::Basic,
+                );
+                let receiver = nodes[0].clone();
+                let processor = nodes[1].clone();
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: processor.index,
+                        duration: Duration::from_millis(10),
+                    })
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "test shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+                let drain = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                    .await
+                    .expect("receiver should get DrainIngress")
+                    .expect("receiver control channel should stay open");
+                assert!(matches!(drain, NodeControlMsg::DrainIngress { .. }));
+
+                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+                let tick = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                    .await
+                    .expect("processor should still get TimerTick while receivers drain")
+                    .expect("processor control channel should stay open");
+                assert!(
+                    matches!(tick, NodeControlMsg::TimerTick { .. }),
+                    "expected TimerTick during ingress drain, got {tick:?}"
+                );
+
+                pipeline_tx
+                    .send(RuntimeControlMsg::ReceiverDrained {
+                        node_id: receiver.index,
+                    })
+                    .await
+                    .unwrap();
+                loop {
+                    let msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                        .await
+                        .expect("processor should get downstream Shutdown")
+                        .expect("processor control channel should stay open");
+                    match msg {
+                        NodeControlMsg::Shutdown { .. } => break,
+                        NodeControlMsg::TimerTick { .. } => {}
+                        other => panic!("unexpected control message {other:?}"),
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let after = timeout(Duration::from_millis(100), processor_ctrl.recv()).await;
+                assert!(
+                    after.is_err(),
+                    "no TimerTick may be generated after downstream Shutdown, got {after:?}"
                 );
 
                 drop(pipeline_tx);

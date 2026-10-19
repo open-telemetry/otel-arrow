@@ -19,6 +19,7 @@ use crate::control::{
 };
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
+use crate::forced_shutdown::ForcedShutdownSignal;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{ExporterInbox, Receiver, Sender};
@@ -302,6 +303,39 @@ impl<PData> ExporterWrapper<PData> {
             runtime_services,
         )
         .await
+    }
+
+    /// Starts the exporter and cancels it once the pipeline enters forced
+    /// shutdown.
+    ///
+    /// An exporter may wait for in-flight exports with no bound of its own,
+    /// for example when a remote never answers. After the shutdown deadline
+    /// the pipeline must still stop. Unlike processors, which are cancelled at
+    /// once, the exporter first gets `NODE_FORCED_SHUTDOWN_GRACE` to finish its
+    /// own deadline handling; then its task is cancelled. Work still in flight
+    /// is abandoned; waiting receivers have already NACKed it at the deadline.
+    pub(crate) async fn start_until_forced_shutdown(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+        runtime_services: PipelineRuntimeServices,
+        forced_shutdown_signal: ForcedShutdownSignal,
+    ) -> Result<TerminalState, Error> {
+        tokio::select! {
+            biased;
+            result = self.start_with_completion_metrics(
+                runtime_ctrl_msg_tx,
+                pipeline_completion_msg_tx,
+                metrics_reporter,
+                node_interests,
+                completion_emission_metrics,
+                runtime_services,
+            ) => result,
+            _ = forced_shutdown_signal.triggered_after_node_grace() => Ok(TerminalState::default()),
+        }
     }
 
     pub(crate) async fn start_with_completion_metrics(
@@ -1467,5 +1501,88 @@ mod tests {
             ),
             _ => panic!("expected Shared variant"),
         }
+    }
+
+    /// An exporter whose shutdown waits for an in-flight export answer that
+    /// never arrives, like `otlp_grpc_exporter` (431-443) waiting on its
+    /// in-flight futures with no deadline.
+    struct HangingExporter;
+
+    #[async_trait(?Send)]
+    impl local::Exporter<TestMsg> for HangingExporter {
+        async fn start(
+            self: Box<Self>,
+            mut msg_chan: ExporterInbox<TestMsg>,
+            _effect_handler: local::EffectHandler<TestMsg>,
+        ) -> Result<TerminalState, Error> {
+            loop {
+                if let Message::Control(NodeControlMsg::Shutdown { .. }) = msg_chan.recv().await? {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+
+    /// Scenario: an exporter receives `Shutdown` with a two-second deadline and
+    /// then waits forever for an in-flight export to complete; the pipeline
+    /// triggers forced shutdown when the deadline passes.
+    /// Guarantees: the exporter task stops within the one-second node grace
+    /// after the deadline, so a hung export cannot keep the pipeline alive past
+    /// its shutdown deadline (formal/shutdown spec.md S5b, lead L6).
+    #[tokio::test(start_paused = true)]
+    async fn exporter_stops_by_deadline_when_inflight_export_never_completes() {
+        use crate::config::ExporterConfig;
+        use crate::control::Controllable;
+        use crate::control::{pipeline_completion_msg_channel, runtime_ctrl_msg_channel};
+        use crate::node::NodeWithPDataReceiver;
+
+        let config = ExporterConfig::new("hanging_exporter");
+        let node_id = test_node(config.name.clone());
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("hanging_exporter"));
+        let mut wrapper =
+            ExporterWrapper::local(HangingExporter, node_id.clone(), user_config, &config);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<TestMsg>::new(4);
+        wrapper
+            .set_pdata_receiver(node_id, Receiver::Local(LocalReceiver::mpsc(pdata_rx)))
+            .expect("pdata receiver should attach");
+        let control = wrapper.control_sender();
+        drop(pdata_tx);
+
+        let start = tokio::time::Instant::now();
+        control
+            .send(NodeControlMsg::Shutdown {
+                deadline: start.into_std() + Duration::from_secs(2),
+                reason: "hung export".to_owned(),
+            })
+            .await
+            .expect("shutdown should enqueue");
+
+        let (_metrics_rx, reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
+        let (runtime_tx, _runtime_rx) = runtime_ctrl_msg_channel(4);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
+        let (forced_shutdown_trigger, forced_shutdown_signal) =
+            crate::forced_shutdown::ForcedShutdownTrigger::pair();
+        let run = wrapper.start_until_forced_shutdown(
+            runtime_tx,
+            completion_tx,
+            reporter,
+            Interests::empty(),
+            None,
+            crate::testing::test_pipeline_runtime_services(),
+            forced_shutdown_signal,
+        );
+        let deadline_passes = tokio::spawn(async move {
+            tokio::time::sleep_until(start + Duration::from_secs(2)).await;
+            forced_shutdown_trigger.trigger();
+        });
+
+        let outcome = tokio::time::timeout(Duration::from_millis(3500), run).await;
+        deadline_passes.abort();
+        assert!(
+            outcome.is_ok(),
+            "exporter was still running {:?} after a Shutdown with a 2s deadline",
+            start.elapsed()
+        );
     }
 }

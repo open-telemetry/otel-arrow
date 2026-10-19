@@ -400,7 +400,7 @@ impl SignalTypeRouter {
                 self.emit_route_full_nack(port.as_ref(), effect_handler, context.signal_type, data)
                     .await
             }
-            FullRouteHandling::Parked => Ok(()),
+            FullRouteHandling::Parked => self.nack_unprobeable_parked(effect_handler).await,
         }
     }
 
@@ -452,6 +452,23 @@ impl SignalTypeRouter {
         self.admission
             .sync_armed_wakeup(effect_handler)
             .map_err(|error| Self::wakeup_error(effect_handler, error))?;
+        self.nack_unprobeable_parked(effect_handler).await
+    }
+
+    /// NACK parked messages that can no longer be re-probed.
+    ///
+    /// Once the local scheduler has latched shutdown it refuses new wakeups,
+    /// so a message that stays parked would never be retried and would keep
+    /// admission closed until the shutdown deadline. Turning it into a
+    /// retryable shutdown NACK now lets the drain finish.
+    async fn nack_unprobeable_parked(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        if self.admission.parked_unprobeable() {
+            self.handle_shutdown(effect_handler, "node is shutting down")
+                .await?;
+        }
         Ok(())
     }
 

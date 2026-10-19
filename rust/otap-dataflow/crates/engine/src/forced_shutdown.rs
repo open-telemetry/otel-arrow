@@ -7,7 +7,13 @@
 //! runtime. It provides retained fanout without introducing an unbounded queue
 //! or cross-core coordination.
 
+use std::time::Duration;
 use tokio::sync::watch;
+
+/// Time a receiver or exporter gets after forced shutdown is triggered to
+/// finish its own deadline `Shutdown` handling (for example force-NACKing
+/// waiting clients) before the engine cancels its task.
+pub(crate) const NODE_FORCED_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 /// Triggers forced shutdown for every processor in one pipeline runtime.
 #[derive(Debug)]
@@ -50,6 +56,13 @@ impl ForcedShutdownSignal {
                 std::future::pending::<()>().await;
             }
         }
+    }
+
+    /// Waits until forced shutdown is triggered and the node grace period
+    /// ([`NODE_FORCED_SHUTDOWN_GRACE`]) has also elapsed.
+    pub(crate) async fn triggered_after_node_grace(self) {
+        self.triggered().await;
+        crate::clock::sleep(NODE_FORCED_SHUTDOWN_GRACE).await;
     }
 }
 

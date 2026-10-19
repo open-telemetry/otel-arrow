@@ -347,6 +347,24 @@ where
         })
     }
 
+    /// Handles a closed and empty `pdata` input.
+    ///
+    /// Retained local work must come back to the node before the inbox
+    /// closes: the upstream may stop before this node's `Shutdown` arrives,
+    /// and closing here would drop every payload parked with
+    /// `requeue_later`. The scheduler is latched so its delayed resumes become
+    /// due now, and the synthetic `Shutdown` is returned only once it has
+    /// drained. `None` means the caller must deliver local work first.
+    fn closed_pdata_shutdown_when_drained(&mut self) -> Option<Message<PData>> {
+        if let Some(local_scheduler) = &self.local_scheduler {
+            local_scheduler.begin_shutdown(clock::now());
+            if !local_scheduler.is_drained() {
+                return None;
+            }
+        }
+        Some(self.closed_pdata_shutdown())
+    }
+
     /// Returns whether shutdown draining is allowed to pull `pdata` from the
     /// bounded input channel.
     ///
@@ -421,8 +439,9 @@ where
                     .as_mut()
                     .expect("pdata_rx must exist")
                     .try_recv()
+                && let Some(shutdown) = self.closed_pdata_shutdown_when_drained()
             {
-                return Ok(self.closed_pdata_shutdown());
+                return Ok(shutdown);
             }
 
             // Draining mode: Shutdown pending
@@ -462,7 +481,10 @@ where
                         .try_recv()
                     {
                         Ok(pdata) => return Ok(self.pdata_message(pdata)),
-                        Err(RecvError::Closed) => {
+                        // A closed input releases Shutdown only once retained
+                        // local work has drained; otherwise fall through and
+                        // deliver it first.
+                        Err(RecvError::Closed) if self.shutdown_drain_complete() => {
                             let shutdown = self
                                 .pending_shutdown
                                 .take()
@@ -470,7 +492,7 @@ where
                             self.shutdown();
                             return Ok(Message::Control(shutdown));
                         }
-                        Err(RecvError::Empty) => {}
+                        Err(_) => {}
                     }
                 }
 
@@ -513,13 +535,14 @@ where
 
                         pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
                             Ok(pdata) => return Ok(self.pdata_message(pdata)),
-                            Err(_) => {
+                            Err(_) if self.shutdown_drain_complete() => {
                                 let shutdown = self.pending_shutdown
                                     .take()
                                     .expect("pending_shutdown must exist");
                                 self.shutdown();
                                 return Ok(Message::Control(shutdown));
                             }
+                            Err(_) => continue,
                         },
 
                         ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
@@ -562,13 +585,14 @@ where
 
                         pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if drain_accepts_pdata => match pdata {
                             Ok(pdata) => return Ok(self.pdata_message(pdata)),
-                            Err(_) => {
+                            Err(_) if self.shutdown_drain_complete() => {
                                 let shutdown = self.pending_shutdown
                                     .take()
                                     .expect("pending_shutdown must exist");
                                 self.shutdown();
                                 return Ok(Message::Control(shutdown));
                             }
+                            Err(_) => continue,
                         },
 
                         _ = async {
@@ -602,7 +626,11 @@ where
                     .try_recv()
                 {
                     Ok(pdata) => return Ok(self.pdata_message(pdata)),
-                    Err(RecvError::Closed) => return Ok(self.closed_pdata_shutdown()),
+                    Err(RecvError::Closed) => {
+                        if let Some(shutdown) = self.closed_pdata_shutdown_when_drained() {
+                            return Ok(shutdown);
+                        }
+                    }
                     Err(RecvError::Empty) => {}
                 }
             }
@@ -651,7 +679,10 @@ where
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                         match pdata {
                             Ok(pdata) => return Ok(self.pdata_message(pdata)),
-                            Err(RecvError::Closed) => return Ok(self.closed_pdata_shutdown()),
+                            Err(RecvError::Closed) => match self.closed_pdata_shutdown_when_drained() {
+                                Some(shutdown) => return Ok(shutdown),
+                                None => continue,
+                            },
                             Err(e) => return Err(e),
                         }
                         }
@@ -722,7 +753,10 @@ where
                     pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv(), if accept_pdata => {
                         match pdata {
                             Ok(pdata) => return Ok(self.pdata_message(pdata)),
-                            Err(RecvError::Closed) => return Ok(self.closed_pdata_shutdown()),
+                            Err(RecvError::Closed) => match self.closed_pdata_shutdown_when_drained() {
+                                Some(shutdown) => return Ok(shutdown),
+                                None => continue,
+                            },
                             Err(e) => return Err(e),
                         }
                     },
@@ -1216,11 +1250,12 @@ mod tests {
 
     /// Scenario: a processor-local wakeup is pending when shutdown is latched
     /// and the inbox still has buffered pdata to drain.
-    /// Guarantees: pending wakeups are dropped immediately on shutdown latch,
-    /// buffered pdata still drains according to the inbox contract, and the
-    /// latched shutdown is delivered after draining completes.
+    /// Guarantees: the pending wakeup is delivered once during drain (a node
+    /// may own a payload keyed by it), buffered pdata still drains according
+    /// to the inbox contract, and the latched shutdown is delivered after
+    /// draining completes.
     #[tokio::test]
-    async fn processor_inbox_drops_pending_wakeups_on_shutdown_latch() {
+    async fn processor_inbox_fires_pending_wakeups_once_on_shutdown_latch() {
         let (control_tx, pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
         pdata_tx
             .send_async(TestMsg::new("buffered"))
@@ -1250,6 +1285,18 @@ mod tests {
         assert!(matches!(
             first,
             Message::Control(NodeControlMsg::Config { .. })
+        ));
+
+        let wakeup = inbox
+            .recv_when(false)
+            .await
+            .expect("pending wakeup should fire once after the latch");
+        assert!(matches!(
+            wakeup,
+            Message::Control(NodeControlMsg::Wakeup {
+                slot: crate::control::WakeupSlot(2),
+                ..
+            })
         ));
 
         let drained = inbox
