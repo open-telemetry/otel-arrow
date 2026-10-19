@@ -903,6 +903,10 @@ fn direct_connection_deserialization_rejects_invalid_values() {
             json!({"trust_server_certificate":true,"ca_file":"SENSITIVE.pem"}),
         ),
         ("tls", json!({"server_name_override":"SENSITIVE;invalid"})),
+        (
+            "tls",
+            json!({"trust_server_certificate":true,"server_name_override":"SENSITIVE.example"}),
+        ),
         ("tls", json!({"enabled":"SENSITIVE"})),
     ] {
         let mut raw = composite()["connection"].clone();
@@ -967,7 +971,7 @@ fn tls_defaults_require_encryption_and_verification() {
 }
 
 /// Scenario: All combinations of TLS, trust bypass, CA path, and identity override are prepared.
-/// Guarantees: Conflicting/inapplicable options fail; an enabled trust bypass may still request SNI.
+/// Guarantees: Conflicting options fail, including a name override with native TLS trust bypass.
 #[test]
 fn validates_tls_option_combinations() {
     for enabled in [false, true] {
@@ -987,7 +991,7 @@ fn validates_tls_option_combinations() {
                     raw["connection"]["tls"] = tls;
                     let result = serde_json::from_value::<SqlServerReceiverConfig>(raw);
                     let valid = if enabled {
-                        !(trust && ca)
+                        !(trust && (ca || override_name))
                     } else {
                         !trust && !ca && !override_name
                     };
@@ -1127,7 +1131,6 @@ fn fingerprint_excludes_tls_transport_settings() {
         json!({"trust_server_certificate":true}),
         json!({"ca_file":"not-loaded.pem"}),
         json!({"server_name_override":"different.example.test"}),
-        json!({"trust_server_certificate":true, "server_name_override":"different.example.test"}),
         json!({"ca_file":"not-loaded.pem", "server_name_override":"127.0.0.1"}),
     ] {
         let mut raw = composite();
@@ -1321,6 +1324,7 @@ fn all_preparation_diagnostics_are_redacted() {
         json!({"server_name_override":"SENSITIVE;invalid"}),
         json!({"enabled":false, "server_name_override":"SENSITIVE.example"}),
         json!({"trust_server_certificate":true, "ca_file":"SENSITIVE.pem"}),
+        json!({"trust_server_certificate":true, "server_name_override":"SENSITIVE.example"}),
         json!({"server_name_override":null, "ca_file":"SENSITIVE.pem"}),
     ] {
         let mut invalid = raw.clone();
