@@ -104,7 +104,7 @@ pub(super) enum CounterKind {
     Direct,
     /// A PDH-formatted calculation requiring only the current sample.
     FormattedSingleSample,
-    /// A fraction requiring the current numerator and a positive current base.
+    /// A PDH-formatted fraction requiring only the current sample.
     RawFraction,
     /// A PDH formula requiring successive samples (including private-clock timers).
     CalculatedTwoSample,
