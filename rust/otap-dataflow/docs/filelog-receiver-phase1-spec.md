@@ -40,10 +40,12 @@ convention.
 | Committed offset | The source-byte offset in live applied checkpoint state; it becomes crash-durable only when covered by the durable frontier. |
 | Committed-frontier guard | A bounded SHA-256 digest over raw source bytes immediately preceding committed progress, persisted atomically with that progress and used to detect likely locator reuse or in-place replacement on recovery. |
 | Complete inventory | A pass meeting the [coverage and policy requirements](#complete-and-incomplete-inventories); presence, identity evidence, and multiplicity diagnostics remain distinct facts. |
+| Confirmed permanent EOF | The lifecycle decision that starts D17 terminal framing after rotation confirmation and EOF inactivity; pending disappearance can no longer be canceled. It does not fence writers. |
+| Coverage failure | Required traversal or reconciliation evidence is unavailable; the pass cannot supply discovery-based negative conclusions. |
 | Continuation | Durable split-fragment state containing the original record start, termination evidence, and next fragment index. |
 | Downstream Ack | The matching aggregate completion that authorizes, but does not itself apply or sync, one retained batch's progress transaction. |
 | Durable frontier | The latest applied checkpoint progress guaranteed to survive by a successful required filesystem sync; recovery may also replay a later complete valid WAL prefix that survived. |
-| Distinguished matched-path binding | The one deterministic bounded path binding retained for an identity and used to recognize replacement at that path; additional aliases do not expand durable state. |
+| Distinguished matched-path binding | The one bounded path retained in an identity's `AdvisoryPath`, used as its live binding or as superseded binding evidence. Additional aliases do not expand durable state. |
 | EOF reprobe | A scheduled handle read for an already admitted reader at temporary EOF; it does not traverse directories or reconcile discovery. |
 | Exact locator | The platform runtime locator obtained from an opened file handle. |
 | File epoch | A monotonic generation of one `file_id` stream. A truncate reset or administrative reset increments it. |
@@ -52,18 +54,23 @@ convention.
 | Frame source range | The half-open source-byte range owned by a framed result, including framing bytes omitted from the body. |
 | Full reconciliation | A bounded traversal that refreshes discovery evidence and may establish a complete inventory. |
 | Incomplete inventory | A pass with unresolved coverage, policy, or required reconciliation evidence; non-observation cannot confirm disappearance. |
+| Live binding | A distinguished path currently validated as naming its identity's locator through an eligible name. |
 | Locator presence | A policy-consistent observation of a retained locator that blocks retention absence aging and discovery-derived disappearance confirmation; it alone authorizes neither admission, reconnection, nor cancellation. |
 | Logical record | A newline-framed record, multiline record, or deterministic bound-terminated record before oversize projection. |
 | Matched path | The lexical path that satisfied an include glob. |
 | Open batch | The one receiver-wide mutable OTAP batch under construction. |
 | Pending candidate | Retained candidate evidence waiting for an admission opportunity. |
 | Physical line | Decoded content ending at decoded U+000A, or raw content ending at byte `0x0a`; the delimiter is not part of line content. |
+| Policy failure | Required candidate eligibility or exclusion checks cannot be completed; dependent admission fails closed and the pass cannot confirm disappearance. |
+| Qualifying pass | A complete pass meeting the timing and no-presence conditions for discovery-derived confirmation of a pending disappearance. EOF inactivity is a separate requirement. |
 | Quarantine | Durable per-identity failure state that prevents reading until an explicit administrative action. |
+| Resident-unlink path | Independent finalization path based on fresh zero-link evidence from a validated resident handle on a qualified backend; framing, delivery, and checkpoint conditions still apply. |
 | Resolved target | The canonical target opened after alias and symlink policy is applied. |
 | Retained batch | The one sealed receiver-wide batch held for Ack, Nack, or resend. |
 | Runtime lease | Process-local ownership of one exact locator. It survives descriptor closure. |
 | Runtime locator | POSIX device/inode or Windows volume/file-ID evidence obtained from an opened handle. |
 | Source turn | One bounded read opportunity for one scheduled file. |
+| Superseded binding evidence | A retained prior path that no longer claims live ownership, kept for rebound reconciliation. This role is runtime-only; no second path or new checkpoint field is persisted. |
 | Stable evidence | Two handle-based observations whose locator agrees, whose size does not shrink, and whose later fingerprint extends the earlier fingerprint. |
 
 Unless stated otherwise, source ranges are half-open ranges `[start, end)` and all
@@ -725,7 +732,10 @@ blocks. See the design document for diagnostics and operator recovery.
 The scanner must qualify pin-bound target evidence under rename, intermediate
 symlink changes, unreachable targets, truncation, and exclusion-root aliases.
 Alias mapping must preserve full glob semantics, including an excluded file and
-an allowed sibling. No syscall sequence is prescribed or prequalified here.
+an allowed sibling. A full path-result buffer must be treated as potentially
+truncated, and a final-component no-follow check alone cannot qualify
+intermediate-component validation. No syscall sequence is prescribed or
+prequalified here.
 
 The resident-unlink shortcut requires qualification for the opened object's
 filesystem/backend; report the tested filesystems and conditions. Root and
@@ -829,69 +839,52 @@ Overlapping globs, hardlinks, aliases, and rename-visible paths that resolve to 
 live runtime locator produce one candidate identity. Advisory-path updates obey
 the binding rules below. Equal fingerprints do not deduplicate distinct locators.
 
-Each `Active` identity retains one distinguished path, either as its live
-binding or as superseded transition evidence, bounded by `max_tracked_files`
-and represented by its existing `AdvisoryPath`.
-At initial selection, or after the prior binding no longer names the locator,
-the scanner selects the deterministic minimum of `(path_kind, complete native
-path bytes)` among simultaneously eligible paths while visiting entries
-incrementally; it does not retain every alias. An existing binding remains
-stable while it is eligible and still names the locator. A
-truncated `AdvisoryPath` preserves the binding through kind, complete length,
-full-path digest, and stored suffix. Retain the prior path as transition evidence
-until rebound reconciliation. Stable evidence that it names a new locator can
-supersede its live binding as described below; choosing a replacement binding
-for the old identity still requires a complete pass.
+Each `Active` identity retains one distinguished path in `AdvisoryPath`, bounded
+by `max_tracked_files`. It is either a live binding or superseded binding evidence:
 
-If an existing tracked predecessor has a binding that is unavailable or cannot
-be compared, only candidates evaluated as possible replacements for that
-predecessor use the duplicate-biased fallback: a candidate requiring a new
-identity starts at offset zero rather than applying `start_at: end`. A genuine
-first-admission candidate with no tracked predecessor always follows configured
-`start_at`. The binding is reconstructed after restart from the durable
-`AdvisoryPath`; no separate or unbounded alias map is persisted.
+| Event | Binding result |
+| --- | --- |
+| Existing path remains eligible and names the locator | Keep the live binding, even if a smaller alias appears. |
+| Stable, unique path now names an uncontested candidate requiring a new identity | Retain the predecessor's path as superseded binding evidence; admit the candidate with the live binding at offset zero without waiting for a complete pass. Normal admission checks still apply. |
+| Complete pass reconciles a superseded binding | Resolve its rebound, then select the predecessor's next binding without re-registering or resetting the replacement. |
+| Assignment conflicts with tracked paths, or observations are unstable/non-unique | Defer conflicting binding work and preserve prior durable paths; do not create two live claims. |
+| Recovery finds multiple records with the same advisory path | Only the record whose validated locator the path currently names obtains the live binding. Retain other paths as superseded binding evidence for a complete pass; an unverifiable path grants no live binding. |
 
-An incomplete pass can also observe a different stable locator at a tracked
-predecessor's comparable distinguished binding. Carry that possible-replacement
-context with the observation to identity resolution; deferring Path rebound
-must not turn it into unrelated first admission. The candidate's own matching
-durable state takes precedence. If a new identity is required, start at offset
-zero regardless of `start_at`, never inheriting the predecessor's progress.
-For an uncontested path now stably naming a candidate that requires a new
-identity, supersede the predecessor's live binding and admit the candidate with
-that path at offset zero, subject to normal capacity, ownership, and durability
-checks. Do not wait solely for a complete pass. Keep the predecessor's prior
-path only as historical transition evidence, with its reader and progress
-independent; it is not a second live claim on that path.
+The following rules apply to the table:
 
-Binding-order deferral is reserved for conflicting tracked-path assignments
-(such as swaps or cycles), unstable observations, or non-unique evidence; normal
-resource deferral still applies. A complete pass later resolves the historical
-rebound and selects the predecessor's next binding without re-registering or
-resetting the replacement. Supersession is runtime-only: retain the existing
-AdvisoryPath as historical evidence, without a second persisted binding or new
-checkpoint field. When recovered records share an AdvisoryPath, only the record
-whose validated locator the path currently names has that live binding. Other
-records retain historical evidence for rebound reconciliation in the next
-complete pass. Unverifiable paths grant no live binding; ordinary identity
-validation still governs resuming progress.
+1. **Selection and bounds.** Choose the deterministic minimum of
+   `(path_kind, complete native path bytes)` at initial selection or reselection,
+   visiting aliases incrementally rather than retaining them. Reselecting the
+   predecessor's binding requires a complete pass. A truncated `AdvisoryPath`
+   preserves comparison through kind, complete length, digest, and suffix.
+2. **Replacement context.** Carry possible-replacement context to identity
+   resolution even during incomplete passes, whether the predecessor's binding
+   is comparable or unavailable/incomparable. The candidate's own matching
+   durable state wins. A replacement requiring a new identity starts at zero,
+   never inheriting predecessor progress; unrelated first admission follows
+   `start_at`. The predecessor keeps its reader and progress independently.
+3. **Deferral.** An uncontested replacement is stable and unique, requires a new
+   identity, and has no conflicting tracked-path assignment beyond the
+   predecessor being superseded. Only real binding conflicts (including swaps
+   or cycles), instability, or non-unique evidence require binding-order
+   deferral; ordinary capacity, ownership, and durability checks still apply.
+4. **Recovery.** Live/superseded roles are runtime-only and reconstructed from
+   the existing `AdvisoryPath` and validated observations. No additional alias
+   map or checkpoint field is persisted. Ordinary identity validation still
+   governs resuming progress.
 
-A complete pass resolves retained historical rebounds and orders binding
-reselection as follows:
+A complete pass orders reconciliation as follows:
 
-1. Freeze every prior distinguished binding for transition evaluation.
+1. Freeze prior distinguished paths for transition evaluation.
 2. Build current path-to-locator observations incrementally.
-3. Detect every prior binding that no longer names its locator and compute all
-   resulting path-rebound transitions through normal identity resolution.
-4. Only after those transitions are consistent, select a new deterministic
-   binding for each identity whose prior binding was invalidated.
+3. Resolve all prior rebounds, including superseded binding evidence, through
+   normal identity resolution.
+4. Select new deterministic bindings only after those transitions are consistent.
 
-For binding reselection among tracked identities, if a proposed binding was
-another identity's prior binding, resolve that rebound in step 3 before either
-new binding is selected. Conflicting,
-unstable, or non-unique path observations make the affected inventory
-incomplete and preserve prior durable bindings rather than assigning one path
-to two identities.
+If reselection would use another tracked identity's prior path, resolve that
+identity's rebound before selecting either new binding. Conflicting, unstable,
+or non-unique observations make the inventory incomplete and preserve prior
+durable paths rather than assigning two live bindings to one path.
 
 `follow_symlinks` controls symbolic-link and reparse-point traversal, not
 hardlinks. A hardlink is another eligible name for the same opened file and is
@@ -949,11 +942,11 @@ handling cover inspected names only.
 For remaining candidates, evaluate target policy after pin/type/filesystem
 validation and before read-open or fingerprint reads. Keep the pin alive through
 verification and read-open. Path evidence must be bounded, untruncated, and
-associated with the pin; a full buffer is potentially truncated. Preserve full
-patterns through root mappings. Detected substitution, inconsistent ancestry,
-or unverifiable evidence fails closed. A final-component no-follow check alone
-does not validate intermediate components. A positively excluded object needs
-no read-open.
+associated with the pin. Preserve full patterns through root mappings.
+Detected substitution, inconsistent ancestry, or unverifiable evidence fails
+closed. A positively excluded object needs no read-open. The
+[qualification criteria](#implementation-qualification) cover path-buffer and
+intermediate-component checks.
 
 This admission check does not prohibit continued reads from a validated resident
 handle; an unverifiable alias alone is not a positive exclusion. Restrictions
@@ -1108,8 +1101,9 @@ Each pass may produce an ordered transition stream. Incomplete passes can emit
 validated Observed transitions, Updated metadata, and binding-check Excluded
 transitions. They do not authorize Disappeared or the complete-pass exclusion
 fallback. Uncontested replacement admission may supersede a live binding using
-stable positive evidence as described above. Historical Path-rebound publication
-and reselection of the predecessor's binding retain complete-pass ordering.
+stable positive evidence as described above. Publishing rebounds for superseded
+binding evidence and reselecting the predecessor's binding retain complete-pass
+ordering.
 Observed candidates preserve replacement context while that reconciliation is
 deferred.
 
@@ -1124,7 +1118,7 @@ deferred.
 Neither Updated nor an ordinary `update_metadata` may overwrite a retained live
 or superseded `AdvisoryPath` with a newly observed alias. Path publication must
 follow the binding reconciliation rules; uncontested supersession preserves the
-predecessor's historical path until complete-pass reconciliation.
+predecessor's superseded binding evidence until complete-pass reconciliation.
 
 The implementation-facing transition must preserve the reason distinction between
 exclusion revocation and disappearance. A reasonless `Removed` event is insufficient
