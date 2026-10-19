@@ -143,7 +143,7 @@ impl<const BATCH_SIZE: usize> Display for ColumnarEngineResults<'_, BATCH_SIZE> 
     }
 }
 
-fn format_diagnostics(
+pub(crate) fn format_diagnostics(
     query: &str,
     diagnostics: &[ColumnarEngineDiagnostic<'_>],
     output: &mut dyn Write,
