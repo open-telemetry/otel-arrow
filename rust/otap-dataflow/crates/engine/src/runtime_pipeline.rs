@@ -658,15 +658,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let final_metrics_reporter = metrics_reporter.clone();
             let exporter_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let exporter_runtime_services = runtime_services.clone();
+            let exporter_forced_shutdown_signal = forced_shutdown_signal.clone();
             let fut = async move {
                 match exporter
-                    .start_with_completion_metrics(
+                    .start_until_forced_shutdown(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
                         exporter_runtime_services,
+                        exporter_forced_shutdown_signal,
                     )
                     .await
                 {
@@ -894,14 +896,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let final_metrics_reporter = metrics_reporter.clone();
             let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let receiver_runtime_services = runtime_services.clone();
+            let receiver_forced_shutdown_signal = forced_shutdown_signal.clone();
             let fut = async move {
                 match receiver
-                    .start(
+                    .start_until_forced_shutdown(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                         receiver_runtime_services,
+                        receiver_forced_shutdown_signal,
                     )
                     .await
                 {

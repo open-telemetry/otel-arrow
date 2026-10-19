@@ -37,6 +37,11 @@
 //! - `dst_closed_admission_deadline_abandons_buffered_pdata_seeded`: the
 //!   current known limitation where buffered `pdata` is abandoned if admission
 //!   stays closed until the shutdown deadline
+//! - `shutdown_drain`: drain-contract scenarios found by the TLA+ model in
+//!   `formal/shutdown` -- retained `requeue_later` payloads survive when the
+//!   input closes before `Shutdown` and under the control-burst limit
+//! - `parked_wakeup`: a router-style wakeup that owns a parked payload is
+//!   still delivered after the shutdown latch
 //!
 //! Receiver-side `wait_for_result` behavior is covered separately in
 //! `otlp_receiver.rs`, where the DST suite exercises four terminal paths for an
@@ -144,3 +149,7 @@ mod control_plane;
 mod heavy_ingress;
 #[cfg(test)]
 mod inbox;
+#[cfg(test)]
+mod parked_wakeup;
+#[cfg(test)]
+mod shutdown_drain;

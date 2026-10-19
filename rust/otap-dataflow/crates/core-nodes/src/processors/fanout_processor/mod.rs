@@ -1016,6 +1016,37 @@ impl FanoutProcessor {
         Ok(())
     }
 
+    /// NACK every request still waiting on its destinations at `Shutdown`.
+    ///
+    /// Once `Shutdown` is released the node's control channel is gone, so
+    /// downstream outcomes for these requests can never reach the fanout.
+    /// A retryable `NodeShutdown` NACK keeps the upstream subscriber's request
+    /// answered instead of dropping it silently. A destination may still
+    /// deliver the data afterwards (NACK followed by delivery).
+    async fn nack_inflight_on_shutdown(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+        reason: &str,
+    ) -> Result<(), Error> {
+        let mut originals: Vec<OtapPdata> = self
+            .inflight
+            .drain()
+            .map(|(_, inflight)| inflight.original_pdata)
+            .collect();
+        originals.extend(self.slim_inflight.drain().map(|(_, original)| original));
+        self.deadline_heap.clear();
+        for original in originals {
+            effect_handler
+                .notify_nack(NackMsg::new_with_cause(
+                    format!("fanout: shutdown with request in flight: {reason}"),
+                    original,
+                    NackCause::NodeShutdown,
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn process_nack_slim_primary(
         &mut self,
         nack: NackMsg<OtapPdata>,
@@ -1104,8 +1135,12 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 _ = self.metrics.report(&mut metrics_reporter);
                 return Ok(());
             }
-            // Shutdown and other control messages are ignored: we drop inflight state on drop,
-            // mirroring other stateless processors. Follow-up could proactively nack inflight on shutdown.
+            Message::Control(NodeControlMsg::Shutdown { reason, .. }) => {
+                self.nack_inflight_on_shutdown(effect_handler, &reason)
+                    .await?;
+                return Ok(());
+            }
+            // Other control messages are ignored.
             Message::Control(_) => return Ok(()),
             Message::PData(pdata) => {
                 debug_assert!(
@@ -1778,6 +1813,110 @@ mod tests {
             }
         }
         assert_eq!(delivered, 1);
+    }
+
+    /// Scenario: fanout (`await_ack: all`) still waits for both destinations
+    /// of a request when its `Shutdown` is processed.
+    /// Guarantees: the upstream subscriber receives exactly one Nack for that
+    /// request and the in-flight entry is cleared, instead of the fanout
+    /// stopping with the request unanswered (formal/shutdown spec.md S6,
+    /// lead L4).
+    #[tokio::test]
+    async fn shutdown_nacks_inflight_requests_upstream() {
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+        assert_eq!(h.fanout.inflight.len(), 1);
+
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                }),
+                &mut h.effect,
+            )
+            .await
+            .expect("shutdown ok");
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_completion_rx.recv()).await
+        {
+            match msg {
+                PipelineCompletionMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineCompletionMsg::DeliverNack { .. } => delivered_nack += 1,
+            }
+        }
+        assert_eq!(delivered_ack, 0, "should not ack upstream");
+        assert_eq!(
+            delivered_nack, 1,
+            "the in-flight request must be answered upstream at Shutdown"
+        );
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    /// Scenario: fanout on the slim primary-only path (parallel, `await_ack:
+    /// primary`, no fallback or timeout) still waits for the primary when its
+    /// `Shutdown` is processed.
+    /// Guarantees: the upstream subscriber receives exactly one retryable
+    /// `NodeShutdown` Nack and the slim in-flight entry is cleared
+    /// (formal/shutdown spec.md S6, lead L4).
+    #[tokio::test]
+    async fn shutdown_nacks_slim_inflight_requests_upstream() {
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "primary",
+        );
+        assert!(h.fanout.config.use_slim_primary);
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+        assert_eq!(h.fanout.slim_inflight.len(), 1);
+
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                }),
+                &mut h.effect,
+            )
+            .await
+            .expect("shutdown ok");
+
+        let mut nacks = Vec::new();
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_completion_rx.recv()).await
+        {
+            match msg {
+                PipelineCompletionMsg::DeliverNack { nack } => nacks.push(nack),
+                PipelineCompletionMsg::DeliverAck { .. } => panic!("should not ack upstream"),
+            }
+        }
+        assert_eq!(
+            nacks.len(),
+            1,
+            "the slim in-flight request must be answered"
+        );
+        assert_eq!(nacks[0].cause, NackCause::NodeShutdown);
+        assert!(!nacks[0].permanent);
+        assert!(h.fanout.slim_inflight.is_empty());
     }
 
     #[tokio::test]

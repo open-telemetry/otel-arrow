@@ -100,7 +100,7 @@ pub(crate) struct NodeLocalWakeupSchedulerMetrics {
     /// Count of wakeups popped for delivery to the processor.
     #[metric(name = "pop.due", unit = "{wakeup}")]
     pop_due: Counter<u64>,
-    /// Count of live wakeups dropped when shutdown was latched.
+    /// Count of live wakeups fired early, once, when shutdown was latched.
     #[metric(name = "shutdown.cleared", unit = "{wakeup}")]
     shutdown_cleared: Counter<u64>,
     /// Current number of live wakeups.
@@ -434,10 +434,15 @@ impl<PData> NodeLocalScheduler<PData> {
     }
 
     /// Latches shutdown and converts pending delayed resumes into immediate
-    /// `ResumeData` controls while dropping pending wakeups.
+    /// `ResumeData` controls and pending wakeups into immediate `Wakeup`
+    /// controls, each delivered once.
     ///
-    /// This preserves payload drain expectations for retry-like flows. Wakeups
-    /// are intentionally not retained because they carry no payload.
+    /// This preserves payload drain expectations for retry-like flows. A
+    /// wakeup carries no payload itself, but a node may keep a payload in its
+    /// own state keyed by that wakeup (for example a router's parked message),
+    /// so it gets one last chance to act on it during drain. Wakeups keep their
+    /// original deadline and revision so nodes can match them; no new wakeup
+    /// can be armed afterwards.
     fn begin_shutdown(&mut self, now: Instant) {
         if self.shutting_down {
             return;
@@ -451,11 +456,17 @@ impl<PData> NodeLocalScheduler<PData> {
             });
         }
 
-        let cleared = self.heap.len();
+        let fired_early = self.heap.len();
         if let Some(metrics) = &mut self.metrics {
-            metrics.shutdown_cleared.add(cleared as u64);
+            metrics.shutdown_cleared.add(fired_early as u64);
         }
-        self.heap.clear();
+        while let Some((slot, priority)) = self.heap.pop() {
+            self.due_now.push_back(NodeControlMsg::Wakeup {
+                slot,
+                when: priority.when,
+                revision: priority.revision,
+            });
+        }
         self.refresh_gauges();
     }
 

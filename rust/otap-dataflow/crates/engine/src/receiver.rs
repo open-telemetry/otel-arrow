@@ -19,6 +19,7 @@ use crate::control::{
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
+use crate::forced_shutdown::ForcedShutdownSignal;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -425,6 +426,37 @@ impl<PData> ReceiverWrapper<PData> {
                     readiness,
                 }
             }
+        }
+    }
+
+    /// Starts the receiver and cancels it once the pipeline enters forced
+    /// shutdown.
+    ///
+    /// A receiver may never learn that shutdown started (its `DrainIngress`
+    /// or `Shutdown` can be lost when the runtime-control manager exits at the
+    /// deadline with sends still pending), or it may wait for its servers
+    /// with no bound after `Shutdown`. After the deadline the pipeline must
+    /// still stop: the receiver gets `NODE_FORCED_SHUTDOWN_GRACE` to finish its
+    /// own deadline `Shutdown` handling, then its task is cancelled.
+    pub(crate) async fn start_until_forced_shutdown(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
+        forced_shutdown_signal: ForcedShutdownSignal,
+    ) -> Result<TerminalState, Error> {
+        tokio::select! {
+            biased;
+            result = self.start(
+                runtime_ctrl_msg_tx,
+                pipeline_completion_msg_tx,
+                metrics_reporter,
+                node_interests,
+                runtime_services,
+            ) => result,
+            _ = forced_shutdown_signal.triggered_after_node_grace() => Ok(TerminalState::default()),
         }
     }
 
@@ -1429,5 +1461,81 @@ connections:
             ),
             _ => panic!("expected Shared variant"),
         }
+    }
+
+    /// A receiver that never learns about shutdown: its `DrainIngress` and
+    /// `Shutdown` were lost because the runtime-control manager exited at the
+    /// deadline with both still parked in `pending_sends`.
+    struct UnawareReceiver;
+
+    #[async_trait(?Send)]
+    impl local::Receiver<TestMsg> for UnawareReceiver {
+        async fn start(
+            self: Box<Self>,
+            _ctrl_msg_recv: local::ControlChannel<TestMsg>,
+            _effect_handler: local::EffectHandler<TestMsg>,
+        ) -> Result<TerminalState, Error> {
+            std::future::pending::<()>().await;
+            Ok(TerminalState::default())
+        }
+    }
+
+    /// Scenario: a receiver never receives `DrainIngress` or `Shutdown` and
+    /// keeps serving; the pipeline triggers forced shutdown at its deadline.
+    /// Guarantees: the receiver task stops within the one-second node grace
+    /// after the deadline, instead of keeping the pipeline alive forever
+    /// (formal/shutdown spec.md S5b, leads L6 and L8).
+    #[tokio::test(start_paused = true)]
+    async fn receiver_stops_on_forced_shutdown_without_drain_or_shutdown() {
+        use crate::config::ReceiverConfig;
+        use crate::control::{
+            Controllable, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        };
+        use crate::local::message::LocalSender;
+        use crate::message::Sender;
+        use crate::node::NodeWithPDataSender;
+
+        let config = ReceiverConfig::new("unaware_receiver");
+        let node_id = test_node(config.name.clone());
+        let user_config = Arc::new(NodeUserConfig::new_receiver_config("unaware_receiver"));
+        let mut wrapper =
+            ReceiverWrapper::local(UnawareReceiver, node_id.clone(), user_config, &config);
+        let (pdata_tx, _pdata_rx) = otel_arrow_dfe_channel::mpsc::Channel::<TestMsg>::new(4);
+        wrapper
+            .set_pdata_sender(
+                node_id,
+                "out".into(),
+                Sender::Local(LocalSender::mpsc(pdata_tx)),
+            )
+            .expect("pdata sender should attach");
+        let _control_keepalive = wrapper.control_sender();
+
+        let (_metrics_rx, reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
+        let (runtime_tx, _runtime_rx) = runtime_ctrl_msg_channel(4);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
+        let (forced_shutdown_trigger, forced_shutdown_signal) =
+            crate::forced_shutdown::ForcedShutdownTrigger::pair();
+        let start = tokio::time::Instant::now();
+        let run = wrapper.start_until_forced_shutdown(
+            runtime_tx,
+            completion_tx,
+            reporter,
+            crate::Interests::empty(),
+            crate::testing::test_pipeline_runtime_services(),
+            forced_shutdown_signal,
+        );
+        let deadline_passes = tokio::spawn(async move {
+            tokio::time::sleep_until(start + Duration::from_secs(2)).await;
+            forced_shutdown_trigger.trigger();
+        });
+
+        let outcome = timeout(Duration::from_millis(3500), run).await;
+        deadline_passes.abort();
+        assert!(
+            outcome.is_ok(),
+            "receiver was still running {:?} after forced shutdown at 2s",
+            start.elapsed()
+        );
     }
 }

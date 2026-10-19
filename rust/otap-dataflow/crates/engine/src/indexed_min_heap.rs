@@ -134,6 +134,7 @@ where
     }
 
     /// Removes all entries from the heap.
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.entries.clear();
         self.indices.clear();
