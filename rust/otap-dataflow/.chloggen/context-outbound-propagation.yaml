@@ -18,4 +18,4 @@ issues: [3919, 4202]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Qualified selectors use receiver-materialized composite snapshots, and pdata stores captured headers and materialized entries together.
+subtext: Qualified selectors use receiver-materialized composite snapshots, preserving presence conditions, header names, value kinds, duplicates, and ordering.

@@ -300,6 +300,11 @@ impl CompiledHeaderPropagationPolicy {
     ) {
         if let Some(materialized) = materialized {
             for binding in &self.compiled_named {
+                // A primitive override owns the source's propagation outcome independently of
+                // composite presence. Skip its qualified snapshot to avoid duplicate emission
+                // when the override propagates and to honor a drop override consistently.
+                // Resolving the action is insufficient here because this branch needs to
+                // distinguish an explicit override from the same action inherited by default.
                 if binding
                     .source_name
                     .as_ref()

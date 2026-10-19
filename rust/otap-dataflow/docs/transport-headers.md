@@ -209,8 +209,8 @@ When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
 
 Unqualified `named` entries select captured headers by stored name. Qualified
-`composite:member` entries select the member's primitive transport header and
-apply its conditions.
+`composite:member` entries select a receiver-materialized transport-header,
+constant, or randomness member when the enclosing composite is present.
 
 Example of the `named` selector:
 

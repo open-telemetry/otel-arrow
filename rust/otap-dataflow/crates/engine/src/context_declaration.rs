@@ -422,7 +422,7 @@ where
 pub struct CompiledContextBindings {
     /// Compiled node bindings indexed first by pipeline, then by node.
     by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
-    /// Constant/randomness materialization plans indexed by pipeline.
+    /// Selected composite materialization plans indexed by pipeline.
     materialization_by_pipeline: HashMap<PipelineKey, ContextMaterializationPlan>,
 }
 
@@ -745,7 +745,7 @@ impl CompiledContextBindings {
         })
     }
 
-    /// Returns the pipeline's constant/randomness materialization plan.
+    /// Returns the pipeline's selected composite materialization plan.
     ///
     /// Consumers may resolve existing [`ContextProjection`] values against this
     /// plan. General consumer bindings and optimized lookup structures are
