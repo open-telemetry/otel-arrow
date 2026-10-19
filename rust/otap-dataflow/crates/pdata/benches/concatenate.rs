@@ -16,6 +16,10 @@
 //!   budget when uniformly offset, which forces the compaction path. This only
 //!   triggers for logs and traces at the largest shape, so it is only run
 //!   there.
+//!
+//! Small inputs use `concatenate/8items/{shape}/{scenario}/{signal}` with
+//! the `contiguous` and `presplit` scenarios to measure per-input and
+//! per-column overheads rather than per-row work.
 
 use std::num::NonZeroU32;
 use std::ops::Mul;
@@ -37,7 +41,7 @@ use otel_arrow_dfe_pdata::testing::fixtures::{
 use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 
 const NUM_BATCHES: usize = 10;
-const BATCH_SIZES: &[usize] = &[100, 1000];
+const BATCH_SIZES: &[usize] = &[8, 100, 1000];
 
 criterion_group!(benches, bench_all);
 criterion_main!(benches);
@@ -61,9 +65,9 @@ fn bench_all(c: &mut Criterion) {
                 continue;
             }
 
-            let metrics = generate_metrics(size, num_res, scopes, 10, 5, 3);
-            let logs = generate_logs(size, num_res, scopes, 10, 5, 3);
-            let traces = generate_traces(size, num_res, scopes, 10, 5, 3);
+            let metrics = generate_metrics(NUM_BATCHES, size, num_res, scopes, 10, 5, 3);
+            let logs = generate_logs(NUM_BATCHES, size, num_res, scopes, 10, 5, 3);
+            let traces = generate_traces(NUM_BATCHES, size, num_res, scopes, 10, 5, 3);
 
             bench_group(
                 c,
@@ -146,6 +150,7 @@ fn bench_concatenate<const N: usize>(
 }
 
 fn generate_metrics(
+    num_batches: usize,
     points_per_gauge: usize,
     num_resources: usize,
     scopes_per_resource: usize,
@@ -162,7 +167,7 @@ fn generate_metrics(
             .with_scope_attrs(scope_attrs)
             .with_metric_attrs(metric_attrs),
     );
-    (0..NUM_BATCHES)
+    (0..num_batches)
         .map(|_| {
             let data = datagen.generate_metrics_from_config();
             match otlp_to_otap(&data.into()) {
@@ -174,6 +179,7 @@ fn generate_metrics(
 }
 
 fn generate_logs(
+    num_batches: usize,
     logs_per_scope: usize,
     num_resources: usize,
     scopes_per_resource: usize,
@@ -189,7 +195,7 @@ fn generate_logs(
             .with_scope_attrs(scope_attrs)
             .with_log_attrs(log_attrs),
     );
-    (0..NUM_BATCHES)
+    (0..num_batches)
         .map(|_| {
             let data = datagen.generate_logs_from_config();
             match otlp_to_otap(&data.into()) {
@@ -201,6 +207,7 @@ fn generate_logs(
 }
 
 fn generate_traces(
+    num_batches: usize,
     spans_per_scope: usize,
     num_resources: usize,
     scopes_per_resource: usize,
@@ -216,7 +223,7 @@ fn generate_traces(
             .with_scope_attrs(scope_attrs)
             .with_span_attrs(span_attrs),
     );
-    (0..NUM_BATCHES)
+    (0..num_batches)
         .map(|_| {
             let data = datagen.generate_traces_from_config();
             match otlp_to_otap(&data.into()) {

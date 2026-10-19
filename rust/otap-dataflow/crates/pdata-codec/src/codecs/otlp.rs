@@ -35,8 +35,9 @@ use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOption
 use prost::Message;
 
 use crate::{
-    CodecError, CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, DecodeValidation,
-    EncodeOutput, EncodePolicy, PdataDecoder, PdataEncoder, PdataEncoding,
+    BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
+    CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, DecodeValidation, EncodeOutput,
+    EncodePolicy, PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding,
 };
 
 /// Stable identity of uncompressed OTLP protobuf service-request bytes.
@@ -99,7 +100,7 @@ impl PdataDecoder for OtlpStrictDecoder {
     }
 }
 
-fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
+pub(crate) fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
     match policy.validation() {
         DecodeValidation::BestEffort => Box::new(OtlpBestEffortDecoder),
         DecodeValidation::Strict => Box::new(OtlpStrictDecoder),
@@ -141,7 +142,7 @@ pub struct OtlpEncoder {
 }
 
 impl OtlpEncoder {
-    fn new(policy: EncodePolicy) -> Self {
+    pub(crate) fn new(policy: EncodePolicy) -> Self {
         let output_limit = policy
             .max_encoded_size
             .map_or(MAX_OTLP_SIZE_LIMIT, |limit| {
@@ -248,11 +249,52 @@ static OTLP_METADATA: CodecMetadata = CodecMetadata::new(
     &[SignalType::Logs, SignalType::Metrics, SignalType::Traces],
 );
 
+static OTLP_BATCHING: BatchingSupport = BatchingSupport {
+    sizers: &[BatchSizer::Bytes],
+    default_settings: BatchSettings::otlp(),
+};
+
+pub(crate) struct OtlpBatcher;
+
+impl PdataBatcher for OtlpBatcher {
+    fn batch(
+        &mut self,
+        signal: SignalType,
+        settings: &BatchSettings,
+        inputs: Vec<Bytes>,
+    ) -> Result<CodecBatches, CodecError> {
+        let result = otel_arrow_dfe_pdata::otlp::batching::make_bytes_batches_owned(
+            signal,
+            settings.max_size,
+            settings.max_split_fragments,
+            settings.max_split_overhead_bytes,
+            settings.max_split_fragments_per_flush,
+            inputs
+                .into_iter()
+                .map(|bytes| OtlpProtoBytes::new_from_bytes(signal, bytes))
+                .collect(),
+        )
+        .map_err(|source| CodecError::operation(&OTLP_ENCODING, CodecOperation::Batch, source))?;
+        Ok(CodecBatches {
+            batches: result
+                .batches
+                .into_iter()
+                .map(|(mut bytes, inputs)| (bytes.replace_bytes(Bytes::new()), inputs))
+                .collect(),
+            completed_inputs: result.completed_inputs,
+            budget_fallbacks: result.budget_fallbacks,
+        })
+    }
+}
+
 crate::register_pdata_codec!(
     OTLP_CODEC,
     CodecRegistration::new(&OTLP_METADATA)
         .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
+        .with_batcher(CodecBatcherRegistration::new(&OTLP_BATCHING, || {
+            Box::new(OtlpBatcher)
+        }))
         .with_item_counter(|signal, bytes| Some(otel_arrow_dfe_pdata::count_otlp_items(
             signal, bytes
         ))),
