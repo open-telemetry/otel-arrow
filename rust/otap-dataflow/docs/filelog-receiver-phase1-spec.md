@@ -1017,7 +1017,7 @@ locator presence nor a complete traversal authorizes identity reconnection.
 | Detected root or tracked-binding-parent identity change | Invalidate pending confirmations and absence history; follow discovery reinitialization rules. |
 | Required exclusion mapping or pinned-target policy check cannot be completed | Policy failure; no dependent admission; pass cannot confirm disappearance. Preserve locator presence. |
 | Policy passed and locator presence established, but read-open or fingerprint read fails | Candidate-local failure: no admission or cancellation; preserve presence and block disappearance confirmation for that locator. Retry without invalidating unrelated coverage. |
-| Locator, size, or fingerprint observations are unstable | Pass incomplete; retain trustworthy positive observations without claiming identity continuity. |
+| Locator, size, or fingerprint observations are unstable | Pass incomplete; retain positive observations without claiming identity continuity. |
 | Descriptor exhaustion prevents required probing | Retry with backoff; unfinished pass cannot confirm. Never drop unresolved pinned readers to recover capacity. |
 | Cancellation, depth/cycle limit, or bounded-state overflow loses required reconciliation evidence | Pass incomplete. |
 | Known locator reappears during terminal finalization | Preserve presence; block competing admission until release. This lifecycle block alone does not invalidate the pass. |
