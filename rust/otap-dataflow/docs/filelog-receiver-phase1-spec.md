@@ -1090,8 +1090,8 @@ validated Observed transitions, Updated metadata, and binding-check Excluded
 transitions. They do not authorize Disappeared or the complete-pass exclusion
 fallback. Path-rebound publication and distinguished-binding replacement retain
 the complete-pass ordering rules above; partial path observations may be retained
-without publishing those transitions. Observed candidates retain the possible-
-replacement context described above even while Path rebound is deferred.
+without publishing those transitions. Observed candidates retain the
+possible-replacement context described above even while Path rebound is deferred.
 
 | Transition | Preconditions | Effect |
 | --- | --- | --- |
