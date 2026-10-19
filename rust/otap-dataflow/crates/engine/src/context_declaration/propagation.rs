@@ -326,6 +326,12 @@ impl CompiledHeaderPropagationPolicy {
                             NameStrategy::StoredName => binding.output_name.as_str(),
                             NameStrategy::Preserve => value
                                 .original_name()
+                                .or_else(|| {
+                                    binding
+                                        .source_name
+                                        .as_ref()
+                                        .map(|source_name| source_name.as_str())
+                                })
                                 .unwrap_or(binding.output_name.as_str()),
                         };
                         propagated.push(PropagatedHeader {
@@ -930,6 +936,55 @@ default:
             .collect::<Vec<_>>();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "workspace_id");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: a qualified transport member aliases a primitive whose wire and stored names
+    /// are identical, so capture has no separate original name to retain.
+    /// Guarantees: `preserve` falls back to the primitive source name instead of the member alias.
+    #[test]
+    fn qualified_preserve_falls_back_to_primitive_source_name() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  tenant:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [tenant:workspace_id]
+  name: preserve
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("qualified transport member compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(transport_headers::TransportHeader::text(
+            context_name("workspace"),
+            b"acme",
+        ));
+        let materialized = materialize(&policy, &headers);
+
+        let propagated = policy
+            .propagate_materialized(&headers, Some(&materialized))
+            .collect::<Vec<_>>();
+
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "workspace");
         assert_eq!(propagated[0].value, b"acme");
     }
 
