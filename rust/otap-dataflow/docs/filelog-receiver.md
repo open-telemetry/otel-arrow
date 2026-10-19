@@ -196,9 +196,6 @@ related inventory and identity terms.
 Reviewers are asked to approve or challenge all of the following decisions and
 accepted compromises:
 
-The discovery changes additionally request review of the
-[policy and operator-cost table](#discovery-policy-review).
-
 | ID | Decision | Rationale or consequence |
 | --- | --- | --- |
 | D1 | Run one filelog receiver instance in Phase 1 | Engine-scoped assignment and fencing do not exist yet |
@@ -220,6 +217,9 @@ The discovery changes additionally request review of the
 | D17 | At confirmed permanent rotation EOF, emit a nonempty pending frame with bounded terminal-unterminated evidence | This preserves terminal bytes without silently claiming normal newline or multiline completion; deterministic decode-fail and corrupt-state conditions can still quarantine |
 | D18 | Require a nonempty, ready required-subscriber snapshot before a publication can Ack | Zero required membership is backpressure or explicit non-success, never vacuous Ack; this is an engine/topic release dependency |
 | D19 | Map the exact raw checkpoint ID into a versioned lowercase-hex filesystem namespace | `${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/` is injective on case-insensitive filesystems, avoids reserved-name and path-normalization hazards, and keeps the raw ID unchanged in namespace digests and administrative records |
+
+The discovery changes additionally request review of the
+[policy and operator-cost table](#discovery-policy-review).
 
 ## Responsibility boundaries
 

@@ -660,7 +660,8 @@ truncate durable state.
 
 The policies below are proposed for maintainer review, with their operator costs
 listed in [Discovery policy review](filelog-receiver.md#discovery-policy-review).
-Source review establishes neither filesystem qualification nor runtime results.
+This specification does not itself qualify filesystems or runtime behavior;
+see [Implementation qualification](#implementation-qualification).
 Implementation may choose mechanisms, but changes to these behavior contracts
 require an explicit specification and conformance update.
 
@@ -847,6 +848,16 @@ identity starts at offset zero rather than applying `start_at: end`. A genuine
 first-admission candidate with no tracked predecessor always follows configured
 `start_at`. The binding is reconstructed after restart from the durable
 `AdvisoryPath`; no separate or unbounded alias map is persisted.
+
+An incomplete pass can also observe a different stable locator at a tracked
+predecessor's comparable distinguished binding. Carry that possible-replacement
+context with the observation to identity resolution; deferring Path rebound
+must not turn it into unrelated first admission. The candidate's own matching
+durable state takes precedence. If a new identity is required, start at offset
+zero regardless of `start_at`, never inheriting the predecessor's progress.
+Keep prior bindings frozen; if admission cannot preserve binding/transition
+ordering, defer it rather than starting at end. This does not authorize binding
+reselection or Path-rebound publication from an incomplete pass.
 
 One complete pass orders binding work as follows:
 
@@ -1079,11 +1090,12 @@ validated Observed transitions, Updated metadata, and binding-check Excluded
 transitions. They do not authorize Disappeared or the complete-pass exclusion
 fallback. Path-rebound publication and distinguished-binding replacement retain
 the complete-pass ordering rules above; partial path observations may be retained
-without publishing those transitions.
+without publishing those transitions. Observed candidates retain the possible-
+replacement context described above even while Path rebound is deferred.
 
 | Transition | Preconditions | Effect |
 | --- | --- | --- |
-| Observed | Eligible stable locator is not retained or active | Present candidate to identity resolution |
+| Observed | Eligible stable locator is not retained or active | Present candidate and any possible-replacement context to identity resolution |
 | Updated | Retained locator remains eligible but path or mutable metadata changed | Update bounded advisory evidence |
 | Path rebound | A distinguished matched path changes from locator A to locator B while A remains live or eligible under another name | Preserve A independently and present B to normal identity resolution with recognized-replacement context |
 | Excluded | Inspected excluded name identifies an active locator and the binding check or complete-pass fallback below authorizes revocation | Stop reads, resolve existing deltas, then revoke without changing durable progress or lifecycle |

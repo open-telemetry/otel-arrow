@@ -640,7 +640,7 @@ must update the specification and these cases together.
 | Discovery | Bind-mount alias contains an excluded `x.secret` and allowed `x.log` under a `*.secret` exclusion | Full root mapping excludes only `x.secret`; no whole-subtree rejection |
 | Discovery | Target path fills its bounded buffer, is unreachable, or verification detects a rename/intermediate symlink substitution | No admission from truncated or inconsistent evidence; policy failure reported |
 | Discovery | A live name ends in `" (deleted)"` | Apply normal path verification; no filename-text rejection |
-| Discovery | Root or tracked-binding-parent identity changes | Clear pending confirmations and absence history; block negative conclusions receiver-wide until expected environment returns or receiver recreation |
+| Discovery | Root or tracked-binding-parent identity changes | Clear pending confirmations and absence history; block negative conclusions receiver-wide until expected environment returns or receiver recreation; bounded diagnostic identifies the changed directory |
 | Discovery | Receiver recreated after operator verifies the environment | Fresh discovery baseline and absence history; checkpoints/progress unchanged; sync-failure block not bypassed |
 | Rotation | A file moves into an already visited directory and is missed once, then is validated in a later pass | Pending disappearance cancels before permanent EOF; no terminal framing or finalization |
 | Rotation | Still-linked resident file stays unseen | Permanent EOF requires a complete later pass started after the first missing pass finished, plus EOF inactivity; neither condition alone suffices |
@@ -653,9 +653,9 @@ must update the specification and these cases together.
 | Qualification | Pod-directory churn in symlink and direct-path deployments | Release qualification records confirmation delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission |
 | Discovery | Excluded alias and another validated eligible name identify the same locator | Reject excluded name without revoking the eligible reader |
 | Discovery | Excluded name encountered during normal traversal identifies a retained locator | Metadata lookup may preserve presence without read-open; no recursive search of pruned excluded subtrees |
-| Discovery | Root absent at startup, including with recovered records | Pass incomplete receiver-wide for discovery-based finalization and retention; positive reading and qualified unlink handling remain available; first successful validation establishes identity |
+| Discovery | Root absent at startup, including with recovered records | Pass incomplete receiver-wide for discovery-based finalization and retention; positive reading and qualified unlink handling remain available; first successful validation establishes identity; bounded diagnostic identifies the absent root |
 | Discovery | Unresolved symlink might lead to a subtree required by the include pattern | Coverage failure; unknown target kind is not a rejected leaf candidate |
-| Discovery | Established root unavailable or replaced | Coverage failure or identity-change block; never an empty successful scan |
+| Discovery | Established root unavailable or replaced | Coverage failure or identity-change block; never an empty successful scan; bounded diagnostic identifies the root |
 | Discovery | Binding parent returns `ENOENT` with otherwise valid root/traversal context | Classify absence by context, not as a replacement directory identity |
 | Rotation | A confirming pass is followed by coverage failure before permanent EOF | Invalidate confirmation; one qualifying pass started after the failed pass finishes can replace it |
 | Rotation | Validated reappearance cancels, followed by another miss | New pending-disappearance sequence required |
@@ -696,6 +696,8 @@ must update the specification and these cases together.
 | Discovery | One locator has many matched aliases | One deterministic distinguished binding retained; aliases do not grow durable state |
 | Discovery | A lexically smaller alias appears while the distinguished binding still names the locator | Existing binding remains stable; no false rebound |
 | Discovery | Distinguished binding is truncated | Kind, full length, digest, and suffix preserve bounded path comparison |
+| Rotation | New file first observed at a tracked predecessor's comparable binding during an incomplete pass, with `start_at: end` | Preserve replacement context; a new identity starts at zero or admission waits for ordering, never at end; predecessor binding and progress remain unchanged |
+| Rotation | That incomplete-pass replacement matches its own existing durable record | Apply normal identity/lifecycle validation to its own state; do not reset its offset or inherit predecessor progress |
 | Discovery | Distinguished binding unavailable or incomparable for a tracked predecessor | Only its possible new replacement uses offset-zero fallback; unrelated first admission still follows `start_at` |
 | Discovery | Rebound invalidates A's binding and A's new minimum was another identity's prior binding | Freeze and resolve all prior rebounds before reselection; conflict makes inventory incomplete without dual assignment |
 | Discovery | Traversal error | No false removal |
