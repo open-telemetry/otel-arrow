@@ -1109,6 +1109,58 @@ default:
         assert_eq!(value.as_bytes()[14], b'7');
     }
 
+    /// Scenario: qualified generated members share names with primitive drop overrides.
+    /// Guarantees: legacy stored-name overrides remain scoped to captured primitive headers,
+    /// while selected constant and randomness members follow the default propagation action.
+    #[test]
+    fn generated_members_do_not_match_primitive_overrides() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  delivery:
+    - type: constant
+      name: route
+      value: primary
+    - type: randomness
+      name: id
+      value: uuid7
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [delivery:route, delivery:id]
+overrides:
+  - match:
+      stored_names: [route, id]
+    action: drop
+"#,
+        )
+        .expect("valid propagation policy");
+
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("generated members compile");
+        let headers = TransportHeaders::new();
+        let materialized = materialize(&policy, &headers);
+        let propagated = policy
+            .propagate_materialized_only(Some(&materialized))
+            .collect::<Vec<_>>();
+
+        assert_eq!(propagated.len(), 2);
+        assert_eq!(propagated[0].header_name, "route");
+        assert_eq!(propagated[0].value, b"primary");
+        assert_eq!(propagated[1].header_name, "id");
+    }
+
     /// Scenario: a named selector repeats an unqualified header using identical and varied case.
     /// Guarantees: equivalent unconditional selections remain accepted for compatibility.
     #[test]

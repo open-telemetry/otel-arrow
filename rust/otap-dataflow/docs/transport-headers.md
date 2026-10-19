@@ -284,9 +284,10 @@ Matching has these semantics:
 - Repeated unqualified selectors, including ASCII case variants, are accepted
   as equivalent.
 
-Overrides retain precedence over the default selector. An override that selects
-the primitive `workspace` header can propagate it independently even when
-`product_user` conditions do not match.
+Primitive-header overrides retain precedence over the default selector. An
+override that selects the primitive `workspace` header can propagate it
+independently even when `product_user` conditions do not match. Legacy
+overrides do not match qualified constant or randomness members.
 
 ### Name Strategy
 
@@ -304,8 +305,11 @@ configured member name. Otherwise, it retains the original wire name.
 
 ### Overrides
 
-Each override targets specific headers by their stored name and can
-force a different action or name strategy than the default.
+Each override targets captured primitive transport headers by their stored name
+and can force a different action or name strategy than the default. Overrides
+do not match qualified composite references or the configured output names of
+constant and randomness members. Control generated members through the default
+qualified selector and action.
 
 - `match.stored_names` (required): match headers whose stored name
   appears in this list (case-insensitive). Their configured spelling
@@ -317,9 +321,9 @@ force a different action or name strategy than the default.
 - `on_error` (optional): override error action for matched headers.
   Inherits from `default.on_error` when omitted.
 
-Overrides are evaluated before the default selector. If a header
-matches an override, the override's action is used and the default
-selector is not consulted.
+Overrides are evaluated before the default selector for captured primitive
+headers. If a primitive header matches an override, the override's action is
+used and the default selector is not consulted.
 
 ## Examples
 
