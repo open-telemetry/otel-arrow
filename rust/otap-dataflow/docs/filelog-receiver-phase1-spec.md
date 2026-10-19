@@ -855,6 +855,13 @@ qualification remains governed by the platform requirements.
 
 Lexical exclusion may reject a candidate pathname before pinning or read-open.
 That early rejection does not itself prove absence of a retained identity.
+Discovery must still collect the locator evidence needed for exclusion
+transitions and presence accounting of retained identities, following the
+selected link policy. Skipping admission or read-open must not discard that
+evidence. The evidence mechanism must meet the accepted race model; this rule
+does not certify a single pathname metadata lookup as sufficient. If required
+retained-state evidence cannot be established, the pass is incomplete rather
+than treating the excluded pathname as proof of disappearance.
 For candidates not already rejected, discovery must have a policy decision
 point after safe pin/type/filesystem validation and before read-open or
 fingerprint reads. Evaluate resolved-target exclusions against evidence tied
@@ -965,10 +972,11 @@ A complete inventory visited every relevant bounded traversal unit and produced 
 evidence for every fact needed to reconcile retained state. Certification also
 requires the accepted absence model described by the
 [discovery evidence decisions](#discovery-evidence-decisions). Every reference
-below to a complete pass or complete inventory, including disappearance and
-retention absence, carries that requirement. The conditional transitions and
-examples remain the required behavior once that premise is met; this draft
-does not qualify an enumeration algorithm or allow traversal completion to
+in this specification to a complete pass, complete inventory, or complete
+reconciliation, including disappearance and retention absence, carries that
+requirement. The conditional transitions and
+examples remain the required behavior once that premise is met; this specification
+does not yet qualify an enumeration algorithm or allow traversal completion to
 stand in for that premise.
 
 The following conditions make a pass incomplete:
@@ -976,7 +984,8 @@ The following conditions make a pass incomplete:
 - traversal error;
 - directory open or enumeration error;
 - path-resolution error;
-- symlink or reparse-point cycle;
+- symlink or reparse-point cycle encountered during resolution permitted by
+  the selected link policy, including fixed-prefix alias resolution;
 - depth exhaustion;
 - cancellation;
 - unstable locator, size, or fingerprint evidence;
@@ -3443,7 +3452,7 @@ bit-for-bit. In either case, the finalization transaction is
 filesystem-synced before the descriptor is closed and the runtime lease is
 released, even when ordinary Ack progress uses a nonzero sync interval.
 
-If the discovery specification review permits eligible reappearance to cancel
+If the [discovery evidence review](#discovery-evidence-decisions) permits eligible reappearance to cancel
 pending finalization, serialize that cancellation before the finalization WAL
 append begins. A later observation cannot discard an append already started or
 whose outcome remains unresolved. Follow the checkpoint pending-write and

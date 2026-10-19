@@ -640,10 +640,13 @@ components; scanner/reconciliation tests verify evidence and transitions.
 | Discovery | Required target exclusion checks cannot be completed, even though a locator was obtained | No admission or content read through that observation; pass incomplete; uncertainty alone does not revoke another validated reader |
 | Discovery | Unresolved target has zero link count or a name ending in `" (deleted)"` | No implicit exception to exclusion checks or completeness rules |
 | Discovery | Positively excluded target lacks read permission | Exclusion is decided before read-open; no read-open failure manufactured for an already excluded target |
-| Discovery | Candidate name vanishes, target dangles, traversal root is missing, exclusion-root mapping is unavailable, or resolution loops | Pass incomplete under the conservative baseline, with distinct reasons; no admission dependent on an unavailable exclusion mapping |
+| Discovery | Candidate name vanishes, traversal root is missing, or exclusion-root mapping is unavailable | Pass incomplete under the conservative baseline, with distinct reasons; no admission dependent on an unavailable exclusion mapping |
+| Discovery | A followed target dangles or resolution loops, under `follow_symlinks: true` or while resolving a fixed include-prefix alias | Pass incomplete under the conservative baseline, with the resolution reason preserved |
+| Discovery | A final symlink is dangling or cyclic but is not followed under `follow_symlinks: false` | Not admitted; the unattempted target resolution does not itself make the pass incomplete |
+| Discovery | Tracked file is now observed only through a lexically excluded name | Required locator evidence supports exclusion and presence accounting without read-open; missing evidence makes the pass incomplete, not proof of disappearance |
 | Discovery | A persistent resolution failure spans retention deadlines | Bounded reason remains observable; no fabricated absence or capacity-driven checkpoint removal |
 | Discovery | New growing file | Admitted without waiting for close |
-| Discovery | Exclude overlaps include | Lexical rejection may precede pinning; no read-open required |
+| Discovery | Exclude overlaps include | Excluded; lexical rejection may precede pinning while preserving required retained-state evidence; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |
 | Discovery | `follow_symlinks: false` final symlink | Not admitted |
 | Discovery | `follow_symlinks: true` allowed target | Admitted once |

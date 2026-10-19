@@ -559,7 +559,7 @@ implementation:
   eligibility for destructive cleanup.
 - Error-free traversal alone does not prove absence under concurrent directory
   changes. The [discovery evidence decisions](filelog-receiver-phase1-spec.md#discovery-evidence-decisions)
-  records the unresolved evidence model required to certify complete inventory.
+  record the unresolved evidence model required to certify complete inventory.
   Required exclusion checks fail closed; unresolved targets have no implicit
   zero-link-count exception.
 - The checkpoint namespace lock prevents concurrent in-process or local
