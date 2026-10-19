@@ -564,6 +564,31 @@ benchmark hardware are intentionally not normative. Linux cases gate the
 initial Phase 1 release. macOS and Windows cases gate enabling those platforms,
 while their semantic and format definitions remain normative from version 1.
 
+### Discovery evidence qualification
+
+The [discovery evidence decisions](filelog-receiver-phase1-spec.md#discovery-evidence-decisions)
+remain open. Recording gaps does not satisfy the implementation prerequisite.
+Every matrix row and example that assumes a complete inventory requires the
+accepted absence model; an error-free traversal alone does not meet that premise.
+The existing conditional outcomes are retained, not evidence that a traversal
+algorithm has already been qualified.
+
+The following qualification scenarios are **pending the evidence-model decision**,
+not executable pass criteria yet:
+
+- rename within a directory and moves from unvisited to already visited directories;
+- directory reopen/resumption with unchanged identity but uncertain coverage;
+- target verification during rename and across inaccessible namespaces; and
+- eligible reappearance before the finalization append begins.
+
+The decision must provide concrete expected outcomes for these scenarios. Any
+accepted unsupported-target exception also requires tracked/untracked cases,
+independent incompleteness reasons, and retention absence-history tests.
+Integrated lifecycle and retention tests belong with their implementing
+components; scanner/reconciliation tests verify evidence and transitions.
+
+### Required cases
+
 | Area | Scenario | Required observation |
 | --- | --- | --- |
 | Configuration | Empty includes | Rejected before startup |
@@ -612,8 +637,13 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Identity-reconciliation or checkpoint-recovery formula equals its named provisional ceiling | Accepted if representable |
 | Configuration | A formula exceeds its named provisional ceiling or any admission arithmetic overflows | Rejected with actionable knobs |
 | Configuration | Framer, reader, batch, or carry-over formula has no named provisional ceiling | Checked and reported; no invented per-model limit |
+| Discovery | Required target exclusion checks cannot be completed, even though a locator was obtained | No admission or content read through that observation; pass incomplete; uncertainty alone does not revoke another validated reader |
+| Discovery | Unresolved target has zero link count or a name ending in `" (deleted)"` | No implicit exception to exclusion checks or completeness rules |
+| Discovery | Positively excluded target lacks read permission | Exclusion is decided before read-open; no read-open failure manufactured for an already excluded target |
+| Discovery | Candidate name vanishes, target dangles, traversal root is missing, exclusion-root mapping is unavailable, or resolution loops | Pass incomplete under the conservative baseline, with distinct reasons; no admission dependent on an unavailable exclusion mapping |
+| Discovery | A persistent resolution failure spans retention deadlines | Bounded reason remains observable; no fabricated absence or capacity-driven checkpoint removal |
 | Discovery | New growing file | Admitted without waiting for close |
-| Discovery | Exclude overlaps include | Excluded |
+| Discovery | Exclude overlaps include | Lexical rejection may precede pinning; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |
 | Discovery | `follow_symlinks: false` final symlink | Not admitted |
 | Discovery | `follow_symlinks: true` allowed target | Admitted once |
@@ -833,6 +863,7 @@ while their semantic and format definitions remain normative from version 1.
 | Nack | Supervisor restarts after explicit `fail` during persistent outage | Checkpoint/source reconstruction can duplicate; repeated failure can restart-loop without progress |
 | Nack | Free-form diagnostic text changes | No control-flow change; text is diagnostic only |
 | Nack | Typed local `NoRoute` before accepted publication | Consumes attempt, retains exact batch, uses bounded backoff, then applies `on_retry_exhaustion` at exhaustion; no fabricated Ack |
+| Checkpoint | If cancellation is accepted, reappearance races a finalization append that has begun or has unresolved outcome | No cancellation by assuming rollback; pending-write and sync-failure protocol retained |
 | Checkpoint | Crash before registration sync | File was never eligible to read |
 | Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |

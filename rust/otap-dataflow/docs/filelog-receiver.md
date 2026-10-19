@@ -557,6 +557,11 @@ implementation:
   the replacement target's own existing lifecycle state still wins.
 - Incomplete discovery cannot prove absence, uniqueness, replacement, or
   eligibility for destructive cleanup.
+- Error-free traversal alone does not prove absence under concurrent directory
+  changes. The [discovery evidence decisions](filelog-receiver-phase1-spec.md#discovery-evidence-decisions)
+  records the unresolved evidence model required to certify complete inventory.
+  Required exclusion checks fail closed; unresolved targets have no implicit
+  zero-link-count exception.
 - The checkpoint namespace lock prevents concurrent in-process or local
   cross-process writers sharing one effective checkpoint namespace.
   Process-local locator leases prevent duplicate in-process readers. Neither
