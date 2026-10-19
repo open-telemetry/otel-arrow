@@ -629,8 +629,9 @@ is an operational condition, not proof against continuing namespace movement.
 | Discovery | Exclusion prefix is absent | Continue only if the full policy remains evaluable; otherwise no dependent admission and pass incomplete |
 | Discovery | Ordinary leaf-candidate link loop or nesting limit | Candidate rejected, no eligible name or locator presence; unrelated coverage intact; no claim of physical absence |
 | Discovery | Directory traversal cycle, fixed-prefix failure, or required pinned-target policy failure | Pass incomplete; candidate-loop rejection does not bypass magic-link or exclusion policy |
+| Discovery | Persistent link loop under a followed recursive include requires unresolved subtree traversal | Coverage failure each pass; diagnostic identifies the link; discovery-based finalization and retention aging blocked receiver-wide; qualified resident-unlink handling remains available |
 | Discovery | A final symlink is dangling or cyclic but is not followed under `follow_symlinks: false` | Not admitted; the unattempted target resolution does not itself make the pass incomplete |
-| Discovery | Tracked file is now observed only through a lexically excluded name | Required locator evidence supports exclusion and presence accounting without read-open; missing evidence makes the pass incomplete, not proof of disappearance |
+| Discovery | Tracked file is now observed only through a lexically excluded name | Required locator evidence supports exclusion and presence accounting without read-open; evidence failures follow the operation-specific outcomes, never proof of disappearance |
 | Discovery | A persistent resolution failure spans retention deadlines | Bounded reason remains observable; no fabricated absence or capacity-driven checkpoint removal |
 | Discovery | Policy passed and locator presence is known, but content access fails | No admission or cancellation; presence blocks discovery-derived confirmation for that locator without invalidating unrelated coverage |
 | Discovery | Bind-mount alias contains an excluded `x.secret` and allowed `x.log` under a `*.secret` exclusion | Full root mapping excludes only `x.secret`; no whole-subtree rejection |
@@ -658,7 +659,7 @@ is an operational condition, not proof against continuing namespace movement.
 | Rotation | Failure or locator presence arrives during an unfinished pass before the cutoff | Process it immediately for confirmation validity; do not wait for pass completion |
 | Rotation | File is renamed to an inspected excluded name, with no other eligible name | Excluded handling, no D17 solely for exclusion, durable state remains Active |
 | Rotation | Pending disappearance meets Excluded preconditions before permanent EOF | Exclusion handling replaces pending disappearance without D17; after cutoff the observation preserves presence only |
-| Rotation | File moves into a pruned excluded subtree that discovery does not inspect | No promise of exclusion detection; disappearance policy can capture late writes and eventual retention can remove state |
+| Rotation | File moves into a pruned excluded subtree that discovery does not inspect | No promise of exclusion detection; collection may continue after the move (exclusion/privacy limitation), and eventual retention can remove state |
 | Discovery | Excluded name identifies an active locator whose distinguished binding remains validated and eligible | Do not revoke the reader |
 | Discovery | Excluded name identifies an active locator; binding is positively ineligible and no other validated eligible name is known | Prompt exclusion handling without waiting for complete discovery, under unresolved-delta ordering |
 | Discovery | Excluded name identifies an active locator but its binding is truncated, inaccessible, or unstable | No inference of ineligibility; complete-pass fallback required; reading continues until revocation is authorized |

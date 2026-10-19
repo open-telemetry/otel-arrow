@@ -688,8 +688,9 @@ remain pinned for continuing writes, framing, delivery, or checkpoint failures;
 immediate disk-space release is not guaranteed. Pinned readers remain charged
 to descriptor and memory limits; new readers wait rather than evicting them.
 Retained records can also accumulate against `max_tracked_files`. Use
-node-appropriate includes rather than optional absent roots in fleet configs. Report bounded diagnostics that
-distinguish root changes, lost coverage, exclusion failures, and descriptor
+node-appropriate includes rather than optional absent roots in fleet configs.
+Report bounded diagnostics that distinguish root changes, lost coverage,
+exclusion failures, and descriptor
 exhaustion, with rate-limited path context where available.
 
 ### Compilation and path semantics
@@ -1031,12 +1032,17 @@ locator presence nor a complete traversal authorizes identity reconnection.
 
 A non-followed final symlink is rejected without resolving its target; a dangling
 target does not itself invalidate that pass. Directory traversal cycles and
-fixed-prefix resolution failures invalidate coverage. Candidate-local loop/nesting rejection does not cover magic-link
-policy rejection or a pinned target whose exclusion checks cannot be completed.
+fixed-prefix resolution failures invalidate coverage. Candidate-local
+loop/nesting rejection does not cover magic-link policy rejection or a pinned
+target whose exclusion checks cannot be completed.
 Candidate-local rejection applies only where no required subtree traversal
 is being skipped. If the unresolved target may be a directory required by the
 include pattern, unknown type is a coverage failure, not a rejected leaf.
 Classify by operation and context, not errno alone.
+A persistent link loop under a followed recursive include can therefore block
+discovery-based finalization and retention absence aging receiver-wide. Report
+a bounded diagnostic identifying the link; qualified resident-unlink handling
+remains independent of this coverage failure.
 
 Pending overflow alone does not invalidate coverage when every retained locator
 can still be accounted for. Missing fingerprint-multiplicity diagnostics do not
@@ -1122,8 +1128,8 @@ later observation. Before confirmed permanent EOF, an eligible, validated
 observation ordered after the initial miss cancels pending disappearance when
 its locator matches the still-held validated resident handle. Fingerprint-only
 matching is insufficient; cancellation does not bypass truncation or unresolved
-source-delta handling. Locator presence without eligible validation still blocks discovery-derived confirmation
-for that locator. After permanent EOF, preserve presence but block competing
+source-delta handling. Locator presence without eligible validation still blocks
+discovery-derived confirmation for that locator. After permanent EOF, preserve presence but block competing
 admission until ownership is released. After finalization, a later observation
 follows new-identity rules; descriptor-free containment instead permits normal
 validated reconnection of the retained `Active` record.
@@ -1144,8 +1150,9 @@ distinguished binding under the selected link policy:
 A mistaken revocation can lose access to unread bytes if the source disappears
 before rediscovery. Keeping its Active checkpoint preserves possible recovery,
 not the source bytes. This trade-off and delayed revocation are exclusion
-limitations; exclusion is not an instantaneous privacy boundary. Before confirmed permanent
-EOF, an observation meeting the Excluded preconditions replaces pending
+limitations; exclusion is not an instantaneous privacy boundary. Before
+confirmed permanent EOF, an observation meeting the Excluded preconditions
+replaces pending
 disappearance with exclusion handling, without D17. After the cutoff, it
 preserves locator presence but cannot undo finalization.
 
