@@ -1544,7 +1544,7 @@ mod tests {
     /// decision and cannot silently enter the project-owned WIT world.
     #[test]
     fn kernel_processor_world_imports_only_otel_kernels_and_host_services() {
-        let wit_source = include_str!("../wit/plugin.wit");
+        let wit_source = include_str!("../../wasm-guest-sdk/wit/plugin.wit");
         let world_start = wit_source
             .find("world kernel-processor")
             .expect("kernel-processor world must be declared in plugin.wit");

@@ -1,0 +1,18 @@
+[package]
+name = "otel-arrow-dfe-wasm-guest-sdk"
+description = "Internal guest SDK for OTAP dataflow WASM plugins"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+wit-bindgen = { version = "0.62", features = ["async", "macros", "realloc"] }
+
+[lints]
+workspace = true
