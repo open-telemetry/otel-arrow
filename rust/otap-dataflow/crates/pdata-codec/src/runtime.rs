@@ -5,10 +5,10 @@
 //!
 //! [`CodecServiceBuilder`] combines an immutable validated registry and decode
 //! policy with fresh runtime state. Cloned [`CodecService`] handles share that
-//! state within one pipeline, while decoder and encoder instances are created
-//! lazily and reused. The decode policy is applied once at decoder creation;
-//! payload admission and matching-format forwarding therefore require neither
-//! codec construction nor mutable runtime access.
+//! pipeline, while decoder, encoder, and batcher instances are created lazily
+//! and reused. The decode policy is applied once at decoder creation; payload
+//! admission and matching-format forwarding therefore require neither codec
+//! construction nor mutable runtime access.
 //!
 //! Codec trait calls are currently synchronous. The service holds its runtime
 //! lock for the duration of each codec operation and, for prepared output, for
@@ -29,9 +29,9 @@ use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    CodecError, CodecOperation, CodecRegistry, DecodePolicy, EncodeOutput, EncodedPdata,
-    EncodingPlan, InspectionPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError,
-    ResolvedCodec,
+    AcceptedEncodings, BatchSettings, CodecBatches, CodecError, CodecOperation, CodecRegistry,
+    DecodePolicy, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher, PdataDecoder,
+    PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
 
 struct DecoderInstance {
@@ -44,10 +44,16 @@ struct EncoderInstance {
     encoder: Box<dyn PdataEncoder>,
 }
 
+struct BatcherInstance {
+    codec: ResolvedCodec,
+    batcher: Box<dyn PdataBatcher>,
+}
+
 #[derive(Default)]
 struct CodecRuntime {
     decoders: Vec<DecoderInstance>,
     encoders: Vec<EncoderInstance>,
+    batchers: Vec<BatcherInstance>,
 }
 
 /// Builds a pipeline-local codec service from a validated registry.
@@ -132,17 +138,28 @@ impl CodecService {
 
     /// Decodes admitted bytes through a lazily reused decoder instance.
     pub fn decode(&self, encoded: &EncodedPdata) -> Result<OtapArrowRecords, CodecError> {
+        self.decode_parts(encoded.codec(), encoded.signal_type(), encoded.bytes())
+    }
+
+    /// Decodes encoded parts without constructing an envelope.
+    pub fn decode_parts(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &Bytes,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        codec.require_decoder(signal)?;
         let mut runtime = self.lock()?;
         let records = runtime
-            .decoder(encoded.codec(), self.decode_policy)?
-            .decode(encoded.signal_type(), encoded.bytes())
+            .decoder(codec, self.decode_policy)?
+            .decode(signal, bytes)
             .map_err(|error| {
-                error.with_operation_context(encoded.encoding(), CodecOperation::Decode)
+                error.with_operation_context(codec.encoding(), CodecOperation::Decode)
             })?;
-        if records.signal_type() != encoded.signal_type() {
+        if records.signal_type() != signal {
             return Err(CodecError::SignalChanged {
-                encoding: encoded.encoding().clone(),
-                expected: encoded.signal_type(),
+                encoding: codec.encoding().clone(),
+                expected: signal,
                 actual: records.signal_type(),
             });
         }
@@ -153,16 +170,33 @@ impl CodecService {
     pub fn view<'a>(
         &self,
         encoded: &'a EncodedPdata,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
-        if plan.accepts(encoded.codec()) {
+        self.view_parts(
+            encoded.codec(),
+            encoded.signal_type(),
+            encoded.bytes(),
+            accepted_encodings,
+        )
+    }
+
+    /// Views encoded parts without constructing an envelope.
+    pub fn view_parts<'a>(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &'a Bytes,
+        accepted_encodings: &AcceptedEncodings,
+    ) -> Result<PdataView<'a>, CodecError> {
+        codec.require_decoder(signal)?;
+        if accepted_encodings.accepts(codec) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
-                encoded.encoding(),
-                encoded.signal_type(),
-                encoded.bytes(),
+                codec.encoding(),
+                signal,
+                bytes,
             )));
         }
-        self.decode(encoded)
+        self.decode_parts(codec, signal, bytes)
             .map(|records| PdataView::Native(std::borrow::Cow::Owned(records)))
     }
 
@@ -194,6 +228,24 @@ impl CodecService {
         self.with_encoded_output(records, plan, |output| output.into_bytes())
     }
 
+    /// Re-batches independently decodable inputs with reused runtime-local state.
+    pub fn batch(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        settings: &BatchSettings,
+        inputs: Vec<Bytes>,
+    ) -> Result<CodecBatches, CodecError> {
+        codec.require_batcher(signal)?;
+        let mut runtime = self.lock()?;
+        let batcher = runtime.batcher(codec).map_err(|error| {
+            error.with_operation_context(codec.encoding(), CodecOperation::Batch)
+        })?;
+        batcher
+            .batch(signal, settings, inputs)
+            .map_err(|error| error.with_operation_context(codec.encoding(), CodecOperation::Batch))
+    }
+
     /// Returns whether two handles address the same pipeline-owned state.
     #[must_use]
     pub fn shares_state_with(&self, other: &Self) -> bool {
@@ -204,7 +256,7 @@ impl CodecService {
     #[cfg(any(test, feature = "testing"))]
     pub fn test_instance_count(&self) -> Result<usize, CodecError> {
         let runtime = self.lock()?;
-        Ok(runtime.decoders.len() + runtime.encoders.len())
+        Ok(runtime.decoders.len() + runtime.encoders.len() + runtime.batchers.len())
     }
 }
 
@@ -249,6 +301,25 @@ impl CodecRuntime {
             }
         };
         Ok(self.encoders[index].encoder.as_mut())
+    }
+
+    fn batcher(&mut self, codec: ResolvedCodec) -> Result<&mut dyn PdataBatcher, CodecError> {
+        let index = match self
+            .batchers
+            .iter()
+            .position(|instance| instance.codec == codec)
+        {
+            Some(index) => index,
+            None => {
+                let index = self.batchers.len();
+                self.batchers.push(BatcherInstance {
+                    codec,
+                    batcher: codec.create_batcher()?,
+                });
+                index
+            }
+        };
+        Ok(self.batchers[index].batcher.as_mut())
     }
 }
 

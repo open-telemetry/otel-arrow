@@ -3,10 +3,12 @@
 
 //! Pluggable codecs between independently decodable bytes and native OTAP.
 
+mod batching;
 mod decoder;
 mod encoder;
 mod error;
 mod identity;
+mod payload;
 mod plan;
 mod registry;
 mod runtime;
@@ -14,14 +16,21 @@ mod view;
 
 mod codecs;
 
+pub use batching::{
+    BatchPlan, BatchSettings, BatchSizer, BatchingOutput, BatchingSupport, CodecBatches,
+    PdataBatcher,
+};
 pub use decoder::{DecodePolicy, DecodeValidation, PdataDecoder};
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};
 pub use identity::{EncodedPdata, PdataEncoding};
-pub use plan::{EncodePolicy, EncodingPlan, InspectionPlan};
+pub use payload::{
+    OtapPayload, PayloadData, PayloadStorage, PdataFormat, PdataPayload, PdataPayloadDecodeError,
+};
+pub use plan::{AcceptedEncodings, EncodePolicy, EncodingPlan};
 pub use registry::{
-    CodecMetadata, CodecRegistration, CodecRegistry, ItemCounter, PDATA_CODEC_FACTORIES,
-    ResolvedCodec,
+    BatcherFactory, CodecBatcherRegistration, CodecMetadata, CodecRegistration, CodecRegistry,
+    ItemCounter, PDATA_CODEC_FACTORIES, ResolvedCodec,
 };
 pub use runtime::{CodecService, CodecServiceBuilder};
 pub use view::{EncodedView, PdataView};

@@ -66,7 +66,6 @@ mod test {
     };
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
     use weaver_common::result::WResult;
-    use weaver_common::vdir::VirtualDirectoryPath;
     use weaver_forge::registry::ResolvedRegistry;
     use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
     use weaver_semconv::registry_repo::RegistryRepo;
@@ -80,11 +79,8 @@ mod test {
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
             None,
-            &VirtualDirectoryPath::GitRepo {
-                url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-                sub_folder: Some("model".to_owned()),
-                refspec: None,
-            },
+            &otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path(
+            ),
             &mut semconv_errors,
         )
         .expect("all registries are definied under the model folder in semantic convention repo");

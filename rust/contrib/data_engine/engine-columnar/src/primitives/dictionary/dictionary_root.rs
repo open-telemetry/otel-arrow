@@ -144,74 +144,37 @@ impl<'a> Dictionary<'a> {
         Self { keys, values }
     }
 
-    pub fn new_boolean<K: ArrowDictionaryKeyType>(values: BooleanArray) -> Dictionary<'a> {
+    pub fn new_boolean(key_data_type: DictionaryKeyType, values: BooleanArray) -> Dictionary<'a> {
         Self {
             keys: DictionaryKeyArray::BooleanArray {
-                data_type: K::DATA_TYPE,
+                data_type: key_data_type,
                 values,
             },
             values: DictionaryValueArray::Boolean,
         }
     }
 
-    pub fn new_boolean_with_data_type(
-        key_data_type: DataType,
-        values: BooleanArray,
-    ) -> Result<Dictionary<'a>, DictionaryError> {
-        Ok(match key_data_type {
-            DataType::Int8 => Self::new_boolean::<Int8Type>(values),
-            DataType::Int16 => Self::new_boolean::<Int16Type>(values),
-            DataType::Int32 => Self::new_boolean::<Int32Type>(values),
-            DataType::Int64 => Self::new_boolean::<Int64Type>(values),
-
-            DataType::UInt8 => Self::new_boolean::<UInt8Type>(values),
-            DataType::UInt16 => Self::new_boolean::<UInt16Type>(values),
-            DataType::UInt32 => Self::new_boolean::<UInt32Type>(values),
-            DataType::UInt64 => Self::new_boolean::<UInt64Type>(values),
-
-            data_type => return Err(DictionaryError::UnsupportedKeyDataType { data_type }),
-        })
-    }
-
-    pub fn new_unique_values<K: ArrowDictionaryKeyType>(
+    pub fn new_unique_values(
+        key_data_type: DictionaryKeyType,
         values: DictionaryValueArray<'a>,
     ) -> Dictionary<'a> {
         Self {
             keys: DictionaryKeyArray::UniqueValues {
-                data_type: K::DATA_TYPE,
+                data_type: key_data_type,
                 length: values.len(),
             },
             values,
         }
     }
 
-    pub fn new_scalar_with_data_type(
-        key_data_type: DataType,
-        key_count: usize,
-        value: ValueOrRef<'a>,
-    ) -> Result<Dictionary<'a>, DictionaryError> {
-        Ok(match key_data_type {
-            DataType::Int8 => Self::new_scalar::<Int8Type>(key_count, value),
-            DataType::Int16 => Self::new_scalar::<Int16Type>(key_count, value),
-            DataType::Int32 => Self::new_scalar::<Int32Type>(key_count, value),
-            DataType::Int64 => Self::new_scalar::<Int64Type>(key_count, value),
-
-            DataType::UInt8 => Self::new_scalar::<UInt8Type>(key_count, value),
-            DataType::UInt16 => Self::new_scalar::<UInt16Type>(key_count, value),
-            DataType::UInt32 => Self::new_scalar::<UInt32Type>(key_count, value),
-            DataType::UInt64 => Self::new_scalar::<UInt64Type>(key_count, value),
-
-            data_type => return Err(DictionaryError::UnsupportedKeyDataType { data_type }),
-        })
-    }
-
-    pub fn new_scalar<K: ArrowDictionaryKeyType>(
+    pub fn new_scalar(
+        key_data_type: DictionaryKeyType,
         key_count: usize,
         value: ValueOrRef<'a>,
     ) -> Dictionary<'a> {
         Self {
             keys: DictionaryKeyArray::SingleValue {
-                data_type: K::DATA_TYPE,
+                data_type: key_data_type,
                 length: key_count,
                 value_index: Some(0),
             },
@@ -219,30 +182,11 @@ impl<'a> Dictionary<'a> {
         }
     }
 
-    pub fn new_null_with_data_type(
-        count: usize,
-        data_type: DataType,
-    ) -> Result<Dictionary<'a>, DictionaryError> {
-        Ok(match data_type {
-            DataType::Int8 => Self::new_null::<Int8Type>(count),
-            DataType::Int16 => Self::new_null::<Int16Type>(count),
-            DataType::Int32 => Self::new_null::<Int32Type>(count),
-            DataType::Int64 => Self::new_null::<Int64Type>(count),
-
-            DataType::UInt8 => Self::new_null::<UInt8Type>(count),
-            DataType::UInt16 => Self::new_null::<UInt16Type>(count),
-            DataType::UInt32 => Self::new_null::<UInt32Type>(count),
-            DataType::UInt64 => Self::new_null::<UInt64Type>(count),
-
-            data_type => return Err(DictionaryError::UnsupportedKeyDataType { data_type }),
-        })
-    }
-
-    pub fn new_null<K: ArrowDictionaryKeyType>(count: usize) -> Dictionary<'a> {
+    pub fn new_null(key_data_type: DictionaryKeyType, key_count: usize) -> Dictionary<'a> {
         Self {
             keys: DictionaryKeyArray::SingleValue {
-                data_type: K::DATA_TYPE,
-                length: count,
+                data_type: key_data_type,
+                length: key_count,
                 value_index: None,
             },
             values: vec![].into(),
@@ -298,9 +242,6 @@ pub enum DictionaryError {
 
     #[error("Boolean dictionary should have exactly two values")]
     InvalidBooleanValues,
-
-    #[error("Data type '{data_type}' is not supported for keys")]
-    UnsupportedKeyDataType { data_type: DataType },
 }
 
 #[cfg(test)]
@@ -448,18 +389,16 @@ mod tests {
     /// Guarantees: Every row resolves to the scalar or Null and retains the requested key data type.
     #[test]
     fn scalar_and_null_dictionary_constructors_preserve_shape() {
-        let scalar =
-            Dictionary::new_scalar_with_data_type(DataType::UInt16, 3, ValueOrRef::Integer(42))
-                .expect("valid");
+        let scalar = Dictionary::new_scalar(DictionaryKeyType::UInt16, 3, ValueOrRef::Integer(42));
         assert_eq!(scalar.len(), 3);
-        assert_eq!(scalar.keys().data_type(), DataType::UInt16);
+        assert_eq!(scalar.keys().data_type(), DictionaryKeyType::UInt16);
         assert!(scalar.nulls().is_none());
         assert_eq!(scalar.get_value(2), Ok(ValueOrRef::Integer(42)));
         assert_eq!(scalar.get_value(3), Ok(ValueOrRef::Null));
 
-        let null = Dictionary::new_null_with_data_type(3, DataType::Int32).expect("valid");
+        let null = Dictionary::new_null(DictionaryKeyType::Int32, 3);
         assert_eq!(null.len(), 3);
-        assert_eq!(null.keys().data_type(), DataType::Int32);
+        assert_eq!(null.keys().data_type(), DictionaryKeyType::Int32);
         assert_eq!(null.nulls().unwrap().null_count(), 3);
         assert_eq!(null.get_value(0), Ok(ValueOrRef::Null));
     }
@@ -469,7 +408,7 @@ mod tests {
     #[test]
     fn boolean_dictionary_rejects_incomplete_value_tables() {
         let keys = DictionaryKeyArray::BooleanArray {
-            data_type: DataType::Int8,
+            data_type: DictionaryKeyType::Int8,
             values: BooleanArray::from(vec![true]),
         };
 
@@ -488,14 +427,13 @@ mod tests {
     /// Guarantees: Boolean values, key nulls, bounds, and the requested key data type are preserved.
     #[test]
     fn boolean_dictionary_constructor_preserves_values_and_shape() {
-        let dictionary = Dictionary::new_boolean::<UInt16Type>(BooleanArray::from(vec![
-            Some(false),
-            Some(true),
-            None,
-        ]));
+        let dictionary = Dictionary::new_boolean(
+            DictionaryKeyType::UInt16,
+            BooleanArray::from(vec![Some(false), Some(true), None]),
+        );
 
         assert_eq!(dictionary.len(), 3);
-        assert_eq!(dictionary.keys().data_type(), DataType::UInt16);
+        assert_eq!(dictionary.keys().data_type(), DictionaryKeyType::UInt16);
 
         let nulls = dictionary.nulls().expect("nullable Boolean keys");
         assert!(nulls.is_valid(0));
@@ -508,52 +446,15 @@ mod tests {
         assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
     }
 
-    /// Scenario: Boolean dictionaries are constructed from every supported runtime key data type and one unsupported type.
-    /// Guarantees: Supported types are retained and unsupported key types return a typed construction error.
-    #[test]
-    fn boolean_dictionary_runtime_key_type_is_validated() {
-        for data_type in [
-            DataType::Int8,
-            DataType::Int16,
-            DataType::Int32,
-            DataType::Int64,
-            DataType::UInt8,
-            DataType::UInt16,
-            DataType::UInt32,
-            DataType::UInt64,
-        ] {
-            let dictionary = Dictionary::new_boolean_with_data_type(
-                data_type.clone(),
-                BooleanArray::from(vec![false, true]),
-            )
-            .expect("supported key type");
-
-            assert_eq!(dictionary.keys().data_type(), data_type);
-            assert_eq!(dictionary.get_value(0), Ok(ValueOrRef::Boolean(false)));
-            assert_eq!(dictionary.get_value(1), Ok(ValueOrRef::Boolean(true)));
-        }
-
-        let error = Dictionary::new_boolean_with_data_type(
-            DataType::Boolean,
-            BooleanArray::from(vec![true]),
-        )
-        .expect_err("Boolean is not a dictionary key type");
-        assert_eq!(
-            error,
-            DictionaryError::UnsupportedKeyDataType {
-                data_type: DataType::Boolean,
-            }
-        );
-    }
-
     /// Scenario: A primitive Arrow array is represented as a dictionary with one unique key per row.
     /// Guarantees: Row indexes map directly to source values and the first boundary index is rejected.
     #[test]
     fn primitive_array_dictionary_uses_unique_keys() {
         let values = Int32Array::from(vec![5, 8, 13]);
-        let dictionary = Dictionary::new_unique_values::<UInt8Type>(values.into());
+        let dictionary = Dictionary::new_unique_values(DictionaryKeyType::UInt8, values.into());
 
         assert_eq!(dictionary.len(), 3);
+        assert_eq!(dictionary.keys().data_type(), DictionaryKeyType::UInt8);
         assert_eq!(dictionary.get_value_index(2), Some(2));
         assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Integer(13)));
         assert_eq!(dictionary.get_value_index(3), None);

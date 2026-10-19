@@ -1,11 +1,12 @@
-# Filelog checkpoint codec
+# Filelog checkpoint codec, replay, and Linux store
 
 `otel-arrow-dfe-filelog-checkpoint` defines the durable checkpoint format used
 by the Filelog receiver.
 
 It converts checkpoint values between Rust types and their exact on-disk byte
-representation. The crate is specific to Filelog; it is not a general-purpose
-storage or WAL library.
+representation and replays validated transactions against an in-memory file
+table. The crate is specific to Filelog; it is not a general-purpose storage
+or WAL library.
 
 ## What this crate provides
 
@@ -40,24 +41,20 @@ the version 1 byte format remains compatible.
 
 ## Scope
 
-This crate only handles checkpoint values and bytes. It does not:
+This crate handles checkpoint values, bytes, in-memory replay, and Linux
+namespace storage. The [Linux store](docs/store.md) adds exclusive ownership,
+first publication, bounded recovery, WAL append, and synchronization. It accepts
+a borrowed engine-provisioned directory handle without depending on the engine.
 
-- access the filesystem;
-- create or lock checkpoint directories;
-- append or synchronize a WAL;
-- publish checkpoint generations;
-- apply operations to previously stored state;
-- compact or recover a checkpoint store; or
-- implement the Filelog receiver.
-
-Filesystem storage, replay, compaction, and receiver integration are separate
-layers built on this codec.
+Compaction, retention, receiver integration, and administrative workflows are
+outside this implementation. Reaching a WAL limit returns
+`CompactionRequired`; further appends require a compaction implementation.
 
 ## Decoding and replay
 
-The codec validates the structure of each operation and transaction. Rules
-that depend on a previously stored record are checked later while replaying the
-operation against the checkpoint table.
+The codec validates the structure of each operation and transaction.
+`ReplayState` additionally checks rules that depend on previously stored records.
+See [transactional replay](docs/replay.md) for its API and caller obligations.
 
 For example, the decoder preserves structurally decodable `keep_failed` values
 for later replay checks. The current producer rejects the locally impossible
@@ -105,7 +102,7 @@ validated transaction, allowing the caller to apply and drop it before
 decoding the next transaction. The codec does not collect the complete WAL in
 memory. `TransactionScan::Incomplete` means only that the supplied non-empty
 slice cannot hold the complete next transaction. The codec cannot know whether
-the slice reaches physical EOF and never authorizes truncation; a future store
+the slice reaches physical EOF and never authorizes truncation; a store
 must read again unless it independently confirms the permitted final torn-tail
 condition at EOF.
 

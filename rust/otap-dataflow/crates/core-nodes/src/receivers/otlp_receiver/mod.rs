@@ -233,12 +233,10 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             )?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
-        Ok(ReceiverWrapper::shared(
-            receiver,
-            node,
-            node_config,
-            receiver_config,
-        ))
+        Ok(
+            ReceiverWrapper::shared(receiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
     },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -616,8 +614,22 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             let server_layers = ServiceBuilder::new()
                 .layer(limit_layer)
                 .option_layer(authorization_layer);
-            let mut server =
-                common::apply_server_tuning(Server::builder(), grpc_config).layer(server_layers);
+            // Apply the HTTP/2 `max_concurrent_streams` limit here rather than in
+            // `common::apply_server_tuning`. OTLP uses unary RPCs (one short-lived HTTP/2 stream
+            // per request), so tracking the request limit is safe: the stream limit only throttles
+            // in-flight exports transiently. Streaming protocols (OTAP) need a different policy and
+            // apply their own limit.
+            let tuned = common::apply_server_tuning(Server::builder(), grpc_config);
+            let fallback_streams =
+                grpc_config.max_concurrent_requests.min(u32::MAX as usize) as u32;
+            let max_concurrent_streams = grpc_config
+                .max_concurrent_streams
+                .map(|value| if value == 0 { fallback_streams } else { value })
+                .unwrap_or(fallback_streams)
+                .max(1);
+            let mut server = tuned
+                .max_concurrent_streams(Some(max_concurrent_streams))
+                .layer(server_layers);
 
             if let Some(timeout) = grpc_config.timeout {
                 server = server.timeout(timeout);
@@ -680,6 +692,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             } else {
                 None
             };
+
+        // gRPC setup is complete above, but HTTP binds and configures TLS when its future is
+        // first polled. Let the HTTP path signal readiness after that deferred setup finishes.
+        if http_task.is_none() {
+            effect_handler.signal_ready();
+        }
 
         // Run the event loop based on which protocols are enabled.
         let terminal_state = self
@@ -1050,6 +1068,193 @@ mod tests {
                 http: Some(http),
             },
         }
+    }
+
+    fn test_pipeline_context() -> PipelineContext {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        ControllerContext::new(telemetry_registry_handle).pipeline_context_with(
+            "grp".into(),
+            "pipeline".into(),
+            0,
+            1,
+            0,
+        )
+    }
+
+    async fn start_receiver_expect_error(mut receiver: OTLPReceiver) -> Error {
+        receiver.tune_max_concurrent_requests(1);
+        let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+        let _ctrl_tx = ctrl_tx;
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (readiness_signaller, readiness_probe) =
+            otel_arrow_dfe_engine::readiness::ReadinessSignaller::pair_for_test(
+                Duration::from_secs(1),
+            );
+        let (_metrics_rx, metrics_reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
+            test_node("otlp_startup_failure"),
+            HashMap::new(),
+            None,
+            runtime_ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+        .with_readiness_signaller_for_test(readiness_signaller);
+
+        let error = match <OTLPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
+            Box::new(receiver),
+            shared_receiver::ControlChannel::new(SharedReceiver::mpsc(ctrl_rx)),
+            effect_handler,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("receiver startup should fail"),
+        };
+        assert_eq!(
+            readiness_probe.wait_ready().await,
+            Err(otel_arrow_dfe_engine::readiness::ReadinessProbeError::SignallerDropped),
+            "failed startup must not signal readiness"
+        );
+        error
+    }
+
+    /// Scenario: The OTLP gRPC listening address is already owned by another TCP listener.
+    /// Guarantees: gRPC startup returns the original bind failure before entering its serving loop.
+    #[tokio::test]
+    async fn otlp_grpc_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve gRPC listen address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "grpc": {
+                        "listening_addr": addr.to_string()
+                    }
+                }
+            }),
+        )
+        .expect("valid OTLP gRPC config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: The OTLP HTTP listening address is already owned by another TCP listener.
+    /// Guarantees: HTTP startup reports a transport failure instead of reaching its serving loop.
+    #[tokio::test]
+    async fn otlp_http_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve HTTP listen address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "http": {
+                        "listening_addr": addr.to_string()
+                    }
+                }
+            }),
+        )
+        .expect("valid OTLP HTTP config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Transport,
+                    ..
+                }
+            ),
+            "expected HTTP transport error, got {error}"
+        );
+    }
+
+    /// Scenario: OTLP gRPC startup receives incomplete server TLS material.
+    /// Guarantees: TLS configuration fails before the receiver signals readiness or serves traffic.
+    #[tokio::test]
+    async fn otlp_grpc_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "grpc": {
+                        "listening_addr": "127.0.0.1:0",
+                        "tls": {
+                            "cert_pem": "incomplete TLS material"
+                        }
+                    }
+                }
+            }),
+        )
+        .expect("syntactically valid OTLP gRPC TLS config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    ..
+                }
+            ),
+            "expected gRPC TLS configuration error, got {error}"
+        );
+    }
+
+    /// Scenario: OTLP HTTP startup receives incomplete server TLS material.
+    /// Guarantees: TLS initialization fails before the HTTP server signals readiness.
+    #[tokio::test]
+    async fn otlp_http_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "http": {
+                        "listening_addr": "127.0.0.1:0",
+                        "tls": {
+                            "cert_pem": "incomplete TLS material"
+                        }
+                    }
+                }
+            }),
+        )
+        .expect("syntactically valid OTLP HTTP TLS config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Transport,
+                    ..
+                }
+            ),
+            "expected HTTP TLS transport error, got {error}"
+        );
+        assert!(
+            error.to_string().contains("TLS"),
+            "expected TLS configuration detail, got {error}"
+        );
     }
 
     async fn post_otlp_http_with_encoding(
@@ -1511,6 +1716,9 @@ mod tests {
         assert_eq!(grpc.max_decoding_message_size, Some(4 * 1024 * 1024));
         assert_eq!(grpc.http2_keepalive_interval, Some(Duration::from_secs(30)));
         assert_eq!(grpc.http2_keepalive_timeout, Some(Duration::from_secs(10)));
+        // Parsed config value only. When unset, the OTLP serve path derives the applied HTTP/2
+        // stream limit from `max_concurrent_requests` (unary RPCs make that safe); the OTAP
+        // receiver applies a different policy.
         assert_eq!(grpc.max_concurrent_streams, None);
 
         // Test gRPC with compression
