@@ -627,7 +627,8 @@ is an operational condition, not proof against continuing namespace movement.
 | Discovery | Candidate lookup returns `ENOENT`, including a missing component of a followed target | Record a miss without admission; detected environment or traversal failure still invalidates the pass |
 | Discovery | A subdirectory vanishes during traversal, listing fails, or resumption is ambiguous | Pass incomplete; no disappearance confirmation |
 | Discovery | Exclusion prefix is absent | Continue only if the full policy remains evaluable; otherwise no dependent admission and pass incomplete |
-| Discovery | Resolution loops under the selected link policy, including fixed-prefix aliases | Pass incomplete; preserve the failure reason |
+| Discovery | Ordinary leaf-candidate link loop or nesting limit | Candidate rejected, no eligible name or locator presence; unrelated coverage intact; no claim of physical absence |
+| Discovery | Directory traversal cycle, fixed-prefix failure, or required pinned-target policy failure | Pass incomplete; candidate-loop rejection does not bypass magic-link or exclusion policy |
 | Discovery | A final symlink is dangling or cyclic but is not followed under `follow_symlinks: false` | Not admitted; the unattempted target resolution does not itself make the pass incomplete |
 | Discovery | Tracked file is now observed only through a lexically excluded name | Required locator evidence supports exclusion and presence accounting without read-open; missing evidence makes the pass incomplete, not proof of disappearance |
 | Discovery | A persistent resolution failure spans retention deadlines | Bounded reason remains observable; no fabricated absence or capacity-driven checkpoint removal |
@@ -641,10 +642,23 @@ is an operational condition, not proof against continuing namespace movement.
 | Rotation | Still-linked resident file stays unseen | Permanent EOF requires a complete later pass started after the first missing pass finished, plus EOF inactivity; neither condition alone suffices |
 | Rotation | Reappearance was delivered before permanent-EOF confirmation | Process ordered observation before the cutoff; an empty-channel check is not sufficient serialization |
 | Rotation | Reappearance occurs after permanent-EOF confirmation but before finalization append | Do not cancel terminal framing; preserve presence and block competing admission without invalidating unrelated coverage |
-| Rotation | Validated resident handle reports zero links | Second discovery pass is not required; EOF, framing, delivery, and checkpoint conditions still apply |
+| Rotation | Qualified resident handle reports zero links while discovery or root-change handling is stalled | Independent unlink handling starts without discovery confirmation or its coverage dependency; fresh resident unlink evidence is rechecked before permanent EOF; other finalization conditions still apply |
+| Rotation | Zero-link evidence comes from an unqualified filesystem backend | No unlink shortcut based on that count; preserve the ordinary path |
 | Resource | Resident pool is full of readers awaiting confirmation, with adequate OS descriptor headroom | Discovery directory and shared transient probes still progress; no pinned-reader eviction |
 | Resource | Actual `EMFILE` or `ENFILE` prevents a required probe | Backoff and diagnostic; unfinished pass cannot confirm; pinned readers preserved |
-| Qualification | Pod-directory churn in symlink and direct-path deployments | Report confirmation delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission |
+| Qualification | Pod-directory churn in symlink and direct-path deployments | Release qualification records confirmation delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission |
+| Discovery | Excluded alias and another validated eligible name identify the same locator | Reject excluded name without revoking the eligible reader |
+| Discovery | Excluded name encountered during normal traversal identifies a retained locator | Metadata lookup may preserve presence without read-open; no recursive search of pruned excluded subtrees |
+| Discovery | Root absent at startup, including with recovered records | No qualifying coverage or confirmed-empty result; first successful validation establishes identity without a replacement event |
+| Discovery | Unresolved symlink might lead to a subtree required by the include pattern | Coverage failure; unknown target kind is not a rejected leaf candidate |
+| Discovery | Established root unavailable or replaced | Coverage failure or identity-change block; never an empty successful scan |
+| Discovery | Binding parent returns `ENOENT` with otherwise valid root/traversal context | Classify absence by context, not as a replacement directory identity |
+| Rotation | A confirming pass is followed by coverage failure before permanent EOF | Invalidate confirmation; one qualifying pass started after the failed pass finishes can replace it |
+| Rotation | Validated reappearance cancels, followed by another miss | New pending-disappearance sequence required |
+| Rotation | Failure or locator presence arrives during an unfinished pass before the cutoff | Process it immediately for confirmation validity; do not wait for pass completion |
+| Rotation | File is renamed to an inspected excluded name, with no other eligible name | Excluded handling, no D17 solely for exclusion, durable state remains Active |
+| Rotation | Pending disappearance meets Excluded preconditions before permanent EOF | Exclusion handling replaces pending disappearance without D17; after cutoff the observation preserves presence only |
+| Rotation | File moves into a pruned excluded subtree that discovery does not inspect | No promise of exclusion detection; disappearance policy can capture late writes and eventual retention can remove state |
 | Discovery | New growing file | Admitted without waiting for close |
 | Discovery | Exclude overlaps include | Excluded; lexical rejection may precede pinning while preserving required retained-state evidence; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |
@@ -1276,7 +1290,8 @@ cancels workers and retry waits, and leaves all unacknowledged progress unchange
 ### Example 29: D17 terminal emission
 
 A rotated UTF-8 file ends with a nonempty unterminated newline record. Idle
-flush is disabled. After the same handle remains at EOF through `rotate_wait`,
+flush is disabled. After permanent EOF is confirmed under the rotation policy
+(including the qualifying-pass or validated-unlink path and EOF inactivity),
 D17 makes the pending frame terminally eligible. The receiver emits it with
 terminal-unterminated evidence and advances only after aggregate Ack. It never
 reports the frame as LF-completed. If malformed input encounters

@@ -850,6 +850,20 @@ delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission.
 Polling can miss repeated moves or an undetected mount outage; a file found
 after permanent finalization may be treated as new and replay or skip content.
 
+For late-write capture and terminal framing after rotation, prefer an include
+pattern that stops matching the rotated name. Explicitly excluding a rotated
+name that discovery inspects instead requests exclusion handling: no further
+reads or D17 solely for exclusion, and checkpoint state stays Active. An excluded
+alias does not revoke a reader supported by another validated eligible name.
+Pruned excluded subtrees are not searched for aliases; moving a file there can
+instead follow disappearance handling and continue late-write capture.
+
+Directory recreation at an established root or binding-parent path blocks
+discovery-based confirmation receiver-wide. Verify the environment, then
+restart/recreate the receiver to establish a new baseline. Qualified resident
+unlink handling remains available during this stall, but pending writes,
+delivery, or checkpoint failure can still delay descriptor and disk release.
+
 ## Normative architecture examples
 
 These examples illustrate cross-cutting contracts. Exact source ranges, framing
