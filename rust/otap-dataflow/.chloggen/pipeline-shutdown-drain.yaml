@@ -8,7 +8,7 @@ change_type: bug_fix
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Node timers keep running while receivers drain at shutdown, so a fanout destination timeout can still answer a waiting client instead of the drain running into the deadline.
+note: Pipeline shutdown no longer drops data waiting for a retry, stalls on router or fanout work, or runs past its deadline.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4395]
@@ -19,4 +19,6 @@ issues: [4395]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Timers now stop when processors and exporters are told to shut down, not when shutdown is first requested.
+  Receivers and exporters stop 1s after the deadline. Timers run while receivers drain, so
+  fanout timeouts still fire. Routers and fanout NACK (retryable) work they cannot finish.
+  The `shutdown.cleared` wakeup metric now counts wakeups fired at shutdown, not dropped.
