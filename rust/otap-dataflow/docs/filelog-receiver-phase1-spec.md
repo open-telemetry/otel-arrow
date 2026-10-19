@@ -39,7 +39,7 @@ convention.
 | Applied progress | An Ack-authorized or explicitly loss-authorized transaction successfully appended to the WAL and applied atomically to the live checkpoint state; it may be newer than the durable frontier. |
 | Committed offset | The source-byte offset in live applied checkpoint state; it becomes crash-durable only when covered by the durable frontier. |
 | Committed-frontier guard | A bounded SHA-256 digest over raw source bytes immediately preceding committed progress, persisted atomically with that progress and used to detect likely locator reuse or in-place replacement on recovery. |
-| Complete inventory | A reconciliation result meeting the [accepted absence-model requirement](#complete-and-incomplete-inventories), with stable presence, absence, and fingerprint-multiplicity evidence over its bounded population. |
+| Complete inventory | A pass meeting the [coverage and policy requirements](#complete-and-incomplete-inventories); presence, identity evidence, and multiplicity diagnostics remain distinct facts. |
 | Continuation | Durable split-fragment state containing the original record start, termination evidence, and next fragment index. |
 | Downstream Ack | The matching aggregate completion that authorizes, but does not itself apply or sync, one retained batch's progress transaction. |
 | Durable frontier | The latest applied checkpoint progress guaranteed to survive by a successful required filesystem sync; recovery may also replay a later complete valid WAL prefix that survived. |
@@ -51,7 +51,7 @@ convention.
 | Fingerprint | Bounded raw source bytes used as matching evidence. It is not a unique identity. |
 | Frame source range | The half-open source-byte range owned by a framed result, including framing bytes omitted from the body. |
 | Full reconciliation | A bounded traversal that refreshes discovery evidence and may establish a complete inventory. |
-| Incomplete inventory | A reconciliation result that cannot safely prove all absence or uniqueness facts. |
+| Incomplete inventory | A pass with unresolved coverage, policy, or required reconciliation evidence; non-observation cannot confirm disappearance. |
 | Logical record | A newline-framed record, multiline record, or deterministic bound-terminated record before oversize projection. |
 | Matched path | The lexical path that satisfied an include glob. |
 | Open batch | The one receiver-wide mutable OTAP batch under construction. |
@@ -262,7 +262,7 @@ groups:
 | `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits rereading/reframing and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
 | `checkpoint.compact_after_bytes` | `64MiB` | WAL-section byte threshold, excluding the immutable header/snapshot prefix; at least one maximum transaction |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
-| `checkpoint.retention` | `7d` | Continuous runtime-proven absence interval before eligibility; restart or incomplete evidence resets it, zero disables removal, and removal loses durable association |
+| `checkpoint.retention` | `7d` | Continuous runtime-observed absence interval before eligibility; restart or incomplete evidence resets it, zero disables removal, and removal loses durable association |
 | `checkpoint.ownership_timeout` | `30s` | Nonzero bounded ownership wait |
 | `checkpoint.max_consecutive_failures` | `5` | Nonzero store-failure budget |
 | `retry.max_attempts` | `8` | Nonzero attempts before applying the exhaustion policy, including the first; `pause` continues periodic attempts afterward |
@@ -642,42 +642,37 @@ truncate durable state.
 
 ## Discovery reconciliation
 
-### Discovery evidence decisions
+### Discovery evidence and limitations
 
-The following evidence-model decisions remain open. Recording these gaps does
-not resolve them or satisfy the implementation prerequisite tracked in the
-[epic](https://github.com/open-telemetry/otel-arrow/issues/2844#issuecomment-5610254481).
-Scanner mechanics may proceed during review, but a conforming implementation
-must use an accepted evidence model before certifying inventory completeness.
+Discovery reports traversal coverage, observed locator presence, policy
+eligibility, and identity evidence separately. A missing observation is not
+proof that a file ceased to exist: concurrent moves can evade a traversal.
+The [rotation policy](#late-writes-and-finalization) uses a later qualifying
+pass and EOF inactivity to reduce this risk, not to establish a filesystem
+snapshot. Repeated movement or an undetected mount outage can still cause false
+finalization; later discovery may replay or skip content under the start policy.
 
-| Decision | Required resolution |
-| --- | --- |
-| Absence during concurrent mutation | Define evidence and filesystem assumptions for negative conclusions, including cross-directory moves and directory reopen/resumption. Define the consequences and handling of false disappearance. |
-| Resolution outcomes | Define which conclusions follow from a vanished candidate name, dangling target, missing traversal root, unavailable exclusion-root mapping, resolution loop, or unstable target. Preserve error context; neither `ENOENT` nor `ELOOP` alone proves population-wide absence. Define whether an unverifiable alias affects an existing reader admitted through another validated name; do not equate uncertainty with a positive exclusion. |
-| Resolved-target evidence | Define how target evidence is tied to the pinned object, including rename between pinning and verification, targets unreachable from the collector root, and verification failures. |
-| Unsupported-target exceptions | Decide whether any unresolved target can be positively rejected without adding incompleteness. Zero link count is not an approved exception; define presence and retention effects before accepting one. |
-| Eligible reappearance | Define whether and how an observation can cancel pending finalization, including validation, pass ordering, and serialization against the finalization append. Already finalized records remain ineligible for reconnection. |
+Retain bounded identity evidence for include roots and tracked-binding parent
+directories. A detected identity change invalidates pending confirmations and
+absence history and blocks negative conclusions for the whole receiver. Do not
+automatically adopt a changed root, even on the same device. Confirmation can
+resume when the expected identities return and fresh evidence is collected,
+or when a new receiver instance establishes a fresh baseline.
 
-An error-free traversal is not a filesystem snapshot. For example, a file can
-move from an unvisited directory into an already visited directory and be
-missed without either enumeration reporting an error. An unchanged directory
-locator establishes identity, not unchanged contents. Repeating a pass,
-checking directory timestamps, or checking the last-known pathname does not
-alone prove absence under continuing churn. The traversal/resumption strategy
-must justify its negative conclusions under explicit assumptions. Until that
-contract is settled, traversal completion alone cannot authorize disappearance
-or retention absence.
+To reinitialize discovery, restore or verify the intended filesystem environment,
+then restart or use supported reconfiguration that recreates the receiver.
+This clears runtime discovery evidence, not checkpoints or committed progress;
+normal ownership handoff and the terminal sync-failure block still apply.
+Automatic restart can baseline an unexpected environment, so deployments must
+make the intended storage available before startup. Root identity checks do not
+detect every mount change. No new mount-check option or checkpoint field is
+required by this policy.
 
-A false disappearance can eventually finalize a still-eligible source. A later
-observation cannot reconnect a `RotatedFinalized` record, so treating it as a new
-identity can replay content or skip unread content under the applicable start
-policy. Qualification must cover this consequence, not only enumeration errors.
-
-Persistent uncertainty has an operational cost: pass-level incompleteness can
-prevent disappearance and clear continuous-absence proof. Checkpoint retention
-can be delayed indefinitely, and a full tracked table can defer new identities.
-Report bounded diagnostic reasons so operators can identify persistent failures;
-do not silently turn those failures into absence to recover capacity.
+Persistent coverage or policy failure can delay finalization and retention
+indefinitely. Pinned readers remain charged to descriptor and memory limits;
+new readers wait rather than evicting them. Report bounded diagnostics that
+distinguish root changes, lost coverage, exclusion failures, and descriptor
+exhaustion, with rate-limited path context where available.
 
 ### Compilation and path semantics
 
@@ -705,6 +700,13 @@ evidence use the resolved target. Exclusion is evaluated against:
 An alias therefore cannot bypass an exclusion merely because canonicalization changes
 its prefix. Exclusion always wins over inclusion.
 
+Derive exclusion roots using the glob compiler's escape and path-component
+semantics. When an alias identifies such a root, map the relative suffix through
+that root and evaluate the full exclusion pattern. Root identity alone does not
+exclude its whole subtree: `*.secret` must still allow an adjacent `*.log` file.
+A missing exclusion prefix is acceptable only while the full policy remains
+evaluable; retain its matcher and re-evaluate mappings each pass.
+
 The receiver unconditionally excludes its resolved checkpoint namespace. Direct
 inclusion of that namespace is a configuration error. Apparent inclusion of the
 engine's own output produces a bounded warning. Discovery integration must
@@ -720,11 +722,10 @@ because another alias is unverifiable. Obtaining a runtime locator does not waiv
 path-resolution or evidence failure. A zero link count or a pathname ending
 in `" (deleted)"` does not establish an exception to this rule.
 
-Any future exception must distinguish policy eligibility from physical
-presence and define its effect on retention absence history. If an observation
-counts as source presence, it clears or withholds `absence_since`; a temporary
-retention veto must not allow absence time to accumulate through that presence.
-An exception for one observation can never clear another incompleteness reason.
+Trustworthy locator presence, including an excluded, age-filtered, or unreadable
+candidate, clears or withholds `absence_since` for the retained locator; it does
+not by itself establish identity continuity. A temporary retention veto must
+not allow absence time to accumulate through observed presence.
 
 ### Reconciliation schedule
 
@@ -867,8 +868,19 @@ point after safe pin/type/filesystem validation and before read-open or
 fingerprint reads. Evaluate resolved-target exclusions against evidence tied
 to that pinned object. Independent canonicalization of the original pathname
 is insufficient unless its association with the pinned object is validated
-under the race model accepted through the
-[discovery evidence decisions](#discovery-evidence-decisions).
+under the following evidence contract. Keep the pin alive through verification
+and read-open. Path evidence must be bounded and untruncated; a full result
+buffer is treated as potentially truncated and unverifiable. Verify the path's
+association with the pin and preserve full pattern semantics through root
+mappings. Detected substitution, inconsistent ancestry evidence, or an
+unverifiable target fails closed.
+
+These checks provide point-in-time evidence, not an atomic ancestry snapshot
+or protection against every later namespace change. A final-component
+no-follow check alone does not validate intermediate components. Syscall choice
+is implementation-specific and must be qualified against this contract;
+undetected concurrent namespace changes and hardlinks outside excluded roots
+remain limitations, not permission to skip checks.
 A positively excluded object does not require a read-open merely to discover
 that it is excluded.
 
@@ -914,9 +926,10 @@ Candidate stability uses two bounded observations:
 5. Require the second observed size not to be smaller.
 6. Require the second fingerprint evidence to extend the first.
 
-A replacement, truncation, path-resolution change, evidence read failure, or unstable
-observation makes the pass incomplete. It is not converted into false uniqueness or
-absence evidence.
+A replacement, truncation, path-resolution change, or unstable observation makes
+the pass incomplete. Content-access failure with otherwise trustworthy presence
+is candidate-local as specified in the outcome table; it never authorizes
+admission or turns known presence into absence.
 
 Discovery and reader reopens share at most two transient source-open descriptors
 beyond `max_open_files`. Reserve the two-descriptor peak before starting a
@@ -968,47 +981,37 @@ unrelated file by presenting an old timestamp.
 
 ### Complete and incomplete inventories
 
-A complete inventory visited every relevant bounded traversal unit and produced stable
-evidence for every fact needed to reconcile retained state. Certification also
-requires the accepted absence model described by the
-[discovery evidence decisions](#discovery-evidence-decisions). Every reference
-in this specification to a complete pass, complete inventory, or complete
-reconciliation, including disappearance and retention absence, carries that
-requirement. The conditional transitions and
-examples remain the required behavior once that premise is met; this specification
-does not yet qualify an enumeration algorithm or allow traversal completion to
-stand in for that premise.
+A complete pass finishes the required traversal with no coverage or policy
+failure below and retains the observations needed to reconcile bounded state.
+It is not a snapshot or proof of permanent absence. Candidate identity evidence
+and fingerprint-multiplicity diagnostics have their own validity; neither
+locator presence nor a complete traversal authorizes identity reconnection.
 
-The following conditions make a pass incomplete:
+| Outcome | Evidence and action |
+| --- | --- |
+| Individual candidate lookup returns `ENOENT`, including a missing component of a followed link target | No admission; record a miss, unless a detected environment or traversal failure invalidates the context. |
+| Subdirectory vanishes during traversal; directory open/listing fails; reopen cannot resume reliably | Coverage failure; pass cannot confirm disappearance. |
+| Detected root or tracked-binding-parent identity change | Invalidate pending confirmations and absence history; follow discovery reinitialization rules. |
+| Required exclusion mapping or pinned-target policy check cannot be completed | Policy failure; no dependent admission; pass cannot confirm disappearance. Preserve trustworthy locator presence. |
+| Policy passed and locator presence established, but read-open or fingerprint read fails | Candidate-local failure: no admission or cancellation; preserve presence and block disappearance confirmation for that locator. Retry without invalidating unrelated coverage. |
+| Locator, size, or fingerprint observations are unstable | Pass incomplete; retain trustworthy positive observations without claiming identity continuity. |
+| Descriptor exhaustion prevents required probing | Retry with backoff; unfinished pass cannot confirm. Never drop unresolved pinned readers to recover capacity. |
+| Cancellation, depth/cycle limit, or bounded-state overflow loses required reconciliation evidence | Pass incomplete. |
+| Known locator reappears during terminal finalization | Preserve presence; block competing admission until release. This lifecycle block alone does not invalidate the pass. |
 
-- traversal error;
-- directory open or enumeration error;
-- path-resolution error;
-- symlink or reparse-point cycle encountered during resolution permitted by
-  the selected link policy, including fixed-prefix alias resolution;
-- depth exhaustion;
-- cancellation;
-- unstable locator, size, or fingerprint evidence;
-- reappearance of a locator still awaiting finalization;
-- inability to retain required multiplicity evidence; or
-- bounded-state overflow that prevents proving the complete candidate population.
+A non-followed final symlink is rejected without resolving its target; a dangling
+target does not itself invalidate that pass. Resolution loops encountered while
+following links or resolving fixed-prefix aliases remain failures. Classify by
+operation and context, not errno alone.
 
-Candidate overflow alone does not suppress removal when traversal still visits and
-marks every retained locator. If overflow also prevents the pass from proving required
-presence, absence, or multiplicity facts, the affected inventory is incomplete.
+Pending overflow alone does not invalidate coverage when every retained locator
+can still be accounted for. Missing fingerprint-multiplicity diagnostics do not
+block unrelated finalization and must not be presented as complete counts.
 
-An incomplete pass:
-
-- emits no removal based only on non-observation;
-- does not evict unseen pending evidence;
-- does not admit stale pending evidence as though it were current;
-- does not treat fingerprint multiplicity diagnostics as continuity evidence;
-- keeps valid exact-locator matching available; and
-- records bounded health and telemetry evidence.
-
-Only a later complete pass can prove disappearance or complete-population
-multiplicity. Phase 1 never uses either complete or incomplete fingerprint
-populations to transfer progress across locators.
+An incomplete pass cannot infer removal from non-observation, evict unseen
+pending evidence, or admit stale pending evidence as current. Valid positive
+observations remain usable. Phase 1 never transfers progress across locators
+using either complete or incomplete fingerprint populations.
 
 ### Bounded populations
 
@@ -1022,6 +1025,7 @@ populations to transfer progress across locators.
 | Pending candidates | `max_pending_candidates` |
 | Candidate identity-resolution batch | At most `max_open_files` |
 | Distinguished matched-path bindings | One per durable tracked identity; additional aliases visited incrementally |
+| Root and binding-parent identity evidence | Bounded by configured roots plus `max_tracked_files`; no retained directory handles |
 | Durable tracked identities | `max_tracked_files` |
 | Resident tail handles | `max_open_files` |
 | Transient source opens | Two shared by discovery and reader reopens beyond the resident-handle pool |
@@ -1072,17 +1076,23 @@ A complete pass produces one ordered transition stream:
 | Updated | Retained locator remains eligible but path or mutable metadata changed | Update bounded advisory evidence |
 | Path rebound | A distinguished matched path changes from locator A to locator B while A remains live or eligible under another name | Preserve A independently and present B to normal identity resolution with recognized-replacement context |
 | Excluded | Active locator now matches an exclusion | Stop reads, resolve existing deltas, then revoke without changing durable progress or lifecycle |
-| Disappeared | Complete pass proves locator no longer has an eligible name | Enter rotation/removal handling |
+| Disappeared | Complete pass observes no eligible name or conservative presence for the retained locator | Begin pending disappearance; resident finalization requires the later conditions below |
 
 The implementation-facing transition must preserve the reason distinction between
 exclusion revocation and disappearance. A reasonless `Removed` event is insufficient
 because exclusion requires prompt revocation while disappearance can require descriptor-
 dependent late-write capture and rotation finalization.
 
-Transition order for one locator is preserved. A stale removal cannot overtake a later
-observation. Reappearance before the old logical reader and lease are released through
-finalization or descriptor-free disappearance containment is blocked and makes the pass
-incomplete. Reappearance after either release path is a fresh observation.
+Transition order for one locator is preserved; stale removal cannot overtake a
+later observation. Before confirmed permanent EOF, an eligible, validated
+observation ordered after the initial miss cancels pending disappearance when
+its locator matches the still-held validated resident handle. Fingerprint-only
+matching is insufficient; cancellation does not bypass truncation or unresolved
+source-delta handling. Presence too weak to cancel still blocks confirmation
+for that locator. After permanent EOF, preserve presence but block competing
+admission until ownership is released. After finalization, a later observation
+follows new-identity rules; descriptor-free containment instead permits normal
+validated reconnection of the retained `Active` record.
 
 Exclusion is not disappearance or rotation. After the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering) is satisfied,
@@ -1690,7 +1700,7 @@ continuity.
 
 If the descriptor was evicted before the path disappeared, the receiver cannot
 portably reopen that unlinked or delete-pending identity by path. A complete
-reconciliation that proves disappearance therefore contains the logical
+reconciliation that observes no eligible name or retained-locator presence therefore contains the logical
 reader after the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering) is
 satisfied:
@@ -1842,7 +1852,8 @@ policy, completes an unterminated record, or proves that a writer is gone. An
 explicitly enabled EOF-gated idle deadline may establish framing eligibility
 when the deadline expires under the rules below. In Phase 1, only rotation
 finalization may request permanent-EOF handling for bytes still ineligible,
-after the same resident handle has observed EOF through `rotate_wait`. The wait
+after the [rotation confirmation conditions](#late-writes-and-finalization)
+are satisfied, including EOF through `rotate_wait` on the same resident handle. The wait
 is an inactivity heuristic, not writer fencing.
 
 D17 is evaluated in two ordered stages.
@@ -3107,10 +3118,12 @@ traffic reaching a compaction threshold. When retention is nonzero, each
 durable record has runtime-only `absence_since` evidence. Recovery initializes
 it as unknown; persisted `last_seen_time_unix_nano` never proves continuous
 absence across downtime. The first complete post-recovery inventory that
-proves the record absent sets `absence_since` to that observation's monotonic
+observes no presence for the record sets `absence_since` to that observation's monotonic
 time. Observing the source clears it. An incomplete inventory that cannot
-preserve the continuous-absence proof also clears it rather than aging through
-uncertainty.
+preserve the continuous-absence evidence also clears it rather than aging through
+uncertainty. Absence aging is a polling policy, not proof against continuing
+namespace movement or an undetected outage; all runtime removal vetoes still
+apply.
 
 The worker maintains one checked maintenance deadline for the earliest future
 `absence_since + checkpoint.retention` crossing. It recomputes that deadline
@@ -3125,7 +3138,7 @@ identical compaction generation. A full tracked table therefore cannot remain
 blocked solely because its WAL is quiet, and a permanent veto cannot create a
 compaction loop.
 
-Runtime-proven continuous absence is necessary but never sufficient.
+Runtime-observed continuous absence is necessary but never sufficient.
 
 The runtime supplies an explicitly vetted removal set. A record is eligible only when
 it has been absent for the retention interval from:
@@ -3422,12 +3435,34 @@ follows ordinary `start_at`.
 A removed resident handle remains pinned. After each EOF, `rotate_wait` begins or
 restarts. New bytes cancel the wait before framing continues.
 
+For a still-linked resident file, confirmation requires a later complete pass
+that started after the initial missing pass finished and again found neither an
+eligible name nor conservative presence for that locator. Any pass-level failure
+disqualifies confirmation. Before permanent EOF is confirmed, a later
+coverage/policy failure or conservative presence observation invalidates a
+collected confirmation; require fresh qualifying evidence before proceeding.
+New source bytes restart the EOF inactivity wait;
+there is no deadline tying the confirming pass to `rotate_wait`.
+
+Zero links observed on the validated resident handle may use the unlink path
+without the second pass, under the supported filesystem assumptions. This does
+not authorize admission of an unverifiable zero-link candidate or waive any
+other finalization condition.
+
+Before confirming permanent EOF, the lifecycle owner processes discovery
+batches already delivered to it and serializes the confirmation against their
+ordered observations. An empty-channel check alone is not that ordering
+contract. Confirmation is the cancellation cutoff, before D17 terminal framing:
+once entered, terminal delivery and checkpoint work cannot be undone by a
+later observation. Observations ordered after the cutoff may therefore lead
+to replay or skipped content after finalization; `RotatedFinalized` is terminal.
+
 The read/checkpoint worker is the sole originator of an
 `update_progress(finalize = 0x01)` transaction. It may originate that operation
 only when every precondition below holds:
 
-1. A complete reconciliation established disappearance and the logical reader
-   entered rotation finalization with its resident handle pinned.
+1. The disappearance confirmation conditions above were satisfied when the
+   lifecycle owner confirmed permanent EOF with the resident handle pinned.
 2. The checkpoint record is `Active` at the exact expected epoch and applied
    committed offset.
 3. The same validated handle observed EOF continuously through `rotate_wait`;
@@ -3452,14 +3487,10 @@ bit-for-bit. In either case, the finalization transaction is
 filesystem-synced before the descriptor is closed and the runtime lease is
 released, even when ordinary Ack progress uses a nonzero sync interval.
 
-If the [discovery evidence review](#discovery-evidence-decisions) permits eligible reappearance to cancel
-pending finalization, serialize that cancellation before the finalization WAL
-append begins. A later observation cannot discard an append already started or
-whose outcome remains unresolved. Follow the checkpoint pending-write and
-sync-failure protocol instead of assuming rollback. A complete valid transaction
-may survive recovery even before its required sync completes; the applied and
-durable frontiers are not interchangeable cancellation boundaries. This rule
-does not itself enable cancellation or change finalized-record eligibility.
+The finalization WAL append is a second boundary: an append already started or
+with unresolved outcome follows the pending-write and sync-failure protocol.
+Never assume rollback because synchronization has not completed; a complete
+valid transaction may survive recovery before its required sync finishes.
 
 The ordering around non-Ack outcomes is:
 
@@ -3490,6 +3521,12 @@ the durable record remains `Active` and unchanged without retaining a logical
 reader, runtime lease, or rotation-finalization veto. Exact-locator
 reappearance may reconnect it; otherwise ordinary retention or audited
 administration may eventually remove it.
+
+Waiting for a qualifying pass can be indefinite under churn, coverage failures,
+backpressure, or slow filesystem operations. Retained framing state remains
+charged to memory limits. Startup descriptor-budget checks include the discovery
+directory and both transient slots as well as resident and other required handles;
+this accounting does not reserve OS capacity against other components.
 
 Pinned removed handles consume `max_open_files` slots and are never eviction
 victims. Descriptor pressure pauses or refuses new descriptor admission and

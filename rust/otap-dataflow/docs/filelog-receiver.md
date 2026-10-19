@@ -555,13 +555,14 @@ implementation:
   matched-path binding from its old locator to its replacement locator. The
   old locator may remain independently eligible under another matched name;
   the replacement target's own existing lifecycle state still wins.
-- Incomplete discovery cannot prove absence, uniqueness, replacement, or
-  eligibility for destructive cleanup.
-- Error-free traversal alone does not prove absence under concurrent directory
-  changes. The [discovery evidence decisions](filelog-receiver-phase1-spec.md#discovery-evidence-decisions)
-  record the unresolved evidence model required to certify complete inventory.
-  Required exclusion checks fail closed; unresolved targets have no implicit
-  zero-link-count exception.
+- Discovery separates coverage, presence, policy eligibility, and identity
+  evidence. Missing observations do not prove permanent absence. Still-linked
+  resident files require a later qualifying pass and EOF inactivity before
+  permanent EOF; validated reappearance can cancel before that cutoff.
+- Required exclusion checks fail closed. Root changes or persistent coverage
+  failures can stall finalization and admission. Verify the intended filesystem
+  environment before restarting to establish a new discovery baseline; restart
+  does not clear checkpoints or bypass terminal sync-failure handling.
 - The checkpoint namespace lock prevents concurrent in-process or local
   cross-process writers sharing one effective checkpoint namespace.
   Process-local locator leases prevent duplicate in-process readers. Neither
@@ -721,8 +722,8 @@ observable capacity backpressure, not permission to invent a record boundary.
 administration after detected truncation; operators that knowingly prefer
 continued collection with an explicit gap select `read_new`.
 `checkpoint.retention: 7d` makes inactive durable state eligible for removal
-only after a continuous runtime-proven absence interval. Restart or incomplete
-discovery resets that proof, so repeated restarts can defer reclamation
+only after a continuous runtime-observed absence interval. Restart or incomplete
+discovery resets that evidence, so repeated restarts can defer reclamation
 indefinitely; retention is not a wall-clock upper bound across downtime. After
 removal, a returning source is unrelated and can have existing contents
 intentionally excluded by `start_at: end`.
@@ -842,6 +843,12 @@ follow_symlinks: false
 
 Resolved-target exclusions still apply in the symlink form, so an exclusion
 matching the corresponding `/var/log/pods/...` target prevents admission.
+
+A dangling candidate link can count as a miss, but failed directory traversal
+invalidates a pass. Qualify both layouts under pod churn: measure confirmation
+delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission.
+Polling can miss repeated moves or an undetected mount outage; a file found
+after permanent finalization may be treated as new and replay or skip content.
 
 ## Normative architecture examples
 
