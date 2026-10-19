@@ -25,7 +25,7 @@ rows. PostgreSQL binds only to `127.0.0.1`. Run from `rust/otap-dataflow`.
 docker compose --file crates/contrib-nodes/src/receivers/postgresql_receiver/fixtures/tls/compose.yaml up --build --detach --wait
 ```
 
-The fixture writes the username, password, and CA to its `out` directory. 
+The fixture writes the username, password, and CA to its `out` directory.
 
 Run the receiver:
 
