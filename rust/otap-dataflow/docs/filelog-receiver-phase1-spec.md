@@ -829,17 +829,19 @@ Overlapping globs, hardlinks, aliases, and rename-visible paths that resolve to 
 live runtime locator produce one candidate identity. Path is updated as advisory
 metadata. Equal fingerprints do not deduplicate distinct locators.
 
-Each `Active` identity retains exactly one distinguished matched-path binding,
-bounded by `max_tracked_files` and represented by its existing `AdvisoryPath`.
+Each `Active` identity retains one distinguished path, either as its live
+binding or as superseded transition evidence, bounded by `max_tracked_files`
+and represented by its existing `AdvisoryPath`.
 At initial selection, or after the prior binding no longer names the locator,
 the scanner selects the deterministic minimum of `(path_kind, complete native
 path bytes)` among simultaneously eligible paths while visiting entries
 incrementally; it does not retain every alias. An existing binding remains
 stable while it is eligible and still names the locator. A
 truncated `AdvisoryPath` preserves the binding through kind, complete length,
-full-path digest, and stored suffix. The prior binding remains unchanged until
-the pass computes path-rebound transitions. An incomplete pass never replaces
-it from partial evidence.
+full-path digest, and stored suffix. Retain the prior path as transition evidence
+until rebound reconciliation. Stable evidence that it names a new locator can
+supersede its live binding as described below; choosing a replacement binding
+for the old identity still requires a complete pass.
 
 If an existing tracked predecessor has a binding that is unavailable or cannot
 be compared, only candidates evaluated as possible replacements for that
@@ -855,11 +857,27 @@ context with the observation to identity resolution; deferring Path rebound
 must not turn it into unrelated first admission. The candidate's own matching
 durable state takes precedence. If a new identity is required, start at offset
 zero regardless of `start_at`, never inheriting the predecessor's progress.
-Keep prior bindings frozen; if admission cannot preserve binding/transition
-ordering, defer it rather than starting at end. This does not authorize binding
-reselection or Path-rebound publication from an incomplete pass.
+For an uncontested path now stably naming a candidate that requires a new
+identity, supersede the predecessor's live binding and admit the candidate with
+that path at offset zero, subject to normal capacity, ownership, and durability
+checks. Do not wait solely for a complete pass. Keep the predecessor's prior
+path only as historical transition evidence, with its reader and progress
+independent; it is not a second live claim on that path.
 
-One complete pass orders binding work as follows:
+Binding-order deferral is reserved for conflicting tracked-path assignments
+(such as swaps or cycles), unstable observations, or non-unique evidence; normal
+resource deferral still applies. A complete pass later resolves the historical
+rebound and selects the predecessor's next binding without re-registering or
+resetting the replacement. Supersession is runtime-only: retain the existing
+AdvisoryPath as historical evidence, without a second persisted binding or new
+checkpoint field. When recovered records share an AdvisoryPath, only the record
+whose validated locator the path currently names has that live binding. Other
+records retain historical evidence for rebound reconciliation in the next
+complete pass. Unverifiable paths grant no live binding; ordinary identity
+validation still governs resuming progress.
+
+A complete pass resolves retained historical rebounds and orders binding
+reselection as follows:
 
 1. Freeze every prior distinguished binding for transition evaluation.
 2. Build current path-to-locator observations incrementally.
@@ -868,8 +886,9 @@ One complete pass orders binding work as follows:
 4. Only after those transitions are consistent, select a new deterministic
    binding for each identity whose prior binding was invalidated.
 
-If a proposed new binding was another tracked identity's prior binding, that
-other rebound is resolved in step 3 before either binding changes. Conflicting,
+For binding reselection among tracked identities, if a proposed binding was
+another identity's prior binding, resolve that rebound in step 3 before either
+new binding is selected. Conflicting,
 unstable, or non-unique path observations make the affected inventory
 incomplete and preserve prior durable bindings rather than assigning one path
 to two identities.
@@ -1088,10 +1107,11 @@ capacity and are not ordinary retention candidates.
 Each pass may produce an ordered transition stream. Incomplete passes can emit
 validated Observed transitions, Updated metadata, and binding-check Excluded
 transitions. They do not authorize Disappeared or the complete-pass exclusion
-fallback. Path-rebound publication and distinguished-binding replacement retain
-the complete-pass ordering rules above; partial path observations may be retained
-without publishing those transitions. Observed candidates retain the
-possible-replacement context described above even while Path rebound is deferred.
+fallback. Uncontested replacement admission may supersede a live binding using
+stable positive evidence as described above. Historical Path-rebound publication
+and reselection of the predecessor's binding retain complete-pass ordering.
+Observed candidates preserve replacement context while that reconciliation is
+deferred.
 
 | Transition | Preconditions | Effect |
 | --- | --- | --- |
