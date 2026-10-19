@@ -253,11 +253,11 @@ enum TransportHeadersStorage {
     },
 }
 
-/// Arc-free packed transport-header data owned by a pdata context store.
+/// Shared transport-header data owned by a pdata context store.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportHeadersData {
-    storage: TransportHeadersStorage,
+    storage: Arc<TransportHeadersStorage>,
 }
 
 /// Borrowed iteration over either mutable capture storage or packed pdata storage.
@@ -473,26 +473,28 @@ impl TransportHeaders {
         }
     }
 
-    /// Converts this collection into Arc-free packed context data.
+    /// Converts this collection into shared context data.
+    ///
+    /// Owned capture storage is packed before entering pdata context. Existing
+    /// packed storage and append overlays retain their shared backing.
     #[doc(hidden)]
     #[must_use]
     pub fn into_data(self) -> Option<TransportHeadersData> {
         let storage = self.storage?;
-        match Arc::try_unwrap(storage) {
-            Ok(TransportHeadersStorage::Packed(packed)) => Some(TransportHeadersData {
-                storage: TransportHeadersStorage::Packed(packed),
-            }),
-            Ok(storage) => pack_transport_headers(&storage),
-            Err(storage) => pack_transport_headers(&storage),
+        match storage.as_ref() {
+            TransportHeadersStorage::Owned(_) => pack_transport_headers(&storage),
+            TransportHeadersStorage::Packed(_) | TransportHeadersStorage::Overlay { .. } => {
+                Some(TransportHeadersData { storage })
+            }
         }
     }
 
-    /// Reconstructs a shared collection from Arc-free packed context data.
+    /// Reconstructs a shared collection from context data.
     #[doc(hidden)]
     #[must_use]
     pub fn from_data(data: TransportHeadersData) -> Self {
         Self {
-            storage: Some(Arc::new(data.storage)),
+            storage: Some(data.storage),
         }
     }
 }
@@ -505,7 +507,7 @@ fn pack_transport_headers(storage: &TransportHeadersStorage) -> Option<Transport
     .map(TransportHeader::from)
     .collect();
     PackedTransportHeaders::build(headers).map(|packed| TransportHeadersData {
-        storage: TransportHeadersStorage::Packed(packed),
+        storage: Arc::new(TransportHeadersStorage::Packed(packed)),
     })
 }
 
@@ -526,7 +528,7 @@ impl TransportHeadersData {
     #[must_use]
     pub fn iter(&self) -> TransportHeadersIter<'_> {
         TransportHeadersIter {
-            storage: Some(&self.storage),
+            storage: Some(self.storage.as_ref()),
             index: 0,
         }
     }
@@ -534,14 +536,14 @@ impl TransportHeadersData {
     /// Returns the header at `index`.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
-        self.storage.get(index)
+        self.storage.as_ref().get(index)
     }
 
     /// Finds headers by exact stored name.
     #[must_use]
     pub fn find_by_name<'a>(&'a self, name: &'a str) -> TransportHeadersFindIter<'a> {
         TransportHeadersFindIter {
-            storage: Some(&self.storage),
+            storage: Some(self.storage.as_ref()),
             name,
             index: 0,
         }
@@ -1208,6 +1210,26 @@ mod tests {
         assert_eq!(changed.find_by_name("partition").count(), 2);
         let names: Vec<_> = changed.iter().map(|header| header.name.as_str()).collect();
         assert_eq!(names, ["tenant", "partition", "partition"]);
+    }
+
+    /// Scenario: packed pdata headers are reconstructed, appended, and stored again.
+    /// Guarantees: the pdata roundtrip retains the packed base instead of repacking all headers.
+    #[test]
+    fn pdata_roundtrip_preserves_append_overlay() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+        let data = headers.into_data().expect("packed context data");
+        let packed_base = Arc::clone(&data.storage);
+        let mut changed = data.to_transport_headers();
+
+        changed.push(header("partition", "X-Partition", b"first"));
+        let changed = changed.into_data().expect("overlay context data");
+
+        let TransportHeadersStorage::Overlay { base, appended } = changed.storage.as_ref() else {
+            panic!("expected appended transport header overlay");
+        };
+        assert!(Arc::ptr_eq(base, &packed_base));
+        assert_eq!(appended.len(), 1);
     }
 
     /// Scenario: a collection with appended headers is cloned and mutated.

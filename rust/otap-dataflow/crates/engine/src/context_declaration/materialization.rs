@@ -310,7 +310,7 @@ impl MaterializedContextEntry {
 #[derive(Clone, Default, PartialEq, Eq)]
 struct MaterializedContextStorage {
     transport_headers: Option<TransportHeadersData>,
-    entries: Box<[MaterializedContextEntry]>,
+    entries: Arc<[MaterializedContextEntry]>,
 }
 
 /// Immutable composites materialized for one pdata context.
@@ -371,7 +371,7 @@ impl MaterializedContext {
             }
             self.storage = Some(Arc::new(MaterializedContextStorage {
                 transport_headers,
-                entries: Box::new([]),
+                entries: Arc::from([]),
             }));
             return;
         }
@@ -510,7 +510,7 @@ impl MaterializedContext {
             .storage
             .get_or_insert_with(|| Arc::new(MaterializedContextStorage::default()));
         let storage = Arc::make_mut(storage);
-        let mut entries = std::mem::take(&mut storage.entries).into_vec();
+        let mut entries = storage.entries.as_ref().to_vec();
         for (entry, declaration) in plan.entries() {
             if let Some(index) = entries
                 .iter()
@@ -569,7 +569,7 @@ impl MaterializedContext {
             });
         }
         entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-        storage.entries = entries.into_boxed_slice();
+        storage.entries = entries.into();
         if storage.transport_headers.is_none() && storage.entries.is_empty() {
             self.storage = None;
         }
@@ -715,9 +715,9 @@ mod tests {
         );
     }
 
-    /// Scenario: captured headers and a materialized composite share one cloned context store.
-    /// Guarantees: materialization reads stored headers, and taking headers from a clone retains
-    /// both the original headers and the clone's materialized snapshot independently.
+    /// Scenario: a detached context appends a partition header beside a materialized composite.
+    /// Guarantees: the original headers remain unchanged while both contexts share the
+    /// materialized entry backing and the detached context retains its snapshot.
     #[test]
     fn stores_transport_headers_with_materialized_entries() {
         let plan = ContextMaterializationPlan::compile(&[declaration(vec![
@@ -753,14 +753,25 @@ mod tests {
                 .bytes(),
             b"acme"
         );
+        let original_entries =
+            Arc::clone(&context.storage.as_ref().expect("context storage").entries);
 
         let mut detached = context.clone();
-        assert_eq!(
-            detached.take_transport_headers().expect("detached headers"),
-            headers
-        );
-        assert!(detached.transport_headers().is_none());
+        let mut detached_headers = detached.take_transport_headers().expect("detached headers");
+        assert_eq!(detached_headers, headers);
+        detached_headers.push(TransportHeader::text(name("partition"), b"first"));
+        detached.set_transport_headers(detached_headers);
+
+        let detached_storage = detached.storage.as_ref().expect("detached storage");
+        assert!(Arc::ptr_eq(&original_entries, &detached_storage.entries));
         assert!(detached.entry(&name("request")).is_some());
+        assert_eq!(
+            detached
+                .transport_headers()
+                .expect("detached headers")
+                .len(),
+            2
+        );
         assert_eq!(
             context.transport_headers().expect("original headers"),
             &headers
