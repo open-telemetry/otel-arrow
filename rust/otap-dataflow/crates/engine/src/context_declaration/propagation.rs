@@ -424,6 +424,7 @@ mod tests {
     use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
     use otel_arrow_dfe_config::transport_headers_policy::{PropagationMatch, PropagationSelector};
     use otel_arrow_dfe_config::{context_policy, transport_headers};
+    use uuid::Uuid;
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -1159,6 +1160,80 @@ overrides:
         assert_eq!(propagated[0].header_name, "route");
         assert_eq!(propagated[0].value, b"primary");
         assert_eq!(propagated[1].header_name, "id");
+    }
+
+    /// Scenario: one policy combines primitive, qualified header, constant, and randomness
+    /// selections with primitive drop and propagate overrides.
+    /// Guarantees: primitive overrides take precedence, dropping a source suppresses its
+    /// qualified representation, while selected constant and UUID members share the result.
+    #[test]
+    fn mixed_propagation_preserves_primitive_override_precedence() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  delivery:
+    - type: transport_header
+      name: workspace
+      store_as: workspace_id
+    - type: constant
+      name: route
+      value: primary
+    - type: randomness
+      name: id
+      value: uuid7
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [keep, delivery:workspace_id, delivery:route, delivery:id]
+  action: propagate
+  name: stored_name
+overrides:
+  - match:
+      stored_names: [workspace]
+    action: drop
+  - match:
+      stored_names: [forced]
+    action: propagate
+"#,
+        )
+        .expect("valid propagation policy");
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[declaration])
+            .expect("mixed propagation policy compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(header("keep", "X-Keep", b"kept"));
+        headers.push(header("workspace", "X-Workspace", b"acme"));
+        headers.push(header("forced", "X-Forced", b"forced"));
+        headers.push(header("ignored", "X-Ignored", b"ignored"));
+        let materialized = materialize(&policy, &headers);
+
+        let propagated = policy
+            .propagate_materialized(&headers, Some(&materialized))
+            .collect::<Vec<_>>();
+
+        assert_eq!(propagated.len(), 4);
+        assert_eq!(propagated[0].header_name, "keep");
+        assert_eq!(propagated[0].value, b"kept");
+        assert_eq!(propagated[1].header_name, "forced");
+        assert_eq!(propagated[1].value, b"forced");
+        assert_eq!(propagated[2].header_name, "route");
+        assert_eq!(propagated[2].value, b"primary");
+        assert_eq!(propagated[3].header_name, "id");
+        let uuid = std::str::from_utf8(propagated[3].value).expect("UUID is UTF-8");
+        assert_eq!(
+            Uuid::parse_str(uuid).expect("valid UUID").get_version_num(),
+            7
+        );
     }
 
     /// Scenario: a named selector repeats an unqualified header using identical and varied case.
