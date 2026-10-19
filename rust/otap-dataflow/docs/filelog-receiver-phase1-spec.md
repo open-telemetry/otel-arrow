@@ -665,12 +665,10 @@ truncate durable state.
 - Keep traversal, observations, handles, and delivery bounded. Resource pressure
   never authorizes discarding unresolved source progress.
 
-The policies below are proposed for maintainer review, with their operator costs
-listed in [Discovery policy review](filelog-receiver.md#discovery-policy-review).
-This specification does not itself qualify filesystems or runtime behavior;
-see [Implementation qualification](#implementation-qualification).
-Implementation may choose mechanisms, but changes to these behavior contracts
-require an explicit specification and conformance update.
+The rules below define discovery behavior. Their operator costs are listed in
+[Discovery policies and trade-offs](filelog-receiver.md#discovery-policies-and-trade-offs).
+Implementations must satisfy these rules and the
+[qualification requirements](#implementation-qualification).
 
 ### Complete and incomplete inventories
 
@@ -734,8 +732,8 @@ symlink changes, unreachable targets, truncation, and exclusion-root aliases.
 Alias mapping must preserve full glob semantics, including an excluded file and
 an allowed sibling. A full path-result buffer must be treated as potentially
 truncated, and a final-component no-follow check alone cannot qualify
-intermediate-component validation. No syscall sequence is prescribed or
-prequalified here.
+intermediate-component validation. Implementations choose a syscall sequence
+and demonstrate that it meets these requirements.
 
 The resident-unlink shortcut requires qualification for the opened object's
 filesystem/backend; report the tested filesystems and conditions. Root and
@@ -1158,7 +1156,7 @@ distinguished binding under the selected link policy:
 Before permanent EOF, an authorized Excluded transition replaces pending
 disappearance without D17. After the cutoff, it preserves locator presence but
 cannot undo finalization. The data-loss and delayed-revocation trade-offs are
-listed in the [design document](filelog-receiver.md#discovery-policy-review).
+listed in the [design document](filelog-receiver.md#discovery-policies-and-trade-offs).
 
 Exclusion is not disappearance or rotation. After the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering) is satisfied,

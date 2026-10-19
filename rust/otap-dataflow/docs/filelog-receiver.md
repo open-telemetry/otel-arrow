@@ -218,8 +218,8 @@ accepted compromises:
 | D18 | Require a nonempty, ready required-subscriber snapshot before a publication can Ack | Zero required membership is backpressure or explicit non-success, never vacuous Ack; this is an engine/topic release dependency |
 | D19 | Map the exact raw checkpoint ID into a versioned lowercase-hex filesystem namespace | `${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/` is injective on case-insensitive filesystems, avoids reserved-name and path-normalization hazards, and keeps the raw ID unchanged in namespace digests and administrative records |
 
-The discovery changes additionally request review of the
-[policy and operator-cost table](#discovery-policy-review).
+Discovery policies and their operator costs are summarized in the
+[trade-off table](#discovery-policies-and-trade-offs).
 
 ## Responsibility boundaries
 
@@ -847,15 +847,14 @@ follow_symlinks: false
 Resolved-target exclusions still apply in the symlink form, so an exclusion
 matching the corresponding `/var/log/pods/...` target prevents admission.
 
-### Discovery policy review
+### Discovery policies and trade-offs
 
-The discovery/rotation changes are a design proposal, not implementation or
-filesystem qualification. Maintainers should explicitly review these choices:
+The following policies govern discovery and rotation:
 
-| Proposed policy | Why | Operator cost or limitation |
+| Policy | Why | Operator cost or limitation |
 | --- | --- | --- |
 | Later qualifying pass plus EOF inactivity before still-linked finalization; cancellation ends before D17 | Avoid irreversible finalization from one missed scan | Handles and framing state can remain pinned indefinitely; repeated moves or undetected outages can still cause false finalization and replay/skip on rediscovery |
-| Pass-wide blocking for missing roots, replaced directories, or required traversal/policy failures | Do not turn lost coverage into absence without a reviewed narrower model | Cleanup can stall across the receiver, exhausting resident or tracked capacity; positive reading and qualified resident unlink remain available |
+| Pass-wide blocking for missing roots, replaced directories, or required traversal/policy failures | Missing coverage cannot establish absence | Cleanup can stall across the receiver, exhausting resident or tracked capacity; positive reading and qualified resident unlink remain available |
 | Binding-check exclusion fast path, with complete-pass fallback for uncertain bindings | Revoke confirmed exclusions without waiting for unrelated scanning | Wrong revocation can lose unread source bytes; uncertain bindings can delay revocation indefinitely |
 | Bounded alias inspection and point-in-time target evidence | Keep scanning bounded without claiming an atomic namespace snapshot | Uninspected excluded aliases and later namespace changes may escape detection; exclusions are not an instantaneous privacy boundary |
 
@@ -881,8 +880,7 @@ handling. Automatic startup can baseline an unexpected environment; root
 identity checks do not detect every mount change. Deployment must provide the
 expected storage before startup.
 
-These are the limitations of the proposed policy, not evidence that its Linux
-mechanisms already satisfy it. Qualification must measure both Kubernetes path
+Qualification must measure both Kubernetes path
 layouts under pod churn: confirmation delay, incomplete-pass frequency,
 pinned-handle pressure, and delayed admission.
 
