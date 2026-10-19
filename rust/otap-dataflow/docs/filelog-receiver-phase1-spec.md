@@ -826,8 +826,8 @@ With `follow_symlinks: true`:
 - a cycle or exhausted traversal bound makes the inventory incomplete.
 
 Overlapping globs, hardlinks, aliases, and rename-visible paths that resolve to the same
-live runtime locator produce one candidate identity. Path is updated as advisory
-metadata. Equal fingerprints do not deduplicate distinct locators.
+live runtime locator produce one candidate identity. Advisory-path updates obey
+the binding rules below. Equal fingerprints do not deduplicate distinct locators.
 
 Each `Active` identity retains one distinguished path, either as its live
 binding or as superseded transition evidence, bounded by `max_tracked_files`
@@ -1116,10 +1116,15 @@ deferred.
 | Transition | Preconditions | Effect |
 | --- | --- | --- |
 | Observed | Eligible stable locator is not retained or active | Present candidate and any possible-replacement context to identity resolution |
-| Updated | Retained locator remains eligible but path or mutable metadata changed | Update bounded advisory evidence |
+| Updated | Retained locator remains eligible and mutable metadata changed | Refresh bounded non-binding metadata; preserve the retained binding path |
 | Path rebound | A distinguished matched path changes from locator A to locator B while A remains live or eligible under another name | Preserve A independently and present B to normal identity resolution with recognized-replacement context |
 | Excluded | Inspected excluded name identifies an active locator and the binding check or complete-pass fallback below authorizes revocation | Stop reads, resolve existing deltas, then revoke without changing durable progress or lifecycle |
 | Disappeared | Complete pass observes no eligible name or locator presence for the retained locator | Begin pending disappearance; resident finalization requires the later conditions below |
+
+Neither Updated nor an ordinary `update_metadata` may overwrite a retained live
+or superseded `AdvisoryPath` with a newly observed alias. Path publication must
+follow the binding reconciliation rules; uncontested supersession preserves the
+predecessor's historical path until complete-pass reconciliation.
 
 The implementation-facing transition must preserve the reason distinction between
 exclusion revocation and disappearance. A reasonless `Removed` event is insufficient
