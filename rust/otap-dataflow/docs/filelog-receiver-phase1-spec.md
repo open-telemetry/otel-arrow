@@ -675,7 +675,7 @@ complete traversal does not authorize reconnection.
 | --- | --- |
 | Individual candidate lookup returns `ENOENT`, including a missing component of a followed link target | No admission; record a miss, unless a detected environment or traversal failure invalidates the context. |
 | Leaf-candidate link chain fails with an ordinary resolution loop or nesting limit | Reject this candidate without eligible-name or locator-presence evidence; this alone does not invalidate unrelated coverage or prove physical absence. |
-| Root missing at startup / established root unavailable | Establish the first baseline on successful validation / report coverage failure until recovery or reinitialization. |
+| Root missing at startup / established root unavailable | Coverage failure receiver-wide until first validation (startup), or recovery/reinitialization (established); a still-missing root remains a coverage failure after restart. |
 | Subdirectory vanishes during traversal; directory open/listing fails; reopen cannot resume reliably | Coverage failure; pass cannot confirm disappearance. |
 | Detected root or tracked-binding-parent identity change | Invalidate pending confirmations and absence history; follow discovery reinitialization rules. |
 | Required exclusion mapping or pinned-target policy check cannot be completed | Policy failure; no dependent admission; pass cannot confirm disappearance. Preserve locator presence. |
@@ -1102,8 +1102,9 @@ matching is insufficient; cancellation does not bypass truncation or unresolved
 source-delta handling. Locator presence without eligible validation still blocks
 discovery-derived confirmation for that locator. After permanent EOF, preserve
 presence but block competing admission until ownership is released. After
-finalization, a later observation follows new-identity rules; descriptor-free containment instead permits normal
-validated reconnection of the retained `Active` record.
+finalization, a later observation follows new-identity rules; descriptor-free
+containment instead permits normal validated reconnection of the retained
+`Active` record.
 
 A lexical exclusion rejects that name, not every alias of its locator.
 Resolved-target exclusions still take precedence when evaluating each candidate.
