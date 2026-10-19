@@ -149,6 +149,7 @@ Before the fixes (`Fixes` without the lead), TLC finds each finding again:
 | L6 | `T1_overrun.cfg` | `EveryNodeStopsAfterDeadline`: the exporter waits forever for a stuck export after the deadline. |
 | L8 | `T1.cfg` | deadlock, 15 steps: the deadline fires while the receiver's `DrainIngress` is parked in the manager's `pending_sends`; the manager exits and the receiver never learns about shutdown. |
 | L3 | `T4_timeout.cfg` | deadlock, 12 steps: fanout's `StartTimer` arrives after the shutdown request and is ignored, a destination drops the message, and the receiver waits forever. |
+| L9 | `T2.cfg` | `RetainedComeBack`, 8 steps: batch takes an input into an empty buffer after the latch, its timer is refused, `process()` fails and the buffer is lost. Found in review; the model gained this behavior afterwards. |
 | L4 | `T4_late.cfg`, no deadline | `NoSilentLateOutcome`, 12 steps: fanout stops with a request in flight and the destination's later Ack is dropped. With the fix the request is NACKed first; the late Ack is still dropped silently (D6). |
 
 Two further checks guard against a vacuous pass:
@@ -159,9 +160,10 @@ Two further checks guard against a vacuous pass:
   fairness burst path while draining, retained payloads converted at the
   latch, the scheduler latched by a closed input, a wakeup delivered after
   the latch, a router parked at the latch, a tick during ingress drain, a
-  receiver stopped without `ReceiverDrained`, and fanout in flight at
-  `Shutdown`. Expected output: every line starts with `reached` (30 lines,
-  about 25 seconds).
+  receiver stopped without `ReceiverDrained`, fanout in flight at
+  `Shutdown`, and batch taking input into an empty buffer after the latch.
+  Expected output: every line starts with `reached` (31 lines, about 25
+  seconds).
 - **Mutation.** Removing `"L2b"` from `Fixes` in `T3.cfg` makes TLC report
   `DrainByClosure` in 12 steps.
 

@@ -19,7 +19,8 @@ Labels ==
      "deadline_fired", "all_stopped", "mgr_pending_sends", "disp_pending_sends",
      "burst_path", "retained_converted", "closed_before_shutdown",
      "wakeup_after_latch", "router_parked_at_latch", "tick_during_drain",
-     "receiver_forced_stop", "fanout_inflight_at_shutdown"}
+     "receiver_forced_stop", "fanout_inflight_at_shutdown",
+     "holding_input_after_latch"}
 
 ASSUME CovTarget \in Labels
 
@@ -60,6 +61,11 @@ Reached(l) ==
       [] l = "fanout_inflight_at_shutdown" ->
              DOMAIN ps.inflight # {}
              /\ \E i \in DOMAIN ctrl["P"] : ctrl["P"][i].k = "shut"
+         \* batch-like holding processor takes input into an empty buffer
+         \* after the latch, when the timer cannot be armed (L9)
+      [] l = "holding_input_after_latch" ->
+             Kind = "holding" /\ ns["P"].latched /\ data["P"] # <<>>
+             /\ ps.buf = {}
 
 TargetUnreached == ~Reached(CovTarget)
 

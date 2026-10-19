@@ -50,6 +50,7 @@ use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::{SignalFormat, SignalType};
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::WakeupError;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
@@ -1739,18 +1740,27 @@ where
         timeout: Duration,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        effect
-            .set_wakeup(Self::wakeup_slot(signal), now + timeout)
-            .map(|_| {
+        match effect.set_wakeup(Self::wakeup_slot(signal), now + timeout) {
+            Ok(_) => {
                 self.arrival = Some(now);
                 self.wakeup_armed = true;
-            })
-            .map_err(|_| EngineError::ProcessorError {
+                Ok(())
+            }
+            // Shutdown is latched, so no timer can be armed. The buffered input
+            // stays pending and is flushed when the Shutdown message arrives
+            // after the drain completes.
+            Err(WakeupError::ShuttingDown) => {
+                self.arrival = Some(now);
+                self.wakeup_armed = false;
+                Ok(())
+            }
+            Err(_) => Err(EngineError::ProcessorError {
                 processor: effect.processor_id(),
                 kind: ProcessorErrorKind::Other,
                 error: "could not set wakeup".into(),
                 source_detail: "".into(),
-            })
+            }),
+        }
     }
 }
 
@@ -2603,6 +2613,55 @@ mod tests {
                 // 3 inputs consumed; 2 batches produced (one size flush after
                 // the second input, one timer flush after the third).
             });
+    }
+
+    /// Scenario: the local scheduler has latched shutdown (the inbox latched
+    /// `Shutdown` while upstream is still draining) when a small input
+    /// arrives and the batch buffer is empty, so the batch timer cannot be
+    /// armed.
+    /// Guarantees: `process()` still accepts the input instead of failing the
+    /// node, and the buffered input is flushed when `Shutdown` is delivered
+    /// (formal/shutdown spec.md lead L9).
+    #[test]
+    fn test_input_after_shutdown_latch_is_buffered_and_flushed_on_shutdown() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 5,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "50ms"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let mut datagen = DataGenerator::new(1);
+                let logs = datagen.generate_logs();
+
+                ctx.begin_local_shutdown(Instant::now());
+
+                let rec = encode_logs_otap_batch(&logs).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("input after the shutdown latch must not fail the processor");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "input below min_size should stay buffered"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                }))
+                .await
+                .expect("process shutdown");
+                assert_eq!(
+                    ctx.drain_pdata().await.len(),
+                    1,
+                    "Shutdown should flush the buffered input"
+                );
+            })
+            .validate(move |_| async move {});
     }
 
     /// A size flush that empties the buffer must clear timer state. Otherwise

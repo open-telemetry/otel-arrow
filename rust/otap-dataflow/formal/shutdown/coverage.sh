@@ -18,7 +18,8 @@ labels_for() {
         T1) echo "real_ack real_nack forced_nack shut_nack deadline_fired
                   all_stopped mgr_pending_sends disp_pending_sends
                   receiver_forced_stop" ;;
-        T2) echo "real_ack wakeup_after_latch deadline_fired all_stopped" ;;
+        T2) echo "real_ack wakeup_after_latch holding_input_after_latch
+                  deadline_fired all_stopped" ;;
         # Retry's shutdown Nack (rejected requeue) cannot reach a waiting
         # receiver: its scheduler latches only after the receiver drained.
         T3) echo "real_ack real_nack retained_converted

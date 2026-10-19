@@ -19,6 +19,6 @@ issues: [4395]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Receivers and exporters stop 1s after the deadline. Timers run while receivers drain, so
-  fanout timeouts still fire. Routers and fanout NACK (retryable) work they cannot finish.
-  The `shutdown.cleared` wakeup metric now counts wakeups fired at shutdown, not dropped.
+  Receivers and exporters stop 1s after the deadline. Timers run while receivers drain.
+  Batch no longer fails on input that arrives during drain. Routers and fanout NACK
+  (retryable) work they cannot finish. `shutdown.cleared` now counts wakeups fired.

@@ -121,7 +121,7 @@ Rust function it mirrors; actions in `Shutdown.tla` use these names.
 | Config | Pipeline | Variants | Leads |
 | --- | --- | --- | --- |
 | T1 | receiver -> stateless processor -> exporter | receiver may skip `ReceiverDrained`; dispatcher exit | L1, S7 baseline |
-| T2 | receiver -> holding processor (local wakeup flush, batch-like) -> exporter | - | wakeups cleared at latch |
+| T2 | receiver -> holding processor (local wakeup flush, batch-like) -> exporter | - | wakeups at the latch, **L9** |
 | T3 | receiver -> retry (`requeue_later`) -> exporter | admission gating on/off; receiver waiting or fire-and-forget; any order of "upstream stopped" and "Shutdown delivered" | L2, **L2b** |
 | T4 | receiver -> fanout (`await_ack: all`) -> 2 exporters | `T4.cfg`: `max_inflight` gating on/off, timeouts off; `T4_timeout.cfg`: a destination timeout (runtime `TimerTick`) and a destination that never answers; `T4_live.cfg`: S5a, S5b | L3, L4 |
 | T5 | receiver -> admission-gated processor -> exporter | `gate = "never"` (`T5_closed.cfg`, L5) or `gate = "router"` (`T5.cfg`, parks a payload keyed by a wakeup, L7) | L5 (expected), **L7** |
@@ -329,6 +329,7 @@ never just dropped.
 | L6 | A node outlives the deadline. | Confirmed (TLC; Rust test). Fixed. | S5b in `T1_overrun` |
 | L7 | `begin_shutdown` drops wakeups as "carrying no payload", but routers keep a payload keyed by that wakeup. | Confirmed (TLC, 15 steps; DST test). Fixed. | S7, S4 in T5 |
 | L8 | At the deadline the manager exits with `DrainIngress` or `Shutdown` still in `pending_sends`, and the receiver never learns about shutdown. | Found by TLC (15 steps). Fixed by the L6 fix. | S5b and deadlock in T1, T2, T5 |
+| L9 | After the latch `set_wakeup` returns `ShuttingDown`; batch treats that as a processor error, so an input that arrives into an empty buffer during drain fails the node. | Found in review. Confirmed (Rust test; TLC, 8 steps once the model's holding processor fails like batch). Fixed. The durable buffer was checked and is not affected (see below). | S4 in T2 |
 
 ### L1: why the dispatcher exit cannot drop a waited-for answer
 
@@ -396,14 +397,38 @@ closed before `Shutdown` arrived, and passed where `Shutdown` came first.
   with `gate = router` found this in 15 steps, and
   `dst_parked_payload_wakeup_survives_shutdown_latch_seeded` reproduced it.
 
+### L9: batch fails on a refused timer after the latch
+
+Found by review of this PR, after the TLC runs.
+
+- After the latch, `set_wakeup` returns `WakeupError::ShuttingDown`
+  (`scheduler.rs` 283-288). Batch's `set_arrival` (1735-1754) mapped any
+  error to `ProcessorError`, and `accept_payload` (1047) and the
+  retained-residual path (1218) propagate it with `?`.
+- A processor keeps taking input after its `Shutdown` latches. When that
+  input arrives into an empty buffer and stays below `min_size`, batch arms
+  its timer, gets `ShuttingDown`, and `process()` fails. The processor loop
+  ends (`processor.rs` 674-676) and the pipeline join stops on the error, so
+  batch's buffered data and the rest of the drain are left to the deadline.
+- The model missed it because its holding processor treated a refused
+  re-arm as harmless. With the L9 behavior modeled (`Fixes` without
+  `"L9"`), TLC finds it in 8 steps in T2.
+- Temporal reaggregation already treats `ShuttingDown` as `Ok`
+  (`schedule_wakeup`, 593-600). The durable buffer's `sync_armed_wakeup`
+  (`deferred_retry_state.rs` 205) also returns the error, but its callers
+  (`schedule_at`, `rearm_after_processing`) turn it into `false`, and the
+  durable buffer only logs a warning; the bundle stays in storage. The
+  exclusive routers handle it (L7). So batch was the only affected node.
+
 ## Behaviors that are intended, not violations
 
 - **Queued timer ticks arrive late.** See S2 and D4.
 - **Forced Nack does not prove non-delivery.** See D1.
 - **A node may get one early wakeup during drain.** With the L7 fix every
-  pending wakeup is delivered once at the latch. Nodes that keep no payload
-  behind a wakeup (batch) just flush earlier; they flush at `Shutdown`
-  anyway.
+  pending wakeup is delivered once at the latch. Batch skips a wakeup that
+  arrives before `max_batch_duration` has passed (`batch_processor` 1108-1116)
+  and cannot arm a new one; its buffer is flushed when `Shutdown` is
+  released (1400-1403).
 - **Processors still honor admission during drain.** This lets stateful
   processors take Acks and Nacks and reopen (`message.rs` 499-501). The cost
   is L5.
@@ -441,6 +466,7 @@ configs list every fix that has landed.
 | L6, L8 | Receivers and exporters are wired to the pipeline forced-shutdown signal (`start_until_forced_shutdown`). After it fires they get `NODE_FORCED_SHUTDOWN_GRACE` (1 s) to finish their own deadline handling, then their task is cancelled. A receiver whose `DrainIngress` and `Shutdown` were lost in the manager's `pending_sends` (L8) stops the same way. | `exporter_stops_by_deadline_when_inflight_export_never_completes`, `receiver_stops_on_forced_shutdown_without_drain_or_shutdown` |
 | L3 | Runtime and telemetry timers keep running while receivers drain and are frozen when downstream `Shutdown` is sent (`freeze_timers`); `StartTimer` is ignored only from then on. A fanout timeout can now answer a draining receiver when a destination never replies. | `test_timer_keeps_firing_until_downstream_shutdown` (fails with the freeze moved back to the shutdown request); TLC: T4 with `Fixes` without `"L3"` deadlocks in 12 steps, with it 8.2M states pass (`fto`, silent destination, no deadline) |
 | L4 | Fanout NACKs every request in `inflight` and `slim_inflight` upstream at `Shutdown` (`NodeShutdown`, retryable) instead of dropping them (`nack_inflight_on_shutdown`). Late downstream answers are D6. | `shutdown_nacks_inflight_requests_upstream`, `shutdown_nacks_slim_inflight_requests_upstream` |
+| L9 | Batch treats `WakeupError::ShuttingDown` from `set_wakeup` as `Ok` in `set_arrival`, as temporal reaggregation already does: the input stays buffered and is flushed when `Shutdown` is released. | `test_input_after_shutdown_latch_is_buffered_and_flushed_on_shutdown` |
 
 ## Decisions to revisit
 
@@ -554,10 +580,10 @@ Processors never receive `DrainIngress`.
 | --- | --- | --- | --- | --- | --- |
 | fanout | Ignore, drop in-flight state (1107-1109) | `inflight`, `slim_inflight` | R | Yes, at `max_inflight` (1052-1064) | L3, L4, L5 |
 | retry | No-op (705); relies on `ResumeData` conversion | Local scheduler | W | No | L2b |
-| batch | Flush (1400-1403) | Buffers, outbound map | W | No | Partial L4 (outbound) |
+| batch | Flush (1400-1403) | Buffers, outbound map | W | No | Partial L4 (outbound); L9: a refused `set_wakeup` after the latch failed the node (`set_arrival` 1735-1754) |
 | temporal_reaggregation | Flush (310-312) | In and out batches | W | Yes, by slots (331-349) | L5, partial L4 |
 | content_router, signal_type_router | Nack parked messages (865-867; 515-517) | One message per port | W | Yes, backpressure mode | L7 |
-| durable_buffer | Flush, drain until deadline (1643-1736) | Pending bundles | R, W | No | L3-like (data is durable) |
+| durable_buffer | Flush, drain until deadline (1643-1736) | Pending bundles | R, W | No | L3-like (data is durable); a refused retry wakeup only logs a warning (not affected by L9) |
 | partition, transform | Ignore, drop split contexts | Split contexts | - | No | L4 |
 | debug | Log only | - | - | No | - |
 | attributes, filter, log_parser, log_sampling, condense_attributes, recordset_kql, resource_validator | Ignore | - | log_sampling R (counters only) | No | - |

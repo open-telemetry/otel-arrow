@@ -51,7 +51,7 @@ ASSUME ExpUnbounded \subseteq BOOLEAN /\ FanoutTimeouts \subseteq BOOLEAN
 ASSUME Gates \subseteq {"none", "gated", "never", "router"}
 ASSUME FanoutMaxInflights \subseteq Nat
 ASSUME Deadlines \subseteq BOOLEAN /\ GracefulPremise \in BOOLEAN
-ASSUME Fixes \subseteq {"L2b", "L7", "L6", "L3", "L4"}
+ASSUME Fixes \subseteq {"L2b", "L7", "L6", "L3", "L4", "L9"}
 
 Fixed(l) == l \in Fixes
 
@@ -286,6 +286,13 @@ RouterNackStranded(s) ==
     THEN Report([s EXCEPT !.ps.parked = 0], "P", s.ps.parked, "nack", "shut")
     ELSE s
 
+(* process() returned an error (processor.rs 674-676): the processor   *)
+(* loop ends and the node stops with whatever it held (S4).            *)
+HoldingFails(s) ==
+    [s EXCEPT !.ns["P"].st = "stopped", !.ns["P"].ib = TRUE,
+              !.ns["P"].out = <<>>, !.ps.buf = {},
+              !.flags = @ \cup (IF s.ps.buf # {} /\ ~Dl THEN {"S4"} ELSE {})]
+
 (* Holding processor flush (batch-like): send every buffered message. *)
 Flush(s) == [s EXCEPT !.ns["P"].out = OutSeq(s.ps.buf), !.ps.buf = {}]
 
@@ -306,7 +313,14 @@ PDataH(s, n, r, fate) ==
                 IF Len(s.data["A"]) < Cap
                 THEN [s EXCEPT !.data["A"] = Append(@, r)]
                 ELSE RouterNackStranded(ArmWake([s EXCEPT !.ps.parked = r]))
-           [] Kind = "holding" -> ArmWake([s EXCEPT !.ps.buf = @ \cup {r}])
+           [] Kind = "holding" ->
+                \* batch accept_payload -> set_arrival (batch 1047, 1735): the
+                \* first input into an empty buffer arms the timer. Before the
+                \* L9 fix a refused set_wakeup (scheduler shutting down) made
+                \* process() fail; the node stops and its buffer is lost.
+                IF ~Fixed("L9") /\ s.ns["P"].sch /\ s.ps.buf = {}
+                THEN HoldingFails([s EXCEPT !.ps.buf = {r}])
+                ELSE ArmWake([s EXCEPT !.ps.buf = @ \cup {r}])
            [] Kind = "fanout" ->
                 \* fanout: subscribe and send to every destination; start
                 \* the runtime timer on first need (ensure_timer, 477-481).
