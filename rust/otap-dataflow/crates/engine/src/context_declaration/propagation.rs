@@ -267,7 +267,7 @@ impl CompiledHeaderPropagationPolicy {
     where
         H: TransportHeaderSource + ?Sized,
     {
-        self.propagate_materialized(headers, None)
+        self.propagate_primitive(headers)
     }
 
     /// Returns borrowed primitive and materialized headers selected for propagation.
@@ -282,25 +282,32 @@ impl CompiledHeaderPropagationPolicy {
     where
         H: TransportHeaderSource + ?Sized,
     {
-        let mut propagated = SmallVec::<[PropagatedHeader<'a>; 8]>::new();
-        for header in headers.transport_headers() {
+        self.propagate_primitive(headers)
+            .chain(self.materialized_headers(materialized))
+    }
+
+    fn propagate_primitive<'a, H>(
+        &'a self,
+        headers: &'a H,
+    ) -> impl Iterator<Item = PropagatedHeader<'a>>
+    where
+        H: TransportHeaderSource + ?Sized,
+    {
+        headers.transport_headers().filter_map(move |header| {
             let (action, name_strategy) = self.resolve_primitive_action(header.name.as_str());
             if action == PropagationAction::Drop {
-                continue;
+                return None;
             }
             let header_name = match name_strategy {
                 NameStrategy::StoredName => header.name.as_str(),
                 NameStrategy::Preserve => header.wire_name(),
             };
-            propagated.push(PropagatedHeader {
+            Some(PropagatedHeader {
                 header_name,
                 value_kind: header.value.value_kind,
                 value: header.value.bytes,
-            });
-        }
-
-        self.append_materialized(materialized, &mut propagated);
-        propagated.into_iter()
+            })
+        })
     }
 
     /// Returns qualified headers when no captured primitive headers are present.
@@ -308,16 +315,14 @@ impl CompiledHeaderPropagationPolicy {
         &'a self,
         materialized: Option<&'a MaterializedContext>,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
-        let mut propagated = SmallVec::<[PropagatedHeader<'a>; 8]>::new();
-        self.append_materialized(materialized, &mut propagated);
-        propagated.into_iter()
+        self.materialized_headers(materialized).into_iter()
     }
 
-    fn append_materialized<'a>(
+    fn materialized_headers<'a>(
         &'a self,
         materialized: Option<&'a MaterializedContext>,
-        propagated: &mut SmallVec<[PropagatedHeader<'a>; 8]>,
-    ) {
+    ) -> SmallVec<[PropagatedHeader<'a>; 8]> {
+        let mut propagated = SmallVec::new();
         if let Some(materialized) = materialized {
             for binding in &self.compiled_named {
                 // A primitive override owns the source's propagation outcome independently of
@@ -370,6 +375,7 @@ impl CompiledHeaderPropagationPolicy {
                 });
             }
         }
+        propagated
     }
 
     fn resolve_primitive_action(&self, name: &str) -> (PropagationAction, NameStrategy) {
@@ -452,11 +458,14 @@ mod tests {
         ContextDomain, ContextFieldLayout, ContextValueCardinality, ContextValueSource,
         MaterializedContextValue, MaterializedContextValues,
     };
-    use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
+    use otel_arrow_dfe_config::transport_headers::{
+        TransportHeaderRef, TransportHeaders, TransportHeadersIter, ValueKind,
+    };
     use otel_arrow_dfe_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, PropagationMatch, PropagationSelector,
     };
     use otel_arrow_dfe_config::{context_policy, transport_headers};
+    use std::cell::Cell;
     use uuid::Uuid;
 
     fn context_name(raw: &str) -> ContextEntryName {
@@ -529,6 +538,40 @@ mod tests {
         let mut materialized = MaterializedContext::default();
         materialized.materialize(policy.materialization_plan(), &TestValueSource { headers });
         materialized
+    }
+
+    struct CountingHeaderSource {
+        headers: TransportHeaders,
+        reads: Cell<usize>,
+    }
+
+    struct CountingHeaderIter<'a> {
+        inner: TransportHeadersIter<'a>,
+        reads: &'a Cell<usize>,
+    }
+
+    impl<'a> Iterator for CountingHeaderIter<'a> {
+        type Item = TransportHeaderRef<'a>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let header = self.inner.next()?;
+            self.reads.set(self.reads.get() + 1);
+            Some(header)
+        }
+    }
+
+    impl TransportHeaderSource for CountingHeaderSource {
+        type Iter<'a>
+            = CountingHeaderIter<'a>
+        where
+            Self: 'a;
+
+        fn transport_headers(&self) -> Self::Iter<'_> {
+            CountingHeaderIter {
+                inner: self.headers.iter(),
+                reads: &self.reads,
+            }
+        }
     }
 
     /// Scenario: an exporter uses the default compiled policy or compiles default settings.
@@ -1512,6 +1555,52 @@ entries:
         assert_eq!(propagated.len(), 2);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
         assert_eq!(propagated[1].header_name, "X-Request-Id");
+    }
+
+    /// Scenario: an all-captured primitive policy receives more headers than the materialized
+    /// result buffer's inline capacity.
+    /// Guarantees: creating the propagation iterator reads nothing, and each output is produced
+    /// lazily without buffering the complete primitive result.
+    #[test]
+    fn primitive_propagation_remains_lazy_above_inline_capacity() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
+        let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
+            .expect("propagation policy compiles");
+        let mut headers = TransportHeaders::new();
+        for index in 0..12 {
+            headers.push(header(
+                &format!("header-{index}"),
+                &format!("X-Header-{index}"),
+                index.to_string().as_bytes(),
+            ));
+        }
+        let source = CountingHeaderSource {
+            headers,
+            reads: Cell::new(0),
+        };
+
+        let mut propagated = policy.propagate(&source);
+
+        assert_eq!(source.reads.get(), 0);
+        assert_eq!(
+            propagated
+                .next()
+                .expect("first propagated header")
+                .header_name,
+            "X-Header-0"
+        );
+        assert_eq!(source.reads.get(), 1);
+        assert_eq!(propagated.count(), 11);
+        assert_eq!(source.reads.get(), 12);
     }
 
     /// Scenario: a drop override excludes authorization.
