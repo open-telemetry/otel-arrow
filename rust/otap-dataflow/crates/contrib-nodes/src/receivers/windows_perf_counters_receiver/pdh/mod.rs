@@ -118,7 +118,7 @@ impl<C> CounterHandle<C> {
     fn read(&mut self, api: &mut impl PdhApi<Counter = C>) -> Result<SampleValue, Error> {
         if !matches!(
             self.kind,
-            CounterKind::Direct | CounterKind::FormattedSingleSample | CounterKind::RawFraction
+            CounterKind::Direct | CounterKind::FormattedSingleSample
         ) {
             let raw = match api.raw(&self.handle, &self.path) {
                 Ok(Some(raw)) => raw,

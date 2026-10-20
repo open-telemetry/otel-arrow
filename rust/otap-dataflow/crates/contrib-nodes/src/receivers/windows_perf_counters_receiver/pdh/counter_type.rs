@@ -104,8 +104,6 @@ pub(super) enum CounterKind {
     Direct,
     /// A PDH-formatted calculation requiring only the current sample.
     FormattedSingleSample,
-    /// A PDH-formatted fraction requiring only the current sample.
-    RawFraction,
     /// A PDH formula requiring successive samples (including private-clock timers).
     CalculatedTwoSample,
     /// A fraction or average requiring successive samples and advancing base values.
@@ -140,7 +138,9 @@ pub(super) fn classify_native_type(
         | PERF_COUNTER_LARGE_RAWCOUNT
         | PERF_COUNTER_RAWCOUNT_HEX
         | PERF_COUNTER_LARGE_RAWCOUNT_HEX => Ok(CounterKind::Direct),
-        PERF_ELAPSED_TIME => Ok(CounterKind::FormattedSingleSample),
+        PERF_ELAPSED_TIME | PERF_RAW_FRACTION | PERF_LARGE_RAW_FRACTION => {
+            Ok(CounterKind::FormattedSingleSample)
+        }
         PERF_COUNTER_COUNTER
         | PERF_COUNTER_BULK_COUNT
         | PERF_COUNTER_QUEUELEN_TYPE
@@ -165,7 +165,6 @@ pub(super) fn classify_native_type(
         PERF_SAMPLE_FRACTION | PERF_AVERAGE_TIMER | PERF_AVERAGE_BULK => {
             Ok(CounterKind::CalculatedTwoSampleWithBase)
         }
-        PERF_RAW_FRACTION | PERF_LARGE_RAW_FRACTION => Ok(CounterKind::RawFraction),
         _ => Err(UnsupportedNativeType {
             path: path.to_owned(),
             native_type,
@@ -236,7 +235,7 @@ mod tests {
         ] {
             assert_eq!(
                 classify_native_type("raw fraction", native_type).unwrap(),
-                CounterKind::RawFraction,
+                CounterKind::FormattedSingleSample,
                 "native type 0x{native_type:08X}"
             );
         }

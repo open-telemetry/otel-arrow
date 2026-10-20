@@ -472,27 +472,41 @@ fn calculated_reads_warm_up_and_do_not_cap_percentages() {
     assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
 }
 
-/// Scenario: An elapsed-time counter is collected as Gauge or cumulative non-monotonic Sum with configured scaling.
-/// Guarantees: The first sample emits PDH's double without a raw read or artificial warm-up, and projection accepts both kinds.
+/// Scenario: Elapsed time and both raw-fraction types are collected as Gauge or cumulative non-monotonic Sum with configured scaling.
+/// Guarantees: Formatted doubles, including zero, emit on the first sample despite unusable raw data, and projection accepts both kinds.
 #[test]
-fn elapsed_time_emits_from_first_sample() {
-    for kind in [MetricKind::Gauge, MetricKind::Sum] {
-        let (state, mut configs) = fake(vec![CounterFixture::new(
-            0x3024_0500, // PERF_ELAPSED_TIME
-            Number::Double(42.5),
-        )]);
-        configs[0].kind = kind;
-        configs[0].scale_power10 = -1;
-        let mut query = open_fake(&state, &configs).unwrap();
-        let sample = query.collect().unwrap();
-        assert!(sample.failures.is_empty());
-        assert_eq!(
-            sample.points[0].value,
-            SampleValue::Value(Number::Double(4.25))
-        );
-        assert!(state.borrow().raws.is_empty());
-        assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
-        assert!(into_otap(&configs, sample).unwrap().is_some());
+fn formatted_single_sample_counters_emit_from_first_sample() {
+    for (native_type, value, expected) in [
+        (0x3024_0500, 42.5, 4.25), // PERF_ELAPSED_TIME
+        (0x2002_0400, 0.0, 0.0),   // PERF_RAW_FRACTION
+        (0x2002_0400, 25.0, 2.5),  // PERF_RAW_FRACTION
+        (0x2002_0500, 0.0, 0.0),   // PERF_LARGE_RAW_FRACTION
+        (0x2002_0500, 25.0, 2.5),  // PERF_LARGE_RAW_FRACTION
+    ] {
+        for kind in [MetricKind::Gauge, MetricKind::Sum] {
+            let (state, mut configs) = fake(vec![CounterFixture::new(
+                native_type,
+                Number::Double(value),
+            )]);
+            {
+                let mut state = state.borrow_mut();
+                state.counters[0].base = 0;
+                state.counters[0].raw_status = PDH_INVALID_ARGUMENT;
+                state.counters[0].raw_cstatus = PDH_CSTATUS_NO_INSTANCE;
+            }
+            configs[0].kind = kind;
+            configs[0].scale_power10 = -1;
+            let mut query = open_fake(&state, &configs).unwrap();
+            let sample = query.collect().unwrap();
+            assert!(sample.failures.is_empty());
+            assert_eq!(
+                sample.points[0].value,
+                SampleValue::Value(Number::Double(expected))
+            );
+            assert!(state.borrow().raws.is_empty());
+            assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
+            assert!(into_otap(&configs, sample).unwrap().is_some());
+        }
     }
 }
 
@@ -612,66 +626,6 @@ fn multi_timer_raw_failures_still_reset_readiness() {
                 SampleValue::Value(Number::Double(25.0))
             );
         }
-    }
-}
-
-/// Scenario: Both raw-fraction types emit zero with a zero base, receive non-finite values, then recover.
-/// Guarantees: PDH alone governs denominator status without raw reads or warm-up; invalid output stays counter-local and healthy peers emit.
-#[test]
-fn raw_fraction_delegates_sampling_and_status_to_pdh() {
-    for native_type in [
-        0x2002_0400, // PERF_RAW_FRACTION
-        0x2002_0500, // PERF_LARGE_RAW_FRACTION
-    ] {
-        let (state, configs) = fake(vec![
-            CounterFixture::new(native_type, Number::Double(0.0)),
-            CounterFixture::new(0, Number::Integer(7)),
-        ]);
-        {
-            let mut state = state.borrow_mut();
-            state.counters[0].base = 0;
-            state.counters[0].raw_status = PDH_INVALID_ARGUMENT;
-            state.counters[0].raw_cstatus = PDH_CSTATUS_NO_INSTANCE;
-        }
-        let mut query = open_fake(&state, &configs).unwrap();
-        let first = query.collect().unwrap();
-        assert!(first.failures.is_empty());
-        assert_eq!(
-            first.points[0].value,
-            SampleValue::Value(Number::Double(0.0))
-        );
-        assert_eq!(
-            state.borrow().formats,
-            vec![(0, ValueFormat::Double), (1, ValueFormat::Integer)]
-        );
-        assert!(into_otap(&configs, first).unwrap().is_some());
-
-        for number in [f64::NAN, f64::INFINITY] {
-            state.borrow_mut().counters[0].number = Number::Double(number);
-            let sample = query.collect().unwrap();
-            assert_eq!(sample.failures.len(), 1);
-            assert_eq!(sample.failures[0].counter_index, 0);
-            assert!(sample.failures[0].error.contains(&configs[0].path));
-            assert!(sample.failures[0].error.contains("finite"));
-            assert_eq!(sample.points.len(), 1);
-            let peer = &sample.points[0];
-            assert_eq!(peer.counter_index, 1);
-            assert_eq!(peer.value, SampleValue::Value(Number::Integer(7)));
-            assert!(into_otap(&configs, sample).unwrap().is_some());
-
-            state.borrow_mut().counters[0].number = Number::Double(50.0);
-            let recovered = query.collect().unwrap();
-            assert!(recovered.failures.is_empty());
-            assert_eq!(
-                recovered.points[0].value,
-                SampleValue::Value(Number::Double(50.0))
-            );
-            assert_eq!(
-                recovered.points[1].value,
-                SampleValue::Value(Number::Integer(7))
-            );
-        }
-        assert!(state.borrow().raws.is_empty());
     }
 }
 
