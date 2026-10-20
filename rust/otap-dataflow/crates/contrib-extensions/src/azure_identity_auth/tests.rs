@@ -3,8 +3,8 @@
 
 //! Unit tests for the Azure Identity Auth extension.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
@@ -20,7 +20,9 @@ use super::config::{AuthMethod, Config};
 use super::error::Error;
 use super::metrics::AzureIdentityAuthMetrics;
 use super::*;
-use crate::common::background_refresh::BackgroundProviderMetricsTracker;
+use crate::common::background_refresh::{
+    BackgroundProviderMetricsTracker, BackgroundProviderSource,
+};
 
 // -- Config tests -------------------------------------------
 
@@ -185,15 +187,19 @@ fn create_rejects_an_invalid_config() {
 
 // -- Credential construction tests ------------------------------
 
+/// Scenario: System-assigned managed identity is configured during extension construction.
+/// Guarantees: Auth setup succeeds without performing SDK environment detection on this thread.
 #[test]
-fn managed_identity_system_assigned_credential_constructs() {
+fn managed_identity_system_assigned_auth_defers_credential_construction() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let cfg = config_from_json(serde_json::json!({ "method": "managed_identity" })).unwrap();
     assert!(Auth::new(&cfg).is_ok());
 }
 
+/// Scenario: User-assigned managed identity is configured during extension construction.
+/// Guarantees: The client ID is accepted while SDK credential construction remains deferred.
 #[test]
-fn managed_identity_user_assigned_credential_constructs() {
+fn managed_identity_user_assigned_auth_defers_credential_construction() {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let cfg = config_from_json(serde_json::json!({
         "method": "managed_identity",
@@ -260,6 +266,91 @@ struct FailingCredential {
     call_count: Arc<AtomicUsize>,
 }
 
+#[derive(Debug, Default)]
+struct BlockingGate {
+    started: AtomicBool,
+    released: Mutex<bool>,
+    released_changed: Condvar,
+}
+
+impl BlockingGate {
+    fn block(&self) {
+        self.started.store(true, Ordering::Release);
+        let mut released = self.released.lock().expect("gate lock");
+        while !*released {
+            released = self.released_changed.wait(released).expect("gate wait");
+        }
+    }
+
+    fn release(&self) {
+        *self.released.lock().expect("gate lock") = true;
+        self.released_changed.notify_all();
+    }
+
+    fn start_watchdog(self: &Arc<Self>) {
+        let gate = Arc::clone(self);
+        let _ = std::thread::spawn(move || {
+            let released = gate.released.lock().expect("gate lock");
+            let (mut released, _) = gate
+                .released_changed
+                .wait_timeout_while(released, Duration::from_millis(500), |released| !*released)
+                .expect("gate watchdog wait");
+            if !*released {
+                *released = true;
+                gate.released_changed.notify_all();
+            }
+        });
+    }
+}
+
+#[derive(Debug)]
+struct BlockingCredential {
+    gate: Arc<BlockingGate>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl TokenCredential for BlockingCredential {
+    async fn get_token(
+        &self,
+        _scopes: &[&str],
+        _options: Option<TokenRequestOptions<'_>>,
+    ) -> azure_core::Result<AccessToken> {
+        let _ = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.gate.block();
+        Ok(AccessToken {
+            token: "blocking-token".to_string().into(),
+            expires_on: OffsetDateTime::now_utc() + AzureDuration::minutes(60),
+        })
+    }
+}
+
+async fn assert_pipeline_executor_progresses(auth: Auth, gate: Arc<BlockingGate>) {
+    gate.start_watchdog();
+    let started_at = std::time::Instant::now();
+    let fetch = tokio::spawn(async move { auth.fetch().await });
+
+    while !gate.started.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        started_at.elapsed() < Duration::from_millis(100),
+        "the current-thread executor was blocked until the watchdog released the worker"
+    );
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        tokio::time::sleep(Duration::from_millis(1)),
+    )
+    .await
+    .expect("an unrelated timer must progress while managed identity work is blocked");
+
+    gate.release();
+    let _ = fetch
+        .await
+        .expect("fetch task")
+        .expect("managed identity token");
+}
+
 #[async_trait::async_trait]
 impl TokenCredential for FailingCredential {
     async fn get_token(
@@ -290,6 +381,89 @@ fn make_extension(credential: Arc<dyn TokenCredential>) -> AzureIdentityAuthExte
         tx,
         make_tracker(),
     )
+}
+
+/// Scenario: Managed-identity credential construction performs synchronous blocking work.
+/// Guarantees: Construction runs outside the single-threaded pipeline executor.
+#[tokio::test(flavor = "current_thread")]
+async fn managed_identity_credential_construction_is_isolated() {
+    let gate = Arc::new(BlockingGate::default());
+    let factory_gate = Arc::clone(&gate);
+    let auth = Auth::from_managed_identity_factory(
+        move || {
+            factory_gate.block();
+            Ok(Arc::new(MockCredential {
+                token: "constructed-token".to_string(),
+                expires_in: AzureDuration::minutes(60),
+                call_count: Arc::new(AtomicUsize::new(0)),
+            }))
+        },
+        "test_scope".to_string(),
+    );
+
+    assert_pipeline_executor_progresses(auth, gate).await;
+}
+
+/// Scenario: A managed-identity credential performs synchronous work while its future is polled.
+/// Guarantees: Token acquisition runs outside the single-threaded pipeline executor.
+#[tokio::test(flavor = "current_thread")]
+async fn managed_identity_token_acquisition_is_isolated() {
+    let gate = Arc::new(BlockingGate::default());
+    let credential_gate = Arc::clone(&gate);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let auth = Auth::from_managed_identity_factory(
+        move || {
+            Ok(Arc::new(BlockingCredential {
+                gate: Arc::clone(&credential_gate),
+                calls: Arc::clone(&calls),
+            }))
+        },
+        "test_scope".to_string(),
+    );
+
+    assert_pipeline_executor_progresses(auth, gate).await;
+}
+
+/// Scenario: A caller is cancelled after managed-identity acquisition starts.
+/// Guarantees: The running worker retains admission and a replacement cannot overlap it.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_managed_identity_fetch_retains_worker_admission() {
+    let gate = Arc::new(BlockingGate::default());
+    gate.start_watchdog();
+    let credential_gate = Arc::clone(&gate);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let credential_calls = Arc::clone(&calls);
+    let auth = Auth::from_managed_identity_factory(
+        move || {
+            Ok(Arc::new(BlockingCredential {
+                gate: Arc::clone(&credential_gate),
+                calls: Arc::clone(&credential_calls),
+            }))
+        },
+        "test_scope".to_string(),
+    );
+
+    let first_auth = auth.clone();
+    let first = tokio::spawn(async move { first_auth.fetch().await });
+    while calls.load(Ordering::SeqCst) == 0 {
+        tokio::task::yield_now().await;
+    }
+    first.abort();
+
+    let second = tokio::spawn(async move { auth.fetch().await });
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a replacement must wait while the cancelled caller's worker is still running"
+    );
+
+    gate.release();
+    let _ = second
+        .await
+        .expect("replacement fetch task")
+        .expect("replacement token");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 fn make_tracker() -> BackgroundProviderMetricsTracker<AzureIdentityAuthMetrics> {

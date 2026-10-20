@@ -22,6 +22,12 @@ Tokens are cached and refreshed ahead of expiry in a background task, concurrent
 cache misses are coalesced onto a single credential call, and pipeline startup is
 held until the first token is published.
 
+Managed identity credential construction and acquisition run through a bounded
+blocking-work boundary. This keeps synchronous environment checks and
+challenge-file access performed by Azure Arc credentials off the thread-per-core
+pipeline executor. One acquisition is admitted per extension instance, and the
+credential is reused across refreshes.
+
 This README is the configuration reference for the extension. Nodes that consume
 the capability (for example the
 [Azure Monitor exporter](../../../contrib-nodes/src/exporters/azure_monitor_exporter/README.md)

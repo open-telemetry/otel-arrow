@@ -185,9 +185,12 @@ flowchart LR
 ### Token flow
 
 1. **Construction.** At factory time, `create()` deserializes and validates the
-   config, builds an `Auth` (wrapping an `Arc<dyn TokenCredential>` + scope),
-   registers the metric set, and constructs the extension with an empty `watch`
-   channel (`Option<BearerToken> = None`).
+   config and builds an `Auth` for the configured method and scope. Development
+   and workload-identity credentials are constructed immediately. Managed
+   identity construction is deferred to the first bounded worker acquisition so
+   synchronous environment detection cannot block the pipeline executor. The
+   factory then registers the metric set and constructs the extension with an
+   empty `watch` channel (`Option<BearerToken> = None`).
 2. **Background refresh.** When the engine spawns the extension, `start()` runs a
    loop that acquires a token, publishes it onto the `watch` channel, and
    schedules the next refresh ahead of expiry. After the first successful publish
@@ -202,6 +205,14 @@ flowchart LR
    concurrent callers coalesce onto one in-flight request.
 5. **Stream.** `token_stream()` subscribes to the `watch` channel and yields each
    subsequent published token. The initial `None` is filtered out.
+
+For managed identity, the credential call runs on Tokio's blocking pool behind
+a one-permit admission gate owned by the extension instance. The permit is
+acquired before work is submitted and remains held until the worker exits, even
+if the awaiting task is cancelled. The worker constructs the credential once,
+reuses it for later refreshes, and polls the SDK token future away from the
+thread-per-core executor. This is required for Azure Arc credentials, whose SDK
+path includes synchronous agent detection and challenge-file reads.
 
 ### Internal state
 

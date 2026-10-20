@@ -77,12 +77,15 @@ use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 
 mod agent_fed_source;
+mod gcs_token_provider;
 mod metrics;
 
 use agent_fed_source::AgentFedGenevaSource;
+use gcs_token_provider::GenevaGcsTokenProvider;
 use metrics::{GenevaExporterErrorType, GenevaExporterMetrics, GenevaExporterSkipReason};
 use otel_arrow_dfe_engine::capability::ExtensionCapability;
 use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as AgentFedCredentialProviderCap;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider as BearerTokenProviderCap;
 use otel_arrow_dfe_engine::capability::registry::Capabilities;
 
 /// The URN for the Geneva exporter
@@ -773,6 +776,11 @@ impl Config {
             );
         }
         let is_agent_fed = matches!(self.auth, AuthConfig::AgentFed);
+        if let AuthConfig::ExternalToken { resource } = &self.auth
+            && resource.trim().is_empty()
+        {
+            return Err("resource is required when auth.type is externaltoken".to_owned());
+        }
         if !is_agent_fed {
             if self.endpoint.trim().is_empty() {
                 return Err("endpoint is required unless auth.type is agentfed".to_owned());
@@ -878,6 +886,10 @@ impl Config {
     /// `GenevaClientConfig` conversion can be unit-tested without initializing
     /// a live `GenevaClient`.
     fn to_geneva_client_config(&self) -> GenevaClientConfig {
+        self.to_geneva_client_config_with_auth(self.auth.uploader_auth_method())
+    }
+
+    fn to_geneva_client_config_with_auth(&self, auth_method: AuthMethod) -> GenevaClientConfig {
         // Create LogsConfig and TracesConfig from the configuration
         let logs_config = self
             .logs
@@ -902,7 +914,7 @@ impl Config {
             account_routing: self.account_routing.clone().into(),
             region: self.region.clone(),
             config_major_version: self.config_major_version,
-            auth_method: self.auth.uploader_auth_method(),
+            auth_method,
             tenant: self.tenant.clone(),
             role_name: self.role_name.clone(),
             role_instance: self.role_instance.clone(),
@@ -951,6 +963,11 @@ pub enum AuthConfig {
         /// MSI resource identifier
         msi_resource: String,
     },
+    /// Entra tokens supplied through a bound `bearer_token_provider`.
+    ExternalToken {
+        /// Entra resource expected by the Geneva uploader.
+        resource: String,
+    },
     /// Agent-fed credentials: the host agent supplies one atomic GIG token and
     /// routing snapshot through `agent_fed_credential_provider`, so the
     /// uploader skips the GCS config-service handshake. Carries no config
@@ -978,6 +995,9 @@ impl AuthConfig {
             Self::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
                 resource: msi_resource.clone(),
             },
+            // Client construction replaces this placeholder with the resolved
+            // bearer-token capability adapter.
+            Self::ExternalToken { .. } => AuthMethod::SystemManagedIdentity,
             // `with_agent_fed_source` ignores this field. The placeholder only
             // satisfies the shared uploader configuration type.
             Self::AgentFed => AuthMethod::SystemManagedIdentity,
@@ -990,7 +1010,7 @@ impl AuthConfig {
             | Self::UserManagedIdentity { msi_resource, .. }
             | Self::UserManagedIdentityByArmResourceId { msi_resource, .. }
             | Self::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
-            Self::Certificate { .. } | Self::AgentFed => None,
+            Self::Certificate { .. } | Self::ExternalToken { .. } | Self::AgentFed => None,
         }
     }
 }
@@ -1018,6 +1038,21 @@ fn validate_agent_fed_capability_binding(node_config: &NodeUserConfig) -> Result
         })
 }
 
+fn validate_external_token_capability_binding(
+    node_config: &NodeUserConfig,
+) -> Result<(), ConfigError> {
+    let capability_name = BearerTokenProviderCap::NAME;
+    node_config
+        .capabilities
+        .get(capability_name)
+        .map(|_| ())
+        .ok_or_else(|| ConfigError::InvalidUserConfig {
+            error: format!(
+                "external-token Geneva auth requires a '{capability_name}' capability binding"
+            ),
+        })
+}
+
 fn ensure_crypto_provider() -> Result<(), ConfigError> {
     if otel_arrow_dfe_otap::crypto::is_crypto_provider_installed() {
         return Ok(());
@@ -1040,6 +1075,9 @@ fn validate_geneva_client_prerequisites(
     if matches!(&config.auth, AuthConfig::AgentFed) {
         validate_agent_fed_capability_binding(node_config)?;
     }
+    if matches!(&config.auth, AuthConfig::ExternalToken { .. }) {
+        validate_external_token_capability_binding(node_config)?;
+    }
 
     // Both GCS and agent-fed uploads use the rustls-backed HTTP client.
     crypto_provider_check()
@@ -1061,16 +1099,31 @@ fn resolve_agent_fed_source(
     Ok(AgentFedGenevaSource::new(credential_provider))
 }
 
+fn resolve_gcs_token_provider(
+    capabilities: &Capabilities,
+    resource: String,
+) -> Result<GenevaGcsTokenProvider, ConfigError> {
+    let provider = capabilities
+        .require_shared::<BearerTokenProviderCap>()
+        .map_err(|error| ConfigError::InvalidUserConfig {
+            error: format!(
+                "external-token Geneva auth requires the bound bearer_token_provider \
+                 capability to provide a shared implementation; local-only registrations \
+                 are unsupported: {error}"
+            ),
+        })?;
+    Ok(GenevaGcsTokenProvider::new(provider, resource))
+}
+
 fn create_geneva_client(
     config: &Config,
     node_config: &NodeUserConfig,
     capabilities: &Capabilities,
 ) -> Result<GenevaClient, ConfigError> {
     validate_geneva_client_prerequisites(config, node_config, ensure_crypto_provider)?;
-    let client_config = config.to_geneva_client_config();
-
     match &config.auth {
         AuthConfig::AgentFed => {
+            let client_config = config.to_geneva_client_config();
             let source = resolve_agent_fed_source(capabilities)?;
             GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(|error| {
                 ConfigError::InvalidUserConfig {
@@ -1078,11 +1131,23 @@ fn create_geneva_client(
                 }
             })
         }
+        AuthConfig::ExternalToken { resource } => {
+            let provider = resolve_gcs_token_provider(capabilities, resource.clone())?;
+            let auth_method = AuthMethod::ExternalToken {
+                resource: resource.clone(),
+                provider: Arc::new(provider),
+            };
+            let client_config = config.to_geneva_client_config_with_auth(auth_method);
+            GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
+                error: format!("Failed to initialize external-token Geneva client: {error}"),
+            })
+        }
         AuthConfig::Certificate { .. }
         | AuthConfig::SystemManagedIdentity { .. }
         | AuthConfig::UserManagedIdentity { .. }
         | AuthConfig::UserManagedIdentityByArmResourceId { .. }
         | AuthConfig::WorkloadIdentity { .. } => {
+            let client_config = config.to_geneva_client_config();
             GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
                 error: format!("Failed to initialize Geneva client: {error}"),
             })
@@ -1785,6 +1850,7 @@ mod tests {
     use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::{
         AgentFedCredentialSnapshot, AgentFedCredentialSnapshotStream,
     };
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TokenStream;
     use otel_arrow_dfe_engine::capability::registry::CapabilityRegistry;
     use otel_arrow_dfe_engine::capability::{
         CapabilityError, ExtensionCapability, LocalInstanceFactory, SharedInstanceFactory,
@@ -1792,7 +1858,9 @@ mod tests {
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::extension_capabilities;
     use otel_arrow_dfe_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as LocalAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider as LocalBearerTokenProvider;
     use otel_arrow_dfe_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as SharedAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
     use otel_arrow_dfe_engine::testing::capability::resolve_bindings_for_test;
     use otel_arrow_dfe_engine::testing::exporter::{
         TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
@@ -1987,6 +2055,27 @@ mod tests {
         node_config
     }
 
+    fn external_token_test_config() -> serde_json::Value {
+        let mut config = test_config();
+        config["auth"] = serde_json::json!({
+            "type": "externaltoken",
+            "resource": "https://monitor.azure.com"
+        });
+        config
+    }
+
+    fn external_token_node_config(extension: Option<&str>) -> NodeUserConfig {
+        let mut node_config = NodeUserConfig::new_exporter_config(GENEVA_EXPORTER_URN);
+        node_config.config = external_token_test_config();
+        if let Some(extension) = extension {
+            let _ = node_config.capabilities.insert(
+                BearerTokenProviderCap::NAME.into(),
+                extension.to_owned().into(),
+            );
+        }
+        node_config
+    }
+
     #[derive(Clone)]
     struct MockAgentExtension {
         snapshot: Arc<RwLock<MockAgentSnapshot>>,
@@ -2026,6 +2115,34 @@ mod tests {
 
         fn credential_stream(&self) -> AgentFedCredentialSnapshotStream {
             unreachable!()
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockBearerTokenExtension;
+
+    #[async_trait]
+    impl SharedBearerTokenProvider for MockBearerTokenExtension {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            Ok(BearerToken::without_expiry("test-entra-token".to_string()))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockLocalBearerTokenExtension;
+
+    #[async_trait(?Send)]
+    impl LocalBearerTokenProvider for MockLocalBearerTokenExtension {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            Ok(BearerToken::without_expiry("test-entra-token".to_string()))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            Box::pin(futures::stream::empty())
         }
     }
 
@@ -2075,6 +2192,47 @@ mod tests {
             HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
         resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
             .expect("resolve local-only capabilities")
+    }
+
+    fn resolved_external_token_capabilities(node_config: &NodeUserConfig) -> Capabilities {
+        let extension_capabilities = extension_capabilities!(
+            shared: MockBearerTokenExtension => [BearerTokenProviderCap]
+        );
+        let mut registry = CapabilityRegistry::new();
+        let instance_factory = SharedInstanceFactory::new(|| {
+            Box::new(MockBearerTokenExtension) as Box<dyn Any + Send>
+        });
+        (extension_capabilities.register_shared)(
+            "azure-identity".into(),
+            instance_factory,
+            &mut registry,
+        )
+        .expect("register capabilities");
+        let known_extensions =
+            HashSet::from([otel_arrow_dfe_config::ExtensionId::from("azure-identity")]);
+        resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+            .expect("resolve capabilities")
+    }
+
+    fn resolved_local_only_external_token_capabilities(
+        node_config: &NodeUserConfig,
+    ) -> Capabilities {
+        let extension_capabilities = extension_capabilities!(
+            local: MockLocalBearerTokenExtension => [BearerTokenProviderCap]
+        );
+        let mut registry = CapabilityRegistry::new();
+        let instance_factory =
+            LocalInstanceFactory::new(|| Box::new(MockLocalBearerTokenExtension) as Box<dyn Any>);
+        (extension_capabilities.register_local)(
+            "azure-identity".into(),
+            instance_factory,
+            &mut registry,
+        )
+        .expect("register capabilities");
+        let known_extensions =
+            HashSet::from([otel_arrow_dfe_config::ExtensionId::from("azure-identity")]);
+        resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+            .expect("resolve capabilities")
     }
 
     #[derive(Debug)]
@@ -2743,6 +2901,84 @@ mod tests {
             .remove("region");
         let error = Config::parse(&missing_region).expect_err("region must be required");
         assert!(error.to_string().contains("region is required"));
+    }
+
+    /// Scenario: External-token authentication is configured with a resource and GCS endpoint.
+    /// Guarantees: The new mode parses while retaining the normal endpoint and region requirements.
+    #[test]
+    fn external_token_config_requires_resource_endpoint_and_region() {
+        let config = Config::parse(&external_token_test_config())
+            .expect("external-token config should parse");
+        assert!(matches!(
+            config.auth,
+            AuthConfig::ExternalToken { ref resource }
+                if resource == "https://monitor.azure.com"
+        ));
+
+        let mut empty_resource = external_token_test_config();
+        empty_resource["auth"]["resource"] = serde_json::Value::String("  ".to_string());
+        assert!(
+            Config::parse(&empty_resource)
+                .expect_err("empty resource must fail")
+                .to_string()
+                .contains("resource is required")
+        );
+
+        let mut missing_endpoint = external_token_test_config();
+        let _ = missing_endpoint
+            .as_object_mut()
+            .expect("object")
+            .remove("endpoint");
+        assert!(
+            Config::parse(&missing_endpoint)
+                .expect_err("endpoint must remain required")
+                .to_string()
+                .contains("endpoint is required")
+        );
+    }
+
+    /// Scenario: External-token authentication has no bearer-token capability binding.
+    /// Guarantees: Exporter prerequisites fail before attempting client construction.
+    #[test]
+    fn external_token_provider_binding_is_required() {
+        let node_config = external_token_node_config(None);
+        let error = validate_external_token_capability_binding(&node_config)
+            .expect_err("bearer-token binding must be required");
+        assert!(error.to_string().contains("bearer_token_provider"));
+
+        let node_config = external_token_node_config(Some("azure-identity"));
+        validate_external_token_capability_binding(&node_config)
+            .expect("configured bearer-token binding should pass");
+    }
+
+    /// Scenario: External-token authentication binds a local-only token capability.
+    /// Guarantees: Adapter construction rejects a provider that cannot satisfy Send + Sync.
+    #[test]
+    fn external_token_provider_requires_shared_capability() {
+        let node_config = external_token_node_config(Some("azure-identity"));
+        let capabilities = resolved_local_only_external_token_capabilities(&node_config);
+        let error =
+            resolve_gcs_token_provider(&capabilities, "https://monitor.azure.com".to_string())
+                .expect_err("local-only provider must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("local-only registrations are unsupported")
+        );
+    }
+
+    /// Scenario: External-token authentication binds a shared bearer-token capability.
+    /// Guarantees: The exporter constructs a normal GCS-backed Geneva client.
+    #[test]
+    fn external_token_provider_builds_geneva_client() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let node_config = external_token_node_config(Some("azure-identity"));
+        let capabilities = resolved_external_token_capabilities(&node_config);
+        let config = Config::parse(&node_config.config).expect("valid external-token config");
+
+        let _ = create_geneva_client(&config, &node_config, &capabilities)
+            .expect("shared bearer-token provider should construct the client");
     }
 
     /// Scenario: A configuration carries a field the exporter does not define.
