@@ -70,6 +70,7 @@ pub mod inventory;
 pub use otel_arrow_dfe_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
+pub mod readiness;
 pub mod receiver;
 pub mod retained_work;
 pub mod runtime_services;
@@ -721,6 +722,21 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
     extension_factories: &'static [ExtensionFactory],
+    context_materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
+}
+
+fn validate_context_materialization_support<PData>(
+    plan: Option<&context_declaration::ContextMaterializationPlan>,
+    materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
+) -> Result<(), Error> {
+    if plan.is_some() && materializer.is_none() {
+        return Err(Error::ConfigError(Box::new(
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "pipeline data type does not support context materialization".to_owned(),
+            },
+        )));
+    }
+    Ok(())
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -741,7 +757,18 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             processor_factories,
             exporter_factories,
             extension_factories,
+            context_materializer: None,
         }
+    }
+
+    /// Installs the data-type-specific runtime context materializer.
+    #[must_use]
+    pub const fn with_context_materializer(
+        mut self,
+        materialize: fn(&mut PData, &context_declaration::ContextMaterializationPlan),
+    ) -> Self {
+        self.context_materializer = Some(materialize);
+        self
     }
 
     /// Gets the receiver factory map, initializing it if necessary.
@@ -1977,6 +2004,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .compiled_context_bindings()
             .authorized_identity_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
             .cloned();
+        let context_materialization_plan = pipeline_ctx
+            .compiled_context_bindings()
+            .context_materialization_plan(&pipeline_ctx.pipeline_key())
+            .cloned();
+        validate_context_materialization_support(
+            context_materialization_plan.as_ref(),
+            self.context_materializer,
+        )?;
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -1987,7 +2022,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy)
-        .with_authorized_identity_policy(authorized_identity_policy);
+        .with_authorized_identity_policy(authorized_identity_policy)
+        .with_context_materialization(context_materialization_plan, self.context_materializer);
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
@@ -2673,11 +2709,53 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context_policy::{
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+    };
     use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         TokenBucketPolicy,
     };
     use std::time::Duration;
+
+    fn materialize_unit(_: &mut (), _: &context_declaration::ContextMaterializationPlan) {}
+
+    /// Scenario: receiver construction sees every plan/materializer compatibility combination.
+    /// Guarantees: only a present plan without a registered materializer fails configuration.
+    #[test]
+    fn context_materialization_support_fails_closed() {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: ContextEntryName::try_from("request").expect("valid composite name"),
+            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            }]),
+        };
+        let plan = context_declaration::ContextMaterializationPlan::compile(&[declaration])
+            .expect("plan compiles");
+
+        assert!(validate_context_materialization_support::<()>(None, None).is_ok());
+        assert!(validate_context_materialization_support(None, Some(materialize_unit)).is_ok());
+        assert!(
+            validate_context_materialization_support(Some(&plan), Some(materialize_unit)).is_ok()
+        );
+        let error = validate_context_materialization_support::<()>(Some(&plan), None)
+            .expect_err("plan without materializer must fail");
+        match error {
+            Error::ConfigError(error) => match error.as_ref() {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig { error } => {
+                    assert_eq!(
+                        error,
+                        "pipeline data type does not support context materialization"
+                    );
+                }
+                error => panic!("unexpected configuration error: {error}"),
+            },
+            error => panic!("unexpected receiver construction error: {error}"),
+        }
+    }
 
     /// Scenario: runtime metric levels resolve optional data-path measurements.
     /// Guarantees: detailed metrics enable node duration, item counts, and size while normal metrics enable none by default.

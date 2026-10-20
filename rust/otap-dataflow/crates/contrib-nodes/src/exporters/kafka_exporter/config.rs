@@ -659,8 +659,15 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 /// the factory `validate_config` path, which runs this validation without
 /// constructing an exporter.
 fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
-    if signal.encoding == MessageFormat::Syslog {
-        return Err("encoding: syslog is not supported by the Kafka exporter".to_string());
+    let unsupported_encoding = match signal.encoding {
+        MessageFormat::Plaintext => Some("plaintext"),
+        MessageFormat::Syslog => Some("syslog"),
+        MessageFormat::OtlpProto | MessageFormat::OtapProto => None,
+    };
+    if let Some(encoding) = unsupported_encoding {
+        return Err(format!(
+            "encoding: {encoding} is not supported by the Kafka exporter"
+        ));
     }
     validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
     for (i, t) in signal.allowed_topics.iter().enumerate() {
@@ -753,6 +760,13 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
         // Validate auth configuration when present
         if let Some(ref auth) = builder.auth {
             auth.validate().map_err(|e| format!("auth: {e}"))?;
+            if auth.uses_sasl_credential_provider() {
+                return Err(
+                    "auth: capability-backed SASL credentials are not supported by the Kafka \
+                     exporter"
+                        .to_string(),
+                );
+            }
         }
 
         // Validate TLS configuration when present
@@ -1197,6 +1211,21 @@ mod tests {
         let err = serde_json::from_str::<KafkaExporterConfig>(json)
             .expect_err("Syslog encoding must be rejected");
         assert!(err.to_string().contains("syslog is not supported"));
+    }
+
+    /// Scenario: a Kafka exporter signal is configured with plaintext encoding.
+    /// Guarantees: exporter validation rejects the receiver-only encoding.
+    #[test]
+    fn test_config_plaintext_encoding_fails() {
+        let json = r#"{
+            "brokers": "kafka:9092",
+            "client_id": "test",
+            "logs": {"topic": "l", "encoding": "plaintext"}
+        }"#;
+
+        let err = serde_json::from_str::<KafkaExporterConfig>(json)
+            .expect_err("plaintext encoding must be rejected");
+        assert!(err.to_string().contains("plaintext is not supported"));
     }
 
     // ---- Validation via TryFrom ----
@@ -1728,6 +1757,31 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         assert!(config.auth().is_some());
+    }
+
+    /// Scenario: A Kafka exporter selects the receiver-only SASL credential capability.
+    /// Guarantees: Exporter configuration fails instead of silently omitting authentication.
+    #[test]
+    fn test_auth_sasl_capability_credentials_are_rejected() {
+        let json = r#"{
+            "brokers": "kafka:9092",
+            "client_id": "test",
+            "logs": {"topic": "l"},
+            "auth": {
+                "sasl": {
+                    "mechanism": "PLAIN",
+                    "credential_source": "capability"
+                }
+            }
+        }"#;
+
+        let error = serde_json::from_str::<KafkaExporterConfig>(json)
+            .expect_err("exporter must reject capability credentials")
+            .to_string();
+        assert!(
+            error.contains("not supported by the Kafka exporter"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

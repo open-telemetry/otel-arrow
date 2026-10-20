@@ -37,11 +37,12 @@ use otel_arrow_dfe_engine::processor::{ProcessorRuntimeRequirements, ProcessorWr
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, Interests};
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension, PeerAddrMerger};
+use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, OtapPayload, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
@@ -264,6 +265,11 @@ pub struct TemporalReaggregationProcessor {
     /// The CallData inside the entry points to every associated otap batch in
     /// [Self::inbound_batches] so that we can operate on the ref counts there.
     outbound_batches: SlotState<Vec<CallData>>,
+
+    /// Resolved on first use because processors currently receive codec services
+    /// only while processing messages. A future PR will expose the pipeline registry
+    /// at construction so this set can be required instead of optional.
+    accepted_encodings: Option<AcceptedEncodings>,
 }
 
 struct InboundTracker {
@@ -287,7 +293,22 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
             Message::PData(pdata) => {
                 match pdata.signal_type() {
                     SignalType::Metrics => {
-                        self.process_metric_pdata(effect_handler, pdata).await?;
+                        if self.accepted_encodings.is_none() {
+                            self.accepted_encodings = Some(
+                                effect_handler
+                                    .resolve_accepted_encodings(&[PdataEncoding::OTLP])?,
+                            );
+                        }
+                        // SAFETY: If absent, the set is stored in Some above; resolution errors
+                        // return via `?`. There is no intervening mutation or await.
+                        // A future PR will resolve this set at construction and remove this expect.
+                        let accepted_encodings = self
+                            .accepted_encodings
+                            .as_ref()
+                            .expect("accepted encodings initialized")
+                            .clone();
+                        self.process_metric_pdata(effect_handler, pdata, &accepted_encodings)
+                            .await?;
                     }
                     // Non-metrics signals pass through unchanged.
                     SignalType::Logs | SignalType::Traces => {
@@ -373,6 +394,7 @@ impl TemporalReaggregationProcessor {
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
             aggregated_peer: PeerAddrMerger::new(),
+            accepted_encodings: None,
         })
     }
 
@@ -628,9 +650,23 @@ impl TemporalReaggregationProcessor {
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         pdata: OtapPdata,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<(), Error> {
-        let result = match pdata.payload_ref().data() {
-            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+        let view = match effect_handler
+            .view(pdata.payload_ref(), accepted_encodings)
+            .await
+        {
+            Ok(view) => view,
+            Err(error) => {
+                self.metrics.record_failure(ErrorType::ViewCreation);
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                    .await?;
+                return Ok(());
+            }
+        };
+        let result = match view {
+            PdataView::Native(records) => match OtapMetricsView::try_from(records.as_ref()) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
@@ -644,8 +680,8 @@ impl TemporalReaggregationProcessor {
                     return Ok(());
                 }
             },
-            PayloadData::OtlpBytes(otlp) => {
-                let view = RawMetricsData::new(otlp.as_bytes());
+            PdataView::Encoded(view) => {
+                let view = RawMetricsData::new(view.bytes());
                 self.process_view(effect_handler, &view).await
             }
         };
@@ -2704,10 +2740,10 @@ mod tests {
             assert_eq!(output.len(), 1);
             // Both streams should be present: verify by converting the output
             // to OTLP and checking we have 2 resource_metrics entries.
-            let actual = match output[0].payload_ref().data() {
-                PayloadData::OtapArrowRecords(r) => r,
-                _ => panic!("expected OtapArrowRecords payload"),
-            };
+            let actual = output[0]
+                .payload_ref()
+                .otap_ref()
+                .expect("expected native OTAP payload");
             let otlp = otap_to_otlp(actual);
             let md = match otlp {
                 otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
@@ -3445,11 +3481,10 @@ mod tests {
         });
     }
 
+    /// Scenario: An encoded delta sum without a resource passes through immediately.
+    /// Guarantees: Passthrough preserves the original bytes, OTLP encoding, and metrics signal.
     #[test]
     fn test_none_resource_passthrough() {
-        // A delta sum under a None resource should pass through immediately.
-        // This uses OTLP bytes encoding and the full passthrough path forwards
-        // the original pdata unchanged (still as OTLP bytes, not OTAP records).
         run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 ScopeMetrics::new(
@@ -3459,16 +3494,18 @@ mod tests {
             ])]);
 
             let pdata = make_otlp_bytes_pdata(input_data);
+            let expected_bytes = pdata.payload_ref().encoded_bytes().unwrap().clone();
             ctx.process(Message::PData(pdata)).await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "delta sum should pass through immediately");
-            // Full passthrough forwards original OTLP bytes unchanged -
-            // just verify something was emitted, the payload format is preserved.
-            assert!(
-                matches!(output[0].payload_ref().data(), PayloadData::OtlpBytes(_)),
-                "full passthrough should preserve OTLP bytes payload"
-            );
+            let view = output[0]
+                .payload_ref()
+                .encoded_view()
+                .expect("full passthrough should preserve an encoded payload");
+            assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+            assert_eq!(view.signal_type(), SignalType::Metrics);
+            assert_eq!(view.bytes(), expected_bytes.as_ref());
         });
     }
 

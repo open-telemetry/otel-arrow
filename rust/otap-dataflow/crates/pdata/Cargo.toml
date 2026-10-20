@@ -33,6 +33,7 @@ paste = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 roaring = { workspace = true }
 simdutf8 = { workspace = true }
 serde = { workspace = true }
@@ -79,3 +80,8 @@ required-features = ["bench"]
 name = "schema_unify"
 harness = false
 required-features = ["testing", "bench"]
+
+[[bench]]
+name = "filter_regex"
+harness = false
+required-features = ["testing"]

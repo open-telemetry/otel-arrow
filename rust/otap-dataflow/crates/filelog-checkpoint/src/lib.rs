@@ -1,19 +1,23 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Filelog-specific version 1 checkpoint wire codec.
+//! Filelog-specific version 1 checkpoint wire codec and transactional replay.
 //!
 //! The version 1 on-disk representation is the compatibility contract. This
 //! crate's Rust API remains internal and experimental under repository policy.
-//! It contains no filesystem, publication, replay-table, receiver-runtime, or
-//! administration implementation.
+//! Linux storage is available through the `store` module on Linux. Receiver runtime and
+//! administration remain separate layers.
 
 mod checkpoint;
 mod error;
 mod framing_profile;
 mod primitives;
+mod replay;
 mod snapshot;
 mod wal;
+
+#[cfg(target_os = "linux")]
+pub mod store;
 
 pub use checkpoint::{
     CHECKPOINT_HEADER_BYTES, CheckpointHeader, decode_checkpoint_header,
@@ -29,6 +33,7 @@ pub use primitives::{
     FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, FRAMING_PROFILE_VERSION, FileId, FramingResume,
     LifecycleState, Locator, NAMESPACE_ID_MAX_BYTES, crc32c, namespace_digest,
 };
+pub use replay::{ReplayConfig, ReplayError, ReplayState, ReplayStep};
 pub use snapshot::{
     QuarantineEvidence, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
     SNAPSHOT_MAX_RECORD_FRAME_BYTES, Snapshot, SnapshotRecord, decode_snapshot, encode_snapshot,

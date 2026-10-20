@@ -371,11 +371,9 @@ fn prepared_logs(
     metrics: &mut OtlpGrpcExporterMetrics,
     metadata: Option<MetadataMap>,
 ) -> EncodedExport {
-    let (context, saved_payload) = subscribed_empty_logs().into_parts();
     EncodedExport {
         bytes: Bytes::new(),
-        context,
-        saved_payload,
+        delivery: subscribed_empty_logs().into_delivery(),
         signal_type: SignalType::Logs,
         attempt: metrics.boundary.attempt(SignalType::Logs),
         metadata: RequestMetadata {

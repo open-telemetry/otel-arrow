@@ -2,7 +2,8 @@ name: Prepare Release
 
 on:
   schedule:
-    - cron: "0 15 * * 1"
+    # Avoid top-of-hour scheduler load.
+    - cron: "17 9 * * 1"
   workflow_dispatch:
     inputs:
       target:

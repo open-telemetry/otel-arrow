@@ -544,6 +544,7 @@ mod test {
     use datafusion::logical_expr::{col, lit};
     use otel_arrow_contrib_data_engine_kql_parser::KqlParser;
     use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
@@ -554,7 +555,7 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics,
     };
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
     use prost::Message;
 
@@ -562,24 +563,29 @@ mod test {
 
     use super::*;
 
+    fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
+        otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
+            .expect("OTLP conversion")
+    }
+
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
+        let otlp_bytes = into_otlp(otap_payload);
         LogsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
     pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
+        let otlp_bytes = into_otlp(otap_payload);
         TracesData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
     pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
+        let otlp_bytes = into_otlp(otap_payload);
         MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 

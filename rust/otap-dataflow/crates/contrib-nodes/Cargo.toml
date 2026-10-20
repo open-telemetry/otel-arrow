@@ -23,6 +23,7 @@ otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-scraper = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
@@ -43,6 +44,12 @@ tracing.workspace = true
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+sqlparser = { workspace = true, optional = true }
+tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
@@ -101,8 +108,9 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-# Keep these umbrella lists exhaustive. Features can appear in both directional
-# categories when they intentionally include source and destination nodes.
+# Keep these umbrella lists exhaustive except for explicitly opt-in integrations.
+# Features can appear in both directional categories when they intentionally
+# include source and destination nodes.
 contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
@@ -118,6 +126,7 @@ contrib-processors = [
 ]
 
 contrib-exporters = [
+    "azure-data-explorer",
     "azure-monitor",
     "clickhouse",
     "geneva",
@@ -141,6 +150,20 @@ kafka = [
 ]
 
 # Receivers.
+# PostgreSQL is explicitly opt-in.
+postgresql = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:tokio-postgres",
+    "dep:tokio-postgres-rustls",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:sqlparser",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:blake3",
+    "dep:humantime-serde",
+    "serde_json/raw_value",
+]
 # Oracle requires separately provisioned native client libraries and is explicitly opt-in.
 oracle = [
     "dep:otel-arrow-dfe-scraper",
@@ -150,12 +173,27 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
+# Independently opt-in adapter; the production connector and factory are deferred.
+sql-server = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:sqlparser",
+    "dep:blake3",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:secrecy",
+    "dep:tiberius",
+]
 etw = ["dep:one_collect", "dep:humantime-serde"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
 # receiver's remaining optional dependencies land with the receiver itself.
 windows-event-forwarding = [
     "dep:quick-xml",
     "dep:chrono",
+    "dep:serde_cbor",
+    "dep:uuid",
+    "uuid/v5",
+    "dep:url",
+    "dep:humantime-serde",
 ]
 user-events = [
     "dep:base64",
@@ -179,6 +217,14 @@ recordset-kql = [
 resource-validator = []
 
 # Exporters.
+azure-data-explorer = [
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:itoa",
+    "dep:reqwest",
+    "dep:ryu",
+    "dep:sysinfo",
+]
 azure-monitor = [
     "dep:opentelemetry-proto",
     "dep:reqwest",
@@ -242,13 +288,16 @@ otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-test-tls-certs.workspace = true
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 
