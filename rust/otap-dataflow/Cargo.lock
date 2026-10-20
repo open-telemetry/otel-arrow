@@ -7613,6 +7613,7 @@ dependencies = [
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-tls-certs",
  "paste",
  "pretty_assertions",
  "prost 0.14.4",
@@ -7621,6 +7622,8 @@ dependencies = [
  "rdkafka",
  "regex",
  "reqwest 0.13.5",
+ "rustls",
+ "rustls-pki-types",
  "ryu",
  "secrecy",
  "serde",
@@ -7636,6 +7639,8 @@ dependencies = [
  "tiberius",
  "tokio",
  "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tokio-rustls",
  "tokio-util",
  "tracelogging",
  "tracelogging_dynamic",
@@ -11294,6 +11299,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
+name = "tls_codec"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0de2e01245e2bb89d6f05801c564fa27624dbd7b1846859876c7dad82e90bf6b"
+dependencies = [
+ "tls_codec_derive",
+ "zeroize",
+]
+
+[[package]]
+name = "tls_codec_derive"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d2e76690929402faae40aebdda620a2c0e25dd6d3b9afe48867dfd95991f4bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "tokio"
 version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11354,6 +11380,20 @@ dependencies = [
  "tokio",
  "tokio-util",
  "whoami",
+]
+
+[[package]]
+name = "tokio-postgres-rustls"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c2ad44aa0ae96db89c4742212ed41645b2f597311ff6e1945542a4d9fadc2fb"
+dependencies = [
+ "rustls",
+ "sha2 0.11.1",
+ "tokio",
+ "tokio-postgres",
+ "tokio-rustls",
+ "x509-cert",
 ]
 
 [[package]]
@@ -13281,6 +13321,7 @@ dependencies = [
  "const-oid 0.9.6",
  "der 0.7.10",
  "spki",
+ "tls_codec",
 ]
 
 [[package]]

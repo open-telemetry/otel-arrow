@@ -1878,18 +1878,17 @@ impl local::Receiver<OtapPdata> for SafeRecoveryProbe {
 }
 
 fn assert_row_ids(pdata: &OtapPdata, expected: &[i64]) {
-    use otel_arrow_dfe_pdata::{
-        otlp::OtlpProtoBytes,
-        proto::opentelemetry::{common::v1::any_value, logs::v1::LogsData},
-    };
-    use otel_arrow_dfe_pdata_codec::PayloadData;
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{common::v1::any_value, logs::v1::LogsData};
+    use otel_arrow_dfe_pdata_codec::PdataEncoding;
     use prost::Message;
-    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
-        pdata.clone().payload().into_data()
-    else {
-        panic!("expected OTLP log bytes");
-    };
-    let logs = LogsData::decode(bytes).unwrap();
+    let view = pdata
+        .payload_ref()
+        .encoded_view()
+        .expect("expected encoded OTLP log payload");
+    assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+    assert_eq!(view.signal_type(), SignalType::Logs);
+    let logs = LogsData::decode(view.bytes()).unwrap();
     let actual = logs
         .resource_logs
         .iter()
