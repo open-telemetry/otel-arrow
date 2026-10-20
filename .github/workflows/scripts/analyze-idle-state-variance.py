@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Aggregate repeated idle-state measurements into stable summary statistics.
+Aggregate repeated idle-memory measurements into summary statistics.
 
 Hosted CI runners are noisy, so a single datapoint is not trustworthy. This
 script consumes the benchmark JSON produced by N repeated runs of the same
@@ -8,8 +8,9 @@ idle-state config and reports central-tendency and spread statistics
 (median, p95, mean, stddev, coefficient of variation).
 
 The coefficient of variation (CV = stddev / mean) is compared against a
-threshold to give a *non-gating* stability signal: it reports whether the
-measurements were stable enough to be meaningful, without failing the build.
+threshold to give a *non-gating* memory-stability signal: it reports whether
+the memory measurements were stable enough to be meaningful, without failing
+the build. CPU stability is not analyzed.
 
 Usage:
     python analyze-idle-state-variance.py <variance_dir> [output_json] [max_cv_percent] [expected_sample_count]
@@ -121,7 +122,7 @@ def print_report(stats: dict[str, float], max_cv_percent: float, stable: bool) -
     """Print a concise, CI-summary-friendly report."""
     print()
     print("=" * 72)
-    print("IDLE STATE VARIANCE ANALYSIS (repeated measurements)")
+    print("IDLE MEMORY VARIANCE ANALYSIS (repeated measurements)")
     print("=" * 72)
     print()
     print(f"  Metric:            {METRIC_NAME}")
@@ -134,11 +135,11 @@ def print_report(stats: dict[str, float], max_cv_percent: float, stable: bool) -
     print(f"  CV (stddev/mean):  {stats['cv_percent']:.2f}%  (threshold {max_cv_percent:.1f}%)")
     print()
     if stable:
-        print(f"[STABLE] CV {stats['cv_percent']:.2f}% <= {max_cv_percent:.1f}% : measurements are")
-        print("         consistent enough to be treated as meaningful.")
+        print(f"[MEMORY STABLE] CV {stats['cv_percent']:.2f}% <= {max_cv_percent:.1f}% : memory")
+        print("                measurements are consistent enough to be meaningful.")
     else:
-        print(f"[NOISY]  CV {stats['cv_percent']:.2f}% > {max_cv_percent:.1f}% : measurements are noisy;")
-        print("         treat results as directional only (non-gating).")
+        print(f"[MEMORY NOISY]  CV {stats['cv_percent']:.2f}% > {max_cv_percent:.1f}% : memory")
+        print("                measurements are noisy; treat results as directional only (non-gating).")
     print("=" * 72)
     print()
 
