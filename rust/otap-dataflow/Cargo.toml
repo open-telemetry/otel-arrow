@@ -201,7 +201,7 @@ ryu = "1"
 rustix = { version = "1.1.5", features = ["fs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
 rustls-pki-types = { version = "1.11", features = ["std"] }
-rustls-webpki = { version = "0.103.15", default-features = false, features = ["std"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
 rustls-openssl = "0.4"
