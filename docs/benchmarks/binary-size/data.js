@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792455884179,
+  "lastUpdate": 1792457182628,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -66610,6 +66610,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "100889614+juanjosalco@users.noreply.github.com",
+            "name": "Juan Salazar",
+            "username": "juanjosalco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9fc4e3f50c58a842021a03e78686b4260c65180e",
+          "message": "chore(sql-server): add Tiberius adapter and shared-runtime integration [2/3] (#4389)\n\n# Chore Summary\n\n<!-- Briefly describe the maintenance work in this PR. -->\n\nAdd the independently opt-in SQL Server adapter on top of [Part\n1](https://github.com/open-telemetry/otel-arrow/pull/4364), using\npublished Tiberius and the existing shared scraper. **No production\nTCP/TLS connector or runnable receiver is included.**\n\n- **Driver integration:** Discover/validate metadata, bind native\nparameters, convert values without silent loss, and obtain current\nBasicAuth credentials on connection/reconnection.\n- **Published native TLS:** Use crates.io Tiberius 0.13.0 with\n`default-features = false` and `tds73,native-tls`. Both driver and macro\ncrate are registry-sourced. SQL Server uses Schannel on Windows /\nOpenSSL on Linux independently of other components' unchanged Rustls\n`crypto-*` selection. No Git pin or producer-local patch.\n- **TLS option compatibility:** Reject certificate bypass combined with\n`server_name_override`, with redacted config validation and\ndefense-in-depth in driver setup. Native bypass disables SNI. Verified\nTLS with an override, bypass alone, optional CA support, secure\ndefaults, and fingerprint exclusions remain intact.\n- **Shared delivery:** Reuse shared scheduling, bounded pages,\nadmission, ACK/NACK, recovery, file checkpoints, ownership, and\ntelemetry; keep vendor dependencies out of the scraper.\n\nProduction connector/factory activation, native live TLS qualification,\ndeployment/governance evidence, and operator recovery remain Part 3.\nPage budgets are not driver-internal allocation or RSS bounds. This\ninternal layer still registers no receiver, so no new-component\nchangelog is included; activation and its release note belong to Part 3.\n\n## Related issue\n\n<!-- Link the related issue if one exists. -->\n\nCloses #4360. Part 2 of RFC #3918, following #4364 and preceding #4361.\nRemaining qualification/upstream work is tracked in #4381. No review\nthreads have been replied to or resolved by this update.\n\n## Validation\n\nFresh validation on Windows x64 for\n`199188ec28036bd1f4b30e87ee6d7e1c8c7b696b` (new commit on native-TLS\nhead `e84aa86e1`; no amend or history rewrite):\n\n- **Passed:** 89 SQL Server tests; combined 223 contrib tests (89 SQL\nServer + 111 Oracle + 23 PostgreSQL), plus 161 shared-scraper tests. Two\nexisting live Oracle and two existing scraper tests remain ignored.\n- **Shared-controller evidence:** acknowledged metadata/fetch timeout\nrecovery; safe pre-session and acknowledged streaming-reset recovery;\nunchanged prior cursor/revision until downstream ACK; eventual exact\ncursor/revision advancement; same-session prefix continuation with no\nskipped/duplicated emitted IDs; terminal unconfirmed reset cases with no\noutput/reconnect and retained real source ownership. Quarantine tests\nuse an isolated subprocess so process-lifetime leases do not leak\nfixture files.\n\n<details>\n<summary>Exact commands and results</summary>\n\nFrom `rust/otap-dataflow`:\n\n| Command | Result |\n| --- | --- |\n| `cargo check --quiet --locked -p otel-arrow-dfe-contrib-nodes\n--no-default-features --features sql-server` | Passed. |\n| `cargo test --quiet --locked -p otel-arrow-dfe-contrib-nodes\n--no-default-features --features sql-server --lib sql_server_receiver` |\nPassed: 89 tests. |\n| `cargo clippy --quiet --locked -p otel-arrow-dfe-contrib-nodes\n--no-default-features --features sql-server --lib --tests -- -D\nwarnings` | Passed. |\n| `cargo test --quiet --locked -p otel-arrow-dfe-contrib-nodes -p\notel-arrow-dfe-scraper --no-default-features --features\notel-arrow-dfe-contrib-nodes/sql-server,otel-arrow-dfe-contrib-nodes/oracle,otel-arrow-dfe-contrib-nodes/postgresql\n--lib` | Passed: 223 contrib + 161 scraper; 2 existing ignored in each\nsuite. |\n| `cargo clippy --quiet --locked -p otel-arrow-dfe-contrib-nodes -p\notel-arrow-dfe-scraper --no-default-features --features\notel-arrow-dfe-contrib-nodes/sql-server,otel-arrow-dfe-contrib-nodes/oracle,otel-arrow-dfe-contrib-nodes/postgresql\n--lib --tests -- -D warnings` | Passed. |\n| `cargo check --quiet --locked -p otel-arrow-dfe --no-default-features\n--features sql-server` | Passed. |\n| `cargo check --quiet --locked -p otel-arrow-dfe-contrib-nodes\n--no-default-features` | Passed. |\n| `cargo fmt --all -- --check` | Passed. |\n| `cargo tree --locked -p otel-arrow-dfe-contrib-nodes\n--no-default-features --features sql-server -e normal,build,features -i\ntiberius` | Passed; native-tls and tds73 plus supporting driver\nfeatures, no legacy Rustls backend. |\n| `cargo xtask crates-publish check` | Passed, with the\npackage-list/archive-verification distinction above. |\n| `cargo xtask check` | Blocked during wider-workspace Clippy by the\nmissing Windows OpenSSL SDK; full tests not reached. |\n\nFrom the receiver directory: `npx --no-install markdownlint-cli2\nREADME.md` passed. From the repository root: `python\ntools\\sanitycheck.py` reported only the baseline CRLF failures described\nabove; changed-file ASCII/sanity checks, `git diff --check`, and `git\ndiff --cached --check` passed before committing.\n\n</details>\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 414df577-153e-42a1-b2a2-2d089120c04f\nCopilot-Session: 7ecdbe6e-cc26-433c-89f0-16a37ecbf26e\nCopilot-Session: 475dac2f-d3f9-4147-8483-941c7c7fd910\nCopilot-Session: 0aba4851-7ec3-4e16-a672-e637756f3a22",
+          "timestamp": "2026-10-19T23:36:34Z",
+          "tree_id": "bfabca2ebf557013c9a61d96db82502af3055a51",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9fc4e3f50c58a842021a03e78686b4260c65180e"
+        },
+        "date": 1792457161138,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.68,
             "unit": "MB"
           },
           {
