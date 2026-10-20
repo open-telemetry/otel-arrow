@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import duckdb
+import pytest
 import grpc
 import pandas as pd
 from opentelemetry.proto.collector.metrics.v1 import (
@@ -367,3 +368,30 @@ def test_sql_report_without_sink_registers_only_framework_metrics():
         _ctx_with_sink(None),
     )
     assert hook.conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 0
+
+
+# Scenario: sql_report builds its in-memory tables while a metrics sink is
+#   attached to the suite but no engine ever pushed to it (e.g. containers
+#   cannot reach the host sink endpoint).
+# Guarantees: The report fails with an error naming the empty sink and its
+#   endpoint, instead of a confusing SQL binder error about missing
+#   'resource_attributes.*' columns later on.
+def test_sql_report_with_empty_sink_fails_clearly():
+    sink = OtlpMetricsSink(endpoint="0.0.0.0:14317")
+    hook = SQLReportHook(
+        SQLReportConfig(
+            name="t",
+            report_config=SQLReportDetails(
+                queries=[QueryConfig(name="q", sql="SELECT 1")]
+            ),
+        )
+    )
+    hook.conn = duckdb.connect()
+
+    with pytest.raises(RuntimeError, match=r"received no data points.*0\.0\.0\.0:14317"):
+        hook._register_in_memory_tables(
+            _empty_metric_frame(),
+            _empty_span_frame(),
+            _empty_span_frame(),
+            _ctx_with_sink(sink),
+        )

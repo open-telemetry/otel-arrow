@@ -110,6 +110,14 @@ jobs:
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
+      # TEMPORARY: diagnose why push-based metrics never reach the host sink on
+      # this runner. Remove once resolved.
+      - name: Diagnose push metrics sink connectivity
+        continue-on-error: true
+        run: |
+          cd tools/pipeline_perf_test
+          bash ./scripts/diagnose-push-sink.sh
+
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
