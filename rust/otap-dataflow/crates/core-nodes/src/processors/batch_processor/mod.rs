@@ -5069,7 +5069,7 @@ mod tests {
             ResidualFormat::Otap => out.num_items(),
             ResidualFormat::Otlp | ResidualFormat::EncodedOtlp => {
                 // SAFETY: callers use the matching OTLP-output test configuration;
-                // both legacy and generalized encoded OTLP report Some(buffer.len()).
+                // both OTLP adapter and admitted encoded fixtures report Some(buffer.len()).
                 // A panic here indicates a fixture or output-format regression.
                 out.num_bytes().expect("otlp size") / residual_unit_size(fmt)
             }

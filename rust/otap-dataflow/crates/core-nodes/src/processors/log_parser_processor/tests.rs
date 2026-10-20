@@ -13,7 +13,6 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
 use otel_arrow_dfe_pdata::{
-    TryFromWithOptions,
     proto::{
         OtlpProtoMessage,
         opentelemetry::{
@@ -25,7 +24,7 @@ use otel_arrow_dfe_pdata::{
     },
     testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
 };
-use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -85,9 +84,12 @@ fn test_sanitization_removes_unused_dictionary_values() {
                     .unwrap();
                 let mut outputs = ctx.drain_pdata().await;
                 assert_eq!(outputs.len(), 1);
-                let batch =
-                    OtapArrowRecords::try_from_with_default(outputs.pop().unwrap().payload())
-                        .unwrap();
+                let batch = outputs
+                    .pop()
+                    .unwrap()
+                    .payload()
+                    .try_into_otap(&CodecService::new().unwrap())
+                    .unwrap();
                 let root = batch.get(ArrowPayloadType::Logs).unwrap();
                 let dictionary = root
                     .column_by_name(consts::SEVERITY_TEXT)
@@ -249,7 +251,11 @@ fn test_parser_to_opl_pipeline() {
             let mut output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1);
             let output = output.pop().unwrap();
-            let batch = OtapArrowRecords::try_from_with_default(output.clone().payload()).unwrap();
+            let batch = output
+                .clone()
+                .payload()
+                .try_into_otap(&CodecService::new().unwrap())
+                .unwrap();
             let OtlpProtoMessage::Logs(logs) = otap_to_otlp(&batch) else {
                 panic!("expected logs")
             };
@@ -483,7 +489,10 @@ fn test_parse_logs_cooperative_progress_and_atomic_output() {
             assert_eq!(outputs.len(), 1);
             let output = outputs.pop().unwrap();
             assert_eq!(next_ack(AckMsg::new(output.clone())).unwrap().0, 999);
-            let batch = OtapArrowRecords::try_from_with_default(output.payload()).unwrap();
+            let batch = output
+                .payload()
+                .try_into_otap(&CodecService::new().unwrap())
+                .unwrap();
             let OtlpProtoMessage::Logs(actual) = otap_to_otlp(&batch) else {
                 panic!("expected logs")
             };
@@ -647,10 +656,13 @@ fn test_parse_logs_framed_batches() {
                     record.severity_text = text.into();
                     record.severity_number = number;
                 }
-                let batch = OtapArrowRecords::try_from_with_default(
-                    output.into_iter().next().unwrap().payload(),
-                )
-                .unwrap();
+                let batch = output
+                    .into_iter()
+                    .next()
+                    .unwrap()
+                    .payload()
+                    .try_into_otap(&CodecService::new().unwrap())
+                    .unwrap();
                 match otap_to_otlp(&batch) {
                     OtlpProtoMessage::Logs(actual) => assert_eq!(actual, expected),
                     other => panic!("unexpected output {other:?}"),
@@ -853,7 +865,7 @@ fn test_parse_logs_fallback_records_and_counters() {
                     record.severity_text = "ERROR".into();
                     record.severity_number = 17;
                 }
-                let batch = OtapArrowRecords::try_from_with_default(output).unwrap();
+                let batch = output.try_into_otap(&CodecService::new().unwrap()).unwrap();
                 match otap_to_otlp(&batch) {
                     OtlpProtoMessage::Logs(actual) => assert_eq!(actual, expected),
                     other => panic!("unexpected output {other:?}"),
@@ -971,7 +983,9 @@ fn assert_parsing_fixture(
                     record.severity_text = "ERROR".into();
                     record.severity_number = 17;
                 }
-                let batch = OtapArrowRecords::try_from_with_default(payload).unwrap();
+                let batch = payload
+                    .try_into_otap(&CodecService::new().unwrap())
+                    .unwrap();
                 match otap_to_otlp(&batch) {
                     OtlpProtoMessage::Logs(actual) => assert_eq!(actual, expected),
                     other => panic!("unexpected output {other:?}"),
@@ -1270,10 +1284,7 @@ fn test_parse_logs_non_log_passthrough() {
             assert_eq!(output.len(), 1);
             let (actual_context, payload) = output.pop().unwrap().into_parts();
             assert_eq!(actual_context, context);
-            match payload.into_data() {
-                PayloadData::OtapRecords(actual) => assert_eq!(actual, original),
-                other => panic!("unexpected output {other:?}"),
-            }
+            assert_eq!(payload.otap_ref(), Some(&original));
             ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                 metrics_reporter: reporter,
             }))
