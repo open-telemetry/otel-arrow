@@ -68,6 +68,12 @@ groups:
               #   # Client identity for mTLS (optional)
               #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
               #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
+              #
+              #   # File-backed CA/cert/key material reloads every 5m by default.
+              #   # reload_interval: "30s"           # custom polling interval
+              #   # reload_interval: null            # disable client TLS reload
+              #   # Rotate related standalone files atomically. Kubernetes
+              #   # projected-volume generations are pinned per reload attempt.
 
         connections:
           - from: receiver

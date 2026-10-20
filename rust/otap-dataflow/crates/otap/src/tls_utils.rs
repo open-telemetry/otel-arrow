@@ -184,7 +184,7 @@ impl fmt::Debug for ClientIdentityMaterial {
 /// reload loop can read + validate one generation and build the transport from
 /// exactly those bytes.
 #[derive(Clone, Debug)]
-pub(crate) struct LoadedClientTlsMaterial {
+pub struct LoadedClientTlsMaterial {
     /// Optional SNI / certificate-verification domain override.
     pub(crate) server_name: Option<String>,
     /// Whether the platform trust store is included as trust anchors.

@@ -34,8 +34,9 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::client_tls_reload::{ClientTlsGeneration, ClientTlsProvider};
 use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
-use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
+use otel_arrow_dfe_otap::otap_grpc::client_settings::{GrpcClientSettings, GrpcEndpointError};
 use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
@@ -52,9 +53,12 @@ use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::future::poll_fn;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tonic::Code;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
@@ -87,6 +91,9 @@ const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEve
         );
     },
 };
+
+const TLS_INSTALL_RETRY_MIN: Duration = Duration::from_secs(5);
+const TLS_INSTALL_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
@@ -191,6 +198,167 @@ impl OTLPExporter {
     }
 }
 
+struct LocalTlsReloadTask {
+    cancel: CancellationToken,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LocalTlsReloadTask {
+    fn start(provider: Rc<ClientTlsProvider>) -> Self {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let handle = tokio::task::spawn_local(async move {
+            provider.run(task_cancel.cancelled()).await;
+        });
+        Self {
+            cancel,
+            handle: Some(handle),
+        }
+    }
+
+    async fn stop(&mut self) {
+        self.cancel.cancel();
+        if let Some(handle) = self.handle.take()
+            && let Err(error) = handle.await
+            && !error.is_cancelled()
+        {
+            otel_warn!(
+                "otlp.exporter.grpc.tls_reload_task_failed",
+                error = %error,
+                message = "TLS reload task failed during shutdown"
+            );
+        }
+    }
+}
+
+impl Drop for LocalTlsReloadTask {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+async fn build_grpc_client_pool(
+    settings: &GrpcClientSettings,
+    num_connections: usize,
+    max_in_flight: usize,
+    compression: Option<CompressionEncoding>,
+    generation: Option<&ClientTlsGeneration>,
+) -> Result<GrpcClientPool, GrpcEndpointError> {
+    let channels = match generation {
+        Some(generation) => {
+            settings
+                .connect_channels_lazy_with_tls_material(
+                    None,
+                    generation.material(),
+                    num_connections,
+                )
+                .await?
+        }
+        None => {
+            let mut channels = Vec::with_capacity(num_connections);
+            for _ in 0..num_connections {
+                channels.push(settings.connect_channel_lazy(None).await?);
+            }
+            channels
+        }
+    };
+
+    let generation_number = generation.map_or(0, ClientTlsGeneration::number);
+    let mut pool = GrpcClientPool::new(generation_number, max_in_flight, channels, compression);
+    pool.prepopulate_clients();
+    Ok(pool)
+}
+
+async fn install_tls_generation(
+    settings: &GrpcClientSettings,
+    num_connections: usize,
+    max_in_flight: usize,
+    compression: Option<CompressionEncoding>,
+    generation: &ClientTlsGeneration,
+    pool: &mut GrpcClientPool,
+) -> Result<(), GrpcEndpointError> {
+    let replacement = build_grpc_client_pool(
+        settings,
+        num_connections,
+        max_in_flight,
+        compression,
+        Some(generation),
+    )
+    .await?;
+    *pool = replacement;
+    Ok(())
+}
+
+struct TlsPoolInstallation {
+    pending: Option<Arc<ClientTlsGeneration>>,
+    retry_at: tokio::time::Instant,
+    retry_delay: Duration,
+}
+
+impl TlsPoolInstallation {
+    fn new() -> Self {
+        Self {
+            pending: None,
+            retry_at: tokio::time::Instant::now(),
+            retry_delay: TLS_INSTALL_RETRY_MIN,
+        }
+    }
+
+    async fn install(
+        &mut self,
+        settings: &GrpcClientSettings,
+        num_connections: usize,
+        max_in_flight: usize,
+        compression: Option<CompressionEncoding>,
+        generation: Arc<ClientTlsGeneration>,
+        pool: &mut GrpcClientPool,
+    ) {
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.number() != generation.number())
+        {
+            self.retry_delay = TLS_INSTALL_RETRY_MIN;
+        }
+        match install_tls_generation(
+            settings,
+            num_connections,
+            max_in_flight,
+            compression,
+            &generation,
+            pool,
+        )
+        .await
+        {
+            Ok(()) => {
+                self.pending = None;
+                self.retry_delay = TLS_INSTALL_RETRY_MIN;
+                otel_info!(
+                    "otlp.exporter.grpc.tls_generation_installed",
+                    generation = generation.number()
+                );
+            }
+            Err(error) => {
+                otel_warn!(
+                    "otlp.exporter.grpc.tls_generation_install_failed",
+                    generation = generation.number(),
+                    error = %error,
+                    message = "keeping current gRPC channel pool and scheduling retry"
+                );
+                self.pending = Some(generation);
+                self.retry_at = tokio::time::Instant::now() + self.retry_delay;
+                self.retry_delay = self
+                    .retry_delay
+                    .saturating_mul(2)
+                    .min(TLS_INSTALL_RETRY_MAX);
+            }
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for OTLPExporter {
     async fn start(
@@ -220,33 +388,57 @@ impl Exporter<OtapPdata> for OTLPExporter {
         })?;
 
         let num_connections = self.config.num_connections.max(1);
-        let mut channels = Vec::with_capacity(num_connections);
-        for _ in 0..num_connections {
-            let channel = self
-                .config
-                .grpc
-                .connect_channel_lazy(None)
-                .await
-                .map_err(|e| {
-                    let source_detail = format_error_sources(&e);
-                    Error::ExporterError {
-                        exporter: exporter_id.clone(),
-                        kind: ExporterErrorKind::Connect,
-                        error: format!("grpc channel error {e}"),
-                        source_detail,
-                    }
-                })?;
-            channels.push(channel);
-        }
+        let compression = self.config.grpc.compression_encoding();
+        let max_in_flight = self.config.max_in_flight.max(1);
+        let tls_provider = ClientTlsProvider::new(
+            self.config.grpc.tls.as_ref(),
+            &self.config.grpc.grpc_endpoint,
+        )
+        .await
+        .map_err(|error| Error::ExporterError {
+            exporter: exporter_id.clone(),
+            kind: ExporterErrorKind::Configuration,
+            error: "unable to initialize client TLS reload provider".into(),
+            source_detail: error.to_string(),
+        })?
+        .map(Rc::new);
+        let initial_tls_generation = tls_provider.as_ref().map(|provider| provider.current());
+        let mut grpc_clients = build_grpc_client_pool(
+            &self.config.grpc,
+            num_connections,
+            max_in_flight,
+            compression,
+            initial_tls_generation.as_deref(),
+        )
+        .await
+        .map_err(|error| {
+            let source_detail = format_error_sources(&error);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("grpc channel error {error}"),
+                source_detail,
+            }
+        })?;
+
+        let reload_enabled = tls_provider.as_ref().is_some_and(|provider| {
+            provider.is_file_backed() && provider.reload_interval().is_some()
+        });
+        let mut tls_updates =
+            reload_enabled.then(|| tls_provider.as_ref().expect("reload provider").subscribe());
+        let mut tls_reload_task = reload_enabled.then(|| {
+            LocalTlsReloadTask::start(Rc::clone(tls_provider.as_ref().expect("reload provider")))
+        });
+        let mut tls_installation = TlsPoolInstallation::new();
+        let tls_install_retry = tokio::time::sleep_until(tls_installation.retry_at);
+        tokio::pin!(tls_install_retry);
 
         otel_info!(
             "otlp.exporter.grpc.channels",
             num_connections = num_connections,
+            tls_reload_enabled = reload_enabled,
             endpoint = self.config.grpc.grpc_endpoint.as_str()
         );
-
-        let compression = self.config.grpc.compression_encoding();
-        let max_in_flight = self.config.max_in_flight.max(1);
 
         // Pre-build the static gRPC metadata template ONCE, outside the hot loop.
         // Returns `None` when no static headers are configured, which preserves
@@ -261,9 +453,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut logs_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut metrics_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut traces_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
-
-        let mut grpc_clients = GrpcClientPool::new(max_in_flight, channels, compression);
-        grpc_clients.prepopulate_clients();
 
         let mut inflight_exports = InFlightExports::new();
         let mut pending_msg: Option<OtapPdata> = None;
@@ -361,6 +550,66 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         continue;
                     }
 
+                    tls_update = async {
+                        match tls_updates.as_mut() {
+                            Some(updates) => updates.changed().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if tls_updates.is_some() => {
+                        match tls_update {
+                            Ok(()) => {
+                                let generation = tls_provider
+                                    .as_ref()
+                                    .expect("TLS updates require a provider")
+                                    .current();
+                                if generation.number() > grpc_clients.generation {
+                                    tls_installation
+                                        .install(
+                                            &self.config.grpc,
+                                            num_connections,
+                                            max_in_flight,
+                                            compression,
+                                            generation,
+                                            &mut grpc_clients,
+                                        )
+                                        .await;
+                                    if tls_installation.pending.is_some() {
+                                        tls_install_retry.as_mut().reset(tls_installation.retry_at);
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                tls_updates = None;
+                                otel_warn!(
+                                    "otlp.exporter.grpc.tls_updates_closed",
+                                    message = "TLS generation stream closed; keeping current gRPC channel pool"
+                                );
+                            }
+                        }
+                        continue;
+                    }
+
+                    () = &mut tls_install_retry, if tls_installation.pending.is_some() => {
+                        let generation = tls_installation.pending
+                            .as_ref()
+                            .expect("retry requires a pending generation")
+                            .clone();
+                        tls_installation
+                            .install(
+                                &self.config.grpc,
+                                num_connections,
+                                max_in_flight,
+                                compression,
+                                generation,
+                                &mut grpc_clients,
+                            )
+                            .await;
+                        if tls_installation.pending.is_some() {
+                            tls_install_retry.as_mut().reset(tls_installation.retry_at);
+                        }
+                        continue;
+                    }
+
                     // Pick up auth refreshes (initial + subsequent) even while pdata
                     // intake is gated, so a pending auth can arrive and unblock us.
                     _ = poll_fn(|cx| match auth.as_mut() {
@@ -408,6 +657,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otel_info!("otlp.exporter.grpc.shutdown");
+                    if let Some(task) = tls_reload_task.as_mut() {
+                        task.stop().await;
+                    }
                     // A batch can only still be parked here because the auth gate
                     // was shut when it last came up for dispatch: un-parking is
                     // gated on `accepting_pdata`, and every other `select!` arm
@@ -525,7 +777,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &mut logs_proto_buffer,
                                 &mut logs_proto_encoder,
                                 |encoded| {
-                                    let client = SignalClient::Logs(grpc_clients.take_logs());
+                                    let client = grpc_clients.take_logs();
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
@@ -545,7 +797,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &mut metrics_proto_buffer,
                                 &mut metrics_proto_encoder,
                                 |encoded| {
-                                    let client = SignalClient::Metrics(grpc_clients.take_metrics());
+                                    let client = grpc_clients.take_metrics();
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
@@ -565,7 +817,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &mut traces_proto_buffer,
                                 &mut traces_proto_encoder,
                                 |encoded| {
-                                    let client = SignalClient::Traces(grpc_clients.take_traces());
+                                    let client = grpc_clients.take_traces();
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
@@ -603,13 +855,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             };
 
                             let client = match signal_type {
-                                SignalType::Logs => SignalClient::Logs(grpc_clients.take_logs()),
-                                SignalType::Metrics => {
-                                    SignalClient::Metrics(grpc_clients.take_metrics())
-                                }
-                                SignalType::Traces => {
-                                    SignalClient::Traces(grpc_clients.take_traces())
-                                }
+                                SignalType::Logs => grpc_clients.take_logs(),
+                                SignalType::Metrics => grpc_clients.take_metrics(),
+                                SignalType::Traces => grpc_clients.take_traces(),
                             };
                             let future = make_export_future(prepared, client);
                             inflight_exports.push(future);
@@ -1013,7 +1261,7 @@ async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     metrics: &mut OtlpGrpcExporterMetrics,
-) -> (SignalClient, Option<u64>) {
+) -> (PooledSignalClient, Option<u64>) {
     let CompletedExport {
         attempt,
         context,
@@ -1189,7 +1437,7 @@ fn build_grpc_metadata(
 /// Otherwise the request is sent with an empty metadata map (zero overhead).
 fn make_export_future(
     prepared: EncodedExport,
-    client: SignalClient,
+    client: PooledSignalClient,
 ) -> impl Future<Output = CompletedExport> {
     let EncodedExport {
         bytes,
@@ -1209,6 +1457,7 @@ fn make_export_future(
         None => tonic::Request::new(bytes),
     };
     let payload_size = request.get_ref().len();
+    let PooledSignalClient { generation, client } = client;
 
     async move {
         let completed = attempt
@@ -1216,24 +1465,42 @@ fn make_export_future(
                 attempt.set_payload_size_with(|| payload_size);
                 let result = match client {
                     SignalClient::Logs(mut client) => match client.export(request).await {
-                        Ok(_) => Ok(SignalClient::Logs(client)),
+                        Ok(_) => Ok(PooledSignalClient {
+                            generation,
+                            client: SignalClient::Logs(client),
+                        }),
                         Err(status) => Err((
                             (OtlpGrpcExporterErrorType::from_status(&status), status),
-                            SignalClient::Logs(client),
+                            PooledSignalClient {
+                                generation,
+                                client: SignalClient::Logs(client),
+                            },
                         )),
                     },
                     SignalClient::Metrics(mut client) => match client.export(request).await {
-                        Ok(_) => Ok(SignalClient::Metrics(client)),
+                        Ok(_) => Ok(PooledSignalClient {
+                            generation,
+                            client: SignalClient::Metrics(client),
+                        }),
                         Err(status) => Err((
                             (OtlpGrpcExporterErrorType::from_status(&status), status),
-                            SignalClient::Metrics(client),
+                            PooledSignalClient {
+                                generation,
+                                client: SignalClient::Metrics(client),
+                            },
                         )),
                     },
                     SignalClient::Traces(mut client) => match client.export(request).await {
-                        Ok(_) => Ok(SignalClient::Traces(client)),
+                        Ok(_) => Ok(PooledSignalClient {
+                            generation,
+                            client: SignalClient::Traces(client),
+                        }),
                         Err(status) => Err((
                             (OtlpGrpcExporterErrorType::from_status(&status), status),
-                            SignalClient::Traces(client),
+                            PooledSignalClient {
+                                generation,
+                                client: SignalClient::Traces(client),
+                            },
                         )),
                     },
                 };
@@ -1258,6 +1525,7 @@ fn make_export_future(
 /// When multiple channels are configured, clients are distributed across them in
 /// round-robin order so that exports spread evenly across TCP connections.
 struct GrpcClientPool {
+    generation: u64,
     channels: Vec<Channel>,
     compression: Option<CompressionEncoding>,
     logs: VecDeque<LogsServiceClient<Channel>>,
@@ -1267,6 +1535,7 @@ struct GrpcClientPool {
 
 impl GrpcClientPool {
     fn new(
+        generation: u64,
         max_in_flight: usize,
         channels: Vec<Channel>,
         compression: Option<CompressionEncoding>,
@@ -1275,6 +1544,7 @@ impl GrpcClientPool {
         // gets exercised, even when max_in_flight is smaller than the channel count.
         let pool_size = max_in_flight.max(channels.len());
         Self {
+            generation,
             channels,
             compression,
             logs: VecDeque::with_capacity(pool_size),
@@ -1307,28 +1577,46 @@ impl GrpcClientPool {
     }
 
     #[inline(always)]
-    fn take_logs(&mut self) -> LogsServiceClient<Channel> {
-        self.logs
+    fn take_logs(&mut self) -> PooledSignalClient {
+        let client = self
+            .logs
             .pop_front()
-            .expect("client pool underflow: take_logs called with empty pool")
+            .expect("client pool underflow: take_logs called with empty pool");
+        PooledSignalClient {
+            generation: self.generation,
+            client: SignalClient::Logs(client),
+        }
     }
 
     #[inline(always)]
-    fn take_metrics(&mut self) -> MetricsServiceClient<Channel> {
-        self.metrics
+    fn take_metrics(&mut self) -> PooledSignalClient {
+        let client = self
+            .metrics
             .pop_front()
-            .expect("client pool underflow: take_metrics called with empty pool")
+            .expect("client pool underflow: take_metrics called with empty pool");
+        PooledSignalClient {
+            generation: self.generation,
+            client: SignalClient::Metrics(client),
+        }
     }
 
     #[inline(always)]
-    fn take_traces(&mut self) -> TraceServiceClient<Channel> {
-        self.traces
+    fn take_traces(&mut self) -> PooledSignalClient {
+        let client = self
+            .traces
             .pop_front()
-            .expect("client pool underflow: take_traces called with empty pool")
+            .expect("client pool underflow: take_traces called with empty pool");
+        PooledSignalClient {
+            generation: self.generation,
+            client: SignalClient::Traces(client),
+        }
     }
 
-    fn release(&mut self, client: SignalClient) {
-        match client {
+    fn release(&mut self, client: PooledSignalClient) {
+        if client.generation != self.generation {
+            return;
+        }
+        match client.client {
             SignalClient::Logs(client) => self.logs.push_back(client),
             SignalClient::Metrics(client) => self.metrics.push_back(client),
             SignalClient::Traces(client) => self.traces.push_back(client),
@@ -1369,9 +1657,14 @@ enum SignalClient {
     Traces(TraceServiceClient<Channel>),
 }
 
+struct PooledSignalClient {
+    generation: u64,
+    client: SignalClient,
+}
+
 /// Captures everything we need once a single export RPC has completed.
 struct CompletedExport {
-    attempt: CompletedExporterAttempt<SignalClient, (GrpcAttemptError, SignalClient)>,
+    attempt: CompletedExporterAttempt<PooledSignalClient, (GrpcAttemptError, PooledSignalClient)>,
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
@@ -1385,12 +1678,15 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
+    mod tls_reload;
+
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::context_policy::{
         ContextEntryDeclaration, ContextPolicy, ContextScope,
     };
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
@@ -1425,6 +1721,7 @@ mod tests {
     use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, GeneratedCa, generate_ca};
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -1436,13 +1733,15 @@ mod tests {
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
+    use std::path::Path;
     use std::pin::Pin;
     use std::time::Instant;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
-    use tonic::transport::Server;
+    use tempfile::TempDir;
+    use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -1466,6 +1765,253 @@ mod tests {
             ValueKind::Binary,
             value.into(),
         )
+    }
+
+    /// Scenario: an in-flight client from generation 1 completes after the pool
+    /// has already installed generation 2.
+    /// Guarantees: returning the stale client does not add an old TLS channel to
+    /// the current pool, while current-generation clients remain reusable.
+    #[test]
+    fn grpc_client_pool_drops_clients_from_retired_tls_generations() {
+        let runtime = Runtime::new().expect("runtime");
+        let channel = runtime
+            .block_on(async { Channel::from_static("http://127.0.0.1:4317").connect_lazy() });
+        let mut old_pool = GrpcClientPool::new(1, 1, vec![channel.clone()], None);
+        old_pool.prepopulate_clients();
+        let stale = old_pool.take_logs();
+
+        let mut current_pool = GrpcClientPool::new(2, 1, vec![channel], None);
+        current_pool.prepopulate_clients();
+        assert_eq!(current_pool.logs.len(), 1);
+
+        current_pool.release(stale);
+        assert_eq!(current_pool.logs.len(), 1);
+
+        let current = current_pool.take_logs();
+        assert_eq!(current_pool.logs.len(), 0);
+        current_pool.release(current);
+        assert_eq!(current_pool.logs.len(), 1);
+    }
+
+    fn write_client_tls_material(dir: &Path, ca: &GeneratedCa, client_name: &str) {
+        let client = ca.issue_leaf(
+            client_name,
+            Some(client_name),
+            Some(ExtendedKeyUsage::ClientAuth),
+        );
+        std::fs::write(dir.join("ca.crt"), &ca.cert_pem).expect("write CA");
+        std::fs::write(dir.join("client.crt"), &client.cert_pem).expect("write client cert");
+        std::fs::write(dir.join("client.key"), &client.key_pem).expect("write client key");
+    }
+
+    fn mtls_server_config(ca: &GeneratedCa, server_name: &str) -> ServerTlsConfig {
+        let server = ca.issue_leaf(
+            server_name,
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        ServerTlsConfig::new()
+            .identity(Identity::from_pem(
+                server.cert_pem.as_bytes(),
+                server.key_pem.as_bytes(),
+            ))
+            .client_ca_root(Certificate::from_pem(ca.cert_pem.as_bytes()))
+    }
+
+    async fn start_mtls_logs_server(
+        listener: TcpListener,
+        tls: ServerTlsConfig,
+        requests: tokio::sync::mpsc::Sender<OTLPData>,
+        shutdown: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let incoming = TcpListenerStream::new(listener);
+        Server::builder()
+            .tls_config(tls)
+            .expect("valid server TLS")
+            .add_service(LogsServiceServer::new(LogsServiceMock::new(requests)))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown.await;
+            })
+            .await
+            .expect("mTLS logs server");
+    }
+
+    fn subscribed_empty_logs() -> OtapPdata {
+        let request = ExportLogsServiceRequest::default();
+        let mut bytes = Vec::new();
+        request.encode(&mut bytes).expect("encode logs request");
+        OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            )
+    }
+
+    /// Scenario: a running file-backed mTLS exporter observes a Kubernetes
+    /// projected-volume swap while the backend restarts with matching TLS
+    /// material.
+    /// Guarantees: the exporter's reload task publishes and installs the new
+    /// generation, exports before and after rotation are acknowledged, and
+    /// shutdown stops the live reload task.
+    #[cfg(unix)]
+    #[test]
+    fn grpc_exporter_hot_reloads_projected_mtls_generation() {
+        use std::os::unix::fs::symlink;
+
+        run_grpc_exporter_mtls_rotation(
+            |root, generation| {
+                symlink(generation, root.join("..data")).expect("link initial generation");
+                for name in ["ca.crt", "client.crt", "client.key"] {
+                    symlink(Path::new("..data").join(name), root.join(name))
+                        .expect("link projected TLS file");
+                }
+            },
+            |root, generation| {
+                let replacement = root.join("..data_tmp");
+                symlink(generation, &replacement).expect("link replacement generation");
+                std::fs::rename(&replacement, root.join("..data"))
+                    .expect("swap projected generation");
+            },
+        );
+    }
+
+    fn run_grpc_exporter_mtls_rotation(
+        prepare: impl FnOnce(&Path, &Path),
+        rotate: impl FnOnce(&Path, &Path) + 'static,
+    ) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().expect("temp dir");
+        let ca1 = generate_ca("CA 1");
+        let ca2 = generate_ca("CA 2");
+        let generation1 = dir.path().join("..generation-1");
+        let generation2 = dir.path().join("..generation-2");
+        std::fs::create_dir(&generation1).expect("create generation 1");
+        std::fs::create_dir(&generation2).expect("create generation 2");
+        write_client_tls_material(&generation1, &ca1, "client-1");
+        write_client_tls_material(&generation2, &ca2, "client-2");
+        prepare(dir.path(), &generation1);
+
+        let server_runtime = Runtime::new().expect("server runtime");
+        let listener = server_runtime
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("bind server");
+        let addr = listener.local_addr().expect("server address");
+        let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel::<OTLPData>(4);
+        let (rotate_tx, rotate_rx) = tokio::sync::oneshot::channel::<()>();
+        let (rotated_ready_tx, rotated_ready_rx) = tokio::sync::oneshot::channel::<()>();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_manager = server_runtime.spawn(async move {
+            let (_shutdown1_tx, shutdown1_rx) = tokio::sync::oneshot::channel();
+            let server1 = tokio::spawn(start_mtls_logs_server(
+                listener,
+                mtls_server_config(&ca1, "server-1"),
+                requests_tx.clone(),
+                shutdown1_rx,
+            ));
+            let _ = rotate_rx.await;
+            server1.abort();
+            let _ = server1.await;
+
+            let listener = TcpListener::bind(addr).await.expect("rebind server");
+            let (_shutdown2_tx, shutdown2_rx) = tokio::sync::oneshot::channel();
+            let server2 = tokio::spawn(start_mtls_logs_server(
+                listener,
+                mtls_server_config(&ca2, "server-2"),
+                requests_tx,
+                shutdown2_rx,
+            ));
+            let _ = rotated_ready_tx.send(());
+            let _ = stop_rx.await;
+            server2.abort();
+            let _ = server2.await;
+        });
+
+        let test_runtime = TestRuntime::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: format!("https://localhost:{}", addr.port()),
+                        tls: Some(TlsClientConfig {
+                            config: TlsConfig {
+                                cert_file: Some(dir.path().join("client.crt")),
+                                key_file: Some(dir.path().join("client.key")),
+                                reload_interval: Some(Duration::from_millis(20)),
+                                ..TlsConfig::default()
+                            },
+                            ca_file: Some(dir.path().join("ca.crt")),
+                            include_system_ca_certs_pool: Some(false),
+                            server_name: Some("localhost".to_string()),
+                            ..TlsClientConfig::default()
+                        }),
+                        ..GrpcClientSettings::default()
+                    },
+                    max_in_flight: 1,
+                    num_connections: 1,
+                },
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx, None),
+                auth_provider: None,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let root = dir.path().to_path_buf();
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| async move {
+                ctx.send_pdata(subscribed_empty_logs())
+                    .await
+                    .expect("send initial logs");
+                let _initial_request = timeout(Duration::from_secs(2), requests_rx.recv())
+                    .await
+                    .expect("initial request timeout")
+                    .expect("initial request");
+
+                rotate_tx.send(()).expect("request server rotation");
+                rotated_ready_rx.await.expect("rotated server ready");
+                rotate(&root, &generation2);
+                ctx.sleep(Duration::from_millis(200)).await;
+
+                ctx.send_pdata(subscribed_empty_logs())
+                    .await
+                    .expect("send rotated logs");
+                let _rotated_request = timeout(Duration::from_secs(2), requests_rx.recv())
+                    .await
+                    .expect("rotated request timeout")
+                    .expect("rotated request");
+
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), "test complete")
+                    .await
+                    .expect("send exporter shutdown");
+                let _ = stop_tx.send(());
+            })
+            .run_validation(|mut ctx, result| async move {
+                result.expect("exporter result");
+                let mut completions = ctx
+                    .take_pipeline_completion_receiver()
+                    .expect("completion receiver");
+                for index in 0..2 {
+                    wait_for_ack_or_nack(
+                        &mut completions,
+                        true,
+                        123,
+                        &format!("for TLS generation {}", index + 1),
+                    )
+                    .await
+                    .expect("successful export ack");
+                }
+            });
+
+        server_runtime
+            .block_on(server_manager)
+            .expect("server manager");
     }
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
@@ -3048,7 +3594,10 @@ mod tests {
     ) -> Option<u64> {
         let channel = runtime
             .block_on(async { Channel::from_static("http://127.0.0.1:4317").connect_lazy() });
-        let client = SignalClient::Logs(LogsServiceClient::new(channel));
+        let client = PooledSignalClient {
+            generation: 0,
+            client: SignalClient::Logs(LogsServiceClient::new(channel)),
+        };
         let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
             async |attempt| {
                 Err(attempt.refused((
