@@ -3675,6 +3675,8 @@ mod test {
             })
     }
 
+    /// Scenario: An HTTP export failure returns a subscribed OTLP logs payload.
+    /// Guarantees: The Nack retains nonempty bytes with the original encoding and signal.
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
@@ -3733,11 +3735,13 @@ mod test {
                                 ack_count += 1;
 
                                 let payload = nack.refused.payload();
+                                let view = payload
+                                    .encoded_view()
+                                    .expect("expected encoded payload in Nack");
+                                assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+                                assert_eq!(view.signal_type(), SignalType::Logs);
                                 assert!(
-                                    !payload
-                                        .encoded_bytes()
-                                        .expect("expected encoded payload in Nack")
-                                        .is_empty(),
+                                    !view.bytes().is_empty(),
                                     "expected payload bytes to be returned in Nack, but it was empty"
                                 );
 

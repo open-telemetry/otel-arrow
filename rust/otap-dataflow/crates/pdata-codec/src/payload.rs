@@ -16,7 +16,11 @@ use crate::{
     EncodingPlan, PdataEncoding, PdataView, ResolvedCodec,
 };
 
-/// Concrete inline storage hidden behind representation-independent capabilities.
+/// Private representation enum accessed through the [`PdataPayload`] API.
+///
+/// The enum and its variant fields are stored directly in `PdataPayload`, without
+/// an additional `Box` or `Arc` envelope. The byte and Arrow buffers they reference
+/// remain separately allocated and can be shared.
 #[derive(Clone, Debug)]
 enum PayloadStorage {
     /// Independently decodable bytes and their resolved codec identity.
@@ -48,7 +52,7 @@ impl PayloadStorage {
     }
 }
 
-/// Logical pdata representation identity, independent of compatibility storage.
+/// Logical pdata representation identity, independent of private storage details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PdataFormat {
     /// Native mutable OTAP records.
@@ -175,7 +179,7 @@ impl PdataPayload {
         }
     }
 
-    /// Constructs generalized OTLP storage through the validated registry.
+    /// Constructs an encoded OTLP payload through the validated registry.
     ///
     /// # Panics
     ///
@@ -447,7 +451,7 @@ impl PdataPayload {
         self.with_encoded_output(codecs, plan, |output| output.into_bytes())
     }
 
-    /// Returns an empty generalized OTLP payload for a signal.
+    /// Returns an empty encoded OTLP payload for a signal.
     #[must_use]
     pub fn empty(signal: SignalType) -> Self {
         Self::from_otlp(OtlpProtoBytes::empty(signal))
@@ -487,7 +491,7 @@ pub enum CompatibilityConversionError {
     /// Low-level OTAP-to-OTLP conversion failed.
     #[error(transparent)]
     Encode(#[from] otel_arrow_dfe_pdata::error::Error),
-    /// A generalized encoded payload could not be decoded.
+    /// An encoded payload could not be decoded.
     #[error(transparent)]
     Codec(#[from] CodecError),
 }
@@ -660,7 +664,7 @@ mod tests {
         assert!(native.encoded_view().is_none());
     }
 
-    /// Scenario: Generalized encoded and native storage is built on 64 bit.
+    /// Scenario: Encoded and native storage is built on a 64-bit target.
     /// Guarantees: Inline encoded storage keeps the runtime payload at 64 bytes.
     #[test]
     #[cfg(target_pointer_width = "64")]
@@ -701,7 +705,7 @@ mod tests {
         assert_eq!(payload.known_item_count(), None);
     }
 
-    /// Scenario: Legacy and generalized encoded OTLP fail conversion with private telemetry.
+    /// Scenario: OTLP adapters and explicit admission produce encoded inputs that fail conversion.
     /// Guarantees: Display and Debug omit the retained body while recovery preserves its buffer.
     #[test]
     fn decode_error_diagnostics_omit_recoverable_payload() {
@@ -727,7 +731,7 @@ mod tests {
         }
     }
 
-    /// Scenario: Both OTLP byte representations are forwarded with bounded and unbounded plans.
+    /// Scenario: OTLP adapters and explicit admission feed bounded and unbounded forwarding plans.
     /// Guarantees: Oversized output never reaches the consumer; accepted output shares bytes
     /// without creating codec instances, in either validation mode and for every signal.
     #[test]

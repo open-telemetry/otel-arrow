@@ -1907,11 +1907,14 @@ mod tests {
                                 nack.reason
                             );
                             let (_context, payload) = (*nack.refused).into_parts();
+                            let view = payload
+                                .encoded_view()
+                                .expect("expected encoded refused payload");
+                            assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+                            assert_eq!(view.signal_type(), SignalType::Logs);
                             assert_eq!(
-                                payload
-                                    .encoded_bytes()
-                                    .expect("expected encoded refused payload"),
-                                &expected_bytes,
+                                view.bytes(),
+                                expected_bytes.as_ref(),
                                 "the refused batch must be returned intact so it can be retried"
                             );
                         }

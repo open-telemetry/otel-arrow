@@ -51,6 +51,16 @@ static RESOLVED_OTLP: LazyLock<Result<ResolvedCodec, RegistryError>> = LazyLock:
 });
 
 /// Returns the built-in OTLP identity after validated registry resolution.
+///
+/// Resolution validates all linked registrations on first use and caches the
+/// result without creating a codec instance. Pipeline startup validates this
+/// same immutable registry before starting nodes.
+///
+/// # Errors
+///
+/// Returns a registry error if any linked codec registration is invalid, even
+/// though the built-in OTLP registration is always present. Standalone callers
+/// can resolve OTLP before pipeline startup and must be able to handle this error.
 pub fn resolve_otlp() -> Result<ResolvedCodec, RegistryError> {
     RESOLVED_OTLP.as_ref().copied().map_err(Clone::clone)
 }
@@ -339,8 +349,9 @@ mod tests {
             .build()
     }
 
-    /// Scenario: OTLP admission uses either pipeline decode-validation policy.
-    /// Guarantees: Admission preserves the shared buffer and creates no decoder.
+    /// Scenario: OTLP admission uses the validated registry under both decode-validation policies.
+    /// Guarantees: Admission preserves the shared buffer and stateless item count
+    /// without creating mutable codec instances.
     #[test]
     fn admission_does_not_create_an_instance() {
         for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
