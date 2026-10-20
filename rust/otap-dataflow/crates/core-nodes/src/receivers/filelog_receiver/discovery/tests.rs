@@ -1,13 +1,21 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::probe::{pinned_path, verify_path};
+use super::native_path::NativePath;
+use super::probe::pinned_path;
+
 use super::*;
 use crate::receivers::filelog_receiver::source::PinnedSource;
 use std::fs::{self, File};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::{TempDir, tempdir};
+
+fn verify_path(path: &Path, locator: FileLocator) -> std::io::Result<()> {
+    let mut native = NativePath::new(65536);
+    native.load(path)?;
+    probe::verify_path(native.as_c_str(), locator)
+}
 
 struct Policy {
     recursive: bool,
@@ -838,7 +846,7 @@ fn bind_mount_exclusion_preserves_allowed_sibling() {
 }
 
 /// Scenario: Stable tmpfs directories require repeated close/reopen while enumerating.
-/// Guarantees: The qualified tmpfs resumption path visits every entry without duplication.
+/// Guarantees: Replay preserves positive observations without certifying unqualified tmpfs coverage.
 #[test]
 #[ignore = "requires writable tmpfs at /dev/shm; Linux qualification"]
 fn tmpfs_resumption() {
@@ -856,10 +864,22 @@ fn tmpfs_resumption() {
         },
     )
     .unwrap());
-    assert!(end.complete);
-    assert_eq!(observations.len(), 25);
-    let paths: std::collections::HashSet<_> = observations.iter().map(|o| &o.0).collect();
+    assert!(!end.complete);
+    assert!(
+        observations
+            .iter()
+            .any(|o| o.1 == Some(ScanReason::UnqualifiedResumption))
+    );
+    let paths: std::collections::HashSet<_> = observations
+        .iter()
+        .filter(|o| o.1.is_none())
+        .map(|o| &o.0)
+        .collect();
     assert_eq!(paths.len(), 25);
+    let (single, observations) = run(&mut scanner(dir.path(), false));
+    assert!(single.complete);
+    assert_eq!(observations.len(), 25);
+    assert!(observations.iter().all(|o| o.1.is_none()));
 }
 
 /// Scenario: A matched filename contains non-UTF-8 native bytes.
@@ -1257,6 +1277,16 @@ fn dangling_exclusion_alias_fails_closed() {
     .unwrap());
     assert!(!end.complete);
     assert!(observations.iter().all(|o| o.1.is_some()));
+    assert!(
+        observations
+            .iter()
+            .any(|o| o.1 == Some(ScanReason::ExclusionUnavailable) && o.2.is_none())
+    );
+    assert!(
+        observations
+            .iter()
+            .any(|o| o.0.ends_with("log") && o.1 == Some(ScanReason::Policy) && o.2.is_some())
+    );
 }
 
 /// Scenario: The caller requests only presence for a known file, then the name is replaced.

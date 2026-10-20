@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::native_path::NativePath;
 use super::roots::ExclusionRoot;
 use super::*;
 use crate::receivers::filelog_receiver::source::{FileAccessError, PinnedSource, SourceFile};
@@ -30,7 +31,7 @@ pub(super) fn pinned_path<'a>(file: &File, scratch: &'a mut [u8]) -> io::Result<
 }
 
 /// Verification must reject intermediate symlinks too. No unrestricted fallback.
-pub(super) fn verify_path(path: &Path, expected: FileLocator) -> io::Result<()> {
+pub(super) fn verify_path(path: &CStr, expected: FileLocator) -> io::Result<()> {
     let verified = File::from(openat2(
         CWD,
         path,
@@ -45,6 +46,7 @@ pub(super) fn verify_path(path: &Path, expected: FileLocator) -> io::Result<()> 
 }
 
 pub(super) struct ProbeScratch {
+    pub native: NativePath,
     target: Vec<u8>,
     first_target: Vec<u8>,
     first: Vec<u8>,
@@ -53,13 +55,15 @@ pub(super) struct ProbeScratch {
 
 impl ProbeScratch {
     pub fn retained_bytes(&self) -> usize {
-        self.target.capacity()
+        self.native.heap_bytes()
+            + self.target.capacity()
             + self.first_target.capacity()
             + self.first.capacity()
             + self.second.capacity()
     }
     pub fn new(limits: ScanLimits) -> Self {
         Self {
+            native: NativePath::new(limits.path_bytes),
             target: vec![0; limits.path_bytes],
             first_target: vec![0; limits.path_bytes],
             first: vec![0; limits.fingerprint_bytes],
@@ -91,10 +95,12 @@ fn policy(
     roots: &[ExclusionRoot],
     namespace: FileLocator,
     scratch: &mut [u8],
+    native: &mut NativePath,
     cancelled: &mut impl FnMut() -> bool,
 ) -> io::Result<(bool, usize)> {
     let target = pinned_path(pin.file(), scratch)?;
-    verify_path(target, pin.locator())?;
+    native.load(target)?;
+    verify_path(native.as_c_str(), pin.locator())?;
     if matcher.excludes(target) {
         return Ok((false, target.as_os_str().len()));
     }
@@ -102,7 +108,9 @@ fn policy(
         if cancelled() {
             return Err(io::Error::from_raw_os_error(libc::ECANCELED));
         }
-        let identity = locator(&statat(CWD, ancestor, AtFlags::SYMLINK_NOFOLLOW)?);
+        let identity = native.with_prefix(ancestor.as_os_str().len(), |path| {
+            Ok(locator(&statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW)?))
+        })?;
         if identity == namespace {
             return Ok((false, target.as_os_str().len()));
         }
@@ -120,7 +128,7 @@ fn policy(
     }
     // Detect substitution during ancestry inspection. This is not an atomic
     // ancestry snapshot; the specification explicitly bounds that guarantee.
-    verify_path(target, pin.locator())?;
+    verify_path(native.as_c_str(), pin.locator())?;
     Ok((true, target.as_os_str().len()))
 }
 
@@ -261,6 +269,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
             context.roots,
             context.config.checkpoint_namespace,
             &mut scratch.target,
+            &mut scratch.native,
             cancelled,
         ) {
             Ok((true, len)) => {

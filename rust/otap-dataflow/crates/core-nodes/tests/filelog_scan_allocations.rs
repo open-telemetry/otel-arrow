@@ -5,7 +5,7 @@
 #![cfg(target_os = "linux")]
 
 use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::{discovery::*, source::*};
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, ffi::OsString, fs, os::unix::ffi::OsStringExt, path::Path};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -30,7 +30,7 @@ impl MatchPolicy for Policy {
     }
 }
 
-/// Scenario: Flat and six-level scans with exclusions and aliases alternate full and presence-only probing.
+/// Scenario: Flat, nested, and 255/256/257/1024-byte native paths alternate full and presence-only probing.
 /// Guarantees: Retained heap does not grow across passes and transient allocations stay below one per file.
 #[test]
 fn steady_state_storage_is_reused() {
@@ -54,11 +54,44 @@ fn steady_state_storage_is_reused() {
         std::os::unix::fs::symlink(format!("{index}.log"), &alias).unwrap();
         let _ = known.insert(alias, locator);
     }
+    let mut long_parent = dir.path().to_owned();
+    for len in [255, 256, 257, 1024] {
+        let mut parent = dir.path().join("boundary");
+        assert!(
+            parent.as_os_str().len() + 8 < len,
+            "use a shorter TMPDIR for exact path-length cases"
+        );
+        while len - parent.as_os_str().len() - 1 > 240 {
+            parent.push("d".repeat(120));
+        }
+        fs::create_dir_all(&parent).unwrap();
+        let mut name = vec![b'x'; len - parent.as_os_str().len() - 1];
+        name[0] = 0xff;
+        let suffix = name.len() - 4;
+        name[suffix..].copy_from_slice(b".log");
+        let path = parent.join(OsString::from_vec(name));
+        assert_eq!(path.as_os_str().len(), len);
+        fs::write(&path, b"long native path").unwrap();
+        let locator = FileLocator::from_metadata(&fs::metadata(&path).unwrap());
+        let alias = path.with_extension("alias");
+        std::os::unix::fs::symlink(path.file_name().unwrap(), &alias).unwrap();
+        fs::write(path.with_extension("secret"), b"excluded").unwrap();
+        let _ = known.insert(path, locator);
+        let _ = known.insert(alias, locator);
+        long_parent = parent;
+    }
+    // Exercise long include roots and missing exclusion prefixes too.
+    let expected = known.len()
+        + known
+            .keys()
+            .filter(|path| path.starts_with(&long_parent))
+            .count();
+    let missing_exclusion = long_parent.join("not-created/child");
     let _profiler = dhat::Profiler::builder().testing().build();
     let mut scanner = Scanner::new(
         ScanConfig {
-            include_roots: vec![dir.path().to_owned()],
-            exclusion_roots: vec![dir.path().to_owned()],
+            include_roots: vec![dir.path().to_owned(), long_parent.clone()],
+            exclusion_roots: vec![dir.path().to_owned(), missing_exclusion.clone()],
             symlinks: SymlinkPolicy::Follow,
             limits: ScanLimits::default(),
             checkpoint_namespace: FileLocator {
@@ -70,29 +103,65 @@ fn steady_state_storage_is_reused() {
     )
     .unwrap();
     let budget = ProbeBudget::default();
-    assert!(scanner.scan(0, &budget, || false, |_| true).complete);
+    let mut observed = 0;
+    let mut consume = |batch: &[Observation]| {
+        for observation in batch {
+            assert!(matches!(
+                observation.reason,
+                None | Some(
+                    ScanReason::PresenceOnly
+                        | ScanReason::Directory
+                        | ScanReason::Excluded
+                        | ScanReason::UnqualifiedResumption
+                )
+            ));
+            observed += usize::from(matches!(
+                observation.reason,
+                None | Some(ScanReason::PresenceOnly)
+            ));
+        }
+        true
+    };
+    assert!(!scanner.scan(0, &budget, || false, &mut consume).cancelled);
+    assert_eq!(observed, expected);
     let before = dhat::HeapStats::get();
     dhat::assert!(before.curr_bytes > 0);
     for pass in 1..=6 {
-        assert!(
-            scanner
-                .scan_with_requests(
-                    pass,
-                    &budget,
-                    |path| {
-                        if pass > 3
-                            && let Some(&expected) = known.get(path)
-                        {
-                            ProbeRequest::PresenceOnly { expected }
-                        } else {
-                            ProbeRequest::Full
-                        }
-                    },
-                    || false,
-                    |_| true
-                )
-                .complete
+        let mut observed = 0;
+        let end = scanner.scan_with_requests(
+            pass,
+            &budget,
+            |path| {
+                if pass > 3
+                    && let Some(&expected) = known.get(path)
+                {
+                    ProbeRequest::PresenceOnly { expected }
+                } else {
+                    ProbeRequest::Full
+                }
+            },
+            || false,
+            |batch| {
+                for observation in batch {
+                    assert!(matches!(
+                        observation.reason,
+                        None | Some(
+                            ScanReason::PresenceOnly
+                                | ScanReason::Directory
+                                | ScanReason::Excluded
+                                | ScanReason::UnqualifiedResumption
+                        )
+                    ));
+                    observed += usize::from(matches!(
+                        observation.reason,
+                        None | Some(ScanReason::PresenceOnly)
+                    ));
+                }
+                true
+            },
         );
+        assert!(!end.cancelled);
+        assert_eq!(observed, expected);
     }
     let after = dhat::HeapStats::get();
     dhat::assert_eq!(after.curr_bytes, before.curr_bytes);

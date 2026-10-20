@@ -23,7 +23,11 @@ batching contracts without adopting Linux directory traversal.
 - Share one `ProbeBudget` with reader reopens. Acquisition reserves both transient
   descriptor slots together. A busy probe gets one scheduler yield and retry;
   continued contention makes coverage incomplete. Backoff and fairness belong
-  to the worker; this allowance is not an OS reservation.
+  to the worker; this allowance is not an OS reservation. Scheduler integration
+  must give both discovery and reader reopens fair access. On a stable tree
+  within the work budget, bounded permit holds under sustained reader load must
+  still allow complete discovery passes and reader progress. Cancellation must
+  remain responsive. A single yield/retry is not evidence of that fairness.
 - Run `scan` on a blocking worker. The callback borrows at most `limits.batch`
   observations, with no filesystem handles retained. It must bound copies and
   check cancellation while waiting for downstream capacity. Returning false
@@ -67,7 +71,9 @@ if the required operation is unavailable, rather than reporting every root as
 missing. Permanent capability failures stay cached until scanner recreation;
 transient resource failures can retry on a later pass. There is no unrestricted
 verification fallback. Successful verification therefore requires Linux 5.6 or
-newer and a security profile permitting this syscall. The trusted procfs read-open
+newer and a security profile permitting this syscall. An unavailable or blocked
+syscall produces `VerificationUnavailable` and no candidate admission on each
+pass. The trusted procfs read-open
 itself is unchanged. Neither zero links nor a `" (deleted)"` suffix bypasses policy.
 
 Ancestor identities supply full-pattern exclusion-root mappings and checkpoint
@@ -82,7 +88,14 @@ existing ancestor and retains the missing suffix and original pattern index.
 It still evaluates the full pattern. A dangling prefix alias, permission error,
 or failure after opening a root is not treated as an absent literal prefix.
 Lexically excluded names inspected during traversal may contribute metadata-only
-presence; pruned subtrees are not searched.
+presence; pruned subtrees are not searched. Failed exclusion-root mappings emit
+`ExclusionUnavailable`, separately from a candidate's `Policy` failure; both
+invalidate coverage, while cancellation remains `Cancelled`.
+
+Path-based syscalls use bounded reusable C-string scratch, including paths of
+256 bytes or more. Ancestor queries temporarily terminate a prefix and restore
+the full path before later verification. No lossy native-byte conversion or
+truncation is accepted.
 
 ## Traversal and resources
 
@@ -92,15 +105,21 @@ indicators. A changed directory locator prevents resumption. A content-change
 indicator invalidates completeness, but positive traversal can continue when
 resumption is possible. Change indicators are not proof of an immutable listing.
 
-Cookie resumption is enabled for ext4, tmpfs, XFS, and btrfs. Other backends use
-bounded replay from the beginning: the previously consumed prefix must match
-its saved entry count and digest before scanning continues. Replay failures
-stop that traversal unit. Directory observations retain their locators on all
-backends. A pass needs no resumption qualification when each directory is read
-without replay. Passes that use replay remain incomplete even when it works;
-no generic overlayfs or network-filesystem coverage qualification is claimed.
-Replay can be quadratic across many small batches and is charged to the work
-limit. It does not silently skip the rest of every stable directory.
+Cookie resumption is enabled for ext4, XFS, and btrfs. Tmpfs and other backends
+use bounded replay from the beginning: the previously consumed prefix must
+match its saved entry count and digest before scanning continues. Replay
+failures stop that traversal unit. A single-open directory needs no resumption
+qualification; a pass that replays remains incomplete even when its prefix
+matches. Tmpfs offset behavior varies across kernels, and no generic tmpfs
+kernel range is qualified for native resumption. Tests on one kernel do not
+qualify older kernels or vendor backports.
+
+This also limits NFS, CIFS, and overlayfs: positive observations may continue,
+but resumed passes cannot support discovery-derived finalization or retention
+aging. On a stable tree, replay reaches later entries. Repeated prefix changes
+can prevent reaching the tail; replay can also be quadratic across batches and
+consumes the work budget. Qualification must measure these costs before relying
+on such a deployment for cleanup.
 
 A missing root is incomplete; the first successful validation establishes its
 baseline. A replacement never silently becomes the new baseline. Returning the
@@ -121,6 +140,12 @@ counts enumeration steps (including replay) and traversal-directory opens; it
 also bounds acyclic alias fan-out. Root preparation is separately bounded by
 configured roots and native path length. Work exhaustion reports `Limit` and
 incomplete coverage; it is not a wall-clock or cross-root fairness guarantee.
+`ScanConfig.limits.work_units` defaults to 1,000,000. With a stable traversal
+order, repeated exhaustion skips the same tail on every pass: those files or
+roots remain undiscovered until the budget or tree changes. Integration must
+surface persistent exhaustion as an actionable coverage/health problem, without
+automatically treating transient churn as invalid configuration. Rotating roots
+alone would not fix starvation inside one large root.
 Allocation failures remain process allocation failures; limits do not reserve
 OS memory or descriptors. Root and filesystem operations preserve original
 errors. Caller-owned retry must not turn descriptor exhaustion into disappearance.

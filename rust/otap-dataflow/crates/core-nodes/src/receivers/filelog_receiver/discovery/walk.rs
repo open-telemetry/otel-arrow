@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::batch::Batch;
+use super::native_path::NativePath;
 use super::probe::{ProbeContext, ProbeScratch, probe};
 use super::*;
 use rustix::fs::{
@@ -144,10 +145,11 @@ impl Walker {
         let depth = stack.len();
         let (ancestors, current) = stack.split_at_mut(depth - 1);
         let frame = &mut current[0];
-        let (file, evidence) = match prepare_directory(frame, ancestors, context, batch) {
-            ControlFlow::Continue(opened) => opened,
-            ControlFlow::Break(step) => return step,
-        };
+        let (file, evidence) =
+            match prepare_directory(frame, ancestors, context, batch, &mut scratch.native) {
+                ControlFlow::Continue(opened) => opened,
+                ControlFlow::Break(step) => return step,
+            };
         let mut entries = RawDir::new(&file, buffer);
         if let ControlFlow::Break(step) =
             replay_prefix(&mut entries, frame, batch, work_left, cancelled)
@@ -269,20 +271,22 @@ fn prepare_directory<P: MatchPolicy>(
     ancestors: &[Frame],
     context: &ProbeContext<'_, P>,
     batch: &mut Batch,
+    native: &mut NativePath,
 ) -> ControlFlow<WalkStep, (File, DirectoryEvidence)> {
-    let open_directory = || -> io::Result<File> {
+    let mut open_directory = || -> io::Result<File> {
+        native.load(&frame.physical)?;
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NONBLOCK;
         Ok(File::from(
             if context.config.symlinks == SymlinkPolicy::Reject {
                 openat2(
                     CWD,
-                    &frame.physical,
+                    native.as_c_str(),
                     flags,
                     Mode::empty(),
                     ResolveFlags::NO_SYMLINKS,
                 )?
             } else {
-                openat(CWD, &frame.physical, flags, Mode::empty())?
+                openat(CWD, native.as_c_str(), flags, Mode::empty())?
             },
         ))
     };
@@ -343,10 +347,11 @@ fn prepare_directory<P: MatchPolicy>(
                 return ControlFlow::Break(WalkStep::Failed);
             }
         };
+        // tmpfs offset implementations vary by kernel. A matching replay
+        // prefix alone does not qualify complete coverage on those backends.
         frame.replay = !matches!(
             filesystem,
             nix::sys::statfs::EXT4_SUPER_MAGIC
-                | nix::sys::statfs::TMPFS_MAGIC
                 | nix::sys::statfs::XFS_SUPER_MAGIC
                 | nix::sys::statfs::BTRFS_SUPER_MAGIC
         );

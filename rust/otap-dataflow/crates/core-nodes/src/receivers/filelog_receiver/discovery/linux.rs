@@ -207,6 +207,7 @@ impl<P: MatchPolicy> Scanner<P> {
             match resolve_exclusion(
                 root,
                 &mut self.target,
+                &mut self.scratch.native,
                 &mut self.exclusions[index],
                 &mut cancelled,
             ) {
@@ -243,7 +244,12 @@ impl<P: MatchPolicy> Scanner<P> {
                 break;
             }
             let root = &self.config.include_roots[index];
-            match resolve_include_root(root, &mut self.target, &mut self.include_baselines[index]) {
+            match resolve_include_root(
+                root,
+                &mut self.target,
+                &mut self.scratch.native,
+                &mut self.include_baselines[index],
+            ) {
                 Ok((physical, locator, changed)) => {
                     if changed {
                         self.batch
@@ -262,7 +268,7 @@ impl<P: MatchPolicy> Scanner<P> {
                         continue;
                     }
                     self.walker
-                        .start(root, &physical, locator, self.config.limits);
+                        .start(root, physical, locator, self.config.limits);
                 }
                 Err((reason, error)) => {
                     self.batch.emit(root, reason, error.raw_os_error());

@@ -11,6 +11,7 @@
 mod batch;
 mod budget;
 mod linux;
+mod native_path;
 mod probe;
 mod roots;
 mod walk;
@@ -130,6 +131,8 @@ pub enum ScanReason {
     Cycle,
     /// A configured resource bound was reached.
     Limit,
+    /// A required exclusion-root mapping could not be established.
+    ExclusionUnavailable,
     /// Required resolved-target policy could not be evaluated.
     Policy,
     /// Positive exclusion without opening content.
@@ -163,6 +166,7 @@ impl ScanReason {
             | Self::UnqualifiedResumption
             | Self::Cycle
             | Self::Limit
+            | Self::ExclusionUnavailable
             | Self::Policy
             | Self::Unstable
             | Self::ProbeBusy

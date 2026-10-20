@@ -632,6 +632,16 @@ implementation:
   identity and durable representations remain fixed, while enabling either
   platform requires separate conformance and durability evidence.
 
+The Linux scanner requires Linux 5.6 or newer and a container security profile
+that permits `openat2`; blocked or unavailable verification prevents admission.
+Native directory resumption is enabled for ext4, XFS, and btrfs. Tmpfs and other
+unqualified backends use conservative replay: resumed scans remain incomplete,
+so discovery-based cleanup can stall even while positive discovery continues.
+Repeated exhaustion of the fixed-order scan work budget can leave the same tail
+of files or roots undiscovered. See the
+[scanner support and integration requirements](../crates/core-nodes/src/receivers/filelog_receiver/docs/discovery.md)
+for qualification, diagnostics, and resource limits.
+
 Exact behavior is defined by the
 [Phase 1 behavioral specification](filelog-receiver-phase1-spec.md), with its
 [conformance specification](filelog-receiver-phase1-conformance.md). Exact

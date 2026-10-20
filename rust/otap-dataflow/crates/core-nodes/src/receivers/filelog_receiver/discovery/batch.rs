@@ -135,6 +135,7 @@ mod tests {
             (Some(Cycle), true),
             (Some(Limit), true),
             (Some(Policy), true),
+            (Some(ExclusionUnavailable), true),
             (Some(Unstable), true),
             (Some(ProbeBusy), true),
             (Some(DescriptorExhausted), true),
