@@ -25,6 +25,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRu
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::RuntimeControlMsg;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::Producer;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics};
@@ -38,8 +39,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLo
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use prost::Message;
 use rdkafka::ClientConfig;
@@ -212,7 +212,7 @@ fn create_traces_with_spans_otap_bytes() -> Vec<u8> {
     // Convert OTLP bytes -> OtapPayload -> OtapArrowRecords
     let payload: OtapPayload = OtlpProtoBytes::ExportTracesRequest(Bytes::from(buf)).into();
     let mut otap_records: OtapArrowRecords = payload
-        .try_into_with_default()
+        .try_into_otap(&CodecService::new().unwrap())
         .expect("convert OTLP to OTAP Arrow");
 
     // Serialize to BatchArrowRecords wire bytes (as the Kafka receiver expects)
@@ -243,20 +243,15 @@ fn arrow_records_to_bytes(arrow_records: &mut OtapArrowRecords) -> Vec<u8> {
 /// first step for tests that assert on the delivered signal's OTLP-proto bytes
 /// (e.g. via `matches!` on the request variant or `decode`).
 fn take_otlp_proto(pdata: &mut OtapPdata) -> OtlpProtoBytes {
-    pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("to OtlpProtoBytes")
+    otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(pdata.take_payload())
+        .expect("OTLP encoding")
 }
 
 /// Convert an `OtapPdata` (containing OTAP Arrow records) back to an OTLP
 /// `ExportTraceServiceRequest` so tests can assert against familiar protobuf
 /// structs instead of Arrow column internals.
 fn otap_pdata_to_traces(pdata: &mut OtapPdata) -> ExportTraceServiceRequest {
-    let otlp: OtlpProtoBytes = pdata
-        .take_payload()
-        .try_into_with_default()
-        .expect("OTAP -> OTLP conversion");
+    let otlp = take_otlp_proto(pdata);
     ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
 }
 
