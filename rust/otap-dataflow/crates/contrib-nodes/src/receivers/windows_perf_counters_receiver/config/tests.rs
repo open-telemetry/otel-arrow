@@ -125,16 +125,16 @@ fn rejects_empty_object_collections() {
     );
 }
 
-/// Scenario: Required text values are empty or whitespace-only.
-/// Guarantees: Validation identifies each blank field instead of emitting unnamed telemetry.
+/// Scenario: A metric definition name is empty or an attribute key is whitespace-only.
+/// Guarantees: Empty metric names and blank attribute keys remain configuration errors.
 #[test]
 fn rejects_blank_required_values() {
     assert_config_error(
         json!({
-            "metrics": {" ": {"description": "Value.", "unit": "By", "gauge": {}}},
+            "metrics": {"": {"description": "Value.", "unit": "By", "gauge": {}}},
             "perfcounters": [{
                 "object": "Memory",
-                "counters": [{"name": "Available Bytes", "metric": " "}]
+                "counters": [{"name": "Available Bytes", "metric": ""}]
             }]
         }),
         "metric name must not be empty",
@@ -315,8 +315,8 @@ fn defaults_optional_metric_metadata_and_allows_unused_definitions() {
     assert_eq!(counter.kind, MetricKind::Gauge);
 }
 
-/// Scenario: A referenced metric omits or supplies a blank description.
-/// Guarantees: Descriptions normalize to empty without changing the supplied unit.
+/// Scenario: A referenced metric omits its description or supplies empty or whitespace text.
+/// Guarantees: An omitted description defaults to empty; supplied descriptions remain unchanged.
 #[test]
 fn defaults_optional_metric_description() {
     for description in [None, Some(""), Some(" \t ")] {
@@ -331,7 +331,10 @@ fn defaults_optional_metric_description() {
             Some(description) => value["metrics"]["available"]["description"] = json!(description),
         }
         let config = RuntimeConfig::from_json(&value).unwrap();
-        assert!(config.counters[0].description.is_empty());
+        assert_eq!(
+            config.counters[0].description.as_ref(),
+            description.unwrap_or("")
+        );
         assert_eq!(config.counters[0].unit, "By");
     }
 }
@@ -354,14 +357,17 @@ fn defaults_omitted_metric_unit() {
 }
 
 /// Scenario: A referenced metric supplies an empty or whitespace-only unit.
-/// Guarantees: Blank units receive the same "1" default as an omitted unit.
+/// Guarantees: Only an empty unit receives the "1" default; whitespace-only units remain unchanged.
 #[test]
 fn defaults_empty_metric_unit() {
     for unit in ["", " \t "] {
         let mut value = config_with_timing("30s", "1s");
         value["metrics"]["available"]["unit"] = json!(unit);
         let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(config.counters[0].unit, "1");
+        assert_eq!(
+            config.counters[0].unit,
+            if unit.is_empty() { "1" } else { unit }
+        );
     }
 }
 
@@ -386,42 +392,37 @@ fn shares_metadata_across_expanded_counters() {
     assert!(Arc::ptr_eq(&first.description, &second.description));
 }
 
-/// Scenario: Metric names violate the OpenTelemetry instrument-name syntax.
-/// Guarantees: Validation rejects them instead of emitting invalid metric names.
+/// Scenario: OTLP metric names do not satisfy SDK instrument-name syntax or length limits.
+/// Guarantees: Nonempty whitespace-only, Unicode, numeric, punctuated and long names resolve unchanged.
 #[test]
-fn rejects_invalid_metric_names() {
-    let too_long = format!("a{}", "b".repeat(MAX_METRIC_NAME_LEN));
-    for name in ["1available", "avail able", "\u{e9}", too_long.as_str()] {
-        assert_config_error(
-            json!({
-                "metrics": {name: {"description": "Value.", "unit": "By", "gauge": {}}},
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": name}]
-                }]
-            }),
-            "must start with an ASCII letter",
-        );
-    }
-    let at_limit = format!("a{}", "b".repeat(MAX_METRIC_NAME_LEN - 1));
-    for name in ["system.memory_usage-1/s", at_limit.as_str()] {
-        assert!(
-            RuntimeConfig::from_json(&json!({
-                "metrics": {name: {"description": "Value.", "unit": "By", "gauge": {}}},
-                "perfcounters": [{
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": name}]
-                }]
-            }))
-            .is_ok()
-        );
+fn accepts_unrestricted_metric_names() {
+    let long_name = format!("metric {}", "x".repeat(512));
+    for name in [
+        "  ",
+        "1available",
+        "avail able",
+        "\u{e9}",
+        "metric:!{}",
+        "system.memory_usage-1/s",
+        long_name.as_str(),
+    ] {
+        let config = RuntimeConfig::from_json(&json!({
+            "metrics": {name: {"unit": "By"}},
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [{"name": "Available Bytes", "metric": name}]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(config.counters[0].name, name);
+        assert_eq!(config.counters[0].unit, "By");
     }
 }
 
-/// Scenario: Metric units violate the OpenTelemetry instrument-unit syntax.
-/// Guarantees: Validation rejects non-ASCII, control-character, or overlong units.
+/// Scenario: Metric units contain Unicode or long arbitrary text.
+/// Guarantees: Every supplied nonempty unit is retained verbatim.
 #[test]
-fn rejects_invalid_metric_units() {
+fn accepts_unrestricted_metric_units() {
     let unit_config = |unit: &str| {
         json!({
             "metrics": {"m": {"description": "Value.", "unit": unit, "gauge": {}}},
@@ -431,20 +432,70 @@ fn rejects_invalid_metric_units() {
             }]
         })
     };
-    let too_long = "a".repeat(MAX_METRIC_UNIT_LEN + 1);
-    for unit in ["\u{b5}s", "B\ty", too_long.as_str()] {
-        assert_config_error(unit_config(unit), "metrics.m.unit must be printable ASCII");
-    }
-    let at_limit = "a".repeat(MAX_METRIC_UNIT_LEN);
-    for unit in ["By", "{packets}/s", "1", at_limit.as_str()] {
-        assert!(RuntimeConfig::from_json(&unit_config(unit)).is_ok());
+    let long_unit = "a".repeat(128);
+    for unit in [
+        " ",
+        " By ",
+        "By",
+        "{packets}/s",
+        "1",
+        "\u{b5}s",
+        "B y",
+        long_unit.as_str(),
+    ] {
+        let config = RuntimeConfig::from_json(&unit_config(unit)).unwrap();
+        assert_eq!(config.counters[0].unit, unit);
     }
 }
 
-/// Scenario: Metric definitions exceed the configuration's entry limit.
-/// Guarantees: The definition bound applies even when most definitions are unused.
+/// Scenario: A metric name, its exact reference and its unit contain control characters.
+/// Guarantees: Metric names, references and units retain their configured control characters.
+/// Metric metadata is not a native PDH selector and must not inherit native-component restrictions.
 #[test]
-fn rejects_too_many_metric_definitions() {
+fn preserves_control_characters_in_metric_names_references_and_units() {
+    let name = "metric\nname";
+    let unit = "B\0y";
+    let config = RuntimeConfig::from_json(&json!({
+        "metrics": {name: {"unit": unit}},
+        "perfcounters": [{"object": "Memory", "counters": [
+            {"name": "Available Bytes", "metric": name}
+        ]}]
+    }))
+    .unwrap();
+    assert_eq!(config.counters[0].name, name);
+    assert_eq!(config.counters[0].unit, unit);
+}
+
+/// Scenario: A metric description is configured using a YAML literal block.
+/// Guarantees: The block's trailing newline reaches the metric description unchanged.
+/// Users control block chomping in YAML; the receiver must not trim the parsed string.
+#[test]
+fn preserves_yaml_block_description() {
+    let value: serde_json::Value = serde_yaml::from_str(
+        r#"
+metrics:
+  available:
+    description: |
+      Available memory.
+perfcounters:
+  - object: Memory
+    counters:
+      - name: Available Bytes
+        metric: available
+"#,
+    )
+    .unwrap();
+    let config = RuntimeConfig::from_json(&value).unwrap();
+    assert_eq!(
+        config.counters[0].description.as_ref(),
+        "Available memory.\n"
+    );
+}
+
+/// Scenario: Definitions exceed the configured native-path budget but only one is referenced.
+/// Guarantees: Unused definitions do not consume the counter-path budget or produce counters.
+#[test]
+fn accepts_metric_definitions_beyond_path_limit() {
     let metrics = (0..=MAX_COUNTERS)
         .map(|index| {
             (
@@ -453,16 +504,16 @@ fn rejects_too_many_metric_definitions() {
             )
         })
         .collect::<serde_json::Map<_, _>>();
-    assert_config_error(
-        json!({
-            "metrics": metrics,
-            "perfcounters": [{
-                "object": "Memory",
-                "counters": [{"name": "Available Bytes", "metric": "m0"}]
-            }]
-        }),
-        "metrics must contain at most 256 entries",
-    );
+    let config = RuntimeConfig::from_json(&json!({
+        "metrics": metrics,
+        "perfcounters": [{
+            "object": "Memory",
+            "counters": [{"name": "Available Bytes", "metric": "m0"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(config.counters.len(), 1);
+    assert_eq!(config.counters[0].name, "m0");
 }
 
 /// Scenario: An unused definition selects an unsupported metric kind.
@@ -474,7 +525,7 @@ fn validates_unused_metric_definitions() {
     assert_config_error(value, "metrics.unused: delta Sum is not supported yet");
 }
 
-/// Scenario: Definitions are omitted or empty and metric references are omitted or blank.
+/// Scenario: Definitions are omitted or empty and metric references are omitted or empty.
 /// Guarantees: Path-named Gauges retain configured index spelling and canonical native paths.
 #[test]
 fn defaults_path_metrics_without_definitions() {
@@ -486,7 +537,7 @@ fn defaults_path_metrics_without_definitions() {
         if let Some(definitions) = definitions {
             value["metrics"] = definitions;
         }
-        for reference in [None, Some(""), Some(" \t ")] {
+        for reference in [None, Some("")] {
             if let Some(reference) = reference {
                 value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
             }
@@ -515,14 +566,14 @@ fn defaults_path_metrics_without_definitions() {
     }
 }
 
-/// Scenario: An implicitly matched path definition selects invalid metadata or an unsupported kind.
+/// Scenario: An implicitly matched path definition selects conflicting or unsupported kinds.
 /// Guarantees: Path-name resolution never replaces an invalid definition with the default Gauge.
 #[test]
 fn validates_implicit_path_metric_definitions() {
     for (definition, expected) in [
         (
             json!({"sum": {"aggregation": "delta"}}),
-            "delta Sum is not supported yet",
+            "delta Sum is not supported",
         ),
         (
             json!({"sum": {"aggregation": "cumulative", "monotonic": true}}),
@@ -533,7 +584,6 @@ fn validates_implicit_path_metric_definitions() {
             "must not contain both",
         ),
         (json!({"sum": null}), "null Sum is invalid"),
-        (json!({"unit": "\u{b5}s"}), "unit must be printable ASCII"),
     ] {
         assert_config_error(
             json!({"metrics": {r"\Memory\Available Bytes": definition}, "perfcounters": [{
@@ -545,15 +595,17 @@ fn validates_implicit_path_metric_definitions() {
 }
 
 /// Scenario: Definitions and explicit references use exact local paths, including long and Unicode names.
-/// Guarantees: Path names use existing segment and UTF-16 bounds rather than instrument-name restrictions.
+/// Guarantees: References resolve literal definition keys. Path-shaped names are metric names,
+/// so their spelling and length aren't checked as native paths.
 #[test]
 fn accepts_path_shaped_metric_definitions_and_references() {
-    let at_limit = format!(r"\Memory\{}", "a".repeat(MAX_COUNTER_PATH_LEN - 8));
+    let overlong = format!(r"\Memory\{}", "\u{1f600}".repeat(MAX_COUNTER_PATH_LEN));
     for name in [
         r"\Memory\Available (Bytes)",
         r"\Process(app#001)\Private Bytes",
+        r"\Hyper-V Virtual Switch Port(*)\IPsec SAs Offloaded ",
         "\\M\u{e9}moire\\Octets disponibles",
-        at_limit.as_str(),
+        overlong.as_str(),
     ] {
         let config = RuntimeConfig::from_json(&json!({
             "metrics": {name: {}},
@@ -565,56 +617,177 @@ fn accepts_path_shaped_metric_definitions_and_references() {
         .unwrap();
         assert_eq!(config.counters[0].name, name);
     }
-    let too_long = format!("{at_limit}a");
-    let expected = format!("metric name {too_long:?} must contain at most 2047 UTF-16 code units");
-    assert_config_error(
-        json!({"metrics": {too_long: {}}, "perfcounters": [{
-            "object": "Memory", "counters": [{"name": "Available Bytes"}]
-        }]}),
-        &expected,
+}
+
+/// Scenario: Path-shaped definitions use opaque names or differ from native paths by trailing spaces.
+/// Guarantees: Implicit lookup requires exact configured spelling; explicit references select literal definitions.
+/// Padding changes metric identity; only generated paths are sent to PDH.
+#[test]
+fn matches_path_definitions_only_by_exact_spelling() {
+    for (name, counter) in [
+        ("\\Memory\\Available Bytes ", "Available Bytes"),
+        (r"\Memory", "Available Bytes"),
+        ("\\Memory\\Available Bytes ", "Available Bytes "),
+    ] {
+        let path = counter_path("Memory", None, counter.trim());
+        let mut value = json!({"metrics": {name: {"unit": "exact"}}, "perfcounters": [{
+            "object": "Memory", "counters": [{"name": counter}]
+        }]});
+        let config = RuntimeConfig::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].name, path);
+        assert_eq!(
+            config.counters[0].unit,
+            if name == path { "exact" } else { "1" }
+        );
+        value["perfcounters"][0]["counters"][0]["metric"] = json!(name);
+        let config = RuntimeConfig::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].name, name);
+        assert_eq!(config.counters[0].unit, "exact");
+    }
+}
+
+/// Scenario: Definitions include a leading-whitespace name, an explicit alias, an unavailable implicit path, an unselected case variant and an overlong name.
+/// Guarantees: Only path-shaped definitions no counter selects warn, whatever their length or availability; keys with leading whitespace are ordinary names and never warn.
+/// A valid alias or unavailable counter must not be misdiagnosed as an unused definition.
+#[test]
+fn warns_only_for_unselected_path_metric_definitions() {
+    let overlong = format!(r"\Memory\{}", "\u{1f600}".repeat(MAX_COUNTER_PATH_LEN / 2));
+    let names = [
+        " \\NotPath\\Unused ",
+        r"\Alias*?",
+        r"\Unavailable\Counter",
+        r"\unavailable\counter",
+        overlong.as_str(),
+    ];
+    let definitions = names
+        .iter()
+        .map(|name| ((*name).to_owned(), json!({"unit": "selected"})))
+        .collect::<serde_json::Map<_, _>>();
+    let mut value = json!({
+        "metrics": definitions,
+        "perfcounters": [
+            {"object": "Memory", "counters": [
+                {"name": "Available Bytes", "metric": r"\Alias*?"}
+            ]},
+            {"object": "Unavailable", "counters": [{"name": "Counter"}]}
+        ]
+    });
+    let config = RuntimeConfig::from_json(&value).unwrap();
+    assert!(
+        config
+            .counters
+            .iter()
+            .all(|counter| counter.unit == "selected")
+    );
+    assert_eq!(
+        unused_path_metric_definitions(
+            value["metrics"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str),
+            &config.counters,
+        ),
+        [overlong.as_str(), r"\unavailable\counter",]
+    );
+    value["perfcounters"][0]["counters"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "Committed Bytes", "metric": overlong}));
+    let config = RuntimeConfig::from_json(&value).unwrap();
+    assert_eq!(
+        unused_path_metric_definitions(
+            value["metrics"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str),
+            &config.counters,
+        ),
+        [r"\unavailable\counter"]
     );
 }
 
-/// Scenario: Unused path-shaped definitions contain malformed or unsupported path segments.
-/// Guarantees: The name accommodation does not bypass existing exact-path safety validation.
+/// Scenario: Definitions include an ASCII case group, a Unicode pair, a unique name and a whitespace-different name.
+/// Guarantees: Only case-distinct groups warn; whitespace-different names stay separate.
+/// A case-only difference is likely a typo, but all names are valid, so this warns rather than rejects.
 #[test]
-fn rejects_invalid_path_shaped_metric_definitions() {
-    for name in [
-        r"\Memory",
-        r"\\host\Memory\X",
-        r"\Memory(*)\X",
-        r"\Memory(app\X",
-        r"\Memory()\X",
-        r"\Memory(#0)\X",
-        r"\Memory\X\Y",
-        r"\Memory\X?",
-        "\\Memory\\X\0",
-    ] {
-        assert_config_error(
-            json!({"metrics": {name: {}}, "perfcounters": [{
-                "object": "Memory", "counters": [{"name": "Available Bytes"}]
-            }]}),
-            "metric name",
-        );
-    }
+fn warns_once_per_case_distinct_group() {
+    let names = ["cpu", "CPU", "\u{c9}", "\u{e9}", "unique", " cpu"];
+    assert_eq!(
+        case_distinct_metric_definitions(names),
+        [vec!["cpu", "CPU"], vec!["\u{c9}", "\u{e9}"],]
+    );
 }
 
-/// Scenario: Path-shaped definition names contain padding around object, instance, or counter segments.
-/// Guarantees: Definition identities are rejected rather than accepted with padded path segments.
+/// Scenario: Case-distinct ordinary and path definitions are referenced explicitly and by path fallback.
+/// Guarantees: Lookup remains exact and case-sensitive, preserving separate metadata and defaulting mismatched paths.
+/// OTLP metric names are case-sensitive.
 #[test]
-fn rejects_padding_in_path_shaped_metric_definitions() {
-    for name in [
-        r"\Memory \Available Bytes",
-        r"\Process( app )\X",
-        r"\Memory\ Available Bytes",
+fn resolves_case_distinct_definitions_exactly() {
+    let mut value = json!({
+        "metrics": {
+            "cpu": {"unit": "lower"},
+            "CPU": {"unit": "upper"},
+            r"\Memory\Available Bytes": {"unit": "By"},
+            r"\memory\available bytes": {"unit": "\u{b5}s", "sum": {"aggregation": "cumulative"}}
+        },
+        "perfcounters": [
+            {"object": "Processor", "counters": [
+                {"name": "Time", "metric": "cpu"},
+                {"name": "User Time", "metric": "CPU"}
+            ]},
+            {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
+            {"object": "memory", "counters": [{"name": "committed bytes",
+                "metric": r"\memory\available bytes"}]},
+            {"object": "MEMORY", "counters": [{"name": "CACHE BYTES"}]}
+        ]
+    });
+    let config = RuntimeConfig::from_json(&value).unwrap();
+    for (counter, name, unit, kind) in [
+        (&config.counters[0], "cpu", "lower", MetricKind::Gauge),
+        (&config.counters[1], "CPU", "upper", MetricKind::Gauge),
+        (
+            &config.counters[2],
+            r"\Memory\Available Bytes",
+            "By",
+            MetricKind::Gauge,
+        ),
+        (
+            &config.counters[3],
+            r"\memory\available bytes",
+            "\u{b5}s",
+            MetricKind::Sum,
+        ),
+        (
+            &config.counters[4],
+            r"\MEMORY\CACHE BYTES",
+            "1",
+            MetricKind::Gauge,
+        ),
     ] {
-        assert_config_error(
-            json!({"metrics": {name: {}}, "perfcounters": [{
-                "object": "Memory", "counters": [{"name": "Available Bytes"}]
-            }]}),
-            &format!("metric name {name:?} segments must not have surrounding whitespace"),
-        );
+        assert_eq!(counter.name, name);
+        assert_eq!(counter.unit, unit);
+        assert_eq!(counter.kind, kind);
     }
+    value["perfcounters"][0]["counters"][0]["metric"] = json!("Cpu");
+    assert_config_error(value, "references undefined metric \"Cpu\"");
+}
+
+/// Scenario: Implicit and explicit mappings configure equivalent native paths with different index spellings.
+/// Guarantees: Path-derived names do not weaken canonical, case-insensitive native duplicate rejection.
+#[test]
+fn rejects_duplicate_paths_with_omitted_metric_references() {
+    assert_config_error(
+        json!({
+            "metrics": {"explicit": {}},
+            "perfcounters": [
+                {"object": "Process", "instances": "app#001", "counters": [{"name": "Private Bytes"}]},
+                {"object": "process", "instances": "APP#1", "counters": [{"name": "private bytes", "metric": "explicit"}]}
+            ]
+        }),
+        "duplicate counter path",
+    );
 }
 
 /// Scenario: A counter mapping names a metric that is not defined.
@@ -658,7 +831,7 @@ fn rejects_undefined_references_and_empty_perfcounters() {
     );
 }
 
-/// Scenario: A metric reference or the definitions map is explicitly null.
+/// Scenario: A metric reference is explicitly null at different object and counter indexes.
 /// Guarantees: Null references identify both entry indexes and never select path-name fallback.
 #[test]
 fn rejects_null_metric_forms() {
@@ -679,9 +852,24 @@ fn rejects_null_metric_forms() {
             ),
         );
     }
-    let mut value = config_with_timing("30s", "1s");
-    value["metrics"] = json!(null);
-    assert_config_error(value, "expected a map");
+}
+
+/// Scenario: The metric definitions map is explicitly null and a counter uses implicit naming.
+/// Guarantees: A null definitions map behaves like an empty map and produces a path-named Gauge.
+/// Go accepts null metric maps; no definitions are required for implicit collection.
+#[test]
+fn accepts_null_metric_definitions_with_implicit_names() {
+    let config = RuntimeConfig::from_json(&json!({
+        "metrics": null,
+        "perfcounters": [{"object": "Memory", "counters": [{"name": "Available Bytes"}]}]
+    }))
+    .unwrap();
+    assert_eq!(config.counters.len(), 1);
+    let counter = &config.counters[0];
+    assert_eq!(counter.name, r"\Memory\Available Bytes");
+    assert_eq!(counter.unit, "1");
+    assert!(counter.description.is_empty());
+    assert_eq!(counter.kind, MetricKind::Gauge);
 }
 
 /// Scenario: An object specifies one exact instance as a scalar string.
@@ -990,72 +1178,69 @@ fn rejects_duplicate_counter_paths_case_insensitively() {
     );
 }
 
-/// Scenario: Implicit and explicit mappings configure equivalent native paths with different index spellings.
-/// Guarantees: Path-derived names do not weaken canonical, case-insensitive native duplicate rejection.
-#[test]
-fn rejects_duplicate_paths_with_omitted_metric_references() {
-    assert_config_error(
-        json!({
-            "metrics": {"explicit": {}},
-            "perfcounters": [
-                {"object": "Process", "instances": "app#001", "counters": [{"name": "Private Bytes"}]},
-                {"object": "process", "instances": "APP#1", "counters": [{"name": "private bytes", "metric": "explicit"}]}
-            ]
-        }),
-        "duplicate counter path",
-    );
-}
-
 /// Scenario: Metric names, references, descriptions, units, and attribute keys are padded.
-/// Guarantees: Values are trimmed consistently and padded references still resolve.
+/// Guarantees: Metric metadata reaches CounterConfig unchanged while attribute keys retain baseline trimming.
+/// The receiver must not rewrite user-supplied metric metadata.
 #[test]
-fn trims_metric_definitions_and_attribute_keys() {
+fn preserves_metric_identities_and_metadata() {
     let config = RuntimeConfig::from_json(&json!({
         "metrics": {" available ": {
-            "description": " Available memory. ",
-            "unit": " By ",
+            "description": " Available\tmemory. ",
+            "unit": "\r By \t",
             "gauge": {}
         }},
         "perfcounters": [{
             "object": "Memory",
             "counters": [{
                 "name": "Available Bytes",
-                "metric": "available ",
-                "attributes": {" state ": " free "}
+                "metric": " available ",
+                "attributes": {" host ": " free "}
             }]
         }]
     }))
     .unwrap();
     let counter = &config.counters[0];
-    assert_eq!(counter.name, "available");
-    assert_eq!(&*counter.description, "Available memory.");
-    assert_eq!(counter.unit, "By");
+    assert_eq!(counter.name, " available ");
+    assert_eq!(&*counter.description, " Available\tmemory. ");
+    assert_eq!(counter.unit, "\r By \t");
     assert_eq!(
         *counter.attributes,
-        BTreeMap::from([("state".to_owned(), " free ".to_owned())])
+        BTreeMap::from([("host".to_owned(), " free ".to_owned())])
     );
 }
 
-/// Scenario: Metric names or attribute keys collide after trimming or case folding.
-/// Guarantees: Validation rejects them instead of silently merging definitions.
+/// Scenario: Metric names differ only by leading or trailing spaces.
+/// Guarantees: Both metrics load with their own metadata without merging.
+/// Distinct quoted identities must not collide because their unquoted text looks alike.
 #[test]
-fn rejects_duplicate_metric_names_and_attribute_keys() {
-    let metric = json!({"description": "Value.", "unit": "By", "gauge": {}});
-    for (first, second) in [("cpu", " cpu"), ("cpu", "CPU")] {
-        assert_config_error(
-            json!({
-                "metrics": {first: metric.clone(), second: metric.clone()},
-                "perfcounters": [{
-                    "object": "Processor",
-                    "counters": [
-                        {"name": "% Processor Time", "metric": first},
-                        {"name": "% User Time", "metric": second}
-                    ]
-                }]
-            }),
-            "metrics contains duplicate",
-        );
+fn allows_whitespace_distinct_metric_names() {
+    for (first, second) in [("foo", " foo"), ("foo", "foo ")] {
+        let config = RuntimeConfig::from_json(&json!({
+            "metrics": {first: {"unit": "By"}, second: {"unit": "KiBy"}},
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [
+                    {"name": "Available Bytes", "metric": first},
+                    {"name": "Committed Bytes", "metric": second}
+                ]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(config.counters.len(), 2);
+        for (counter, name, unit) in [
+            (&config.counters[0], first, "By"),
+            (&config.counters[1], second, "KiBy"),
+        ] {
+            assert_eq!(counter.name, name);
+            assert_eq!(counter.unit, unit);
+        }
     }
+}
+
+/// Scenario: Attribute keys collide after trimming.
+/// Guarantees: Validation rejects them instead of silently merging attributes.
+#[test]
+fn rejects_duplicate_attribute_keys() {
     assert_config_error(
         gauge_config(json!({
             "object": "Memory",
@@ -1065,8 +1250,48 @@ fn rejects_duplicate_metric_names_and_attribute_keys() {
                 "attributes": {"state": "a", " state": "b"}
             }]
         })),
-        "contains duplicate attribute key \"state\"",
+        "duplicate attribute key \"state\"",
     );
+}
+
+/// Scenario: Explicit metric references are empty, padded, whitespace-only or missing their exact definition.
+/// Guarantees: Only empty references use the implicit path; nonempty references select their exact definition or fail as undefined.
+/// A mistyped reference must not silently select a different metric or the implicit path.
+#[test]
+fn resolves_metric_references_exactly() {
+    let path = r"\Memory\Available Bytes";
+    let mut value = json!({
+        "metrics": {
+            "foo": {"unit": "plain"},
+            " foo": {"unit": "padded"},
+            " \t ": {"unit": "whitespace"},
+            path: {"unit": "path"}
+        },
+        "perfcounters": [{"object": "Memory", "counters": [
+            {"name": "Available Bytes", "metric": ""}
+        ]}]
+    });
+    for (reference, name, unit) in [
+        ("", path, "path"),
+        ("foo", "foo", "plain"),
+        (" foo", " foo", "padded"),
+        (" \t ", " \t ", "whitespace"),
+    ] {
+        value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
+        let config = RuntimeConfig::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].name, name);
+        assert_eq!(config.counters[0].unit, unit);
+    }
+    for reference in ["  ", "foo ", " foo "] {
+        value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
+        assert_config_error(
+            value.clone(),
+            &format!("references undefined metric {reference:?}"),
+        );
+    }
+    let _ = value["metrics"].as_object_mut().unwrap().remove(" foo");
+    value["perfcounters"][0]["counters"][0]["metric"] = json!(" foo");
+    assert_config_error(value, "references undefined metric \" foo\"");
 }
 
 /// Scenario: A configured data-point attribute uses the receiver-owned namespace.
