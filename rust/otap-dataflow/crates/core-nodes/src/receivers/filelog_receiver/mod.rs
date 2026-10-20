@@ -13,3 +13,7 @@ pub mod multiline_pattern;
 /// Linux source-file access.
 #[cfg(target_os = "linux")]
 pub mod source;
+
+/// Bounded Linux discovery without reconciliation or receiver wiring.
+#[cfg(target_os = "linux")]
+pub mod discovery;

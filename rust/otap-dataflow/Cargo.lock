@@ -7762,6 +7762,7 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "reqwest 0.13.5",
+ "rustix",
  "secrecy",
  "serde",
  "serde_json",
