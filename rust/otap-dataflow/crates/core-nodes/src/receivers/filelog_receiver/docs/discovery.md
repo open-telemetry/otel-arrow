@@ -1,177 +1,189 @@
 # Bounded discovery scanner
 
-`discovery::Scanner` implements synchronous Linux filesystem observation. It
-accepts precompiled matching policy and fixed traversal prefixes, and returns
-bounded, descriptor-free batches followed by a completion marker. It does not
-register a receiver, assign durable identities, select pending candidates,
-reconcile bindings, or finalize readers.
+`discovery::Scanner` finds and checks files on Linux. It walks configured
+include directories, applies exclusions, and delivers small batches of
+observations. Each call to `scan` is one pass and returns a `ScanCompletion`.
 
-Outcome classification lives on `ScanReason`; `batch` owns reusable storage and
-completion accounting without filesystem calls. Linux orchestration, root
-resolution, traversal, and probing remain separate from those rules. Linux is
-the only implemented backend; future backends can reuse the evidence and
-batching contracts without adopting Linux directory traversal.
+Reconciliation owns file identity, candidate selection, bindings, and reader
+finalization. The scanner only supplies observations. Linux file access is
+separate from the observation and batching contracts for future platform reuse.
 
-## Integration contract
+## Complete and incomplete passes
 
-- Configuration supplies absolute directory prefixes, matching policy, explicit
-  limits, link policy, and the actual checkpoint namespace directory's locator.
-  Obtain it from `CheckpointStore::namespace_locator()` after opening the store.
-  Do not supply the engine's broader state-root identity in its place.
-- Matchers evaluate lexical names, verified target paths, and full patterns
-  through exclusion-root suffix mappings. They must not accumulate scanned names.
-- Share one `ProbeBudget` with reader reopens. Acquisition reserves both transient
-  descriptor slots together. A busy probe gets one scheduler yield and retry;
-  continued contention makes coverage incomplete. Backoff and fairness belong
-  to the worker; this allowance is not an OS reservation. Scheduler integration
-  must give both discovery and reader reopens fair access. On a stable tree
-  within the work budget, bounded permit holds under sustained reader load must
-  still allow complete discovery passes and reader progress. Cancellation must
-  remain responsive. A single yield/retry is not evidence of that fairness.
-- Run `scan` on a blocking worker. The callback borrows at most `limits.batch`
-  observations, with no filesystem handles retained. It must bound copies and
-  check cancellation while waiting for downstream capacity. Returning false
-  cancels the pass. Kernel calls already in progress cannot be interrupted.
-- `reason == None` identifies a policy-checked, stable candidate. Its raw prefix,
-  size, and modification time are handle-derived observations, not proof of
-  durable identity. `Directory` observations let reconciliation compare bounded
-  retained binding-parent identities. Other outcomes preserve errno and, where
-  available, locator presence independently of candidate eligibility.
-- `scan_with_requests` accepts a caller-owned bounded lookup. A presence-only
-  request still pins the source and checks policy, but does not open/read content.
-  It returns `PresenceOnly`, not a validated candidate. A different locator
-  triggers full probing. Admission, reconnection, and validated reappearance
-  require a full request; locator equality alone never grants those permissions.
-- Failed or unstable probes do not publish candidate size or modification time.
-  A failed second pin clears the unconfirmed locator; a single successful pin
-  may still supply presence on policy/content failures.
-- Overlapping roots and aliases can emit multiple observations. Reconciliation
-  deduplicates its bounded tracked/pending populations; the scanner never builds
-  an unbounded match or seen-inode set.
-- Consume all batches before using the returned completion marker. Complete
-  coverage is an operational polling result, not a namespace snapshot. A later
-  retained-parent comparison may invalidate negative evidence too.
-- `retained_bytes()` accounts for scanner-owned capacity between scans. Matcher
-  memory and consumer copies have separate owners. Frame buffers are pooled up
-  to the depth bound; retained accounting includes them after traversal. Root
-  resolution, entry buffers, exclusion mappings, and fingerprints remain bounded.
+- **Complete:** the required traversal and checks succeeded. Reconciliation can
+  use the results together with its rotation and retention rules. This is still
+  a polling result, not a snapshot proving that a file is gone.
+- **Incomplete:** some coverage or required check was unavailable. Candidates
+  that passed their own checks remain usable, but the pass cannot support
+  conclusions that unseen files have disappeared or can age out of retention.
 
-## Source and target verification
+Incomplete passes are expected, for example when a directory changes during a
+scan. They do not by themselves stop existing readers. The cause matters:
+exclusion failures can prevent admission, and traversal failures can leave files
+undiscovered. The worker can retry on a later pass; persistent causes need
+attention. Later comparisons of tracked files' parent directories can also
+invalidate absence conclusions from an otherwise complete pass.
 
-`PinnedSource` separates the existing path-only validation from read conversion.
-Discovery keeps the pin alive while evaluating policy and converting it through
-trusted procfs. Each candidate has two sequential probes, with the first closed
-before the second. Both locators and resolved paths must agree, size must not
-shrink, and the second raw fingerprint must extend the first.
+## Using the scanner
 
-Target evidence uses bounded `/proc/self/fd` link text and a locator check through
-`openat2(RESOLVE_NO_SYMLINKS)`. This checks intermediate components as well as the
-last one. A capability check on the first pass reports `VerificationUnavailable`
-if the required operation is unavailable, rather than reporting every root as
-missing. Permanent capability failures stay cached until scanner recreation;
-transient resource failures can retry on a later pass. There is no unrestricted
-verification fallback. Successful verification therefore requires Linux 5.6 or
-newer and a security profile permitting this syscall. An unavailable or blocked
-syscall produces `VerificationUnavailable` and no candidate admission on each
-pass. The trusted procfs read-open
-itself is unchanged. Neither zero links nor a `" (deleted)"` suffix bypasses policy.
+- Supply absolute directory prefixes, precompiled matchers, symlink policy, and
+  limits. Matchers check discovered names, verified targets, and full exclusion
+  patterns through directory aliases; they must not retain every scanned name.
+- Open the checkpoint store first and obtain its namespace identity through
+  `CheckpointStore::namespace_locator()`. Exclude that namespace, not the whole
+  engine state directory.
+- Run `scan` on a blocking worker. Its callback borrows at most `limits.batch`
+  observations. No directory or source handles remain open during delivery.
+  Keep any copies bounded and check cancellation while waiting for downstream
+  capacity. Returning `false` stops the scan. A blocked kernel call cannot be
+  interrupted by the cancellation callback.
+- Share one `ProbeBudget` with reader reopens. It reserves both temporary source
+  descriptor slots together. A busy probe yields and retries once; if still busy,
+  the scan is incomplete. Worker scheduling owns backoff and fair access. Under
+  sustained reader load, bounded permit holds must still let readers progress
+  and stable scans within the work budget complete, with responsive cancellation.
+  The single retry does not establish that fairness.
+- Consume every batch before acting on the completion result. Overlapping roots
+  or aliases can produce duplicates; reconciliation deduplicates its bounded
+  tracked and pending populations.
 
-Ancestor identities supply full-pattern exclusion-root mappings and checkpoint
-namespace exclusion. A second target verification detects substitutions during
-inspection. This is point-in-time evidence, not an atomic ancestry snapshot.
-Concurrent hostile namespace changes and uninspected hardlink aliases retain the
-limitations in the design specification.
+## Understanding results
 
-Exclusion mappings are refreshed every pass, independently of include-root
-baselines. For an absent literal prefix, the scanner maps through its verified
-existing ancestor and retains the missing suffix and original pattern index.
-It still evaluates the full pattern. A dangling prefix alias, permission error,
-or failure after opening a root is not treated as an absent literal prefix.
-Lexically excluded names inspected during traversal may contribute metadata-only
-presence; pruned subtrees are not searched. Failed exclusion-root mappings emit
-`ExclusionUnavailable`, separately from a candidate's `Policy` failure; both
-invalidate coverage, while cancellation remains `Cancelled`.
+| Result | Meaning |
+| --- | --- |
+| `reason == None` | Both probes and policy checks passed. |
+| `PresenceOnly` | Known locator and policy checked; no content read. |
+| `Directory` | Identity for retained binding-parent comparisons. |
+| Other reasons | Rejection or failure; errno and presence where available. |
 
-Path-based syscalls use bounded reusable C-string scratch, including paths of
-256 bytes or more. Ancestor queries temporarily terminate a prefix and restore
-the full path before later verification. No lossy native-byte conversion or
-truncation is accepted.
+Full candidates include handle-derived size, modification time, and fingerprint
+bytes. Presence alone does not authorize admission or reconnection.
 
-## Traversal and resources
+`scan_with_requests` lets the caller use a bounded lookup to request presence-only
+checks for known files. If the locator differs, the scanner performs full probing.
+Admission, reconnection, and validated reappearance require a full request;
+matching device/inode alone does not establish continuity.
 
-Traversal holds one directory handle. Before descent or delivery it closes that
-handle and retains an opaque enumeration cookie, directory locator, and change
-indicators. A changed directory locator prevents resumption. A content-change
-indicator invalidates completeness, but positive traversal can continue when
-resumption is possible. Change indicators are not proof of an immutable listing.
+Failed or unstable probes do not publish candidate size or modification time.
+A failed second pin clears the unconfirmed locator. A successful pin may still
+provide presence evidence when policy or content access fails.
 
-Cookie resumption is enabled for ext4, XFS, and btrfs. Tmpfs and other backends
-use bounded replay from the beginning: the previously consumed prefix must
-match its saved entry count and digest before scanning continues. Replay
-failures stop that traversal unit. A single-open directory needs no resumption
-qualification; a pass that replays remains incomplete even when its prefix
-matches. Tmpfs offset behavior varies across kernels, and no generic tmpfs
-kernel range is qualified for native resumption. Tests on one kernel do not
-qualify older kernels or vendor backports.
+## Checking files and exclusions
 
-Descending into a subdirectory closes the parent handle. Returning to that
-parent requires replay on these backends, so a scan that traverses subdirectories
-remains incomplete even when the tree is unchanged. A recursive include pattern
-alone does not cause this if no subdirectory is traversed.
+`PinnedSource` holds the file open without opening its content for reading.
+The scanner checks policy while that pin remains alive, then converts it to a
+read handle through trusted procfs. Full validation uses two sequential probes;
+the first closes before the second starts. Locators and resolved paths must
+match, size must not shrink, and the second fingerprint must extend the first.
 
-This also limits NFS, CIFS, and overlayfs: positive observations may continue,
-but resumed passes cannot support discovery-derived finalization or retention
-aging. On a stable tree, replay reaches later entries. Repeated prefix changes
-can prevent reaching the tail; replay can also be quadratic across batches and
-consumes the work budget. Qualification must measure these costs before relying
-on such a deployment for cleanup.
+Target verification reads the bounded `/proc/self/fd` path and uses
+`openat2(RESOLVE_NO_SYMLINKS)` to check it against the pin. This rejects symlinks
+in any path component. The syscall was introduced in Linux 5.6 and must be
+permitted by the host or container security settings. The first scan checks
+actual availability. If unavailable or blocked, it reports
+`VerificationUnavailable` and admits no candidates; there is no fallback.
+Permanent capability failures are cached until scanner recreation, while
+transient resource failures can retry on a later scan.
 
-A missing root is incomplete; the first successful validation establishes its
-baseline. A replacement never silently becomes the new baseline. Returning the
-expected root or recreating the scanner is required for complete coverage.
-Validated files in a changed include root may still be observed without adopting
-that root as the expected baseline. Positive observations remain usable during
-incomplete passes.
+Ancestor identities identify directory aliases and the checkpoint namespace.
+Exclusions still use the full pattern. A second target verification checks for
+substitution during inspection. Concurrent hostile changes and uninspected
+hardlinks retain the design's limits: these checks are not an atomic snapshot.
+Zero links and names ending in `" (deleted)"` do not bypass policy.
 
-A persistent dangling or looping link under a followed recursive include can
-hide a required subtree. It makes every affected pass incomplete, blocking
-discovery-derived finalization and retention receiver-wide. Diagnostics identify
-the link; positive observations and qualified resident unlink handling remain
-available. A leaf-only broken link follows the candidate-local rules instead.
+Exclusion mappings refresh every scan. An absent literal prefix can map through
+its verified existing ancestor, retaining the missing suffix and pattern index.
+A dangling alias, denied access, or failure after opening the prefix cannot use
+that rule. Mapping failures report `ExclusionUnavailable`; candidate verification
+failures report `Policy`. Both make coverage incomplete. While a required
+mapping is unavailable, candidates that can still be pinned may report presence,
+but none are admitted. Cancellation remains `Cancelled`.
 
-Limits cover roots, native path bytes, recursion depth, fingerprint bytes, batch
-size, traversal/replay work, and the fixed 8 KiB directory buffer. The work limit
-counts enumeration steps (including replay) and traversal-directory opens; it
-also bounds acyclic alias fan-out. Root preparation is separately bounded by
-configured roots and native path length. Work exhaustion reports `Limit` and
-incomplete coverage; it is not a wall-clock or cross-root fairness guarantee.
-`ScanConfig.limits.work_units` defaults to 1,000,000. With a stable traversal
-order, repeated exhaustion skips the same tail on every pass: those files or
-roots remain undiscovered until the budget or tree changes. Integration must
-surface persistent exhaustion as an actionable coverage/health problem, without
-automatically treating transient churn as invalid configuration. Rotating roots
-alone would not fix starvation inside one large root.
-Allocation failures remain process allocation failures; limits do not reserve
-OS memory or descriptors. Root and filesystem operations preserve original
-errors. Caller-owned retry must not turn descriptor exhaustion into disappearance.
+Excluded names encountered during traversal can supply metadata-only presence.
+Entirely excluded subtrees are not searched. Native path bytes are preserved
+without truncation or lossy conversion, and repeated syscalls reuse bounded
+C-string buffers, including for paths of 256 bytes or more.
 
-## Validation and measurements
+## Directory traversal
 
-Run the Filelog unit tests and `filelog_scan_allocations` on Linux. Resumption
-tests cover multi-batch and nested traversal and detected churn; run them on
-each supported filesystem. Explicit privileged cases cover tmpfs, bind-mount
-pattern mapping, overlayfs replay, and unreachable targets. Run these only in
-an isolated mount namespace with `CAP_SYS_ADMIN`.
+Traversal holds one directory handle at a time. Before descent or batch delivery,
+it closes that handle and saves the listing position, directory identity, and
+change indicators. A different identity prevents resumption. Other detected
+changes make coverage incomplete, but scanning can continue where resumption
+is possible. Unchanged indicators do not prove the directory stayed unchanged.
 
-`cargo bench -p otel-arrow-dfe-core-nodes --bench filelog_scan` compares full and
-presence-only probing on flat, six-level, followed-link, and churn workloads,
-with exclusion mappings configured. Set `FILELOG_BENCH_ROOT` to select the
-fixture filesystem. The benchmark reports coverage completion separately from
-positive file observations. See the
-[measurement guide](../../../../benches/filelog_scan/README.md) for commands and
-qualification boundaries.
+| Filesystem | How a reopened listing continues |
+| --- | --- |
+| ext4, XFS, btrfs | Resume from the saved directory cookie. |
+| Other backends | Replay the prefix; the scan stays incomplete. |
 
-The allocator test checks stable retained heap and reuse of observation and
-fingerprint buffers. These scanner measurements do not qualify integrated reader
-latency, downstream backpressure, or resident-unlink finalization; those belong
-to the corresponding receiver integration work.
+Replay applies to tmpfs, NFS, CIFS, overlayfs, and other unqualified backends.
+It compares the saved entry count and digest before continuing. A match allows
+progress but does not establish complete coverage.
+
+A directory read in one opening needs no resumption support. Descending into a
+subdirectory requires reopening the parent afterwards. On replay backends,
+therefore, traversing subdirectories makes the scan incomplete even for a stable
+tree. A recursive pattern alone does not cause this if no subdirectory is visited.
+Tmpfs behavior varies by kernel; testing one kernel does not qualify other
+versions or vendor backports for native resumption.
+
+Replay reaches later entries in a stable directory. A mismatched prefix stops
+that directory's traversal. Repeated changes can prevent reaching its tail, and
+replaying across many batches can require quadratic work. Replay counts against
+the work budget. These costs and the resulting cleanup delays need measurement
+before relying on such filesystems for discovery-based finalization or retention.
+
+A missing include root makes coverage incomplete. Its first successful validation
+establishes the expected identity. A replacement root can supply positive
+observations but does not become the new baseline. Complete coverage requires
+the expected root to return or the scanner to be recreated.
+
+A persistent dangling or looping link that might lead to a required subtree also
+keeps scans incomplete. Diagnostics identify the link. This blocks discovery-based
+finalization and retention across the receiver; positive observations and
+qualified resident-unlink handling remain available. A leaf-only broken link is
+handled as a candidate-local outcome instead.
+
+## Resource limits
+
+Limits cover root count, path length, depth, fingerprint size, batch size, and
+traversal work. The directory buffer is fixed at 8 KiB. Frame buffers are pooled
+up to the depth limit. `retained_bytes()` reports scanner-owned capacity between
+scans, including pooled frames; matcher memory and consumer copies are accounted
+for separately.
+
+`ScanConfig.limits.work_units` defaults to 1,000,000. It counts directory opens
+and enumeration steps, including replay, and bounds branching directory aliases.
+Root preparation is separately bounded by root count and path length. Exhaustion
+reports `Limit` and incomplete coverage. It does not bound time inside kernel
+calls or guarantee fair progress across roots.
+
+With a fixed traversal order, repeated exhaustion can leave the same files or
+roots undiscovered until the budget or tree changes. Rotating roots alone cannot
+fix this inside one large root. Integration must report persistent exhaustion as
+an actionable health problem, without treating every temporary change as invalid
+configuration.
+
+These limits do not reserve OS memory or descriptors. Allocation failures keep
+normal process behavior. Filesystem errors retain their original errno, and
+retries must never treat descriptor exhaustion as evidence that files disappeared.
+
+## Testing and measurements
+
+Run the Filelog unit tests and `filelog_scan_allocations` on Linux. Test nested
+and multi-batch traversal, resumption, and directory changes on each supported
+filesystem. The privileged filesystem cases cover tmpfs, bind-mount exclusions,
+overlayfs replay, and unreachable targets; use an isolated mount namespace with
+`CAP_SYS_ADMIN` for mount-based tests.
+
+The `filelog_scan` benchmark compares full and presence-only checks on flat,
+six-level, followed-link, and changing-directory workloads, with exclusions.
+`FILELOG_BENCH_ROOT` selects the fixture filesystem. Results report observed files
+and complete passes separately. See the
+[benchmark guide](../../../../benches/filelog_scan/README.md) for commands and
+measurement limits.
+
+The allocation test checks stable retained heap and buffer reuse. Reader latency,
+downstream backpressure, and resident-unlink finalization still require receiver
+integration tests.
