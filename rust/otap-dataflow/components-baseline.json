@@ -282,6 +282,15 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:microsoft_json",
+    "category": "Receiver",
+    "description": "Browser-focused HTTP receiver for unauthenticated Microsoft Common Schema JSON telemetry",
+    "attributes": {
+      "auth": "NONE",
+      "protocol": "HTTP"
+    }
+  },
+  {
     "id": "urn:otel:receiver:oracle",
     "category": "Receiver",
     "description": null,
