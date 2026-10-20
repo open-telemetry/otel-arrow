@@ -114,6 +114,11 @@ matches. Tmpfs offset behavior varies across kernels, and no generic tmpfs
 kernel range is qualified for native resumption. Tests on one kernel do not
 qualify older kernels or vendor backports.
 
+Descending into a subdirectory closes the parent handle. Returning to that
+parent requires replay on these backends, so a scan that traverses subdirectories
+remains incomplete even when the tree is unchanged. A recursive include pattern
+alone does not cause this if no subdirectory is traversed.
+
 This also limits NFS, CIFS, and overlayfs: positive observations may continue,
 but resumed passes cannot support discovery-derived finalization or retention
 aging. On a stable tree, replay reaches later entries. Repeated prefix changes

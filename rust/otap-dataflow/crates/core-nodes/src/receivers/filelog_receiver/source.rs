@@ -70,7 +70,7 @@ pub enum FileAccessError {
     /// The supplied name is not a single non-dot directory entry.
     #[error("source name must be one nonempty directory entry, excluding . and ..")]
     InvalidName,
-    /// The opened object was not a regular file; no content was read.
+    /// The opened object was neither a regular file nor a directory; no content was read.
     #[error("opened source is not a regular file")]
     NotRegular,
     /// The pin names a directory; discovery may still require subtree traversal.
@@ -134,7 +134,8 @@ impl SourceFile {
     ///
     /// Reserve two shared transient descriptor slots. Success returns one read
     /// handle with fresh metadata; errors and cancellation close acquired handles.
-    /// The directory stays caller-owned. A rejected symlink returns `NotRegular`.
+    /// The directory stays caller-owned. A rejected symlink returns `NotRegular`;
+    /// an opened directory returns `IsDirectory`.
     pub fn open_at(
         directory: &File,
         name: &CStr,
