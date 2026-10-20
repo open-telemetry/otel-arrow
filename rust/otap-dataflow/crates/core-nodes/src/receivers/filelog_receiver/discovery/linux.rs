@@ -249,11 +249,11 @@ impl<P: MatchPolicy> Scanner<P> {
                 &mut self.target,
                 &mut self.scratch.native,
                 &mut self.include_baselines[index],
+                self.config.checkpoint_namespace,
             ) {
                 Ok((physical, locator, changed)) => {
                     if changed {
-                        self.batch
-                            .emit(root, ScanReason::RootChanged, Some(libc::ESTALE));
+                        self.batch.emit(root, ScanReason::RootChanged, None);
                         self.batch.last_mut().locator = Some(locator);
                         completion.complete = false;
                         if self.batch.is_full()
@@ -262,9 +262,7 @@ impl<P: MatchPolicy> Scanner<P> {
                             break;
                         }
                     }
-                    if locator == self.config.checkpoint_namespace
-                        || self.matcher.excludes_subtree(root)
-                    {
+                    if self.matcher.excludes_subtree(root) {
                         continue;
                     }
                     self.walker

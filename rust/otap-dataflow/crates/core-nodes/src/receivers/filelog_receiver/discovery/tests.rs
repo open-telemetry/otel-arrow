@@ -348,6 +348,27 @@ fn root_baseline() {
     let (end, observations) = run(&mut scanner);
     assert!(!end.complete);
     assert_eq!(observations[0].1, Some(ScanReason::RootChanged));
+    let mut changed = false;
+    let end = scanner.scan(
+        8,
+        &ProbeBudget::default(),
+        || false,
+        |observations| {
+            for o in observations
+                .iter()
+                .filter(|o| o.reason == Some(ScanReason::RootChanged))
+            {
+                assert!(
+                    o.errno.is_none(),
+                    "identity comparison is not a syscall error"
+                );
+                changed = true;
+            }
+            true
+        },
+    );
+    assert!(!end.complete);
+    assert!(changed);
     fs::write(root.join("new.log"), b"new root contents").unwrap();
     let (end, observations) = run(&mut scanner);
     assert!(!end.complete);
@@ -2153,4 +2174,280 @@ fn special_target_becomes_required_directory() {
             }
         }
     }
+}
+
+/// Scenario: An include root initially names the checkpoint namespace, directly or through an alias.
+/// Guarantees: The root is rejected without establishing a baseline; a later valid root can establish one.
+#[test]
+fn namespace_include_does_not_establish_baseline() {
+    for alias in [false, true] {
+        for batch in [1, 64] {
+            let dir = fixture();
+            let namespace = dir.path().join("state");
+            let logs = dir.path().join("logs");
+            fs::create_dir(&namespace).unwrap();
+            fs::create_dir(&logs).unwrap();
+            fs::write(namespace.join("checkpoint.db"), b"private").unwrap();
+            fs::write(logs.join("app.log"), b"allowed").unwrap();
+            let root = if alias {
+                let root = dir.path().join("include");
+                symlink(&namespace, &root).unwrap();
+                root
+            } else {
+                namespace.clone()
+            };
+            let mut cfg = config(&root);
+            cfg.limits.batch = batch;
+            cfg.symlinks = SymlinkPolicy::Follow;
+            cfg.checkpoint_namespace =
+                FileLocator::from_metadata(&fs::metadata(&namespace).unwrap());
+            let mut scanner = Scanner::new(
+                cfg,
+                Policy {
+                    recursive: false,
+                    exclude_secret: false,
+                },
+            )
+            .unwrap();
+            let mut rejected = false;
+            let end = scanner.scan(
+                1,
+                &ProbeBudget::default(),
+                || false,
+                |observations| {
+                    for o in observations {
+                        assert_eq!(o.reason, Some(ScanReason::RootUnavailable));
+                        assert!(o.errno.is_none());
+                        rejected = true;
+                    }
+                    true
+                },
+            );
+            assert!(rejected && !end.complete);
+            if alias {
+                fs::remove_file(&root).unwrap();
+                symlink(&logs, &root).unwrap();
+            } else {
+                fs::rename(&namespace, dir.path().join("old-state")).unwrap();
+                fs::rename(&logs, &root).unwrap();
+            }
+            let (end, observations) = run(&mut scanner);
+            // A one-slot batch requires replay on unqualified backends.
+            assert_eq!(end.complete, batch != 1 || native_resumption(&root));
+            assert!(
+                observations
+                    .iter()
+                    .any(|o| o.0.ends_with("app.log") && o.1.is_none())
+            );
+            assert!(
+                !observations
+                    .iter()
+                    .any(|o| o.1 == Some(ScanReason::RootChanged))
+            );
+        }
+    }
+}
+
+/// Scenario: A followed directory's external target is replaced after classification but before its first open.
+/// Guarantees: The observed child locator is checked before traversal or namespace pruning, including one-slot batches.
+#[test]
+fn classified_child_identity_survives_until_open() {
+    use std::cell::Cell;
+    struct ChildPolicy<'a>(&'a Cell<bool>);
+    impl MatchPolicy for ChildPolicy<'_> {
+        fn includes(&self, _: &Path) -> bool {
+            true
+        }
+        fn may_descend(&self, path: &Path) -> bool {
+            if path.ends_with("child") {
+                self.0.set(true);
+            }
+            true
+        }
+        fn excludes(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_subtree(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_mapped(&self, _: usize, _: &Path) -> bool {
+            false
+        }
+    }
+    for to_namespace in [false, true] {
+        for batch in [1, 64] {
+            let watched = fixture();
+            let external = fixture();
+            let target = external.path().join("target");
+            let replacement = external.path().join("replacement");
+            fs::create_dir(&target).unwrap();
+            fs::create_dir(&replacement).unwrap();
+            fs::write(target.join("old.log"), b"old").unwrap();
+            fs::write(replacement.join("new.log"), b"new").unwrap();
+            symlink(&target, watched.path().join("child")).unwrap();
+            let before = fs::metadata(watched.path()).unwrap().modified().unwrap();
+            let classified = Cell::new(false);
+            let mut cfg = config(watched.path());
+            cfg.limits.batch = batch;
+            cfg.symlinks = SymlinkPolicy::Follow;
+            if to_namespace {
+                cfg.checkpoint_namespace =
+                    FileLocator::from_metadata(&fs::metadata(&replacement).unwrap());
+            }
+            let mut scanner = Scanner::new(cfg, ChildPolicy(&classified)).unwrap();
+            let mut changed = false;
+            let mut coverage = false;
+            let end = scanner.scan(
+                1,
+                &ProbeBudget::default(),
+                || {
+                    if classified.get() && !changed {
+                        fs::rename(&target, external.path().join("old-target")).unwrap();
+                        symlink(&replacement, &target).unwrap();
+                        changed = true;
+                    }
+                    false
+                },
+                |observations| {
+                    for o in observations {
+                        coverage |=
+                            o.path.ends_with("child") && o.reason == Some(ScanReason::Coverage);
+                        assert!(!o.path.ends_with("new.log"));
+                    }
+                    true
+                },
+            );
+            assert!(changed && coverage && !end.complete);
+            assert_eq!(
+                fs::metadata(watched.path()).unwrap().modified().unwrap(),
+                before
+            );
+        }
+    }
+}
+
+/// Scenario: The same file moves into a target exclusion or checkpoint namespace between its two probes.
+/// Guarantees: Policy changes invalidate coverage while preserving consistent locator presence and withholding candidate data.
+#[test]
+fn second_probe_exclusion_is_unstable() {
+    use super::probe::{ProbeContext, ProbeScratch, probe_with_open};
+    for into_namespace in [false, true] {
+        let watched = fixture();
+        let external = fixture();
+        let target = external.path().join("target");
+        let excluded = external.path().join("excluded");
+        fs::create_dir(&excluded).unwrap();
+        fs::write(&target, b"unchanged contents").unwrap();
+        symlink(&target, watched.path().join("alias.log")).unwrap();
+        let expected = FileLocator::from_metadata(&fs::metadata(&target).unwrap());
+        let mut cfg = config(watched.path());
+        cfg.symlinks = SymlinkPolicy::Follow;
+        if into_namespace {
+            cfg.checkpoint_namespace =
+                FileLocator::from_metadata(&fs::metadata(&excluded).unwrap());
+        }
+        let budget = ProbeBudget::default();
+        let matcher = Policy {
+            recursive: false,
+            exclude_secret: true,
+        };
+        let context = ProbeContext {
+            config: &cfg,
+            matcher: &matcher,
+            roots: &[],
+            budget: &budget,
+            policy_available: true,
+        };
+        let mut out = Observation {
+            path: watched.path().join("alias.log"),
+            locator: None,
+            size: None,
+            modified: None,
+            fingerprint: Vec::new(),
+            reason: Some(ScanReason::ProbeBusy),
+            errno: None,
+        };
+        let mut opens = 0;
+        probe_with_open(
+            &context,
+            &File::open(watched.path()).unwrap(),
+            c"alias.log",
+            false,
+            false,
+            ProbeRequest::Full,
+            &mut out,
+            &mut ProbeScratch::new(cfg.limits),
+            &mut || false,
+            |directory, name, links, cancelled| {
+                opens += 1;
+                if opens == 2 {
+                    let moved = excluded.join(if into_namespace { "log" } else { "log.secret" });
+                    fs::rename(&target, &moved).unwrap();
+                    symlink(&moved, &target).unwrap();
+                }
+                PinnedSource::open_at(directory, name, links, None, cancelled)
+            },
+        );
+        assert_eq!(opens, 2);
+        assert_eq!(out.reason, Some(ScanReason::Unstable));
+        assert_eq!(out.locator, Some(expected));
+        assert!(out.size.is_none() && out.modified.is_none() && out.fingerprint.is_empty());
+        assert!(budget.try_reserve().is_some());
+    }
+}
+
+/// Scenario: A file shrinks after read-open, reaches short EOF, then regrows before the post-read metadata check.
+/// Guarantees: A fingerprint shorter than the opening size requires is unstable even when final size and later prefix agree.
+#[test]
+fn short_fingerprint_detects_truncate_and_regrow() {
+    let dir = fixture();
+    let path = dir.path().join("log");
+    fs::write(&path, [b'x'; 500]).unwrap();
+    let mut scanner = scanner(dir.path(), false);
+    let mut read_checks = 0;
+    let mut unstable = false;
+    let end = scanner.scan(
+        1,
+        &ProbeBudget::default(),
+        || {
+            // Identify read-open callbacks without counting path-only verification
+            // operations or depending on the fixture's ancestor depth.
+            let read_open = fs::read_dir("/proc/self/fd").unwrap().flatten().any(|fd| {
+                if fs::read_link(fd.path()).ok().as_deref() != Some(path.as_path()) {
+                    return false;
+                }
+                let info = fs::read_to_string(Path::new("/proc/self/fdinfo").join(fd.file_name()))
+                    .unwrap();
+                let flags = info
+                    .lines()
+                    .find_map(|line| line.strip_prefix("flags:\t"))
+                    .unwrap();
+                u32::from_str_radix(flags, 8).unwrap() & libc::O_PATH as u32 == 0
+            });
+            if read_open {
+                read_checks += 1;
+                match read_checks {
+                    2 => fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                        .set_len(50)
+                        .unwrap(),
+                    4 => fs::write(&path, [b'x'; 500]).unwrap(),
+                    _ => (),
+                }
+            }
+            false
+        },
+        |observations| {
+            for o in observations.iter().filter(|o| o.path == path) {
+                unstable = o.reason == Some(ScanReason::Unstable);
+                assert!(o.size.is_none() && o.fingerprint.is_empty());
+            }
+            true
+        },
+    );
+    assert!(read_checks >= 4);
+    assert!(unstable && !end.complete);
+    assert_eq!(fs::metadata(path).unwrap().len(), 500);
 }

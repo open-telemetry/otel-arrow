@@ -290,7 +290,11 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                 }
             }
             Ok((false, _)) => {
-                out.reason = Some(ScanReason::Excluded);
+                out.reason = Some(if pass == 0 {
+                    ScanReason::Excluded
+                } else {
+                    ScanReason::Unstable
+                });
                 return;
             }
             Err(error) => {
@@ -341,7 +345,11 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
         };
         let size = metadata.len();
         let modified = metadata.modified().ok();
-        if size < opened_size
+        let minimum_len = opened_size
+            .saturating_sub(context.config.limits.ignored_header_bytes)
+            .min(buffer.len() as u64) as usize;
+        if len < minimum_len
+            || size < opened_size
             || (len != 0 && size < context.config.limits.ignored_header_bytes + len as u64)
         {
             out.reason = Some(ScanReason::Unstable);

@@ -215,7 +215,7 @@ impl Walker {
             let (observed_regular, should_descend) =
                 match classify_entry(context, &file, &entry, path) {
                     Ok(EntryKind::Skip) => continue,
-                    Ok(EntryKind::Directory) => {
+                    Ok(EntryKind::Directory(expected)) => {
                         if depth == context.config.limits.depth {
                             batch.emit(path, ScanReason::Limit, None);
                             continue;
@@ -224,7 +224,7 @@ impl Walker {
                             free_frames,
                             path,
                             &frame.physical,
-                            None,
+                            expected,
                             context.config.limits.path_bytes,
                         );
                         child.physical.push(name_path);
@@ -310,25 +310,21 @@ fn prepare_directory<P: MatchPolicy>(
     if frame
         .expected
         .is_some_and(|expected| expected != evidence.locator)
-        || (frame.evidence.is_none()
-            && ancestors.iter().any(|ancestor| {
-                ancestor
-                    .evidence
-                    .is_some_and(|e| e.locator == evidence.locator)
-            }))
         || frame
             .evidence
             .is_some_and(|prior| prior.locator != evidence.locator)
     {
-        batch.emit(
-            &frame.lexical,
-            if frame.evidence.is_none() && frame.expected.is_none() {
-                ScanReason::Cycle
-            } else {
-                ScanReason::Coverage
-            },
-            None,
-        );
+        batch.emit(&frame.lexical, ScanReason::Coverage, None);
+        return ControlFlow::Break(WalkStep::Failed);
+    }
+    if frame.evidence.is_none()
+        && ancestors.iter().any(|ancestor| {
+            ancestor
+                .evidence
+                .is_some_and(|e| e.locator == evidence.locator)
+        })
+    {
+        batch.emit(&frame.lexical, ScanReason::Cycle, None);
         return ControlFlow::Break(WalkStep::Failed);
     }
     // Prune a known namespace, not a replacement for a directory whose
@@ -399,16 +395,12 @@ fn replay_prefix(
         let mut seen = 0;
         let mut prefix = [0; 32];
         while seen < frame.visited {
-            if cancelled() || *work_left == 0 {
-                batch.emit(
-                    &frame.lexical,
-                    if *work_left == 0 {
-                        ScanReason::Limit
-                    } else {
-                        ScanReason::Cancelled
-                    },
-                    None,
-                );
+            if cancelled() {
+                batch.emit(&frame.lexical, ScanReason::Cancelled, None);
+                return ControlFlow::Break(WalkStep::Failed);
+            }
+            if *work_left == 0 {
+                batch.emit(&frame.lexical, ScanReason::Limit, None);
                 return ControlFlow::Break(WalkStep::Failed);
             }
             *work_left -= 1;
@@ -437,7 +429,7 @@ fn replay_prefix(
 
 enum EntryKind {
     Skip,
-    Directory,
+    Directory(Option<FileLocator>),
     Candidate {
         observed_regular: bool,
         should_descend: bool,
@@ -456,6 +448,7 @@ fn classify_entry<P: MatchPolicy>(
     let file_type = entry.file_type();
     let mut is_directory = file_type == FileType::Directory;
     let mut observed_regular = file_type == FileType::RegularFile;
+    let mut directory_locator = None;
     if should_descend
         && (file_type == FileType::Unknown
             || (file_type == FileType::Symlink && context.config.symlinks == SymlinkPolicy::Follow))
@@ -473,6 +466,9 @@ fn classify_entry<P: MatchPolicy>(
                 let observed_type = FileType::from_raw_mode(stat.st_mode);
                 is_directory = observed_type == FileType::Directory;
                 observed_regular = observed_type == FileType::RegularFile;
+                if is_directory {
+                    directory_locator = Some(probe::locator(&stat));
+                }
             }
             Err(error) => {
                 // A required subtree's kind is unknown, including ENOENT.
@@ -482,7 +478,7 @@ fn classify_entry<P: MatchPolicy>(
     }
     Ok(if is_directory {
         if should_descend {
-            EntryKind::Directory
+            EntryKind::Directory(directory_locator)
         } else {
             EntryKind::Skip
         }
@@ -668,5 +664,43 @@ mod tests {
             }
             batch.clear();
         }
+    }
+
+    /// Scenario: One-shot cancellation coincides with an exhausted replay work budget.
+    /// Guarantees: Cancellation takes precedence and is preserved in the delivered completion marker.
+    #[test]
+    fn replay_cancellation_precedes_work_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = File::open(dir.path()).unwrap();
+        let mut buffer = vec![MaybeUninit::uninit(); 8192];
+        let mut frame = take_frame(&mut Vec::new(), dir.path(), dir.path(), None, 4096);
+        frame.replay = true;
+        frame.visited = 1;
+        let mut batch = Batch::new(ScanLimits {
+            batch: 1,
+            ..ScanLimits::default()
+        });
+        let mut calls = 0;
+        {
+            let mut entries = RawDir::new(&file, &mut buffer);
+            assert!(matches!(
+                replay_prefix(&mut entries, &frame, &mut batch, &mut 0, &mut || {
+                    calls += 1;
+                    calls == 1
+                }),
+                ControlFlow::Break(WalkStep::Failed)
+            ));
+        }
+        assert_eq!(calls, 1);
+        assert_eq!(batch[0].reason, Some(ScanReason::Cancelled));
+        drop(file);
+        let mut end = ScanCompletion {
+            generation: 1,
+            complete: true,
+            cancelled: false,
+            observations: 0,
+        };
+        assert!(!batch::deliver(&mut batch, &mut end, &mut |_| true));
+        assert!(end.cancelled && !end.complete);
     }
 }

@@ -19,6 +19,7 @@ pub(super) fn resolve_include_root<'a>(
     scratch: &'a mut [u8],
     native: &mut NativePath,
     baseline: &mut Option<FileLocator>,
+    checkpoint_namespace: FileLocator,
 ) -> Result<(&'a Path, FileLocator, bool), (ScanReason, io::Error)> {
     native
         .load(root)
@@ -34,6 +35,15 @@ pub(super) fn resolve_include_root<'a>(
     );
     let (path, locator) =
         verify_directory(file, scratch, native).map_err(|e| (ScanReason::RootUnavailable, e))?;
+    if locator == checkpoint_namespace {
+        return Err((
+            ScanReason::RootUnavailable,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "include root resolves to the checkpoint namespace",
+            ),
+        ));
+    }
     let changed = baseline.is_some_and(|old| old != locator);
     if baseline.is_none() {
         *baseline = Some(locator);
