@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792499127229,
+  "lastUpdate": 1792514206165,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -67375,6 +67375,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 112.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "5232798+cijothomas@users.noreply.github.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "107d2d5ef04a0329b8bd853915d4413ebacc97c1",
+          "message": "fix(controller): reject unsupported reconciliation changes (#3865)\n\nCloses #3847.\n\nFull-config reconciliation currently accepts some changes that cannot be\napplied to the running process, allowing the committed configuration\nsnapshot to diverge from runtime behavior. This change performs\nfail-closed capability admission before rollout planning and rejects a\nmixed request in full when any requested change is unsupported.\n\nThis is a fail-closed correctness fix, not a complete\nlive-reconfiguration capability framework. Capability checks remain\nownership-specific, with `validate_reconcile_capabilities` providing one\nadmission entry point. The immediate goal is to stop reporting\nreconciliation success when part of the desired configuration was not\napplied. Individual restrictions can be relaxed as their runtime owners\ngain explicit, tested live-apply paths.\n\nUnsupported live changes return `unsupported_mutation` with actionable\nguidance in the message: startup-owned engine, topic broker, memory\nlimiter, and system observability changes require restart, while\ntop-level policies and group policies inherited by current or requested\npipelines must move to pipeline-level policies. Runtime log levels,\n`engine.custom`, topic descriptions, policies on empty groups, and\nregular pipeline-local changes remain mutable.\n\nThe error kind is preserved through the admin API, dfctl, and OpAMP.\nThis admission guarantee does not make multi-pipeline planning or\nexecution atomic; later runtime failures can still report partial\nprogress.\n\n---------\n\nCo-authored-by: Joshua MacDonald <josh.macdonald@gmail.com>\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-20T15:38:36Z",
+          "tree_id": "cfe39fd810655de9b6fbb83760572e6345937b11",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/107d2d5ef04a0329b8bd853915d4413ebacc97c1"
+        },
+        "date": 1792514190650,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.36,
             "unit": "MB"
           }
         ]
