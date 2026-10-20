@@ -5,12 +5,12 @@
 //! reopened and no namespace artifact is followed through a symbolic link.
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::BorrowedFd;
 
 use nix::dir::Dir;
 use nix::errno::Errno;
-use nix::fcntl::{AtFlags, OFlag, openat};
+use nix::fcntl::{AtFlags, FcntlArg, OFlag, fcntl, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, geteuid, unlinkat};
 // nix::renameat2 is GNU-only; rustix also supports Linux musl. Its flock API
@@ -50,8 +50,85 @@ pub(super) fn namespace_component(id: &str) -> Result<String, StoreError> {
     Ok(component)
 }
 
+/// Owned capability for an already provisioned checkpoint root.
+///
+/// Construction validates the directory but does not provision it or establish
+/// durability of its ancestors. The caller must complete those steps first.
+/// The handle is private: store operations never reopen a diagnostic pathname.
+#[derive(Debug)]
+pub struct StateRoot {
+    directory: File,
+}
+
+impl StateRoot {
+    /// Duplicates a borrowed Linux directory descriptor into an owned capability.
+    ///
+    /// The directory must belong to the effective UID with access mode 0700.
+    /// Path-only (`O_PATH`) descriptors are rejected: namespace creation needs
+    /// a root handle that supports synchronization, not just relative lookup.
+    /// The original descriptor may be closed after this call. This performs no
+    /// synchronization and does not certify the caller's provisioning history.
+    pub fn from_borrowed_fd(root: BorrowedFd<'_>) -> Result<Self, StoreError> {
+        let directory = File::from(
+            root.try_clone_to_owned()
+                .map_err(|e| io("duplicate root handle", e))?,
+        );
+        validate(&fstat(&directory).map_err(|e| io("stat root", e))?, true)?;
+        let flags =
+            fcntl(&directory, FcntlArg::F_GETFL).map_err(|e| io("read root handle flags", e))?;
+        if OFlag::from_bits_truncate(flags).contains(OFlag::O_PATH) {
+            return Err(StoreError::InvalidConfig(
+                "state root must support synchronization; O_PATH is not supported",
+            ));
+        }
+        Ok(Self { directory })
+    }
+}
+
+/// Active checkpoint handle. Writes always append at physical EOF, regardless
+/// of the read cursor used by recovery. Only Namespace can construct this type;
+/// neither the raw file nor a general-purpose Write implementation is exposed.
+pub(super) struct DataFile {
+    file: File,
+}
+
+impl DataFile {
+    pub fn len(&self) -> std::io::Result<u64> {
+        self.file.metadata().map(|metadata| metadata.len())
+    }
+
+    pub fn truncate(&self, length: u64) -> std::io::Result<()> {
+        self.file.set_len(length)
+    }
+
+    pub fn append(&mut self, io_ops: &mut Io, bytes: &[u8]) -> Result<(), StoreError> {
+        io_ops.write_all(&mut self.file, bytes)
+    }
+
+    pub fn sync(&self, io_ops: &mut Io, operation: &'static str) -> Result<(), StoreError> {
+        io_ops.sync(&self.file, operation)
+    }
+
+    #[cfg(test)]
+    pub fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.file)
+    }
+}
+
+impl Read for DataFile {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(bytes)
+    }
+}
+
+impl Seek for DataFile {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(position)
+    }
+}
+
 pub(super) struct Namespace {
-    pub directory: File,
+    directory: File,
     // Keep ancestors open so namespace identity can be rechecked before writes.
     root: File,
     filelog: File,
@@ -69,13 +146,17 @@ pub(super) struct Inventory {
 }
 
 impl Namespace {
-    pub fn open(root: BorrowedFd<'_>, id: &str, io_ops: &mut Io) -> Result<Self, StoreError> {
+    /// Opens and locks the namespace, creating missing directories as needed.
+    /// Each child directory is validated and its parent synchronized, including
+    /// existing entries. These ancestor barriers precede all artifact access;
+    /// the protocol still orders publication, recovery and cleanup barriers.
+    pub fn open(root: &StateRoot, id: &str, io_ops: &mut Io) -> Result<Self, StoreError> {
         let component = namespace_component(id)?;
-        // Duplicate the engine capability, never resolve its configured path.
-        let root = File::from(
-            root.try_clone_to_owned()
-                .map_err(|e| io("duplicate root handle", e))?,
-        );
+        // Each namespace owns its root handle independently of the caller.
+        let root = root
+            .directory
+            .try_clone()
+            .map_err(|e| io("duplicate root handle", e))?;
         validate(&fstat(&root).map_err(|e| io("stat root", e))?, true)?;
         let (filelog, _) = child_directory(&root, "filelog", io_ops)?;
         let (version, _) = child_directory(&filelog, "@v1", io_ops)?;
@@ -164,18 +245,35 @@ impl Namespace {
         )
     }
 
-    pub fn open_database(&self) -> Result<File, StoreError> {
+    pub fn open_database(&self) -> Result<DataFile, StoreError> {
         self.verify_ancestry()?;
         // O_APPEND ensures writes after reads/recovery do not depend on a cursor.
         match open_regular(&self.directory, DB, REGULAR | OFlag::O_APPEND) {
             Err(StoreError::Io { source, .. }) => {
                 Err(StoreError::AuthoritativeGenerationUnreadable(source))
             }
-            other => other,
+            result => result.map(|file| DataFile { file }),
         }
     }
 
-    pub fn publish_initial(&self) -> Result<(), StoreError> {
+    pub fn verify_database(&self, file: &DataFile) -> Result<(), StoreError> {
+        self.verify(DB, &file.file)
+    }
+
+    /// Synchronizes namespace entries. The protocol chooses when this barrier
+    /// is required; the same fault-injection and poison latch covers every sync.
+    pub fn sync_directory(
+        &self,
+        io_ops: &mut Io,
+        operation: &'static str,
+    ) -> Result<(), StoreError> {
+        io_ops.sync(&self.directory, operation)
+    }
+
+    /// Atomically publishes the creation temporary without replacing authority.
+    /// This does not sync the directory; publication is durable only after the
+    /// protocol's subsequent sync_directory call succeeds. No fallback is used.
+    pub fn publish_no_replace(&self) -> Result<(), StoreError> {
         self.verify_ancestry()?;
         renameat_with(
             &self.directory,
