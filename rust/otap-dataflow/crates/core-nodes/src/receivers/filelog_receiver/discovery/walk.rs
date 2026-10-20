@@ -253,6 +253,7 @@ impl Walker {
                     &file,
                     name,
                     observed_regular,
+                    should_descend,
                     request(path),
                     batch.last_mut(),
                     scratch,
@@ -299,9 +300,6 @@ fn prepare_directory<P: MatchPolicy>(
             return ControlFlow::Break(WalkStep::Failed);
         }
     };
-    if evidence.locator == context.config.checkpoint_namespace {
-        return ControlFlow::Break(WalkStep::Finished);
-    }
     if frame
         .expected
         .is_some_and(|expected| expected != evidence.locator)
@@ -325,6 +323,11 @@ fn prepare_directory<P: MatchPolicy>(
             None,
         );
         return ControlFlow::Break(WalkStep::Failed);
+    }
+    // Prune a known namespace, not a replacement for a directory whose
+    // identity this pass already relied on.
+    if evidence.locator == context.config.checkpoint_namespace {
+        return ControlFlow::Break(WalkStep::Finished);
     }
     if frame.evidence.is_some_and(|prior| prior != evidence) && !frame.uncertain {
         // Keep positive progress where resumption is possible, but never turn

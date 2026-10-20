@@ -158,6 +158,7 @@ pub(super) fn probe<P: MatchPolicy>(
     directory: &File,
     name: &CStr,
     observed_regular: bool,
+    requires_subtree: bool,
     request: ProbeRequest,
     out: &mut Observation,
     scratch: &mut ProbeScratch,
@@ -168,6 +169,7 @@ pub(super) fn probe<P: MatchPolicy>(
         directory,
         name,
         observed_regular,
+        requires_subtree,
         request,
         out,
         scratch,
@@ -183,6 +185,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
     directory: &File,
     name: &CStr,
     observed_regular: bool,
+    requires_subtree: bool,
     request: ProbeRequest,
     out: &mut Observation,
     scratch: &mut ProbeScratch,
@@ -221,6 +224,14 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                     return;
                 }
                 access_failure(out, error, false);
+                // Classification may have succeeded before the target changed.
+                // A failed pin cannot turn required traversal into a leaf-only
+                // miss/rejection. Content failures after pinning remain separate.
+                if requires_subtree
+                    && matches!(out.reason, Some(ScanReason::Missing | ScanReason::LeafLoop))
+                {
+                    out.reason = Some(ScanReason::Coverage);
+                }
                 if pass == 1
                     && matches!(
                         out.reason,

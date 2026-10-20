@@ -1148,6 +1148,7 @@ fn failed_second_pin_clears_candidate_evidence() {
             &parent,
             c"log",
             true,
+            false,
             ProbeRequest::Full,
             &mut out,
             &mut ProbeScratch::new(cfg.limits),
@@ -1734,4 +1735,161 @@ fn cancellation_between_root_errors() {
     let (end, observations) = run(&mut scanner);
     assert!(!end.cancelled && !end.complete);
     assert_eq!(observations.len(), 2);
+}
+
+/// Scenario: A root or followed subdirectory is replaced by the checkpoint namespace between batches.
+/// Guarantees: Expected and prior directory identities are checked before pruning, even with one output slot.
+#[test]
+fn namespace_replacement_between_batches_loses_coverage() {
+    for through_alias in [false, true] {
+        for batch_size in [1, 2] {
+            let dir = fixture();
+            let watched = dir.path().join("watched");
+            let target = dir.path().join("target");
+            let namespace = dir.path().join("namespace");
+            for path in [&watched, &target, &namespace] {
+                fs::create_dir(path).unwrap();
+            }
+            for index in 0..4 {
+                fs::write(target.join(format!("{index}.log")), b"data").unwrap();
+            }
+            fs::write(namespace.join("checkpoint.db"), b"private").unwrap();
+            let (root, replaced_path) = if through_alias {
+                let alias = watched.join("alias");
+                symlink(&target, &alias).unwrap();
+                (watched, alias)
+            } else {
+                (target.clone(), target.clone())
+            };
+            let mut cfg = config(&root);
+            cfg.symlinks = SymlinkPolicy::Follow;
+            cfg.limits.batch = batch_size;
+            cfg.checkpoint_namespace =
+                FileLocator::from_metadata(&fs::metadata(&namespace).unwrap());
+            let mut scanner = Scanner::new(
+                cfg,
+                Policy {
+                    recursive: true,
+                    exclude_secret: false,
+                },
+            )
+            .unwrap();
+            let mut replaced = false;
+            let mut lost_coverage = false;
+            let end = scanner.scan(
+                1,
+                &ProbeBudget::default(),
+                || false,
+                |batch| {
+                    assert!(batch.len() <= batch_size);
+                    assert!(batch.iter().all(|o| !o.path.ends_with("checkpoint.db")));
+                    lost_coverage |= batch
+                        .iter()
+                        .any(|o| o.path == replaced_path && o.reason == Some(ScanReason::Coverage));
+                    if !replaced
+                        && batch.iter().any(|o| {
+                            o.path == replaced_path && o.reason == Some(ScanReason::Directory)
+                        })
+                    {
+                        fs::rename(&target, dir.path().join("moved")).unwrap();
+                        symlink(&namespace, &target).unwrap();
+                        replaced = true;
+                    }
+                    true
+                },
+            );
+            assert!(replaced);
+            assert!(!end.complete, "alias={through_alias}, batch={batch_size}");
+            assert!(lost_coverage);
+        }
+    }
+}
+
+/// Scenario: A followed file target disappears or becomes a loop after classification but before its first pin.
+/// Guarantees: Required-subtree uncertainty fails coverage; the same failures remain local for leaf-only includes.
+#[test]
+fn late_link_resolution_failure_preserves_traversal_context() {
+    use std::cell::Cell;
+    struct ChangingTarget {
+        target: PathBuf,
+        recursive: bool,
+        make_loop: bool,
+        changed: Cell<bool>,
+    }
+    impl MatchPolicy for ChangingTarget {
+        fn includes(&self, _: &Path) -> bool {
+            if !self.changed.replace(true) {
+                fs::remove_file(&self.target).unwrap();
+                if self.make_loop {
+                    symlink("target", &self.target).unwrap();
+                }
+            }
+            true
+        }
+        fn may_descend(&self, _: &Path) -> bool {
+            self.recursive
+        }
+        fn excludes(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_subtree(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_mapped(&self, _: usize, _: &Path) -> bool {
+            false
+        }
+    }
+    for recursive in [false, true] {
+        for make_loop in [false, true] {
+            let watched = fixture();
+            let external = fixture();
+            let target = external.path().join("target");
+            fs::write(&target, b"old file").unwrap();
+            symlink(&target, watched.path().join("alias.log")).unwrap();
+            let before = fs::metadata(watched.path()).unwrap().modified().unwrap();
+            let mut cfg = config(watched.path());
+            cfg.symlinks = SymlinkPolicy::Follow;
+            let mut scanner = Scanner::new(
+                cfg,
+                ChangingTarget {
+                    target,
+                    recursive,
+                    make_loop,
+                    changed: Cell::new(false),
+                },
+            )
+            .unwrap();
+            let expected = if recursive {
+                ScanReason::Coverage
+            } else if make_loop {
+                ScanReason::LeafLoop
+            } else {
+                ScanReason::Missing
+            };
+            let mut observed = false;
+            let end = scanner.scan(
+                1,
+                &ProbeBudget::default(),
+                || false,
+                |batch| {
+                    for observation in batch.iter().filter(|o| o.path.ends_with("alias.log")) {
+                        assert_eq!(observation.reason, Some(expected));
+                        assert_eq!(
+                            observation.errno,
+                            Some(if make_loop { libc::ELOOP } else { libc::ENOENT })
+                        );
+                        assert!(observation.locator.is_none());
+                        observed = true;
+                    }
+                    true
+                },
+            );
+            assert!(observed);
+            assert_eq!(end.complete, !recursive);
+            assert_eq!(
+                fs::metadata(watched.path()).unwrap().modified().unwrap(),
+                before
+            );
+        }
+    }
 }
