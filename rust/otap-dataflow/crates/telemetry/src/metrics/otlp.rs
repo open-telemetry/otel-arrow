@@ -1245,6 +1245,7 @@ mod tests {
         MetricsDescriptor,
     };
     use crate::entity::{EntityAttributeSet, EntityRegistry};
+    use otel_arrow_dfe_pdata::OtapArrowRecords;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, KeyValue, KeyValueList, any_value,
@@ -1256,8 +1257,7 @@ mod tests {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
-    use otel_arrow_dfe_pdata_codec::OtapPayload;
+    use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload};
     use otel_arrow_dfe_pdata_views::views::common::{
         AnyValueView, AttributeView, InstrumentationScopeView,
     };
@@ -3001,8 +3001,8 @@ mod tests {
             .expect("batch is non-empty");
         let payload: OtapPayload = encoded.into();
 
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
+        let records = payload
+            .try_into_otap(&CodecService::new().expect("valid codec registry"))
             .expect("OTAP exporter can convert bridge output to Arrow records");
         assert!(matches!(records, OtapArrowRecords::Metrics(_)));
 
