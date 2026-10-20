@@ -204,15 +204,15 @@ The receiver also defines these non-overlapping protocol diagnostics under
 
 | Metric suffix | Unit | Description |
 | --- | --- | --- |
-| `received_logs_invalid` | `{item}` | JSON events that fail parsing or endpoint validation. |
-| `cors_preflight_requests` | `{request}` | CORS preflight requests handled. |
-| `compressed_requests` | `{request}` | Requests received with an encoded body. |
-| `ikey_rejected` | `{item}` | Events rejected by the iKey filter. |
-| `ikey_ignored` | `{item}` | Events silently dropped by the iKey filter. |
-| `ikey_unauthorized` | `{item}` | Events rejected because their origin is not allowed. |
-| `events_oversized` | `{item}` | Events exceeding the endpoint event-size limit. |
-| `config_endpoints_loaded` | `{item}` | Endpoint files loaded at startup. |
-| `config_endpoints_failed` | `{error}` | Endpoint files that fail startup loading. |
+| `received.logs.invalid` | `{item}` | JSON events that fail parsing or endpoint validation. |
+| `cors.preflight.requests` | `{request}` | CORS preflight requests handled. |
+| `compressed.requests` | `{request}` | Requests received with an encoded body. |
+| `ikey.rejected` | `{item}` | Events rejected by the iKey filter. |
+| `ikey.ignored` | `{item}` | Events silently dropped by the iKey filter. |
+| `ikey.unauthorized` | `{item}` | Events rejected because their origin is not allowed. |
+| `events.oversized` | `{item}` | Events exceeding the endpoint event-size limit. |
+| `config.endpoints.loaded` | `{item}` | Endpoint files loaded at startup. |
+| `config.endpoints.failed` | `{error}` | Endpoint files that fail startup loading. |
 
 This skeleton does not emit metric observations because construction
 intentionally returns `NotImplemented`. The configuration module composes the

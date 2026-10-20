@@ -11,7 +11,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::ReceiverMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetRegistrar, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
@@ -1282,7 +1282,7 @@ impl MicrosoftJsonReceiverMetrics {
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             boundary: ReceiverMetrics::register(pipeline_ctx),
-            diagnostics: pipeline_ctx.register_metric_set(),
+            diagnostics: MicrosoftJsonReceiverDiagnosticMetrics::register(pipeline_ctx),
         }
     }
 
@@ -1311,6 +1311,37 @@ mod tests {
     };
     use serde_json::json;
     use std::time::Duration;
+
+    /// Scenario: the endpoint reference's multi-target SDK example is copied verbatim.
+    /// Guarantees: its tagged transforms deserialize and extract the documented SDK name and version.
+    #[test]
+    fn documented_also_targets_deserialize() {
+        let reference = include_str!("Endpoint.md").replace("\r\n", "\n");
+        let section = reference
+            .split_once("### Also targets")
+            .expect("also targets section")
+            .1;
+        let yaml = section
+            .split_once("```yaml\n")
+            .expect("YAML example")
+            .1
+            .split_once("```")
+            .expect("closing fence")
+            .0;
+        let rules: Vec<super::FieldRule> = serde_yaml::from_str(yaml).expect("documented rules");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].also.len(), 2);
+        for (target, expected) in rules[0].also.iter().zip(["1DS-Web-JS", "4.4.1"]) {
+            assert_eq!(
+                target
+                    .transform
+                    .as_ref()
+                    .expect("transform")
+                    .apply(&json!("1DS-Web-JS-4.4.1")),
+                Some(json!(expected))
+            );
+        }
+    }
 
     fn flattened_rules<'a>(
         prefix: &str,

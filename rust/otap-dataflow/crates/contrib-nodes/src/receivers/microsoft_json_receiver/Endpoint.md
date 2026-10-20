@@ -199,7 +199,7 @@ rules:
 | `path` | `string` | *(required)* | Dot-separated JSON field path. Supports `*.*` wildcards. |
 | `target` | `MappingTarget` | `null` | Where to place the value. Omit for container-only nodes that just hold `children`. |
 | `validate` | `Validation` | `null` | Optional type checking and length constraints. |
-| `allowed_keys` | `string[]` | `null` | Restrict which child keys are accepted (others are dropped). |
+| `allowed_keys` | `string[]` | `null` | Restrict accepted child keys; an unlisted key causes validation failure for the entire event. |
 | `required` | `Required` | `null` | Mark the field as required; missing fields trigger the configured action. |
 | `also` | `AlsoTarget[]` | `[]` | Write the same value to additional targets, optionally with transforms. |
 | `children` | `FieldRule[]` | `null` | Nested child rules (flattened at compile time). |
@@ -249,11 +249,11 @@ Fan out a single field value to multiple destinations with optional transforms:
     - target:
         kind: attribute
         key: "telemetry.sdk.name"
-      transform: dash_semver_name     # "1DS-Web-JS-4.4.1" -> "1DS-Web-JS"
+      transform: { kind: dash_semver_name }     # "1DS-Web-JS-4.4.1" -> "1DS-Web-JS"
     - target:
         kind: attribute
         key: "telemetry.sdk.version"
-      transform: dash_semver_version  # "1DS-Web-JS-4.4.1" -> "4.4.1"
+      transform: { kind: dash_semver_version }  # "1DS-Web-JS-4.4.1" -> "4.4.1"
 ```
 
 Available transforms:
@@ -465,7 +465,7 @@ are not authentication: non-browser clients can supply arbitrary headers.
   An explicitly empty `allowed_origins` list allows no origins.
 - Origin validation runs before the event-name check. A failed origin check
   returns `RejectUnauthorized`, representing HTTP 401 for runtime integration.
-- Unauthorized events are counted in the `ikey_unauthorized` metric.
+- Unauthorized events are counted in the `ikey.unauthorized` metric.
 
 ### iKey remapping
 
@@ -508,16 +508,16 @@ when supplied.
 | Action | Description |
 | -------- | ------------- |
 | `accept` | Allow the event (subject to `allowed_events` and origin checks). Optionally remap the iKey via `remap_ikey`. |
-| `reject` | Reject the event -- the sender receives an error response. Counted in `ikey_rejected`. |
-| `ignore` | Silently drop the event -- no error is returned. Counted in `ikey_ignored`. |
+| `reject` | Reject the event -- the sender receives an error response. Counted in `ikey.rejected`. |
+| `ignore` | Silently drop the event -- no error is returned. Counted in `ikey.ignored`. |
 
 ### Metrics
 
 | Metric | Description |
 | -------- | ------------- |
-| `ikey_rejected` | Events rejected by the iKey filter. |
-| `ikey_ignored` | Events silently dropped by the iKey filter. |
-| `ikey_unauthorized` | Events rejected due to missing or disallowed origin. |
+| `ikey.rejected` | Events rejected by the iKey filter. |
+| `ikey.ignored` | Events silently dropped by the iKey filter. |
+| `ikey.unauthorized` | Events rejected due to missing or disallowed origin. |
 
 To reject everything else, use a catch-all rule:
 

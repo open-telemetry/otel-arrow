@@ -55,9 +55,9 @@ use otel_arrow_dfe_engine::ReceiverFactory;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind};
+use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
-use otel_arrow_dfe_engine::shared::receiver as shared;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
@@ -100,7 +100,7 @@ pub static MICROSOFT_JSON_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory
          receiver_config: &ReceiverConfig,
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             let receiver = MicrosoftJsonReceiver::from_config(pipeline_ctx, &node_config.config)?;
-            Ok(ReceiverWrapper::shared(
+            Ok(ReceiverWrapper::local(
                 receiver,
                 node,
                 node_config,
@@ -140,12 +140,12 @@ impl MicrosoftJsonReceiver {
 // Receiver trait implementation
 // ---------------------------------------------------------------------------
 
-#[async_trait]
-impl shared::Receiver<OtapPdata> for MicrosoftJsonReceiver {
+#[async_trait(?Send)]
+impl local::Receiver<OtapPdata> for MicrosoftJsonReceiver {
     async fn start(
         self: Box<Self>,
-        _ctrl_chan: shared::ControlChannel<OtapPdata>,
-        effect_handler: shared::EffectHandler<OtapPdata>,
+        _ctrl_chan: local::ControlChannel<OtapPdata>,
+        effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         let _framework_config = &self.config;
         Err(EngineError::ReceiverError {
