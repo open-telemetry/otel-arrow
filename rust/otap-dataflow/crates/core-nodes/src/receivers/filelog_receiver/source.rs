@@ -73,6 +73,9 @@ pub enum FileAccessError {
     /// The opened object was not a regular file; no content was read.
     #[error("opened source is not a regular file")]
     NotRegular,
+    /// The pin names a directory; discovery may still require subtree traversal.
+    #[error("opened source is a directory")]
+    IsDirectory,
     /// The selected locator changed before open completed.
     #[error("opened source locator does not match the selection: {actual:?}")]
     LocatorChanged {
@@ -244,6 +247,9 @@ impl PinnedSource {
             File::from(openat(directory, name, flags, Mode::empty()).map_err(io::Error::from)?);
         check_cancelled(&mut cancelled)?;
         let pinned_metadata = pinned.metadata()?;
+        if pinned_metadata.is_dir() {
+            return Err(FileAccessError::IsDirectory);
+        }
         if !pinned_metadata.is_file() {
             return Err(FileAccessError::NotRegular);
         }

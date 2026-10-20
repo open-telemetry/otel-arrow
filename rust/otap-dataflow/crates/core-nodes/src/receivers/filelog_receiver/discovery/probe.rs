@@ -136,9 +136,9 @@ fn access_failure(out: &mut Observation, error: FileAccessError, reading: bool) 
     out.errno = error.os_error().and_then(io::Error::raw_os_error);
     out.reason = Some(match &error {
         FileAccessError::Cancelled => ScanReason::Cancelled,
-        FileAccessError::NotRegular | FileAccessError::UnsupportedFilesystem { .. } => {
-            ScanReason::Unsupported
-        }
+        FileAccessError::NotRegular
+        | FileAccessError::IsDirectory
+        | FileAccessError::UnsupportedFilesystem { .. } => ScanReason::Unsupported,
         FileAccessError::LocatorChanged { .. } | FileAccessError::ReopenedMismatch { .. } => {
             out.locator = None;
             ScanReason::Unstable
@@ -226,7 +226,13 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                 if pass == 1 {
                     out.locator = None;
                 }
-                if observed_regular && matches!(error, FileAccessError::NotRegular) {
+                if (observed_regular
+                    && matches!(
+                        error,
+                        FileAccessError::NotRegular | FileAccessError::IsDirectory
+                    ))
+                    || (requires_subtree && matches!(error, FileAccessError::IsDirectory))
+                {
                     out.reason = Some(ScanReason::Unstable);
                     out.locator = None;
                     return;

@@ -88,6 +88,20 @@ fn fixture() -> TempDir {
     tempdir().expect("temporary fixture")
 }
 
+// Test expectations are based on the actual fixture backend, independently of
+// scanner output. Replay backends must still visit every stable file.
+fn native_resumption(root: &Path) -> bool {
+    let directory = File::open(root).unwrap();
+    matches!(
+        nix::sys::statfs::fstatfs(&directory)
+            .unwrap()
+            .filesystem_type(),
+        nix::sys::statfs::EXT4_SUPER_MAGIC
+            | nix::sys::statfs::XFS_SUPER_MAGIC
+            | nix::sys::statfs::BTRFS_SUPER_MAGIC
+    )
+}
+
 /// Scenario: A stable directory is scanned repeatedly with a bounded fingerprint.
 /// Guarantees: Candidates are descriptor-free, preserve bytes, and end in ordered complete passes.
 #[test]
@@ -345,7 +359,7 @@ fn root_baseline() {
 }
 
 /// Scenario: A large stable directory spans multiple batches and nested directories.
-/// Guarantees: Resumption visits every stable file exactly once within bounded batches.
+/// Guarantees: Both resumption modes visit every stable file exactly once; only qualified cookies certify coverage.
 #[test]
 fn bounded_resumption() {
     let dir = fixture();
@@ -365,6 +379,8 @@ fn bounded_resumption() {
     )
     .unwrap();
     let mut paths = std::collections::HashSet::new();
+    let native = native_resumption(dir.path());
+    let mut replay = false;
     let end = scanner.scan(
         1,
         &ProbeBudget::default(),
@@ -375,13 +391,18 @@ fn bounded_resumption() {
                 if observation.reason == Some(ScanReason::Directory) {
                     continue;
                 }
+                if observation.reason == Some(ScanReason::UnqualifiedResumption) {
+                    replay = true;
+                    continue;
+                }
                 assert!(observation.reason.is_none(), "{observation:?}");
                 assert!(paths.insert(observation.path.clone()));
             }
             true
         },
     );
-    assert!(end.complete);
+    assert_eq!(end.complete, native);
+    assert_eq!(replay, !native);
     assert_eq!(paths.len(), 61);
 }
 
@@ -514,9 +535,15 @@ fn namespace_identity_exclusion() {
         },
     )
     .unwrap());
-    assert!(end.complete);
-    assert_eq!(observations.len(), 1);
-    assert!(observations[0].0.ends_with("app.log"));
+    assert_eq!(end.complete, native_resumption(dir.path()));
+    let candidates: Vec<_> = observations.iter().filter(|o| o.1.is_none()).collect();
+    assert_eq!(candidates.len(), 1);
+    assert!(candidates[0].0.ends_with("app.log"));
+    assert!(
+        observations
+            .iter()
+            .all(|o| { o.1.is_none() || o.1 == Some(ScanReason::UnqualifiedResumption) })
+    );
 }
 
 /// Scenario: Cancellation arrives between filesystem operations.
@@ -1404,7 +1431,7 @@ fn nested_fixture(root: &Path) -> usize {
 }
 
 /// Scenario: A six-level tree spans many sibling subtrees and batches.
-/// Guarantees: Qualified close/reopen resumption reaches every stable file exactly once.
+/// Guarantees: Both resumption modes reach every stable file exactly once with backend-appropriate completeness.
 #[test]
 fn nested_tree_resumption() {
     let dir = fixture();
@@ -1424,13 +1451,21 @@ fn nested_tree_resumption() {
         .filter(|o| o.1.is_none())
         .map(|o| &o.0)
         .collect();
-    assert!(end.complete);
+    assert_eq!(end.complete, native_resumption(dir.path()));
     assert_eq!(paths.len(), expected);
-    assert_eq!(observations.len(), expected);
+    assert_eq!(
+        observations.iter().filter(|o| o.1.is_none()).count(),
+        expected
+    );
+    assert!(
+        observations
+            .iter()
+            .all(|o| { o.1.is_none() || o.1 == Some(ScanReason::UnqualifiedResumption) })
+    );
 }
 
 /// Scenario: Root metadata changes during a paused recursive pass while static files remain.
-/// Guarantees: Uncertainty prevents complete coverage but does not discard remaining positive traversal work.
+/// Guarantees: Mutation prevents complete coverage; native cookies preserve progress and a stable retry visits all files.
 #[test]
 fn churn_preserves_positive_progress_without_completeness() {
     let dir = fixture();
@@ -1465,8 +1500,18 @@ fn churn_preserves_positive_progress_without_completeness() {
         },
     );
     assert!(!end.complete);
-    assert_eq!(files.len(), expected);
-    assert!(run(&mut scanner).0.complete);
+    let native = native_resumption(dir.path());
+    if native {
+        assert_eq!(files.len(), expected);
+    }
+    let (retry, observations) = run(&mut scanner);
+    assert_eq!(retry.complete, native);
+    let paths: std::collections::HashSet<_> = observations
+        .iter()
+        .filter(|o| o.1.is_none())
+        .map(|o| &o.0)
+        .collect();
+    assert_eq!(paths.len(), expected);
 }
 
 /// Scenario: A backend without qualified seek cookies has stable directories larger than a batch.
@@ -1920,6 +1965,98 @@ fn late_link_resolution_failure_preserves_traversal_context() {
                 fs::metadata(watched.path()).unwrap().modified().unwrap(),
                 before
             );
+        }
+    }
+}
+
+/// Scenario: A followed FIFO or socket becomes a directory after classification, or stays unchanged.
+/// Guarantees: Required subtree substitution invalidates coverage; stable special files and leaf-only rejection stay local.
+#[test]
+fn special_target_becomes_required_directory() {
+    use std::cell::Cell;
+    use std::os::unix::net::UnixListener;
+
+    struct ChangingTarget {
+        target: PathBuf,
+        recursive: bool,
+        replace: Cell<bool>,
+    }
+    impl MatchPolicy for ChangingTarget {
+        fn includes(&self, _: &Path) -> bool {
+            if self.replace.replace(false) {
+                fs::remove_file(&self.target).unwrap();
+                fs::create_dir(&self.target).unwrap();
+                fs::write(self.target.join("child.log"), b"required subtree").unwrap();
+            }
+            true
+        }
+        fn may_descend(&self, _: &Path) -> bool {
+            self.recursive
+        }
+        fn excludes(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_subtree(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_mapped(&self, _: usize, _: &Path) -> bool {
+            false
+        }
+    }
+    for socket in [false, true] {
+        for recursive in [false, true] {
+            for replace in [false, true] {
+                let watched = fixture();
+                let external = fixture();
+                let target = external.path().join("target");
+                let _listener = if socket {
+                    Some(UnixListener::bind(&target).unwrap())
+                } else {
+                    nix::unistd::mkfifo(&target, nix::sys::stat::Mode::S_IRUSR).unwrap();
+                    None
+                };
+                symlink(&target, watched.path().join("alias.log")).unwrap();
+                let before = fs::metadata(watched.path()).unwrap().modified().unwrap();
+                let mut cfg = config(watched.path());
+                cfg.symlinks = SymlinkPolicy::Follow;
+                let mut scanner = Scanner::new(
+                    cfg,
+                    ChangingTarget {
+                        target,
+                        recursive,
+                        replace: Cell::new(replace),
+                    },
+                )
+                .unwrap();
+                let mut seen = false;
+                let end = scanner.scan(
+                    1,
+                    &ProbeBudget::default(),
+                    || false,
+                    |batch| {
+                        for observation in batch.iter().filter(|o| o.path.ends_with("alias.log")) {
+                            assert_eq!(
+                                observation.reason,
+                                Some(if recursive && replace {
+                                    ScanReason::Unstable
+                                } else {
+                                    ScanReason::Unsupported
+                                })
+                            );
+                            assert!(observation.locator.is_none());
+                            assert!(observation.fingerprint.is_empty());
+                            seen = true;
+                        }
+                        true
+                    },
+                );
+                assert!(seen);
+                assert_eq!(end.complete, !(recursive && replace));
+                assert_eq!(
+                    fs::metadata(watched.path()).unwrap().modified().unwrap(),
+                    before
+                );
+            }
         }
     }
 }
