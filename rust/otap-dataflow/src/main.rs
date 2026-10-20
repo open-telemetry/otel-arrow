@@ -107,6 +107,8 @@ cfg_select! {
         #[global_allocator]
         static GLOBAL: Jemalloc = Jemalloc;
     }
+
+    _ => {}
 }
 
 // Crypto provider features are mutually exclusive.

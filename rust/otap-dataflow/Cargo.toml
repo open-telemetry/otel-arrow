@@ -19,7 +19,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.88.0"
+rust-version = "1.98.1"
 
 [package]
 name = "otel-arrow-dfe"
