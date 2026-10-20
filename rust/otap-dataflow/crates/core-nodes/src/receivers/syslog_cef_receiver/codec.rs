@@ -3,7 +3,7 @@
 
 //! Independently decodable batches of original syslog and CEF messages.
 //!
-//! `syslog-cef-batch-v1` uses this big-endian framing:
+//! `syslog-batch` uses this big-endian framing:
 //!
 //! ```text
 //! "SLG1" | item_count:u32 | repeated {
@@ -33,7 +33,7 @@ use super::arrow_records_encoder::ArrowRecordsBuilder;
 use super::parser;
 
 /// Stable identity of the versioned syslog/CEF batch representation.
-pub const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-cef-batch-v1");
+pub const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
 
 const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;

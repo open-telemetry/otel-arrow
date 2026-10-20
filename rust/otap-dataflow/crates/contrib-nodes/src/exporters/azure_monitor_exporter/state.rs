@@ -135,10 +135,11 @@ impl AzureMonitorExporterState {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
     use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
-    use otel_arrow_dfe_pdata_codec::OtapPayload;
+    use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding};
 
     /// Helper to create a test OtapPayload from bytes
     fn test_payload(data: &'static [u8]) -> OtapPayload {
@@ -147,7 +148,7 @@ mod tests {
 
     /// Helper to create an empty OtapPayload
     fn empty_payload() -> OtapPayload {
-        OtapPayload::empty(otel_arrow_dfe_config::SignalType::Logs)
+        OtapPayload::empty(SignalType::Logs)
     }
 
     /// Scenario: Azure Monitor batching state is initialized.
@@ -185,7 +186,7 @@ mod tests {
     }
 
     /// Scenario: a message has either no batches or a pending batch.
-    /// Guarantees: only orphaned delivery ownership is removed and its retained bytes survive.
+    /// Guarantees: only orphaned delivery ownership is removed, preserving its OTLP logs and bytes.
     #[test]
     fn test_delete_msg_data_if_orphaned() {
         let mut state = AzureMonitorExporterState::new();
@@ -202,13 +203,12 @@ mod tests {
         assert!(removed.is_some());
         // Verify the payload matches
         let payload = removed.unwrap().into_pdata().payload();
-        assert_eq!(
-            payload
-                .encoded_bytes()
-                .expect("expected encoded logs payload")
-                .as_ref(),
-            b"test"
-        );
+        let view = payload
+            .encoded_view()
+            .expect("expected encoded logs payload");
+        assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+        assert_eq!(view.signal_type(), SignalType::Logs);
+        assert_eq!(view.bytes(), b"test");
         assert!(!state.msg_to_data.contains_key(&msg_id));
 
         // Case 2: Message has batches (not orphaned)
@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// Scenario: an orphaned message has no retained data.
-    /// Guarantees: its completion can be removed with an empty payload.
+    /// Guarantees: its completion can be removed with an empty OTLP logs payload.
     #[test]
     fn test_delete_msg_data_if_orphaned_with_empty_payload() {
         let mut state = AzureMonitorExporterState::new();
@@ -240,12 +240,12 @@ mod tests {
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_some());
         let payload = removed.unwrap().into_pdata().payload();
-        assert!(
-            payload
-                .encoded_bytes()
-                .expect("expected encoded logs payload")
-                .is_empty()
-        );
+        let view = payload
+            .encoded_view()
+            .expect("expected encoded logs payload");
+        assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+        assert_eq!(view.signal_type(), SignalType::Logs);
+        assert!(view.bytes().is_empty());
     }
 
     /// Scenario: a message spans multiple successful compressed batches.

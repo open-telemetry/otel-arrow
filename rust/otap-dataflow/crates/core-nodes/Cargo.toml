@@ -183,6 +183,12 @@ path = "benches/temporal_reaggregation_processor/main.rs"
 required-features = ["bench"]
 
 [[bench]]
+name = "batch_processor"
+harness = false
+path = "benches/batch_processor/main.rs"
+required-features = ["bench"]
+
+[[bench]]
 name = "journald_decode"
 harness = false
 path = "benches/journald_decode/main.rs"

@@ -235,6 +235,114 @@ macro_rules! postgresql_module_tests {
         mod tests {
             use super::*;
 
+            /// Scenario: A PostgreSQL TLS connection adds a PEM-encoded private CA file.
+            /// Guarantees: The bounded file loader and certificate parser build a verified Rustls connector.
+            #[tokio::test]
+            async fn tls_connector_loads_custom_ca_file() {
+                otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+                let directory = tempfile::tempdir().expect("temporary CA directory");
+                let path = directory.path().join("postgresql-ca.pem");
+                let ca = otel_arrow_dfe_test_tls_certs::generate_ca("PostgreSQL test CA");
+                std::fs::write(&path, ca.cert_pem).expect("write CA file");
+                let validated = super::super::tests::test_validated_with_ca(&path);
+
+                assert!(
+                    tls_connector(&validated.config.connection)
+                        .await
+                        .expect("custom CA connector")
+                        .is_some()
+                );
+            }
+
+            /// Scenario: A PostgreSQL TLS CA file is missing or does not contain certificates.
+            /// Guarantees: Connection setup fails as configuration instead of ignoring invalid trust material.
+            #[tokio::test]
+            async fn tls_connector_rejects_invalid_ca_file() {
+                otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+                let directory = tempfile::tempdir().expect("temporary CA directory");
+                let missing = directory.path().join("missing.pem");
+                let validated = super::super::tests::test_validated_with_ca(&missing);
+                assert_eq!(
+                    tls_connector(&validated.config.connection).await.err(),
+                    Some(Error::TlsCaRead(io::ErrorKind::NotFound))
+                );
+
+                let invalid = directory.path().join("invalid.pem");
+                std::fs::write(&invalid, "not a certificate").expect("write invalid CA file");
+                let validated = super::super::tests::test_validated_with_ca(&invalid);
+                assert_eq!(
+                    tls_connector(&validated.config.connection).await.err(),
+                    Some(Error::TlsCaParse)
+                );
+            }
+
+            /// Scenario: A PostgreSQL peer accepts SSLRequest, reads ClientHello, and never finishes TLS.
+            /// Guarantees: The connection deadline closes the socket and reports retryable unavailability without publishing a session.
+            #[tokio::test]
+            async fn stalled_tls_handshake_obeys_connection_deadline() {
+                use serde_json::json;
+                use tokio::{
+                    io::{AsyncReadExt, AsyncWriteExt},
+                    net::TcpListener,
+                };
+
+                otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+                let directory = tempfile::tempdir().expect("CA directory");
+                let ca_file = directory.path().join("ca.pem");
+                let ca = otel_arrow_dfe_test_tls_certs::generate_ca("PostgreSQL timeout CA");
+                std::fs::write(&ca_file, ca.cert_pem).expect("CA file");
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("loopback listener");
+                let address = listener.local_addr().expect("listener address");
+                let validated = super::super::tests::test_validated_with_connection(json!({
+                    "host": "127.0.0.1",
+                    "port": address.port(),
+                    "database": "fixture",
+                    "tls": {"ca_file": ca_file},
+                }));
+                let mut adapter = PostgreSqlAdapter::new(
+                    validated,
+                    super::super::tests::test_provider(),
+                )
+                .expect("adapter");
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        let server = async {
+                            let (mut socket, _) = listener.accept().await.expect("connection");
+                            let mut request = [0; 8];
+                            let _ = socket.read_exact(&mut request).await.expect("SSLRequest");
+                            assert_eq!(request, [0, 0, 0, 8, 4, 210, 22, 47]);
+                            socket.write_all(b"S").await.expect("TLS supported");
+                            let mut buffer = [0; 4096];
+                            assert!(socket.read(&mut buffer).await.expect("ClientHello") > 0);
+                            tokio::time::pause();
+                            tokio::time::advance(CONNECTION_TIMEOUT).await;
+                            while socket.read(&mut buffer).await.expect("client closes") != 0 {}
+                        };
+                        let client = async {
+                            assert_eq!(
+                                adapter
+                                    .connect(
+                                        &Operation::default(),
+                                        &super::super::tests::fixed_credential()
+                                    )
+                                    .await,
+                                Err(Error::Unavailable)
+                            );
+                            assert!(adapter.session.is_none());
+                            assert!(adapter.cancel.borrow().is_none());
+                        };
+                        tokio::time::timeout(Duration::from_secs(30), async {
+                            tokio::join!(server, client);
+                        })
+                        .await
+                        .expect("timeout scenario completed");
+                    })
+                    .await;
+            }
+
             /// Scenario: One large row is followed by ten thousand small rows.
             /// Guarantees: The outlier ages out after the bounded window, target returns to 300, and estimated native requests stay bounded.
             #[test]
@@ -592,6 +700,35 @@ macro_rules! postgresql_module_tests {
                     assert!(!PostgreSqlAdapter::is_retryable(&error));
                 }
             }
+
+            /// Scenario: Reading a PostgreSQL TLS CA file fails with either a transient or permanent filesystem error.
+            /// Guarantees: Transient I/O follows transport retry policy while configuration failures remain terminal and retain their error kind.
+            #[test]
+            fn tls_ca_read_retry_policy() {
+                for kind in [
+                    std::io::ErrorKind::Interrupted,
+                    std::io::ErrorKind::WouldBlock,
+                    std::io::ErrorKind::TimedOut,
+                    std::io::ErrorKind::ConnectionReset,
+                    std::io::ErrorKind::ConnectionAborted,
+                    std::io::ErrorKind::NotConnected,
+                    std::io::ErrorKind::UnexpectedEof,
+                    std::io::ErrorKind::BrokenPipe,
+                ] {
+                    let error = tls_ca_read(std::io::Error::from(kind));
+                    assert_eq!(error, Error::Unavailable);
+                    assert!(PostgreSqlAdapter::is_retryable(&error));
+                }
+                for kind in [
+                    std::io::ErrorKind::NotFound,
+                    std::io::ErrorKind::PermissionDenied,
+                    std::io::ErrorKind::InvalidData,
+                ] {
+                    let error = tls_ca_read(std::io::Error::from(kind));
+                    assert_eq!(error, Error::TlsCaRead(kind));
+                    assert!(!PostgreSqlAdapter::is_retryable(&error));
+                }
+            }
         }
     };
 }
@@ -612,7 +749,7 @@ use tokio_postgres::types::Type;
 
 struct TestCredentials;
 
-fn fixed_credential() -> BasicAuthCredential {
+pub(super) fn fixed_credential() -> BasicAuthCredential {
     BasicAuthCredential::new("reader", "password").expect("fixture")
 }
 
@@ -658,8 +795,92 @@ fn validate(value: &Value) -> super::adapter::Result<super::config::Validated> {
     Config::parse(value)?.validate()
 }
 
+/// Scenario: PostgreSQL connection TLS settings are omitted or explicitly disabled.
+/// Guarantees: TLS defaults on, plaintext requires an explicit opt-out, and a CA file cannot be ignored in plaintext mode.
+#[test]
+fn validates_tls_enablement_and_ca_file_contract() {
+    let base = config(&sql(KEY));
+    let validated = validate(&base).expect("TLS defaults");
+    assert!(validated.config.connection.tls_enabled());
+    assert!(validated.config.connection.ca_file().is_none());
+
+    let mut plaintext = base.clone();
+    plaintext["connection"]["tls"] = json!({"enabled": false});
+    assert!(
+        !validate(&plaintext)
+            .expect("explicit plaintext")
+            .config
+            .connection
+            .tls_enabled()
+    );
+
+    plaintext["connection"]["tls"]["ca_file"] = json!("ca.pem");
+    assert!(validate(&plaintext).is_err());
+
+    let mut empty = base;
+    empty["connection"]["tls"] = json!({"ca_file": ""});
+    assert!(validate(&empty).is_err());
+}
+
+/// Scenario: TLS fields are null, misspelled, incorrectly typed, or contain an invalid CA path.
+/// Guarantees: Invalid security configuration is rejected instead of silently disabling TLS or ignoring fields.
+#[test]
+fn rejects_invalid_tls_configuration() {
+    for tls in [
+        json!(null),
+        json!({"enabled": null}),
+        json!({"ca_file": null}),
+        json!({"enabled": "false"}),
+        json!({"enabled": false, "ca_file": "ca.pem"}),
+        json!({"ca_file": "  "}),
+        json!({"ca_file": "ca\u{0}.pem"}),
+        json!({"enable": false}),
+        json!({"trust_server_certificate": true}),
+    ] {
+        let mut raw = config(&sql(KEY));
+        raw["connection"]["tls"] = tls;
+        assert_eq!(validate(&raw).err(), Some(super::adapter::Error::Config));
+    }
+}
+
+/// Scenario: TLS trust configuration changes while the logical PostgreSQL source remains unchanged.
+/// Guarantees: Transport trust settings do not invalidate the durable source cursor fingerprint.
+#[test]
+fn tls_settings_do_not_change_source_fingerprint() {
+    let base = config(&sql(KEY));
+    let expected = validate(&base).expect("default TLS").fingerprint;
+
+    let mut custom_ca = base.clone();
+    custom_ca["connection"]["tls"] = json!({"ca_file": "private-ca.pem"});
+    assert_eq!(
+        validate(&custom_ca).expect("custom CA").fingerprint,
+        expected
+    );
+
+    let mut plaintext = base;
+    plaintext["connection"]["tls"] = json!({"enabled": false});
+    assert_eq!(
+        validate(&plaintext)
+            .expect("explicit plaintext")
+            .fingerprint,
+        expected
+    );
+}
+
 pub(super) fn test_validated() -> super::config::Validated {
     validate(&config(&sql(KEY))).expect("worker fixture")
+}
+
+pub(super) fn test_validated_with_ca(path: &std::path::Path) -> super::config::Validated {
+    let mut raw = config(&sql(KEY));
+    raw["connection"]["tls"] = json!({"ca_file": path});
+    validate(&raw).expect("TLS worker fixture")
+}
+
+pub(super) fn test_validated_with_connection(connection: Value) -> super::config::Validated {
+    let mut raw = config(&sql(KEY));
+    raw["connection"] = connection;
+    validate(&raw).expect("transport fixture")
 }
 
 pub(super) fn mock_signature(plan: &Plan, columns: &[(Type, i32, bool)]) -> Signature {

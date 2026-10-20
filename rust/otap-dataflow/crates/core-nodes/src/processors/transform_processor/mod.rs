@@ -1619,7 +1619,7 @@ mod test {
     }
 
     /// Scenario: A transform routes an entire log batch to a named output.
-    /// Guarantees: The default output is empty and the routed output preserves native OTAP records.
+    /// Guarantees: The default output is empty and all input records reach the named output unchanged.
     #[test]
     fn test_simple_route_to() {
         // test ensure it will only operate on all signals
@@ -2045,7 +2045,7 @@ mod test {
     }
 
     /// Scenario: A transform routes logs by severity to named and default outputs.
-    /// Guarantees: Each output remains native OTAP with the expected records and sanitized columns.
+    /// Guarantees: Each log reaches the expected output and unused dictionary values are removed.
     #[test]
     fn test_conditional_route_to() {
         // test ensure it will only operate on all signals
@@ -3166,7 +3166,7 @@ mod test {
     }
 
     /// Scenario: A transform routes a batch with sanitization disabled.
-    /// Guarantees: Routed output remains native OTAP and retains unreferenced dictionary values.
+    /// Guarantees: Routed output retains unreferenced dictionary values when sanitization is disabled.
     #[test]
     fn test_skip_sanitize() {
         let runtime = TestRuntime::<OtapPdata>::new();

@@ -133,7 +133,7 @@ Syslog over TLS:
 ## Message Parsing
 
 The receiver validates transport framing and rejects zero-length messages, then
-forwards non-empty messages in the `syslog-cef-batch-v1` encoded pdata format.
+forwards non-empty messages in the `syslog-batch` encoded pdata format.
 Format detection and parsing remain lazy until a downstream component requests
 native OTAP records. This keeps transparent forwarding and codec-native
 batching on the original message bytes.

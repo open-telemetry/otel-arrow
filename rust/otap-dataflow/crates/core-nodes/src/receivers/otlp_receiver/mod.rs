@@ -2280,7 +2280,7 @@ mod tests {
             .run_validation_concurrent(validation_procedure());
     }
 
-    /// Scenario: HTTP OTLP requests run without an authorizer and wait for downstream acknowledgment.
+    /// Scenario: An HTTP OTLP receiver runs without an authorizer and waits for downstream acknowledgment.
     /// Guarantees: Unauthenticated logs, metrics, and traces remain encoded and complete after Ack.
     #[test]
     fn test_otlp_http_receiver_ack() {
