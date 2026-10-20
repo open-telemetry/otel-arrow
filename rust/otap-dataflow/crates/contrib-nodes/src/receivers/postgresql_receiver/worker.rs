@@ -4,13 +4,18 @@
 //! Single connection owner with read-only portal pages and observed cleanup.
 
 use super::{
-    adapter::{CachedSchema, Error, Operation, PostgreSqlAdapter, Result, database},
+    adapter::{CachedSchema, Error, Operation, PostgreSqlAdapter, Result, database, tls_ca_read},
     query::{CatalogStatements, ResolvedSchema, Signature},
     value as convert,
 };
 use futures::{StreamExt, future::poll_fn};
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+use otel_arrow_dfe_otap::tls_utils::{
+    add_system_trust_anchors_to_root_cert_store, read_file_with_limit_async,
+};
 use otel_arrow_dfe_scraper::database::{ColumnMetadata, CursorRow, QueryPage, Row};
+use rustls::RootCertStore;
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use secrecy::ExposeSecret;
 use std::{
     cell::{Cell, RefCell},
@@ -28,10 +33,22 @@ use tokio::{
     time::Instant,
 };
 use tokio_postgres::{
-    CancelToken, Client, IsolationLevel, NoTls, Statement, config::SslMode, types::ToSql,
+    CancelToken, Client, IsolationLevel, Statement,
+    config::SslMode,
+    tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream},
+    types::ToSql,
 };
+use tokio_postgres_rustls::MakeRustlsConnect;
 
-pub(crate) type CancelSlot = Rc<RefCell<Option<(CancelToken, SocketAddr)>>>;
+#[derive(Clone)]
+pub(crate) struct CancelSession {
+    token: CancelToken,
+    address: SocketAddr,
+    tls: Option<MakeRustlsConnect>,
+    host: String,
+}
+
+pub(crate) type CancelSlot = Rc<RefCell<Option<CancelSession>>>;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const FETCH_SIZE_WINDOW: usize = 32;
@@ -96,6 +113,41 @@ struct BoundedBackend<S> {
     header_read: usize,
     header_sent: usize,
     body_left: usize,
+}
+
+struct BoundedTlsConnect<T> {
+    inner: T,
+    failure: ReceiveFailure,
+    limits: FrameLimits,
+    handshake_completed: Rc<Cell<bool>>,
+}
+
+impl<S: TlsStream + Unpin> TlsStream for BoundedBackend<S> {
+    fn channel_binding(&self) -> ChannelBinding {
+        self.inner.channel_binding()
+    }
+}
+
+impl<S, T> TlsConnect<S> for BoundedTlsConnect<T>
+where
+    S: 'static,
+    T: TlsConnect<S> + 'static,
+    T::Stream: Unpin,
+    T::Error: 'static,
+{
+    type Stream = BoundedBackend<T::Stream>;
+    type Error = T::Error;
+    type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Stream, Self::Error>>>>;
+
+    fn connect(self, stream: S) -> Self::Future {
+        Box::pin(async move {
+            // Preserve the I/O error kind so interrupted handshakes remain retryable.
+            let stream = self.inner.connect(stream).await?;
+            self.handshake_completed.set(true);
+            // Frame limits apply to decrypted PostgreSQL messages, not TLS records.
+            Ok(BoundedBackend::new(stream, self.failure, self.limits))
+        })
+    }
 }
 
 impl<S> BoundedBackend<S> {
@@ -343,17 +395,97 @@ fn driver_outcome(result: Result<()>, reason: CloseReason) -> SessionClose {
 
 async fn cancel_native(slot: &CancelSlot) {
     let token = slot.borrow().clone();
-    if let Some((token, address)) = token {
+    if let Some(mut session) = token {
         // This is only a request. The operation and driver are still awaited.
         let _ = tokio::time::timeout(CANCEL_REQUEST_TIMEOUT, async {
-            let stream = tokio::net::TcpStream::connect(address).await?;
-            token
-                .cancel_query_raw(stream, NoTls)
-                .await
-                .map_err(io::Error::other)
+            let stream = tokio::net::TcpStream::connect(session.address).await?;
+            if let Some(tls) = session.tls.as_mut() {
+                let connector = match <MakeRustlsConnect as MakeTlsConnect<
+                    tokio::net::TcpStream,
+                >>::make_tls_connect(tls, &session.host)
+                {
+                    Ok(connector) => connector,
+                    Err(error) => match error {},
+                };
+                session
+                    .token
+                    .cancel_query_raw(stream, connector)
+                    .await
+                    .map_err(io::Error::other)
+            } else {
+                session
+                    .token
+                    .cancel_query_raw(stream, tokio_postgres::NoTls)
+                    .await
+                    .map_err(io::Error::other)
+            }
         })
         .await;
     }
+}
+
+async fn tls_connector(config: &super::config::Connection) -> Result<Option<MakeRustlsConnect>> {
+    if !config.tls_enabled() {
+        return Ok(None);
+    }
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .ok_or(Error::TlsProvider)?;
+    let mut roots = RootCertStore::empty();
+    add_system_trust_anchors_to_root_cert_store(&mut roots)
+        .await
+        .map_err(|_| Error::TlsRoots)?;
+    if let Some(path) = config.ca_file() {
+        let pem = read_file_with_limit_async(path)
+            .await
+            .map_err(tls_ca_read)?;
+        let certificates = CertificateDer::pem_slice_iter(&pem)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| Error::TlsCaParse)?;
+        if certificates.is_empty() {
+            return Err(Error::TlsCaParse);
+        }
+        for certificate in certificates {
+            roots.add(certificate).map_err(|_| Error::TlsCaParse)?;
+        }
+    }
+    if roots.is_empty() {
+        return Err(Error::TlsRoots);
+    }
+    Ok(Some(MakeRustlsConnect::new(
+        rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|_| Error::TlsProvider)?
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )))
+}
+
+fn spawn_driver<S, T>(
+    mut connection: tokio_postgres::Connection<S, T>,
+    failure: ReceiveFailure,
+) -> JoinHandle<Result<()>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    tokio::task::spawn_local(async move {
+        loop {
+            match poll_fn(|cx| connection.poll_message(cx)).await {
+                None => return Ok(()),
+                Some(Err(e)) => {
+                    let error = failure.get().unwrap_or_else(|| database(e));
+                    failure.set(Some(error));
+                    return Err(error);
+                }
+                Some(Ok(tokio_postgres::AsyncMessage::Notice(_))) => {}
+                Some(Ok(_)) => {
+                    failure.set(Some(Error::Limit));
+                    return Err(Error::Limit);
+                }
+            }
+        }
+    })
 }
 
 async fn await_operation<T>(
@@ -573,12 +705,18 @@ impl PostgreSqlAdapter {
             .dbname(&config.database)
             .user(credential.expose_username())
             .password(credential.expose_password())
-            .ssl_mode(SslMode::Disable)
+            .ssl_mode(if config.tls_enabled() {
+                SslMode::Require
+            } else {
+                SslMode::Disable
+            })
             .connect_timeout(CONNECTION_TIMEOUT)
             .options(session_options(self.validated.common.timeout()));
         let receive_failure = ReceiveFailure::default();
         let limits = FrameLimits::new(self.validated.common.max_normalized_bytes())?;
         let connected = tokio::time::timeout(CONNECTION_TIMEOUT, async {
+            let mut tls = tls_connector(config).await?;
+            let cancel_tls = tls.clone();
             let stream = tokio::net::TcpStream::connect((config.host.as_str(), config.port))
                 .await
                 .map_err(|_| Error::Unavailable)?;
@@ -586,36 +724,56 @@ impl PostgreSqlAdapter {
             // Match the native driver's socket setting when supplying our own stream.
             stream.set_nodelay(true).map_err(|_| Error::Unavailable)?;
             let stream = tokio::io::BufReader::with_capacity(READ_BUFFER_BYTES, stream);
-            let stream = BoundedBackend::new(stream, receive_failure.clone(), limits);
-            let (client, connection) = pg
-                .connect_raw(stream, NoTls)
-                .await
-                .map_err(|error| receive_failure.get().unwrap_or_else(|| database(error)))?;
-            Ok::<_, Error>((client, connection, address))
+            let driver_failure = receive_failure.clone();
+            let (client, driver) = if let Some(tls) = tls.as_mut() {
+                let inner = match <MakeRustlsConnect as MakeTlsConnect<
+                    tokio::io::BufReader<tokio::net::TcpStream>,
+                >>::make_tls_connect(tls, &config.host)
+                {
+                    Ok(connector) => connector,
+                    Err(error) => match error {},
+                };
+                let handshake_completed = Rc::new(Cell::new(false));
+                let connector = BoundedTlsConnect {
+                    inner,
+                    failure: receive_failure.clone(),
+                    limits,
+                    handshake_completed: handshake_completed.clone(),
+                };
+                let (client, connection) =
+                    pg.connect_raw(stream, connector).await.map_err(|error| {
+                        receive_failure.get().unwrap_or_else(|| {
+                            let error = database(error);
+                            if error == Error::Database && !handshake_completed.get() {
+                                Error::TlsHandshake
+                            } else {
+                                error
+                            }
+                        })
+                    })?;
+                let driver = spawn_driver(connection, driver_failure);
+                (client, driver)
+            } else {
+                let stream = BoundedBackend::new(stream, receive_failure.clone(), limits);
+                let (client, connection) = pg
+                    .connect_raw(stream, tokio_postgres::NoTls)
+                    .await
+                    .map_err(|error| receive_failure.get().unwrap_or_else(|| database(error)))?;
+                let driver = spawn_driver(connection, driver_failure);
+                (client, driver)
+            };
+            Ok::<_, Error>((client, driver, address, cancel_tls))
         })
         .await;
         drop(pg);
-        let (client, mut connection, address) =
+        let (client, driver, address, tls) =
             connected.map_err(|_| receive_failure.get().unwrap_or(Error::Unavailable))??;
-        let driver_failure = receive_failure.clone();
-        let driver = tokio::task::spawn_local(async move {
-            loop {
-                match poll_fn(|cx| connection.poll_message(cx)).await {
-                    None => return Ok(()),
-                    Some(Err(e)) => {
-                        let error = driver_failure.get().unwrap_or_else(|| database(e));
-                        driver_failure.set(Some(error));
-                        return Err(error);
-                    }
-                    Some(Ok(tokio_postgres::AsyncMessage::Notice(_))) => {}
-                    Some(Ok(_)) => {
-                        driver_failure.set(Some(Error::Limit));
-                        return Err(Error::Limit);
-                    }
-                }
-            }
+        *self.cancel.borrow_mut() = Some(CancelSession {
+            token: client.cancel_token(),
+            address,
+            tls,
+            host: config.host.clone(),
         });
-        *self.cancel.borrow_mut() = Some((client.cancel_token(), address));
         if self.principal.is_none() {
             self.principal = Some(credential.expose_username().to_owned().into());
         }
@@ -898,3 +1056,7 @@ postgresql_module_tests!(worker);
 
 #[cfg(test)]
 postgresql_module_tests!(framing);
+
+#[cfg(test)]
+#[path = "tls_tests.rs"]
+mod tls_tests;
