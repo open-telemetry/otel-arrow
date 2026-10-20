@@ -12,6 +12,93 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.62.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pdata`: The otap::filter log, trace and metric filter types are no longer deserializable and are now built from precompiled matchers. ([#4368](https://github.com/open-telemetry/otel-arrow/issues/4368))
+  MatchType, AnyValue and KeyValue were removed, and LogFilter::new no longer takes log_record.
+  Migration: Deserialize your own config types and build filters from Pattern, AttrMatcher and ValueMatcher.
+
+- `pipeline`: Migrated parquet exporter telemetry from flat counters to dimensioned metric populations with enum attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Update queries: flat file metrics -> file.operations{operation}, rows_written -> rows.written.
+
+- `pipeline`: Filter processor now rejects array and key-value match values and invalid regexp patterns when the config is validated. ([#4368](https://github.com/open-telemetry/otel-arrow/issues/4368))
+  Array and key-value match values and log_record were previously accepted but ignored; invalid regexp patterns previously panicked on the first batch.
+  Migration: Remove log_record, array, and key-value match values and fix invalid regexp patterns in filter processor configs.
+
+### :triangular_flag_on_post: Deprecations :triangular_flag_on_post:
+
+- `pipeline`: The OTAP receiver `compression_method` setting is deprecated in favor of `request_compression` and `response_compression`. ([#4379](https://github.com/open-telemetry/otel-arrow/issues/4379))
+  `compression_method` still works and applies a single method (or "none") to both directions, but it cannot be combined with `request_compression` or `response_compression`. Replace it with those fields.
+
+### :rocket: New components :rocket:
+
+- `pipeline`: Add an opt-in, development-only PostgreSQL receiver with automatic result metadata, configurable page budgets, shared credentials, and acknowledged composite polling. ([#4166](https://github.com/open-telemetry/otel-arrow/issues/4166), [#3918](https://github.com/open-telemetry/otel-arrow/issues/3918))
+  Enable postgresql and bind basic_auth_provider. Set query.max_rows_per_poll and query.max_batch_bytes. Unencrypted TCP: trusted development only.
+  Operations use a fixed 30s timeout. Initial timestamps normalize to UTC. Schema must remain stable across restarts.
+
+- `pipeline`: Add opt-in flat_file_sasl_auth credentials with an inline username and a periodically refreshed local password file. ([#4310](https://github.com/open-telemetry/otel-arrow/issues/4310))
+  Configure username and password_secret_file; password_secret_file_refresh defaults to 1h (10s-365d). startup_timeout defaults to 30s for initial retries. Failed refreshes retain last-good credentials. Live Kafka connection rotation remains separate (#4276).
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4349](https://github.com/open-telemetry/otel-arrow/issues/4349), [#4351](https://github.com/open-telemetry/otel-arrow/issues/4351), [#4387](https://github.com/open-telemetry/otel-arrow/issues/4387), [#4438](https://github.com/open-telemetry/otel-arrow/issues/4438))
+- `engine`: Materialize selected constant and UUID v7 context members once per pdata context. ([#4202](https://github.com/open-telemetry/otel-arrow/issues/4202))
+  Values retain their composite presence gates and remain stable across detached context clones.
+- `engine`: Engine startup avoids unnecessary system discovery. New release-perf and release-size profiles reduce binary size while retaining function names for diagnostics. ([#2674](https://github.com/open-telemetry/otel-arrow/issues/2674))
+  Select optimized builds with --profile and package their output without stripping function symbols. Custom release profiles retain panic recovery; source file/line details require debug information. The default release settings are unchanged.
+- `pdata`: Optimize record_batch_logical bytes by avoiding to_data calls ([#4426](https://github.com/open-telemetry/otel-arrow/issues/4426))
+- `pdata`: Optimize concatenation kernel `same_values` function to avoid to_data calls ([#4427](https://github.com/open-telemetry/otel-arrow/issues/4427))
+- `pipeline`: OTAP receiver now accepts the shared gRPC server settings: request/response compression, concurrency limits, message size, HTTP/2 stream limit, and TCP/HTTP2 tuning. ([#4379](https://github.com/open-telemetry/otel-arrow/issues/4379))
+  `max_concurrent_requests` now defaults to the downstream pdata channel capacity instead of 1000, and larger values are clamped to it. Omitted request compression accepts zstd, gzip, and deflate. `max_concurrent_streams` is uncapped by default to avoid stalling long-lived OTAP streams.
+
+- `pipeline`: Kafka receiver supports UTF-8 plaintext records and emits each record as an OpenTelemetry log body. ([#4297](https://github.com/open-telemetry/otel-arrow/issues/4297))
+- `pipeline`: Batch data using registered codecs, with configurable output encoding and OTAP fallback when encoded batching is unavailable. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  Preserve mode retains the input encoding when its codec supports batching. Existing OTAP/OTLP settings remain supported. Split and merged batches preserve delivery acknowledgements and permanent rejections, with output metrics reflecting the emitted encoding. Large batch limits no longer wrap.
+- `pipeline`: Support username_file in flat_file_sasl_auth so both SASL credentials can remain outside pipeline configuration. ([#4310](https://github.com/open-telemetry/otel-arrow/issues/4310))
+  Inline usernames remain supported. username_file takes precedence with no fallback on file failure. password_secret_file_refresh refreshes both files; failed acquisition retains the last good pair. Coordinate rotation because separate files are not an atomic snapshot.
+- `pipeline`: Allow Kafka receivers to acquire initial PLAIN and SCRAM credentials from a bound SASL credential provider. ([#4276](https://github.com/open-telemetry/otel-arrow/issues/4276))
+  Set auth.sasl.credential_source to capability and bind sasl_credential_provider. Runtime credential rotation is not yet supported.
+- `pipeline`: WASM processors enforce host-owned deadlines for guest initialization and processing, in addition to fuel and resource limits. ([#2973](https://github.com/open-telemetry/otel-arrow/issues/2973), [#3227](https://github.com/open-telemetry/otel-arrow/issues/3227))
+  Experimental wasm uses Wasmtime 49 (Rust 1.96+), the component model, initialization, bounded execution time and resources, host services, inert WASI CLI, and real clock reads. Future clock waits fail.
+
+- `pipeline`: Compile filter processor regex patterns once at startup instead of once per batch, improving throughput for small batches. ([#4329](https://github.com/open-telemetry/otel-arrow/issues/4329))
+  LargeUtf8 and Utf8View string columns are now accepted for regexp matching.
+
+- `pipeline`: Add full-result snapshot polling to the Oracle receiver without watermark columns or cursor binds. ([#4206](https://github.com/open-telemetry/otel-arrow/issues/4206))
+- `pipeline`: Add best-effort etw.provider.name attributes for ETW providers configured by GUID. ([#4325](https://github.com/open-telemetry/otel-arrow/issues/4325))
+  Names come from configuration or the registered-provider database at startup. Event-metadata name discovery is not yet supported; unregistered GUID-only providers omit the name. Capture continues when name discovery is unavailable.
+- `query-engine`: Compile regex patterns used by matches() once per pipeline instead of once per batch, improving throughput for small batches. ([#4329](https://github.com/open-telemetry/otel-arrow/issues/4329))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `engine`: Correct live rollout rollback failure classification and record rollback telemetry for create rollouts. ([#4400](https://github.com/open-telemetry/otel-arrow/issues/4400))
+  Rollback succeeds when undesired runtimes stop within the shutdown completion window, regardless of exit status, and restored runtimes reach readiness before their startup deadline. Create rollouts now report operation-level and per-core rollback progress.
+
+- `engine`: Wait for network receivers to finish binding listeners before marking pipelines ready. ([#4049](https://github.com/open-telemetry/otel-arrow/issues/4049))
+  Startup and live rollouts now preserve listener initialization errors instead of committing a pipeline before its receiver can accept traffic.
+- `observability`: Allow internal log event encoding to grow beyond its initial 256-byte capacity, up to 2KiB, before truncating. ([#1746](https://github.com/open-telemetry/otel-arrow/issues/1746))
+  Previously the encoding buffer had a hard 256-byte cap with no growth, so
+  oversized log events were truncated far more often than necessary. The
+  buffer now starts at 256 bytes but can grow up to 2KiB, matching the common
+  case's single-allocation cost while still truncating safely past 2KiB.
+
+- `otap`: Watched mTLS client CA files now reload whenever their contents change, fixing missed CA rotations on Windows when the file timestamp did not change. ([#4313](https://github.com/open-telemetry/otel-arrow/issues/4313))
+- `otap`: Reject empty or malformed custom CA bundles during OTLP exporter client TLS setup. ([#4025](https://github.com/open-telemetry/otel-arrow/issues/4025), [#4160](https://github.com/open-telemetry/otel-arrow/issues/4160))
+- `pdata`: Arrow offset overflow returns errors instead of panicking during attribute updates, batch range selection, query projections, and dictionary sanitization. ([#4085](https://github.com/open-telemetry/otel-arrow/issues/4085))
+  Transform and log parser processors report sanitization failures before emitting output.
+- `pipeline`: Kafka receiver no longer stalls during a consumer-group rebalance; the commit-before-revoke is now asynchronous instead of blocking the pipeline. ([#4104](https://github.com/open-telemetry/otel-arrow/issues/4104))
+  Previously a rebalance could pause ingestion for the broker commit round-trip. Commit-before-revoke is still attempted; a commit that loses the race with reassignment only causes at-least-once redelivery, never data loss.
+
+- `pipeline`: Parquet export now permanently rejects malformed telemetry batches without stopping the exporter. ([#4042](https://github.com/open-telemetry/otel-arrow/issues/4042))
+- `pipeline`: Pin the traffic generator default semantic conventions registry to a fixed tag. ([#4405](https://github.com/open-telemetry/otel-arrow/issues/4405))
+  The default registry previously tracked semantic-conventions main, which could
+  adopt schema features the bundled weaver version cannot parse. Set registry_path
+  to override the pinned default.
+
+<!-- previous-version -->
+
 ## v0.61.0
 
 ### :stop_sign: Breaking changes :stop_sign:
