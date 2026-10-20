@@ -26,16 +26,16 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde::{Deserialize, Serialize};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store};
@@ -464,46 +464,52 @@ impl local::Processor<OtapPdata> for WasmProcessor {
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
                 let processor_id = effect_handler.processor_id();
-                let (context, payload) = pdata.into_parts();
-                let signal_type = payload.signal_type();
-                let output = bridge::run_on_otap_records_async(
-                    OtapPdata::new(context.clone(), payload),
-                    |records| async {
-                        self.metrics.pdata.guest_process_calls.add(1);
-                        // Count rows entering the guest before consuming records.
-                        let rows_in = records
-                            .root_record_batch()
-                            .map_or(0, |b| b.num_rows() as u64);
+                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
+                    Ok(arrow_pdata) => arrow_pdata,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let context = arrow_pdata.context().clone();
+                let signal_type = arrow_pdata.signal_type();
+                let output = bridge::run_on_otap_records_async(arrow_pdata, |records| async {
+                    self.metrics.pdata.guest_process_calls.add(1);
+                    // Count rows entering the guest before consuming records.
+                    let rows_in = records
+                        .root_record_batch()
+                        .map_or(0, |b| b.num_rows() as u64);
 
-                        let result = self.run_guest(records).await.map_err(|e| {
-                            self.metrics.pdata.guest_process_errors.add(1);
-                            EngineError::ProcessorError {
-                                processor: processor_id.clone(),
-                                kind: ProcessorErrorKind::Other,
-                                error: format!("wasm plugin process failed: {e:#}"),
-                                source_detail: String::new(),
-                            }
-                        });
+                    let result = self.run_guest(records).await.map_err(|e| {
+                        self.metrics.pdata.guest_process_errors.add(1);
+                        EngineError::ProcessorError {
+                            processor: processor_id.clone(),
+                            kind: ProcessorErrorKind::Other,
+                            error: format!("wasm plugin process failed: {e:#}"),
+                            source_detail: String::new(),
+                        }
+                    });
 
-                        // Record rows-in by signal type.
+                    // Record rows-in by signal type.
+                    self.metrics
+                        .records_for(signal_type)
+                        .records_in
+                        .add(rows_in);
+
+                    // Record rows-out if the guest returned a batch.
+                    if let Ok(Some(ref out)) = result {
+                        let rows_out = out.root_record_batch().map_or(0, |b| b.num_rows() as u64);
                         self.metrics
                             .records_for(signal_type)
-                            .records_in
-                            .add(rows_in);
+                            .records_out
+                            .add(rows_out);
+                    }
 
-                        // Record rows-out if the guest returned a batch.
-                        if let Ok(Some(ref out)) = result {
-                            let rows_out =
-                                out.root_record_batch().map_or(0, |b| b.num_rows() as u64);
-                            self.metrics
-                                .records_for(signal_type)
-                                .records_out
-                                .add(rows_out);
-                        }
-
-                        result
-                    },
-                )
+                    result
+                })
                 .await;
 
                 // Drain per-call kernel counters outside the closure so they
@@ -761,7 +767,7 @@ mod tests {
     use otel_arrow_dfe_engine::testing::node::test_node;
     use otel_arrow_dfe_engine::testing::processor::TestRuntime;
     use otel_arrow_dfe_otap::pdata::Context;
-    use otel_arrow_dfe_pdata::OtapPayload;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use tokio::time::timeout;
 
     /// Build a minimal `OtapArrowRecords::Logs` batch with a `severity_text`

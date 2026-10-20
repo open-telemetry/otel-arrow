@@ -14,18 +14,17 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.otap",
 );
 
-use otel_arrow_dfe_config::tls::TlsServerConfig;
-use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::compression::CompressionMethod;
 use otel_arrow_dfe_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
 use otel_arrow_dfe_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otel_arrow_dfe_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otel_arrow_dfe_otap::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
-    OtapStreamTaskManager, Settings,
+    OtapStreamTaskManager, Settings, common,
 };
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, otap_grpc};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -60,65 +59,112 @@ use parking_lot::Mutex;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic_middleware::MiddlewareLayer;
 
 const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 
+/// Minimum number of streams per connection. Users should configure at least
+/// this many to be compatible with the OTAP exporter; fewer streams might stall
+/// because the client keeps at least one stream open per signal.
+const MIN_CONCURRENT_STREAMS: u32 = 3;
+
 /// Configuration for the OTAP Receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    listening_addr: SocketAddr,
+    #[serde(flatten)]
+    grpc: otap_grpc::GrpcServerSettings,
 
-    compression_method: Option<CompressionMethod>,
+    /// Deprecated: use `request_compression` and `response_compression` instead.
+    ///
+    /// When set, this single compression method is applied to both accepted requests and sent
+    /// responses, matching the pre-`GrpcServerSettings` behavior. It cannot be combined with the
+    /// `request_compression` or `response_compression` fields. Accepts a single method or `"none"`.
+    #[serde(
+        default,
+        deserialize_with = "otel_arrow_dfe_otap::compression::deserialize_compression_methods"
+    )]
+    compression_method: Option<Vec<CompressionMethod>>,
 
-    /// Size of the channel used to buffer outgoing responses to the client.
-    response_stream_channel_size: usize,
-
-    /// Maximum number of concurrent (in-flight) requests (default: 1000)
-    #[serde(default = "default_max_concurrent_requests")]
-    max_concurrent_requests: usize,
-
-    /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream. Clamped to `max_concurrent_requests` at runtime.
+    /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream.
+    ///
+    /// This bounds how many batches a single OTAP stream can have awaiting a downstream result at
+    /// once. It is distinct from `max_concurrent_requests`, which is the receiver-wide limit per
+    /// signal; this value is additionally clamped to `max_concurrent_requests` at runtime.
     #[serde(
         default = "default_max_concurrent_requests_per_stream",
         deserialize_with = "deserialize_positive_max_concurrent_requests_per_stream"
     )]
     max_concurrent_requests_per_stream: NonZeroUsize,
 
-    /// Whether to wait for the result (default: true)
+    /// Capacity of the per-stream channel buffering outgoing batch-status responses to the client.
     ///
-    /// When enabled, the receiver will not send a response until the
-    /// immediate downstream component has acknowledged receipt of the
-    /// data.  This does not guarantee that data has been fully
-    /// processed or successfully exported to the final destination,
-    /// since components are able acknowledge early.
-    ///
-    /// Note when wait_for_result=false, it is impossible to
-    /// see a failure, errors are effectively suppressed.
-    #[serde(default = "default_wait_for_result")]
-    wait_for_result: bool,
-
-    /// Timeout for RPC requests. If not specified, no timeout is applied.
-    /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
-    #[serde(default, with = "humantime_serde")]
-    pub timeout: Option<Duration>,
-
-    /// TLS configuration
-    pub tls: Option<TlsServerConfig>,
+    /// Each OTAP stream owns a bounded channel of this size carrying ACK/NACK/backpressure
+    /// responses back to the client. When a client reads responses slowly and the channel fills,
+    /// the stream handler stops reading new batches until the client catches up, applying
+    /// per-stream backpressure.
+    response_stream_channel_size: usize,
 }
 
-const fn default_max_concurrent_requests() -> usize {
-    1000
+impl Config {
+    /// Validates the deprecated `compression_method` alias against the shared gRPC settings.
+    ///
+    /// This performs no mutation. The legacy field only ever accepted a single method (or
+    /// `"none"`), and it is mutually exclusive with `request_compression`/`response_compression`;
+    /// combining them is rejected as an ambiguous configuration.
+    fn validate_compression(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
+        let Some(methods) = self.compression_method.as_ref() else {
+            return Ok(());
+        };
+
+        // The legacy field only ever accepted a single method (or `"none"`, an empty list here).
+        if methods.len() > 1 {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "`compression_method` accepts a single compression method or \"none\"; \
+                        use `request_compression`/`response_compression` for multiple methods"
+                    .to_owned(),
+            });
+        }
+
+        if self.grpc.request_compression.is_some() || self.grpc.response_compression.is_some() {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "`compression_method` is deprecated and cannot be combined with \
+                        `request_compression` or `response_compression`; use the new fields only"
+                    .to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Returns the compression methods accepted for requests, honoring the deprecated alias.
+    ///
+    /// When the deprecated `compression_method` is set it applies to both directions; otherwise the
+    /// shared gRPC default applies (an omitted `request_compression` accepts zstd, gzip, deflate).
+    fn effective_request_compression(&self) -> Vec<CompressionMethod> {
+        match self.compression_method.as_ref() {
+            Some(methods) => methods.clone(),
+            None => self.grpc.request_compression_methods(),
+        }
+    }
+
+    /// Returns the compression methods offered for responses, honoring the deprecated alias.
+    ///
+    /// When the deprecated `compression_method` is set it applies to both directions; otherwise the
+    /// shared gRPC default applies (an omitted `response_compression` sends uncompressed).
+    fn effective_response_compression(&self) -> Vec<CompressionMethod> {
+        match self.compression_method.as_ref() {
+            Some(methods) => methods.clone(),
+            None => self.grpc.response_compression_methods(),
+        }
+    }
 }
 
 fn default_max_concurrent_requests_per_stream() -> NonZeroUsize {
@@ -146,12 +192,6 @@ where
     deserialize_positive_usize(deserializer, "max_concurrent_requests_per_stream")
 }
 
-const fn default_wait_for_result() -> bool {
-    // See https://github.com/open-telemetry/otel-arrow/issues/1311
-    // This matches the OTel Collector default for wait_for_result, presently.
-    false
-}
-
 /// A Receiver that listens for OTAP messages
 pub struct OTAPReceiver {
     config: Config,
@@ -174,12 +214,13 @@ pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
          node_config: Arc<NodeUserConfig>,
          receiver_config: &ReceiverConfig,
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
-            Ok(ReceiverWrapper::shared(
-                OTAPReceiver::from_config(pipeline, &node_config.config)?,
-                node,
-                node_config,
-                receiver_config,
-            ))
+            let mut receiver = OTAPReceiver::from_config(pipeline, &node_config.config)?;
+            // Clamp concurrency to the downstream channel capacity so backpressure flows upstream.
+            receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
+            Ok(
+                ReceiverWrapper::shared(receiver, node, node_config, receiver_config)
+                    .with_startup_readiness(),
+            )
         },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -198,6 +239,28 @@ impl OTAPReceiver {
             }
         })?;
 
+        config.validate_compression()?;
+        if config.compression_method.is_some() {
+            otel_warn!(
+                "otap_receiver.deprecated_compression_method",
+                message = "`compression_method` is deprecated; use `request_compression` and \
+                           `response_compression` instead"
+            );
+        }
+
+        if let Some(value) = config.grpc.max_concurrent_streams
+            && value > 0
+            && value < MIN_CONCURRENT_STREAMS
+        {
+            otel_warn!(
+                "otap_receiver.low_max_concurrent_streams",
+                max_concurrent_streams = value,
+                message = "`max_concurrent_streams` is below 3. OTAP exporters connected to \
+                            this receiver may stall with unopened streams if all three \
+                            signals are utilized."
+            );
+        }
+
         // Register OTAP receiver metrics for this node.
         let metrics = Arc::new(SharedOtapReceiverMetrics::new(
             OtapReceiverMetrics::register(&pipeline_ctx),
@@ -210,6 +273,14 @@ impl OTAPReceiver {
                 &pipeline_ctx.memory_pressure_state(),
             ),
         })
+    }
+
+    /// Tunes `max_concurrent_requests` relative to the downstream pdata channel capacity.
+    ///
+    /// Mirrors the OTLP receiver: a default (0) adopts the channel capacity, and any larger value
+    /// is clamped to it so backpressure flows upstream automatically.
+    fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
+        common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
     }
 
     fn route_ack_response(
@@ -504,22 +575,22 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "otap_receiver.start",
-            listening_addr = %self.config.listening_addr
+            listening_addr = %self.config.grpc.listening_addr
         );
 
         // create listener on addr provided from config
-        let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
-        let listener_stream = TcpListenerStream::new(listener);
+        let listener = effect_handler.tcp_listener(self.config.grpc.listening_addr)?;
+        let incoming = self.config.grpc.build_tcp_incoming(listener);
 
         let stream_tasks = OtapStreamTaskManager::new();
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
-            max_concurrent_requests: self.config.max_concurrent_requests,
+            max_concurrent_requests: self.config.grpc.max_concurrent_requests,
             max_concurrent_requests_per_stream: self
                 .config
                 .max_concurrent_requests_per_stream
                 .get(),
-            wait_for_result: self.config.wait_for_result,
+            wait_for_result: self.config.grpc.wait_for_result,
             admission_state: self.admission_state.clone(),
             receiver_metrics: Some(self.metrics.clone()),
             stream_tasks: stream_tasks.clone(),
@@ -540,39 +611,69 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let mut metrics_server = ArrowMetricsServiceServer::new(metrics_service);
         let mut traces_server = ArrowTracesServiceServer::new(traces_service);
 
-        // apply the tonic compression if it is set
-        if let Some(ref compression) = self.config.compression_method {
-            let encoding = compression.map_to_compression_encoding();
-
-            logs_server = logs_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            metrics_server = metrics_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
-            traces_server = traces_server
-                .send_compressed(encoding)
-                .accept_compressed(encoding);
+        // Apply accepted request compression. An omitted `request_compression` defaults to
+        // accepting zstd, gzip, and deflate, matching the OTLP receiver. The deprecated
+        // `compression_method` alias, when set, applies to both directions.
+        for codec in self.config.effective_request_compression() {
+            let encoding = codec.map_to_compression_encoding();
+            logs_server = logs_server.accept_compressed(encoding);
+            metrics_server = metrics_server.accept_compressed(encoding);
+            traces_server = traces_server.accept_compressed(encoding);
         }
 
-        let mut server_builder = Server::builder();
-
-        // Apply timeout if configured
-        if let Some(timeout) = self.config.timeout {
-            server_builder = server_builder.timeout(timeout);
+        // Apply response compression. Enabling several codecs lets tonic pick one per request from
+        // the client's `grpc-accept-encoding` header; an omitted setting sends uncompressed.
+        for codec in self.config.effective_response_compression() {
+            let encoding = codec.map_to_compression_encoding();
+            logs_server = logs_server.send_compressed(encoding);
+            metrics_server = metrics_server.send_compressed(encoding);
+            traces_server = traces_server.send_compressed(encoding);
         }
 
-        let maybe_tls_acceptor =
-            build_tls_acceptor(self.config.tls.as_ref())
-                .await
-                .map_err(|e| Error::ReceiverError {
-                    receiver: effect_handler.receiver_id(),
-                    kind: ReceiverErrorKind::Configuration,
-                    error: format!("Failed to configure TLS: {}", e),
-                    source_detail: format_error_sources(&e),
-                })?;
+        // Apply the maximum decoded (post-decompression) request message size, if configured.
+        if let Some(max_decoding_message_size) = self.config.grpc.max_decoding_message_size {
+            let limit = max_decoding_message_size as usize;
+            logs_server = logs_server.max_decoding_message_size(limit);
+            metrics_server = metrics_server.max_decoding_message_size(limit);
+            traces_server = traces_server.max_decoding_message_size(limit);
+        }
 
-        let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+        // Also applies the request timeout, if configured.
+        let mut server_builder = common::apply_server_tuning(Server::builder(), &self.config.grpc);
+
+        // Apply the HTTP/2 `max_concurrent_streams` limit with OTAP-specific policy.
+        //
+        // OTAP uses long-lived bidirectional streams: each client holds one persistent HTTP/2
+        // stream per signal (and `streams_per_signal` of them), all multiplexed on a single
+        // connection. If the advertised limit is below the number of streams a client opens, the
+        // excess stream-opens sit in the client's HTTP/2 pending-open queue indefinitely with no
+        // error, timeout, or connection spillover, silently starving whole signals. Because the
+        // receiver cannot know a client's `streams_per_signal`, it does not derive this limit from
+        // `max_concurrent_requests`. When unset (or `0`), the limit is left uncapped so this
+        // starvation cannot happen by default. An explicit value is honored as-is.
+        match self.config.grpc.max_concurrent_streams {
+            Some(value) if value > 0 => {
+                server_builder = server_builder.max_concurrent_streams(Some(value));
+            }
+            // `None` or `Some(0)`: leave uncapped (tonic's native default).
+            _ => {}
+        }
+
+        let maybe_tls_acceptor = build_tls_acceptor(self.config.grpc.tls.as_ref())
+            .await
+            .map_err(|e| Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
+                error: format!("Failed to configure TLS: {}", e),
+                source_detail: format_error_sources(&e),
+            })?;
+
+        let handshake_timeout = self
+            .config
+            .grpc
+            .tls
+            .as_ref()
+            .and_then(|t| t.handshake_timeout);
 
         let server = server_builder
             .layer(MemoryPressureLayer::with_metrics(
@@ -591,7 +692,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 match maybe_tls_acceptor {
                     Some(tls_acceptor) => {
                         let tls_stream =
-                            create_tls_stream(listener_stream, tls_acceptor, handshake_timeout);
+                            create_tls_stream(incoming, tls_acceptor, handshake_timeout);
                         server
                             .serve_with_incoming_shutdown(tls_stream, async move {
                                 grpc_shutdown.cancelled().await;
@@ -600,7 +701,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     }
                     None => {
                         server
-                            .serve_with_incoming_shutdown(listener_stream, async move {
+                            .serve_with_incoming_shutdown(incoming, async move {
                                 grpc_shutdown.cancelled().await;
                             })
                             .await
@@ -609,6 +710,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             }
         };
         tokio::pin!(server_task);
+        effect_handler.signal_ready();
 
         let mut server_task_done = false;
         let mut draining_deadline: Option<Instant> = None;
@@ -804,8 +906,13 @@ mod tests {
     use async_stream::stream;
     use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::PipelineContext;
+    use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+    use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind};
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+    use otel_arrow_dfe_engine::shared::receiver as shared_receiver;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
@@ -825,6 +932,7 @@ mod tests {
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
     use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::future::Future;
     use std::net::SocketAddr;
@@ -832,6 +940,112 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
+
+    fn test_pipeline_context() -> PipelineContext {
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle)
+            .pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+    }
+
+    async fn start_receiver_expect_error(receiver: OTAPReceiver) -> Error {
+        let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+        let _ctrl_tx = ctrl_tx;
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (readiness_signaller, readiness_probe) =
+            otel_arrow_dfe_engine::readiness::ReadinessSignaller::pair_for_test(
+                Duration::from_secs(1),
+            );
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
+            test_node("otap_startup_failure"),
+            HashMap::new(),
+            None,
+            runtime_ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+        .with_readiness_signaller_for_test(readiness_signaller);
+
+        let error = match <OTAPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
+            Box::new(receiver),
+            shared_receiver::ControlChannel::new(SharedReceiver::mpsc(ctrl_rx)),
+            effect_handler,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("receiver startup should fail"),
+        };
+        assert_eq!(
+            readiness_probe.wait_ready().await,
+            Err(otel_arrow_dfe_engine::readiness::ReadinessProbeError::SignallerDropped),
+            "failed startup must not signal readiness"
+        );
+        error
+    }
+
+    /// Scenario: The OTAP listening address is already owned by another TCP listener.
+    /// Guarantees: OTAP startup returns the original bind failure before signaling readiness.
+    #[tokio::test]
+    async fn otap_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve OTAP listen address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = OTAPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "listening_addr": addr.to_string(),
+                "response_stream_channel_size": 1
+            }),
+        )
+        .expect("valid OTAP config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: OTAP startup receives incomplete server TLS material.
+    /// Guarantees: TLS configuration fails before the receiver signals readiness or serves traffic.
+    #[tokio::test]
+    async fn otap_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let receiver = OTAPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "listening_addr": "127.0.0.1:0",
+                "response_stream_channel_size": 1,
+                "tls": {
+                    "cert_pem": "incomplete TLS material"
+                }
+            }),
+        )
+        .expect("syntactically valid OTAP TLS config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    ..
+                }
+            ),
+            "expected OTAP TLS configuration error, got {error}"
+        );
+    }
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
@@ -1792,6 +2006,9 @@ mod tests {
             .run_validation_concurrent(validation);
     }
 
+    /// Scenario: OTAP configs parse through the shared `GrpcServerSettings` flattened fields.
+    /// Guarantees: Shared gRPC defaults, server tuning overrides, per-stream limits, and the
+    /// required response channel size all deserialize onto the expected config fields.
     #[test]
     fn test_config_parsing() {
         use otel_arrow_dfe_otap::compression::CompressionMethod;
@@ -1804,105 +2021,269 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
-        // Test with custom max_concurrent_requests, max_concurrent_requests defaults to 1000
-        let config_with_max_concurrent_requests = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "response_stream_channel_size": 100,
-            "max_concurrent_requests": 5000
-        });
-        let receiver =
-            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
-                .unwrap();
-        assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4317");
-        assert_eq!(receiver.config.response_stream_channel_size, 100);
-        assert_eq!(receiver.config.max_concurrent_requests, 5000);
-        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
-        assert!(!receiver.config.wait_for_result);
-        assert!(receiver.config.compression_method.is_none());
-        assert!(receiver.config.timeout.is_none());
-
-        // Test with minimal required fields, max_concurrent_requests defaults to 1000, wait_for_result defaults to false
+        // Minimal config: shared gRPC defaults apply before any downstream tuning.
         let config_minimal = json!({
             "listening_addr": "127.0.0.1:4318",
             "response_stream_channel_size": 200
         });
         let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_minimal).unwrap();
-        assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
+        assert_eq!(
+            receiver.config.grpc.listening_addr.to_string(),
+            "127.0.0.1:4318"
+        );
         assert_eq!(receiver.config.response_stream_channel_size, 200);
-        assert_eq!(receiver.config.max_concurrent_requests, 1000);
+        // Default `max_concurrent_requests` is 0 until tuned against the downstream channel.
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 0);
         assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
-        assert!(!receiver.config.wait_for_result);
+        assert!(!receiver.config.grpc.wait_for_result);
+        // An omitted request_compression keeps the shared default (accept zstd, gzip, deflate).
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
         assert!(receiver.config.compression_method.is_none());
-        assert!(receiver.config.timeout.is_none());
+        assert!(receiver.config.grpc.timeout.is_none());
+        // Omitted: the OTAP receiver leaves the HTTP/2 stream limit uncapped by default.
+        assert!(receiver.config.grpc.max_concurrent_streams.is_none());
 
-        // Test with full configuration including gzip compression
-        let config_full_gzip = json!({
+        // Explicit request/response compression: single value and list forms.
+        let config_compression = json!({
             "listening_addr": "127.0.0.1:4319",
             "response_stream_channel_size": 150,
-            "compression_method": "gzip",
+            "request_compression": ["zstd", "gzip"],
+            "response_compression": "zstd",
             "max_concurrent_requests": 2500,
             "max_concurrent_requests_per_stream": 32,
             "wait_for_result": true,
             "timeout": "30s"
         });
-        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_full_gzip).unwrap();
-        assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
+        let receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_compression).unwrap();
         assert_eq!(receiver.config.response_stream_channel_size, 150);
-        assert_eq!(receiver.config.max_concurrent_requests, 2500);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 2500);
         assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 32);
-        assert!(receiver.config.wait_for_result);
-        assert!(matches!(
-            receiver.config.compression_method,
-            Some(CompressionMethod::Gzip)
-        ));
-        assert_eq!(receiver.config.timeout, Some(Duration::from_secs(30)));
+        assert!(receiver.config.grpc.wait_for_result);
+        assert_eq!(
+            receiver.config.grpc.request_compression,
+            Some(vec![CompressionMethod::Zstd, CompressionMethod::Gzip])
+        );
+        assert_eq!(
+            receiver.config.grpc.response_compression,
+            Some(vec![CompressionMethod::Zstd])
+        );
+        assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
 
-        // Test with zstd compression
-        let config_with_zstd = json!({
+        // Response compression "none" produces an explicit empty list (uncompressed responses).
+        let config_response_none = json!({
             "listening_addr": "127.0.0.1:4320",
             "response_stream_channel_size": 50,
-            "compression_method": "zstd",
-            "wait_for_result": false
-        });
-        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_zstd).unwrap();
-        assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4320");
-        assert_eq!(receiver.config.response_stream_channel_size, 50);
-        assert!(!receiver.config.wait_for_result);
-        assert!(matches!(
-            receiver.config.compression_method,
-            Some(CompressionMethod::Zstd)
-        ));
-        assert!(receiver.config.timeout.is_none());
-
-        // Test with deflate compression
-        let config_with_deflate = json!({
-            "listening_addr": "127.0.0.1:4321",
-            "response_stream_channel_size": 75,
-            "compression_method": "deflate"
+            "response_compression": "none"
         });
         let receiver =
-            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_deflate).unwrap();
-        assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4321");
-        assert_eq!(receiver.config.response_stream_channel_size, 75);
-        assert!(matches!(
-            receiver.config.compression_method,
-            Some(CompressionMethod::Deflate)
-        ));
-        assert!(receiver.config.timeout.is_none());
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_response_none).unwrap();
+        assert_eq!(receiver.config.grpc.response_compression, Some(vec![]));
 
+        // Server tuning overrides flow through to the shared settings.
+        let config_server_overrides = json!({
+            "listening_addr": "127.0.0.1:4321",
+            "response_stream_channel_size": 75,
+            "max_concurrent_streams": 128,
+            "tcp_nodelay": false,
+            "max_decoding_message_size": "8MiB"
+        });
+        let receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_server_overrides).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(128));
+        assert!(!receiver.config.grpc.tcp_nodelay);
+        assert_eq!(
+            receiver.config.grpc.max_decoding_message_size,
+            Some(8 * 1024 * 1024)
+        );
+
+        // A zero per-stream in-flight limit is rejected during deserialization.
         let config_with_zero_per_stream_limit = json!({
             "listening_addr": "127.0.0.1:4322",
             "response_stream_channel_size": 75,
             "max_concurrent_requests_per_stream": 0
         });
-        let err = match OTAPReceiver::from_config(pipeline_ctx, &config_with_zero_per_stream_limit)
-        {
+        let err = match OTAPReceiver::from_config(
+            pipeline_ctx.clone(),
+            &config_with_zero_per_stream_limit,
+        ) {
             Ok(_) => panic!("zero per-stream in-flight limit should be rejected"),
             Err(err) => err,
         };
         assert!(
             format!("{err}").contains("max_concurrent_requests_per_stream must be greater than 0")
         );
+
+        // Unknown fields are rejected even though the gRPC settings are flattened.
+        let config_unknown_field = json!({
+            "listening_addr": "127.0.0.1:4323",
+            "response_stream_channel_size": 75,
+            "not_a_real_field": true
+        });
+        assert!(OTAPReceiver::from_config(pipeline_ctx, &config_unknown_field).is_err());
+    }
+
+    /// Scenario: The OTAP receiver accepts every `max_concurrent_streams` value without rejecting.
+    /// Guarantees: Omitted and `0` parse as uncapped (`None`/`Some(0)`), an explicit positive value
+    /// is preserved, and a value below the signal count is still accepted (it only warns).
+    #[test]
+    fn max_concurrent_streams_policy_accepts_all_values() {
+        use serde_json::json;
+
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // Omitted: uncapped (None).
+        let config_omitted = json!({
+            "listening_addr": "127.0.0.1:4350",
+            "response_stream_channel_size": 100
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_omitted).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, None);
+
+        // Explicit 0: parsed as Some(0); the receiver treats it as uncapped at serve time.
+        let config_zero = json!({
+            "listening_addr": "127.0.0.1:4351",
+            "response_stream_channel_size": 100,
+            "max_concurrent_streams": 0
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_zero).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(0));
+
+        // A positive value is preserved as-is.
+        let config_large = json!({
+            "listening_addr": "127.0.0.1:4352",
+            "response_stream_channel_size": 100,
+            "max_concurrent_streams": 64
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_large).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(64));
+
+        // A value below the signal count is accepted (it emits a warning, but is not an error).
+        let config_too_low = json!({
+            "listening_addr": "127.0.0.1:4353",
+            "response_stream_channel_size": 100,
+            "max_concurrent_streams": 2
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_too_low).unwrap();
+        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(2));
+    }
+
+    /// Scenario: The deprecated `compression_method` alias drives effective compression purely.
+    /// Guarantees: A single method fans out to both directions without mutating the shared gRPC
+    /// fields, "none" clears both, a list is rejected, and combining it with the new fields errors.
+    #[test]
+    fn deprecated_compression_method_alias() {
+        use otel_arrow_dfe_otap::compression::CompressionMethod;
+        use serde_json::json;
+
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // A single legacy method drives both request and response compression...
+        let config_legacy = json!({
+            "listening_addr": "127.0.0.1:4330",
+            "response_stream_channel_size": 100,
+            "compression_method": "zstd"
+        });
+        let receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_legacy).unwrap();
+        assert_eq!(
+            receiver.config.effective_request_compression(),
+            vec![CompressionMethod::Zstd]
+        );
+        assert_eq!(
+            receiver.config.effective_response_compression(),
+            vec![CompressionMethod::Zstd]
+        );
+        // ...without mutating the shared gRPC settings.
+        assert!(receiver.config.grpc.request_compression.is_none());
+        assert!(receiver.config.grpc.response_compression.is_none());
+
+        // "none" clears compression in both directions.
+        let config_legacy_none = json!({
+            "listening_addr": "127.0.0.1:4331",
+            "response_stream_channel_size": 100,
+            "compression_method": "none"
+        });
+        let receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_legacy_none).unwrap();
+        assert_eq!(receiver.config.effective_request_compression(), vec![]);
+        assert_eq!(receiver.config.effective_response_compression(), vec![]);
+
+        // The legacy field rejects a list (it only ever accepted a single method).
+        let config_legacy_list = json!({
+            "listening_addr": "127.0.0.1:4332",
+            "response_stream_channel_size": 100,
+            "compression_method": ["zstd", "gzip"]
+        });
+        assert!(OTAPReceiver::from_config(pipeline_ctx.clone(), &config_legacy_list).is_err());
+
+        // Combining the legacy alias with the new fields is rejected as ambiguous.
+        let config_legacy_conflict = json!({
+            "listening_addr": "127.0.0.1:4333",
+            "response_stream_channel_size": 100,
+            "compression_method": "zstd",
+            "request_compression": "gzip"
+        });
+        let err = match OTAPReceiver::from_config(pipeline_ctx, &config_legacy_conflict) {
+            Ok(_) => panic!("legacy alias combined with new fields should be rejected"),
+            Err(err) => err,
+        };
+        assert!(format!("{err}").contains("compression_method"));
+    }
+
+    /// Scenario: `tune_max_concurrent_requests` reconciles the config against downstream capacity.
+    /// Guarantees: The default (0) adopts capacity, oversized values are clamped, and smaller
+    /// values are preserved.
+    #[test]
+    fn tune_max_concurrent_requests_clamps_to_capacity() {
+        use serde_json::json;
+
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // Default (0) adopts the downstream channel capacity.
+        let config_default = json!({
+            "listening_addr": "127.0.0.1:4340",
+            "response_stream_channel_size": 100
+        });
+        let mut receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
+        receiver.tune_max_concurrent_requests(128);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 128);
+
+        // A value above capacity is clamped down to it.
+        let config_large = json!({
+            "listening_addr": "127.0.0.1:4341",
+            "response_stream_channel_size": 100,
+            "max_concurrent_requests": 5000
+        });
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx.clone(), &config_large).unwrap();
+        receiver.tune_max_concurrent_requests(128);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 128);
+
+        // A value below capacity is preserved.
+        let config_small = json!({
+            "listening_addr": "127.0.0.1:4342",
+            "response_stream_channel_size": 100,
+            "max_concurrent_requests": 32
+        });
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config_small).unwrap();
+        receiver.tune_max_concurrent_requests(128);
+        assert_eq!(receiver.config.grpc.max_concurrent_requests, 32);
     }
 
     /// Scenario: OTAP batch lifecycles, acknowledgements, and rejections span bounded dimensions.
@@ -2045,6 +2426,7 @@ mod tests {
         let config = json!({
             "listening_addr": addr.to_string(),
             "response_stream_channel_size": 100,
+            "max_concurrent_requests": 100,
             "wait_for_result": true  // Enable ACK handling
         });
 
@@ -2087,6 +2469,7 @@ mod tests {
         let config = json!({
             "listening_addr": addr.to_string(),
             "response_stream_channel_size": 100,
+            "max_concurrent_requests": 100,
             "wait_for_result": true  // Enable NACK handling
         });
 
@@ -2130,6 +2513,7 @@ mod tests {
         let config = json!({
             "listening_addr": addr.to_string(),
             "response_stream_channel_size": 100,
+            "max_concurrent_requests": 100,
             "wait_for_result": true
         });
 
@@ -2201,6 +2585,90 @@ mod tests {
                     .expect("timed out waiting for OTAP pdata")
                     .expect("no OTAP pdata received");
                 request_started.notify_one();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    /// Scenario: A client sends zstd-compressed OTAP logs to a receiver with default compression.
+    /// Guarantees: The default request-compression set accepts zstd, so every batch is admitted.
+    #[test]
+    fn default_request_compression_accepts_zstd() {
+        use tonic::codec::CompressionEncoding;
+
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use serde_json::json;
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // No compression is configured, so the shared default (zstd/gzip/deflate) must apply.
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 100
+        });
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut client = ArrowLogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("connect to OTAP receiver")
+                    .send_compressed(CompressionEncoding::Zstd);
+                #[allow(tail_expr_drop_order)]
+                let logs_stream = stream! {
+                    let mut producer = Producer::new();
+                    for batch_id in 0..3 {
+                        let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                        let bar = producer.produce_bar(&mut logs_records).unwrap();
+                        yield bar;
+                    }
+                };
+                let logs_response = client
+                    .arrow_logs(logs_stream)
+                    .await
+                    .expect("compressed OTAP request should be accepted");
+                validate_batch_responses(
+                    logs_response.into_inner(),
+                    0,
+                    "Successfully received",
+                    3,
+                    "logs",
+                )
+                .await;
+                ctx.send_shutdown(Instant::now(), "compression test complete")
+                    .await
+                    .expect("shutdown OTAP receiver");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                for _ in 0..3 {
+                    let _pdata = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("timed out waiting for OTAP pdata")
+                        .expect("no OTAP pdata received");
+                }
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 

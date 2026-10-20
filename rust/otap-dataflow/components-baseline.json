@@ -114,6 +114,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:extension:flat_file_sasl_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:extension:flat_file_user_pass_auth",
     "category": "Extension",
     "description": null,
@@ -289,6 +295,12 @@
   },
   {
     "id": "urn:otel:receiver:otlp",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:postgresql",
     "category": "Receiver",
     "description": null,
     "attributes": {}

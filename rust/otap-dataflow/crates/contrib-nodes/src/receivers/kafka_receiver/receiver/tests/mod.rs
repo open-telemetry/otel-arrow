@@ -38,7 +38,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLo
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData, TryIntoWithOptions};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use prost::Message;
 use rdkafka::ClientConfig;
@@ -57,7 +58,7 @@ use otel_arrow_dfe_config::SignalType;
 
 // Test-only imports for symbols the split test files reference but the
 // receiver implementation no longer imports directly.
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_SYSLOG};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG};
 use crate::receivers::kafka_receiver::identity::DeliveryGeneration;
 use bytes::Bytes;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8};

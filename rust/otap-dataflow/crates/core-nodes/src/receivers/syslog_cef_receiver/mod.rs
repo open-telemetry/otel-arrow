@@ -581,12 +581,10 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                         error: error.to_string(),
                     },
                 )?;
-            Ok(ReceiverWrapper::local(
-                receiver,
-                node,
-                node_config,
-                receiver_config,
-            ))
+            Ok(
+                ReceiverWrapper::local(receiver, node, node_config, receiver_config)
+                    .with_startup_readiness(),
+            )
         },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -642,6 +640,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let shutdown_flag = Rc::new(Cell::new(false));
                 // Counter to track active connection tasks for graceful shutdown
                 let active_task_count = Rc::new(Cell::new(0usize));
+                effect_handler.signal_ready();
 
                 loop {
                     tokio::select! {
@@ -1170,6 +1169,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let socket = effect_handler.udp_socket(udp_config.listening_addr)?;
                 let mut buf = vec![0u8; MAX_MESSAGE_SIZE];
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
+                effect_handler.signal_ready();
 
                 let max_batch_duration = self.config.max_batch_duration();
                 let max_batch_size = self.config.max_batch_size();
@@ -1580,7 +1580,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata_codec::PayloadData;
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {
@@ -1605,11 +1605,17 @@ mod tests {
         }
     }
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+    use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind};
+    use otel_arrow_dfe_engine::local::message::LocalReceiver;
+    use otel_arrow_dfe_engine::local::receiver as local_receiver;
+    use otel_arrow_dfe_engine::message::Receiver as EngineReceiver;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use std::collections::HashMap;
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -1618,6 +1624,127 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
+
+    async fn start_receiver_expect_error(receiver: SyslogCefReceiver) -> Error {
+        let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
+        let _ctrl_tx = ctrl_tx;
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (readiness_signaller, readiness_probe) =
+            otel_arrow_dfe_engine::readiness::ReadinessSignaller::pair_for_test(
+                Duration::from_secs(1),
+            );
+        let (_metrics_rx, metrics_reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = local_receiver::EffectHandler::<OtapPdata>::new(
+            test_node("syslog_startup_failure"),
+            HashMap::new(),
+            None,
+            runtime_ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+        .with_readiness_signaller_for_test(readiness_signaller);
+
+        let error = match <SyslogCefReceiver as local_receiver::Receiver<OtapPdata>>::start(
+            Box::new(receiver),
+            local_receiver::ControlChannel::new(EngineReceiver::Local(LocalReceiver::mpsc(
+                ctrl_rx,
+            ))),
+            effect_handler,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("receiver startup should fail"),
+        };
+        assert_eq!(
+            readiness_probe.wait_ready().await,
+            Err(otel_arrow_dfe_engine::readiness::ReadinessProbeError::SignallerDropped),
+            "failed startup must not signal readiness"
+        );
+        error
+    }
+
+    /// Scenario: The Syslog TCP listening address is already owned by another TCP listener.
+    /// Guarantees: TCP startup returns the original bind failure before signaling readiness.
+    #[tokio::test(flavor = "current_thread")]
+    async fn syslog_tcp_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve Syslog TCP address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = SyslogCefReceiver::new(Config::new_tcp(addr));
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: The Syslog UDP listening address is already owned by another UDP socket.
+    /// Guarantees: UDP startup returns the original bind failure before signaling readiness.
+    #[tokio::test(flavor = "current_thread")]
+    async fn syslog_udp_startup_reports_bind_failure() {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("reserve Syslog UDP address");
+        let addr = socket.local_addr().expect("reserved socket address");
+        let receiver = SyslogCefReceiver::new(Config::new_udp(addr));
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: Syslog TCP startup receives incomplete server TLS material.
+    /// Guarantees: TLS configuration fails before the receiver signals readiness or accepts traffic.
+    #[tokio::test(flavor = "current_thread")]
+    async fn syslog_tcp_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tls = serde_json::from_value(serde_json::json!({
+            "cert_pem": "incomplete TLS material"
+        }))
+        .expect("syntactically valid TLS config");
+        let config = Config {
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr: "127.0.0.1:0".parse().expect("valid TCP address"),
+                framing: TcpFraming::Newline,
+                tls: Some(tls),
+            }),
+            batch: None,
+        };
+        let receiver = SyslogCefReceiver::new(config);
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    ..
+                }
+            ),
+            "expected Syslog TLS configuration error, got {error}"
+        );
+    }
 
     /// Scenario: A pending Syslog batch is dropped before downstream handoff.
     /// Guarantees: Buffered records are cleared without rewriting the node-local success outcome.
@@ -1811,8 +1938,7 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
-                else {
+                let PayloadData::OtapRecords(arrow_records) = message1_received.into_data() else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1882,8 +2008,7 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
-                else {
+                let PayloadData::OtapRecords(arrow_records) = message1_received.into_data() else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1953,7 +2078,7 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let PayloadData::OtapArrowRecords(arrow_records) =
+                            let PayloadData::OtapRecords(arrow_records) =
                                 message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant")
@@ -2098,6 +2223,322 @@ mod tests {
             .run_validation(tcp_incomplete_validation_procedure());
     }
 
+    /// Scenario: A multiline RFC 5424 payload arrives over TCP with framing omitted.
+    /// Guarantees: Each LF ends a separate record, and the next syslog message remains intact.
+    #[test]
+    fn tcp_default_framing_splits_multiline_message() {
+        let test_runtime = TestRuntime::new();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let config = serde_json::from_value(serde_json::json!({
+            "protocol": { "tcp": { "listening_addr": listening_addr.to_string() } }
+        }))
+        .expect("TCP config should default to newline framing");
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
+        let receiver = ReceiverWrapper::local(
+            SyslogCefReceiver::new(config),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |_ctx| {
+                Box::pin(async move {
+                    let mut stream = TcpStream::connect(listening_addr)
+                        .await
+                        .expect("Failed to connect to TCP receiver");
+                    stream
+                        .write_all(
+                            b"<34>1 - - - - - - first line\nsecond line\n\
+                              <34>1 - - - - - - next message\n",
+                        )
+                        .await
+                        .expect("Failed to send multiline TCP payload");
+                    drop(stream);
+                })
+            })
+            .run_validation_concurrent(|mut ctx| async move {
+                use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut batches = Vec::new();
+                let received = timeout(Duration::from_secs(3), async {
+                    let mut count = 0;
+                    while count < 3 {
+                        let message = ctx.recv().await.map_err(|_| "Receiver output closed")?;
+                        let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                        else {
+                            return Err("Expected OtapArrowRecords variant");
+                        };
+                        count += arrow_records.num_items();
+                        batches.push(arrow_records);
+                    }
+                    Ok(())
+                })
+                .await;
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Test".to_owned(),
+                })
+                .await
+                .expect("Failed to send Shutdown");
+                received
+                    .expect("Timed out waiting for three TCP records")
+                    .expect("Failed to receive TCP records");
+
+                let mut records = Vec::new();
+                while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for receiver output to close")
+                {
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                    else {
+                        panic!("Expected OtapArrowRecords variant");
+                    };
+                    batches.push(arrow_records);
+                }
+                for arrow_records in batches {
+                    for resource in decode_logs(arrow_records).resource_logs {
+                        for scope in resource.scope_logs {
+                            records.extend(scope.log_records);
+                        }
+                    }
+                }
+
+                let expected = [
+                    ("syslog.message", "first line"),
+                    ("syslog.content", "second line"),
+                    ("syslog.message", "next message"),
+                ];
+                assert_eq!(records.len(), expected.len());
+                for (record, (key, value)) in records.iter().zip(expected) {
+                    let attribute = record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == key)
+                        .expect("Expected parsed syslog message attribute");
+                    assert_eq!(
+                        attribute
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.value.as_ref()),
+                        Some(&Value::StringValue(value.to_owned())),
+                    );
+                }
+            });
+    }
+
+    /// Scenario: A multiline RFC 5424 TCP frame is followed by another octet-counted frame.
+    /// Guarantees: Embedded and trailing LF bytes stay in one record, and the next frame stays separate.
+    #[test]
+    fn tcp_octet_counting_preserves_multiline_message() {
+        let test_runtime = TestRuntime::new();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
+        let receiver = ReceiverWrapper::local(
+            SyslogCefReceiver::new(Config::new_tcp_with_framing(
+                listening_addr,
+                TcpFraming::OctetCounting,
+            )),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |_ctx| {
+                Box::pin(async move {
+                    let mut stream = TcpStream::connect(listening_addr)
+                        .await
+                        .expect("Failed to connect to TCP receiver");
+                    let mut frames = Vec::new();
+                    for payload in [
+                        b"<34>1 - - - - - - first line\nsecond line\n".as_slice(),
+                        b"<34>1 - - - - - - next message".as_slice(),
+                    ] {
+                        frames.extend_from_slice(payload.len().to_string().as_bytes());
+                        frames.push(b' ');
+                        frames.extend_from_slice(payload);
+                    }
+                    stream
+                        .write_all(&frames)
+                        .await
+                        .expect("Failed to send octet-counted TCP frames");
+                    drop(stream);
+                })
+            })
+            .run_validation_concurrent(|mut ctx| async move {
+                use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut batches = Vec::new();
+                let received = timeout(Duration::from_secs(3), async {
+                    let mut count = 0;
+                    while count < 2 {
+                        let message = ctx.recv().await.map_err(|_| "Receiver output closed")?;
+                        let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                        else {
+                            return Err("Expected OtapArrowRecords variant");
+                        };
+                        count += arrow_records.num_items();
+                        batches.push(arrow_records);
+                    }
+                    Ok(())
+                })
+                .await;
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Test".to_owned(),
+                })
+                .await
+                .expect("Failed to send Shutdown");
+                received
+                    .expect("Timed out waiting for two octet-counted TCP records")
+                    .expect("Failed to receive octet-counted TCP records");
+
+                let mut records = Vec::new();
+                while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for receiver output to close")
+                {
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                    else {
+                        panic!("Expected OtapArrowRecords variant");
+                    };
+                    batches.push(arrow_records);
+                }
+                for arrow_records in batches {
+                    for resource in decode_logs(arrow_records).resource_logs {
+                        for scope in resource.scope_logs {
+                            records.extend(scope.log_records);
+                        }
+                    }
+                }
+
+                let expected = ["first line\nsecond line\n", "next message"];
+                assert_eq!(records.len(), expected.len());
+                for (record, value) in records.iter().zip(expected) {
+                    let attribute = record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == "syslog.message")
+                        .expect("Expected parsed RFC 5424 message attribute");
+                    assert_eq!(
+                        attribute
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.value.as_ref()),
+                        Some(&Value::StringValue(value.to_owned())),
+                    );
+                }
+            });
+    }
+
+    /// Scenario: One UDP datagram contains a multiline RFC 5424 message, followed by another datagram.
+    /// Guarantees: Embedded and trailing LF bytes survive in one record, with datagram boundaries intact.
+    #[test]
+    fn udp_preserves_multiline_message_in_single_datagram() {
+        let test_runtime = TestRuntime::new();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
+        let listening_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
+        let receiver = ReceiverWrapper::local(
+            SyslogCefReceiver::new(Config::new_udp(listening_addr)),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |_ctx| {
+                Box::pin(async move {
+                    let socket = UdpSocket::bind("127.0.0.1:0")
+                        .await
+                        .expect("Failed to bind UDP socket");
+                    for payload in [
+                        b"<34>1 - - - - - - first line\nsecond line\n".as_slice(),
+                        b"<34>1 - - - - - - next message".as_slice(),
+                    ] {
+                        let sent = socket
+                            .send_to(payload, listening_addr)
+                            .await
+                            .expect("Failed to send UDP datagram");
+                        assert_eq!(sent, payload.len());
+                    }
+                })
+            })
+            .run_validation_concurrent(|mut ctx| async move {
+                use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                use otel_arrow_dfe_pdata::testing::round_trip::decode_logs;
+
+                let mut batches = Vec::new();
+                let received = timeout(Duration::from_secs(3), async {
+                    let mut count = 0;
+                    while count < 2 {
+                        let message = ctx.recv().await.map_err(|_| "Receiver output closed")?;
+                        let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                        else {
+                            return Err("Expected OtapArrowRecords variant");
+                        };
+                        count += arrow_records.num_items();
+                        batches.push(arrow_records);
+                    }
+                    Ok(())
+                })
+                .await;
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: Instant::now(),
+                    reason: "Test".to_owned(),
+                })
+                .await
+                .expect("Failed to send Shutdown");
+                received
+                    .expect("Timed out waiting for two UDP records")
+                    .expect("Failed to receive UDP records");
+
+                let mut records = Vec::new();
+                while let Ok(message) = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for receiver output to close")
+                {
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
+                    else {
+                        panic!("Expected OtapArrowRecords variant");
+                    };
+                    batches.push(arrow_records);
+                }
+                for arrow_records in batches {
+                    for resource in decode_logs(arrow_records).resource_logs {
+                        for scope in resource.scope_logs {
+                            records.extend(scope.log_records);
+                        }
+                    }
+                }
+
+                let expected = ["first line\nsecond line\n", "next message"];
+                assert_eq!(records.len(), expected.len());
+                for (record, value) in records.iter().zip(expected) {
+                    let attribute = record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == "syslog.message")
+                        .expect("Expected parsed syslog message attribute");
+                    assert_eq!(
+                        attribute
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.value.as_ref()),
+                        Some(&Value::StringValue(value.to_owned())),
+                    );
+                }
+            });
+    }
+
     fn tcp_octet_counted_scenario(
         listening_addr: SocketAddr,
         payload: Vec<u8>,
@@ -2155,8 +2596,7 @@ mod tests {
                     .await
                     .expect("Timed out waiting for octet-counted message")
                     .expect("No octet-counted message received");
-                let PayloadData::OtapArrowRecords(arrow_records) = message.payload().into_data()
-                else {
+                let PayloadData::OtapRecords(arrow_records) = message.payload().into_data() else {
                     panic!("Expected OtapArrowRecords variant");
                 };
                 let logs_batch = arrow_records
@@ -2254,8 +2694,7 @@ mod tests {
                         .await
                         .expect("Timed out waiting for truncated message")
                         .expect("No truncated message received");
-                    let PayloadData::OtapArrowRecords(arrow_records) =
-                        message.payload().into_data()
+                    let PayloadData::OtapRecords(arrow_records) = message.payload().into_data()
                     else {
                         panic!("Expected OtapArrowRecords variant");
                     };
@@ -2344,7 +2783,7 @@ mod tests {
                 loop {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let PayloadData::OtapArrowRecords(arrow_records) =
+                            let PayloadData::OtapRecords(arrow_records) =
                                 message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant");
