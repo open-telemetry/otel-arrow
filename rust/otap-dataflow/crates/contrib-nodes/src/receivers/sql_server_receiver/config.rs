@@ -271,7 +271,7 @@ impl SqlServerConnectionConfig {
 
     /// Returns an optional TLS identity/SNI override, not a new connection address.
     ///
-    /// When certificate trust is bypassed, this can still set SNI but is not verified.
+    /// This requires certificate verification; native TLS disables SNI during bypass.
     #[must_use]
     pub fn server_name_override(&self) -> Option<&str> {
         self.tls.server_name_override.as_deref()
@@ -320,6 +320,11 @@ impl SqlServerConnectionConfig {
         if self.tls.trust_server_certificate && self.tls.ca_file.is_some() {
             return Err(error(
                 "connection.tls.ca_file cannot be combined with trust_server_certificate=true",
+            ));
+        }
+        if self.tls.trust_server_certificate && self.tls.server_name_override.is_some() {
+            return Err(error(
+                "connection.tls.server_name_override cannot be combined with trust_server_certificate=true",
             ));
         }
         Ok(())
