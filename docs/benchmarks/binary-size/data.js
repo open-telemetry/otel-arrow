@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792514206165,
+  "lastUpdate": 1792517429946,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -67399,6 +67399,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/107d2d5ef04a0329b8bd853915d4413ebacc97c1"
         },
         "date": 1792514190650,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.36,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "932c632341a048d5e4382d326df63338d44a1794",
+          "message": "chore(windows_perf_counters): accept metric definitions as written (#4433)\n\n# Chore Summary\n\nThe first config PRs applied OTel SDK instrument-name limits and\ntrimming rules to metric definitions. Neither OTLP nor Go's receiver\nimposes these rules, so valid configs were rejected or silently changed.\nThis PR corrects that by relaxing the checks so that valid metric\ndefinitions are accepted and kept as written.\n\nFor example, valid configs rejected or changed before this PR:\n\n- (rejected) a definition named `% Processor Time`, because it doesn't\nstart with an ASCII letter.\n- (rejected) the unit `µs`, because it isn't ASCII.\n- (rejected) definitions `cpu.time` and `CPU.time` as duplicates, even\nthough lookup is case-sensitive.\n- (changed) a definition named `\"cpu.time \"` is published as\n`\"cpu.time\"`, because names, units and descriptions are trimmed.\n\nNative object, instance and counter names are unchanged here and will be\naddressed in a follow-up.\n\n- **Definition names:** accept any nonempty name as written, including\nUnicode, long, path-shaped, whitespace-only, padded and\ncontrol-character names. Go: same.\n- **`metric` references:** kept as written and looked up exactly and\ncase-sensitively. An omitted or empty reference uses the counter path.\nGo: same.\n- **Units:** kept as written. An omitted or empty unit defaults to\n`\"1\"`. Go: [intends the same\ndefault](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/c766745fdaed961d2559b1e2d5d9c468c85d3574/receiver/windowsperfcountersreceiver/config.go#L86-L88),\nbut leaves defined metrics with an empty unit.\n- **Descriptions:** kept as written. Go: same.\n- **`metrics: null`:** treated as no definitions. Go: same.\n- **Definition count:** no cap. Go: same. The receiver's existing 256\ncounter-path budget is unchanged.\n- **Case-only variants:** kept distinct, with one warning per group\nnaming every spelling. Go: kept distinct, no warning.\n- **Unused path-shaped definitions:** one warning each when no counter\nselects it, explicitly or by path. Go: silently ignored. Unused\ndefinitions emit nothing.\n- **Docs:** config documentation moved from the module header onto each\nfield.\n\n## Related issue\n\nPart of #4074.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>\nCopilot-Session: 1699f46c-a707-4cd1-9a9e-a9a508d6dd81",
+          "timestamp": "2026-10-20T16:06:41Z",
+          "tree_id": "67aa7c3cdf973bc65744035e6d5faef77dbf22a5",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/932c632341a048d5e4382d326df63338d44a1794"
+        },
+        "date": 1792517410264,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
