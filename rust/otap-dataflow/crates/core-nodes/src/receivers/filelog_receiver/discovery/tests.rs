@@ -570,6 +570,100 @@ fn cancelled_during_probe() {
     assert!(budget.try_reserve().is_some());
 }
 
+/// Scenario: Cancellation fires once after the first pin, with later matching or skipped entries and room in the batch.
+/// Guarantees: No later entry is classified or probed; delivery sees cancellation with all scan handles and permits released.
+#[test]
+fn one_shot_probe_cancellation_stops_traversal() {
+    use std::cell::Cell;
+
+    struct CountingPolicy<'a> {
+        inspected: &'a Cell<usize>,
+        later_matches: bool,
+    }
+    impl MatchPolicy for CountingPolicy<'_> {
+        fn includes(&self, _: &Path) -> bool {
+            let previous = self.inspected.get();
+            self.inspected.set(previous + 1);
+            previous == 0 || self.later_matches
+        }
+        fn may_descend(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_subtree(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_mapped(&self, _: usize, _: &Path) -> bool {
+            false
+        }
+    }
+
+    for batch_size in [4, 64] {
+        for later_matches in [false, true] {
+            let dir = fixture();
+            for index in 0..8 {
+                fs::write(dir.path().join(format!("{index}.log")), b"data").unwrap();
+            }
+            let inspected = Cell::new(0);
+            let mut cfg = config(dir.path());
+            cfg.limits.batch = batch_size;
+            let mut scanner = Scanner::new(
+                cfg,
+                CountingPolicy {
+                    inspected: &inspected,
+                    later_matches,
+                },
+            )
+            .unwrap();
+            let budget = ProbeBudget::default();
+            let mut checks_inside_probe = 0;
+            let mut fired = false;
+            let mut cancellations = 0;
+            let end = scanner.scan(
+                1,
+                &budget,
+                || {
+                    if !fired && budget.try_reserve().is_none() {
+                        checks_inside_probe += 1;
+                        if checks_inside_probe == 2 {
+                            fired = true;
+                            return true;
+                        }
+                    }
+                    false
+                },
+                |batch| {
+                    assert!(budget.try_reserve().is_some());
+                    for fd in fs::read_dir("/proc/self/fd").unwrap().flatten() {
+                        if let Ok(target) = fs::read_link(fd.path()) {
+                            assert!(
+                                !target.starts_with(dir.path()),
+                                "retained handle: {target:?}"
+                            );
+                        }
+                    }
+                    for observation in batch {
+                        assert!(matches!(
+                            observation.reason,
+                            Some(ScanReason::Directory | ScanReason::Cancelled)
+                        ));
+                        cancellations +=
+                            usize::from(observation.reason == Some(ScanReason::Cancelled));
+                    }
+                    true
+                },
+            );
+            assert!(fired);
+            assert!(end.cancelled && !end.complete);
+            assert_eq!(cancellations, 1);
+            assert_eq!(inspected.get(), 1);
+            assert!(budget.try_reserve().is_some());
+        }
+    }
+}
+
 /// Scenario: Independent workers contend for the same two-slot allowance.
 /// Guarantees: Only one worker holds a conversion reservation at any time.
 #[test]

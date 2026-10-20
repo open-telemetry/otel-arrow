@@ -261,6 +261,9 @@ impl Walker {
                     scratch,
                     cancelled,
                 );
+                if batch.last_mut().reason == Some(ScanReason::Cancelled) {
+                    return WalkStep::Failed;
+                }
             }
         }
         WalkStep::Deliver
