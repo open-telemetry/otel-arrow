@@ -671,6 +671,11 @@ schedules and injected lookup failures. Operator limitations are described in
 | Discovery | Incomplete pass has validated positive evidence or a successful exclusion binding check | Observed, metadata Updated, and fast-path Excluded transitions remain available; no Disappeared or predecessor binding reselection from partial coverage; uncontested new replacements use the explicit supersession rule |
 | Discovery | Only an earlier-pass eligible alias is known during exclusion binding check | Revalidate it before using it to prevent revocation; do not infer current eligibility from stale evidence |
 | Discovery | New growing file | Admitted without waiting for close |
+| Discovery | Linux verification syscall unavailable or blocked by container policy | VerificationUnavailable; no admission or unrestricted fallback |
+| Discovery | Exclusion-root mapping fails while a candidate can be pinned | Root failure is distinguishable from candidate policy failure; original path and errno retained; pass incomplete |
+| Discovery | Tmpfs or another unqualified backend requires directory replay | Matching prefix permits positive progress but not complete coverage; no disappearance or retention absence from that pass |
+| Discovery | Stable traversal repeatedly exceeds its work budget | Limit is observable; the same undiscovered tail is not treated as absent; persistent exhaustion identifies the need to change scope or budget |
+| Performance | Native paths of 255, 256, 257 bytes and longer, including non-UTF-8 names | Byte fidelity and truncation rejection preserved; repeated syscall conversions reuse bounded storage without per-path heap allocations |
 | Discovery | Exclude overlaps include | Excluded; lexical rejection may precede pinning while preserving required retained-state evidence; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |
 | Discovery | `follow_symlinks: false` final symlink | Not admitted |
@@ -1047,6 +1052,7 @@ schedules and injected lookup failures. Operator limitations are described in
 | Lifecycle | Direct Shutdown | Immediate forced path handled |
 | Lifecycle | Delivery pause lasts through drain deadline, workers cooperate | Delivery drain reports timeout with unchanged unacknowledged progress; workers receive their separate termination budget and exit without process-fatal escalation |
 | Lifecycle | Repeated Shutdown during worker cancellation | First worker deadline remains fixed; no extra allowance per command |
+| Resource | Discovery competes with sustained reader reopens on a stable tree within the work budget, with bounded permit holds | Fair handoff allows both complete discovery passes and reader progress; cancellation stays responsive; the shared two-descriptor allowance is never exceeded |
 | Resource | More hot/backlogged files than slots, with complete records and validated clean boundaries | Holders yield at a valid completed-record boundary after the source-byte service allowance, discarding only replayable later read-ahead; queued readers progress without waiting for EOF |
 | Resource | Saturated slots with many short complete records | Process a source-byte allowance per admission rather than one record; counter survives Ack waits, evidence/read-ahead bytes do not count, and turns remain bounded |
 | Resource | All holders reach EOF with no unfinished state before using their service allowance, while readers wait | Holders release empty buffer capacity and slots without waiting for more bytes; eligible FIFO waiters are admitted |
