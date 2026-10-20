@@ -426,6 +426,70 @@ mod tests {
         }
     }
 
+    /// Scenario: Explicit mappings use space-distinct, whitespace-only, and control-character static keys.
+    /// Guarantees: Decoded points retain every key/value exactly once, including static instance and padded near-reserved keys.
+    #[test]
+    fn projects_static_attribute_spelling_verbatim() {
+        let expected = BTreeMap::from([
+            ("state", "active"),
+            ("State", "case-distinct"),
+            (" state", " padded "),
+            ("state ", ""),
+            (" state ", "both"),
+            (" \t\r\n\u{2003}", "whitespace"),
+            ("control\0\t\n\u{7f}key", "control\0\t\n\u{7f}value"),
+            (" windows.perf_counter.path", "not the native path"),
+            ("Windows.perf_counter.path", "case-distinct prefix"),
+            ("windows.perf_counter", "no trailing dot"),
+            ("instance", "fixed"),
+            (" instance ", "not an override"),
+        ]);
+        let config = RuntimeConfig::from_json(&serde_json::json!({
+            "metrics": {"process.id": {"unit": "1"}},
+            "perfcounters": [{
+                "object": "Process",
+                "instances": ["app", "worker"],
+                "counters": [{
+                    "name": "ID Process",
+                    "metric": "process.id",
+                    "attributes": expected
+                }]
+            }]
+        }))
+        .unwrap();
+        let decoded = decode(
+            into_otap(
+                &config.counters,
+                sample(
+                    0,
+                    10,
+                    vec![
+                        point(0, SampleValue::Value(Number::Integer(42))),
+                        point(1, SampleValue::Value(Number::Integer(43))),
+                    ],
+                ),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "process.id");
+        let Some(metric::Data::Gauge(gauge)) = &metrics[0].data else {
+            panic!("expected a Gauge");
+        };
+        assert_eq!(gauge.data_points.len(), 2);
+        for (index, point) in gauge.data_points.iter().enumerate() {
+            let mut expected = expected.clone();
+            let _ = expected.insert(
+                "windows.perf_counter.path",
+                config.counters[index].path.as_str(),
+            );
+            assert_eq!(point.attributes.len(), expected.len());
+            assert_eq!(attributes(&point.attributes), expected);
+        }
+    }
+
     /// Scenario: Referenced Gauge and Sum definitions omit metadata while other definitions have no observations.
     /// Guarantees: Decoded output retains default metadata and values, with no empty records for unused or omitted metrics.
     #[test]
@@ -643,7 +707,7 @@ mod tests {
             "perfcounters": [
                 {"object": "memory", "counters": [{"name": "available bytes", "attributes": {"state": "ignored"}}]},
                 {"object": "Process", "instances": ["app#00", "worker#001"], "counters": [
-                    {"name": "Private Bytes", "attributes": {" ": "ignored", "windows.perf_counter.path": "ignored"}}
+                    {"name": "Private Bytes", "attributes": {"": "ignored", " ": "ignored", "instance": "ignored", "windows.perf_counter.path": "ignored"}}
                 ]}
             ]
         });
