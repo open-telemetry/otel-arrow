@@ -1,9 +1,9 @@
 from unittest.mock import MagicMock
 
 import duckdb
-import pytest
 import grpc
 import pandas as pd
+import pytest
 from opentelemetry.proto.collector.metrics.v1 import (
     metrics_service_pb2,
     metrics_service_pb2_grpc,
@@ -388,7 +388,9 @@ def test_sql_report_with_empty_sink_fails_clearly():
     )
     hook.conn = duckdb.connect()
 
-    with pytest.raises(RuntimeError, match=r"received no data points.*0\.0\.0\.0:14317"):
+    with pytest.raises(
+        RuntimeError, match=r"received no data points.*0\.0\.0\.0:14317"
+    ):
         hook._register_in_memory_tables(
             _empty_metric_frame(),
             _empty_span_frame(),

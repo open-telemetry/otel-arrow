@@ -11,9 +11,15 @@ Variables:
   - push_metrics_endpoint: OTLP/gRPC endpoint the engines export to. Defaults to
     http://host.docker.internal:14317.
 
+Hostnames (override when containers run with `network: host`, e.g. 127.0.0.1):
+  - engine_hostname: where the load generator sends data (default df-engine).
+  - backend_hostname: where the engine sends data (default backend-service).
+
 -#}
 {%- set push_metrics = push_metrics | default(false) %}
 {%- set push_endpoint = push_metrics_endpoint | default("http://host.docker.internal:14317") %}
+{%- set engine_host = engine_hostname | default("df-engine") %}
+{%- set backend_host = backend_hostname | default("backend-service") %}
 steps:
   - name: Deploy Backend Engine
     action:
@@ -63,7 +69,7 @@ steps:
               search_paths:
                 - ./test_suites/integration/templates/configs/common
               variables:
-                backend_hostname: backend-service
+                backend_hostname: {{backend_host}}
                 {%- if push_metrics %}
                 push_metrics_endpoint: '{{push_endpoint}}'
                 {%- endif %}
@@ -105,7 +111,7 @@ steps:
                 # engine_hostname: localhost
                 # exporter_port: 4317
                 # compression_method: zstd           # Default is 'zstd' for otap, 'gzip' for otlp
-                engine_hostname: df-engine
+                engine_hostname: {{engine_host}}
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
                 {%- if push_metrics %}
                 push_metrics_endpoint: '{{push_endpoint}}'

@@ -1,0 +1,196 @@
+# EXPERIMENT: batch-processor-docker.yaml with every component on the host
+# network namespace ('network: host') instead of the 'testbed' bridge.
+#
+# Why: on the bare-metal runners the host firewall rejects container -> host
+# traffic (INPUT chain ends in REJECT), so engines on a bridge network can never
+# reach the OTLP metrics sink. With host networking the pushes go over 'lo',
+# which the firewall accepts.
+#
+# Differences from batch-processor-docker.yaml:
+#   - network: host; no 'ports' or 'extra_hosts'.
+#   - Admin APIs bind to 127.0.0.1:8085/8086/8087 (they would collide on 8080).
+#   - Components address each other and the sink via 127.0.0.1.
+#   - container.network.* stats are not available in host mode, so the
+#     network rows in the report read 0.
+name: Nightly - Batch Processor (host network)
+hooks:
+  run:
+    pre:
+      - start_otlp_metrics_sink:
+          endpoint: 127.0.0.1:14317
+    post:
+      - stop_otlp_metrics_sink: {}
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: host
+        volumes:
+          - "test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro"
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "127.0.0.1:8085"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: host
+        volumes:
+          - "test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro"
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "3-3"
+          - "--http-admin-bind"
+          - "127.0.0.1:8086"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: host
+        volumes:
+          - "test_suites/integration/configs/backend/config.rendered.yaml:/home/nonroot/config.yaml:ro"
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "1-1"
+          - "--http-admin-bind"
+          - "127.0.0.1:8087"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+
+tests:
+  # --- Logs ---
+  - name: Logs-OTAP-BATCH-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        push_metrics: true
+        push_metrics_endpoint: http://127.0.0.1:14317
+        engine_hostname: 127.0.0.1
+        backend_hostname: 127.0.0.1
+        result_dir: nightly_batch_processor_hostnet
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        generation_strategy: fresh
+        observation_interval: 60
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+
+  - name: Logs-OTLP-BATCH-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        push_metrics: true
+        push_metrics_endpoint: http://127.0.0.1:14317
+        engine_hostname: 127.0.0.1
+        backend_hostname: 127.0.0.1
+        result_dir: nightly_batch_processor_hostnet
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        generation_strategy: fresh
+        observation_interval: 60
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+        exporter_extra_config:
+          max_in_flight: 256
+
+  # --- Metrics ---
+  - name: Metrics-OTAP-BATCH-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        push_metrics: true
+        push_metrics_endpoint: http://127.0.0.1:14317
+        engine_hostname: 127.0.0.1
+        backend_hostname: 127.0.0.1
+        result_dir: nightly_batch_processor_hostnet
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        generation_strategy: fresh
+        observation_interval: 60
+        log_weight: 0
+        metric_weight: 100
+        trace_weight: 0
+        report_config: ./test_suites/integration/configs/integration_report_metrics_push.yaml
+
+  - name: Metrics-OTLP-BATCH-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        push_metrics: true
+        push_metrics_endpoint: http://127.0.0.1:14317
+        engine_hostname: 127.0.0.1
+        backend_hostname: 127.0.0.1
+        result_dir: nightly_batch_processor_hostnet
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        generation_strategy: fresh
+        observation_interval: 60
+        log_weight: 0
+        metric_weight: 100
+        trace_weight: 0
+        report_config: ./test_suites/integration/configs/integration_report_metrics_push.yaml
+        exporter_extra_config:
+          max_in_flight: 256
+
+  # --- Traces ---
+  - name: Traces-OTAP-BATCH-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        push_metrics: true
+        push_metrics_endpoint: http://127.0.0.1:14317
+        engine_hostname: 127.0.0.1
+        backend_hostname: 127.0.0.1
+        result_dir: nightly_batch_processor_hostnet
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        generation_strategy: fresh
+        observation_interval: 60
+        log_weight: 0
+        metric_weight: 0
+        trace_weight: 100
+        report_config: ./test_suites/integration/configs/integration_report_traces_push.yaml
+
+  - name: Traces-OTLP-BATCH-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        push_metrics: true
+        push_metrics_endpoint: http://127.0.0.1:14317
+        engine_hostname: 127.0.0.1
+        backend_hostname: 127.0.0.1
+        result_dir: nightly_batch_processor_hostnet
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        generation_strategy: fresh
+        observation_interval: 60
+        log_weight: 0
+        metric_weight: 0
+        trace_weight: 100
+        report_config: ./test_suites/integration/configs/integration_report_traces_push.yaml
+        exporter_extra_config:
+          max_in_flight: 256
