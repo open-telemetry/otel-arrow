@@ -72,6 +72,7 @@ regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 
@@ -221,11 +222,16 @@ resource-validator = []
 # Exporters.
 azure-data-explorer = [
     "dep:chrono",
+    "dep:http",
+    "dep:httpdate",
     "dep:humantime-serde",
     "dep:itoa",
+    "dep:rand",
     "dep:reqwest",
     "dep:ryu",
     "dep:sysinfo",
+    "dep:urlencoding",
+    "dep:uuid",
 ]
 azure-monitor = [
     "dep:opentelemetry-proto",
