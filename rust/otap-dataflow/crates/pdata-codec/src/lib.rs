@@ -24,9 +24,7 @@ pub use decoder::{DecodePolicy, DecodeValidation, PdataDecoder};
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};
 pub use identity::{EncodedPdata, PdataEncoding};
-pub use payload::{
-    OtapPayload, PayloadData, PayloadStorage, PdataFormat, PdataPayload, PdataPayloadDecodeError,
-};
+pub use payload::{OtapPayload, PdataFormat, PdataPayload, PdataPayloadDecodeError};
 pub use plan::{AcceptedEncodings, EncodePolicy, EncodingPlan};
 pub use registry::{
     BatcherFactory, CodecBatcherRegistration, CodecMetadata, CodecRegistration, CodecRegistry,
@@ -64,7 +62,9 @@ pub mod __private {
 
 /// Built-in codec identities and implementations.
 pub mod builtins {
-    pub use crate::codecs::otlp::{OTLP_ENCODING, OtlpBestEffortDecoder, OtlpEncoder};
+    pub use crate::codecs::otlp::{
+        OTLP_ENCODING, OtlpBestEffortDecoder, OtlpEncoder, resolve_otlp,
+    };
 }
 
 /// Reusable codec extension conformance checks.

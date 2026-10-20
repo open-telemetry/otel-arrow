@@ -338,9 +338,10 @@ the last buffered input. A remainder spanning several inputs is sent immediately
 avoiding ambiguous ownership if later split again.
 
 This is local capability validation, not graph-wide representation negotiation
-or a node-signature system. OTLP is a built-in encoded codec. Its dedicated
-`OtlpBytes` storage is temporary and is removed by PR4; native OTAP alone is the
-special mutable processing representation.
+or a node-signature system. OTLP is a built-in encoded codec and uses the same
+inline encoded storage as other byte formats. Native OTAP alone is the mutable
+processing representation; its storage and encoded storage remain private behind
+payload capabilities.
 
 ### Input ranges and delivery ownership
 
