@@ -112,7 +112,7 @@ impl RuntimeConfig {
                 "windows_perf_counters_receiver.config.metric_definition.case_collision",
                 message = "metric definitions differ only by case; exact lookup \
                            keeps them distinct, but this may be a configuration typo",
-                names = format!("{group:?}")
+                names = ?group
             );
         }
 
