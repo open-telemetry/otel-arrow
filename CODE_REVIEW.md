@@ -53,7 +53,6 @@ The repository's existing `CODEOWNERS` file remains the source of truth for
 formal GitHub code-owner review. Component metadata supplements it with finer
 review domains; it does not replace or weaken the existing approval rules.
 
-
 ### Advisory owner coverage
 
 The non-required `contrib-owner-coverage` status is red while any
