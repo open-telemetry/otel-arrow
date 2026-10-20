@@ -64,7 +64,9 @@ use secrecy::ExposeSecret;
 
 use self::config::Config;
 use self::diagnostics::{NotificationOperation, emit_notification, emit_preparation};
+use super::tls_reload::LocalTlsReloadTask;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::client_tls_reload::{ClientTlsGeneration, ClientTlsProvider};
 use otel_arrow_dfe_otap::http_client_auth::*;
 use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
 use otel_arrow_dfe_otap::otlp_exporter::InFlightExports;
@@ -99,6 +101,9 @@ const HTTP_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEve
         );
     },
 };
+
+const TLS_INSTALL_RETRY_MIN: Duration = Duration::from_secs(5);
+const TLS_INSTALL_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
@@ -263,6 +268,63 @@ struct CompletedExport {
     auth_generation: Option<u64>,
 }
 
+struct TlsPoolInstallation {
+    pending: Option<Arc<ClientTlsGeneration>>,
+    retry_at: tokio::time::Instant,
+    retry_delay: Duration,
+}
+
+impl TlsPoolInstallation {
+    fn new() -> Self {
+        Self {
+            pending: None,
+            retry_at: tokio::time::Instant::now(),
+            retry_delay: TLS_INSTALL_RETRY_MIN,
+        }
+    }
+
+    async fn install(
+        &mut self,
+        settings: &HttpClientSettings,
+        pool_size: NonZeroUsize,
+        generation: Arc<ClientTlsGeneration>,
+        pool: &mut HttpClientPool,
+    ) {
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.number() != generation.number())
+        {
+            self.retry_delay = TLS_INSTALL_RETRY_MIN;
+        }
+        match HttpClientPool::try_new(settings, pool_size, Some(generation.clone())).await {
+            Ok(replacement) => {
+                *pool = replacement;
+                self.pending = None;
+                self.retry_delay = TLS_INSTALL_RETRY_MIN;
+                otel_info!(
+                    "otlp.exporter.http.tls_generation_installed",
+                    generation = generation.number()
+                );
+            }
+            Err(error) => {
+                otel_warn!(
+                    "otlp.exporter.http.tls_generation_install_failed",
+                    generation = generation.number(),
+                    error = %error,
+                    message = "keeping current HTTP client pool and scheduling retry"
+                );
+                self.pending = Some(generation);
+                self.retry_at = tokio::time::Instant::now() + self.retry_delay;
+                self.retry_delay = self
+                    .retry_delay
+                    .saturating_mul(2)
+                    .min(TLS_INSTALL_RETRY_MAX);
+            }
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for OtlpHttpExporter {
     async fn start(
@@ -297,15 +359,39 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         );
 
         let max_in_flight = self.config.max_in_flight.max(1);
-        let mut client_pool =
-            HttpClientPool::try_new(&self.config.http, self.config.client_pool_size)
-                .await
-                .map_err(|e| EngineError::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    kind: ExporterErrorKind::Configuration,
-                    error: "unable to initialize HTTP client pool".into(),
-                    source_detail: e.to_string(),
-                })?;
+        let tls_provider = ClientTlsProvider::new_http(self.config.http.tls.as_ref())
+            .await
+            .map_err(|error| EngineError::ExporterError {
+                exporter: effect_handler.exporter_id(),
+                kind: ExporterErrorKind::Configuration,
+                error: "unable to initialize client TLS reload provider".into(),
+                source_detail: error.to_string(),
+            })?
+            .map(Rc::new);
+        let initial_tls_generation = tls_provider.as_ref().map(|provider| provider.current());
+        let mut client_pool = HttpClientPool::try_new(
+            &self.config.http,
+            self.config.client_pool_size,
+            initial_tls_generation,
+        )
+        .await
+        .map_err(|error| EngineError::ExporterError {
+            exporter: effect_handler.exporter_id(),
+            kind: ExporterErrorKind::Configuration,
+            error: "unable to initialize HTTP client pool".into(),
+            source_detail: error.to_string(),
+        })?;
+        let reload_enabled = tls_provider.as_ref().is_some_and(|provider| {
+            provider.is_file_backed() && provider.reload_interval().is_some()
+        });
+        let mut tls_updates =
+            reload_enabled.then(|| tls_provider.as_ref().expect("reload provider").subscribe());
+        let mut tls_reload_task = reload_enabled.then(|| {
+            LocalTlsReloadTask::start(Rc::clone(tls_provider.as_ref().expect("reload provider")))
+        });
+        let mut tls_installation = TlsPoolInstallation::new();
+        let tls_install_retry = tokio::time::sleep_until(tls_installation.retry_at);
+        tokio::pin!(tls_install_retry);
 
         let mut inflight_exports = InFlightExports::new();
 
@@ -383,6 +469,62 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     continue;
                 }
 
+                tls_update = async {
+                    match tls_updates.as_mut() {
+                        Some(updates) => updates.changed().await,
+                        None => std::future::pending().await,
+                    }
+                }, if tls_updates.is_some() => {
+                    match tls_update {
+                        Ok(()) => {
+                            let generation = tls_provider
+                                .as_ref()
+                                .expect("TLS updates require a provider")
+                                .current();
+                            if generation.number() > client_pool.generation {
+                                tls_installation
+                                    .install(
+                                        &self.config.http,
+                                        self.config.client_pool_size,
+                                        generation,
+                                        &mut client_pool,
+                                    )
+                                    .await;
+                                if tls_installation.pending.is_some() {
+                                    tls_install_retry.as_mut().reset(tls_installation.retry_at);
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            tls_updates = None;
+                            otel_warn!(
+                                "otlp.exporter.http.tls_updates_closed",
+                                message = "TLS generation stream closed; keeping current HTTP client pool"
+                            );
+                        }
+                    }
+                    continue;
+                }
+
+                () = &mut tls_install_retry, if tls_installation.pending.is_some() => {
+                    let generation = tls_installation.pending
+                        .as_ref()
+                        .expect("retry requires a pending generation")
+                        .clone();
+                    tls_installation
+                        .install(
+                            &self.config.http,
+                            self.config.client_pool_size,
+                            generation,
+                            &mut client_pool,
+                        )
+                        .await;
+                    if tls_installation.pending.is_some() {
+                        tls_install_retry.as_mut().reset(tls_installation.retry_at);
+                    }
+                    continue;
+                }
+
                 // Pick up auth refreshes (initial + subsequent) even while pdata
                 // intake is gated, so a pending auth can arrive and unblock us.
                 _ = poll_fn(|cx| match auth.as_mut() {
@@ -427,6 +569,16 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
+                    if let Some(task) = tls_reload_task.as_mut()
+                        && let Err(error) = task.stop().await
+                    {
+                        otel_warn!(
+                            "otlp.exporter.http.tls_reload_task_failed",
+                            error = %error,
+                            message = "TLS reload task failed during shutdown"
+                        );
+                    }
+                    drop(tls_installation);
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
                             let rejected_generation = finalize_completed_export(
@@ -1169,6 +1321,7 @@ async fn notify_nack_with_diagnostics(
 /// Note that internally, reqwest's Client already manages a pool of connections, so the number of
 /// connections is not guaranteed to be equal to the number of clients.
 struct HttpClientPool {
+    generation: u64,
     next_client: usize,
     pool: Vec<Client>,
 }
@@ -1211,6 +1364,7 @@ impl HttpClientPool {
     async fn try_new(
         client_settings: &HttpClientSettings,
         pool_size: NonZeroUsize,
+        generation: Option<Arc<ClientTlsGeneration>>,
     ) -> Result<Self, HttpClientError> {
         // Build the user-configured static headers first (pre-sized for the two
         // protocol headers added below) so the protocol headers always win on
@@ -1228,16 +1382,43 @@ impl HttpClientPool {
         );
 
         let pool_size: usize = pool_size.into();
-        let mut pool = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            let client_builder = client_settings
-                .client_builder()
-                .await?
-                .default_headers(default_headers.clone());
-            pool.push(client_builder.build()?);
-        }
+        let generation_number = generation
+            .as_ref()
+            .map_or(0, |generation| generation.number());
+        let pool = if let Some(generation) = generation {
+            let client_settings = client_settings.clone();
+            // reqwest's platform verifier may read the native trust store.
+            // Keep that blocking I/O off the pipeline core, with only one
+            // bounded pool-construction job active per exporter.
+            tokio::task::spawn_blocking(move || -> Result<Vec<Client>, HttpClientError> {
+                let mut pool = Vec::with_capacity(pool_size);
+                for _ in 0..pool_size {
+                    pool.push(
+                        client_settings
+                            .client_builder_with_tls_material(generation.material())?
+                            .default_headers(default_headers.clone())
+                            .build()?,
+                    );
+                }
+                Ok(pool)
+            })
+            .await??
+        } else {
+            let mut pool = Vec::with_capacity(pool_size);
+            for _ in 0..pool_size {
+                pool.push(
+                    client_settings
+                        .client_builder()
+                        .await?
+                        .default_headers(default_headers.clone())
+                        .build()?,
+                );
+            }
+            pool
+        };
 
         Ok(Self {
+            generation: generation_number,
             pool,
             next_client: 0,
         })
@@ -1256,6 +1437,7 @@ impl HttpClientPool {
 
 #[cfg(test)]
 mod test {
+    mod tls_reload;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
@@ -1925,7 +2107,7 @@ mod test {
         };
 
         tokio_rt.block_on(async {
-            let mut pool = HttpClientPool::try_new(&settings, NonZeroUsize::new(1).unwrap())
+            let mut pool = HttpClientPool::try_new(&settings, NonZeroUsize::new(1).unwrap(), None)
                 .await
                 .expect("failed to build client pool");
             let client = pool.get_client();
@@ -4018,6 +4200,7 @@ mod test {
 
         let (mut pdata_rx, server_cancellation_token) =
             run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel();
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -4033,7 +4216,11 @@ mod test {
                     for pdata in pdatas {
                         ctx.send_pdata(pdata).await.unwrap();
                     }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let received = tokio::time::timeout(Duration::from_secs(10), pdata_rx.recv())
+                        .await
+                        .expect("timed out waiting for the TLS server to receive pdata")
+                        .expect("TLS server pdata channel closed");
+                    received_tx.send(received).expect("validation receiver");
                     ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                         .await
                         .unwrap();
@@ -4045,27 +4232,13 @@ mod test {
                     result.unwrap();
 
                     let num_expected_pdatas = 1;
-                    let mut pdatas_received = Vec::new();
-                    let recv_deadline = tokio::time::timeout(Duration::from_secs(10), async {
-                        while let Some(pdata) = pdata_rx.recv().await {
-                            pdatas_received.push(pdata);
-                            if pdatas_received.len() >= num_expected_pdatas {
-                                break;
-                            }
-                        }
-                    });
-                    recv_deadline.await.expect(
-                        "timed out waiting for server to receive pdata; \
-                         server may not have been ready in time",
-                    );
+                    let mut received = received_rx.await.expect("TLS server received pdata");
 
                     server_cancellation_token.cancel();
 
                     // assert the pdata sent was the pdata received
-                    let pdata: OtlpProtoBytes = pdatas_received[0]
-                        .take_payload()
-                        .try_into_with_default()
-                        .unwrap();
+                    let pdata: OtlpProtoBytes =
+                        received.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -4117,8 +4290,7 @@ mod test {
         };
 
         let tokio_rt = Runtime::new().unwrap();
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
 
         let (_, server_cancellation_token) =
             run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
@@ -4130,61 +4302,28 @@ mod test {
         )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|ctx| {
-                Box::pin(async move {
-                    for pdata in pdatas {
-                        ctx.send_pdata(pdata).await.unwrap();
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-
-                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+        tokio_rt.block_on(tokio::task::LocalSet::new().run_until(async move {
+            let mut exporter = tls_reload::RunningExporter::start(config, &pipeline_ctx);
+            for pdata in pdatas {
+                exporter.send(pdata).await;
+                let completed =
+                    tokio::time::timeout(Duration::from_secs(10), exporter.completions.recv())
                         .await
+                        .expect("TLS failure completion deadline")
                         .unwrap();
-                })
-            })
-            .run_validation(|mut ctx, result| {
-                Box::pin(async move {
-                    // ensure exit success
-                    result.unwrap();
-                    server_cancellation_token.cancel();
-
-                    let mut nack_count = 0;
-                    let expected_nacks = 1;
-                    let mut pipeline_completion_rx =
-                        ctx.take_pipeline_completion_receiver().unwrap();
-                    loop {
-                        let msg = match pipeline_completion_rx.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break, // channel closed, no more messages will be received
-                        };
-
-                        match msg {
-                            PipelineCompletionMsg::DeliverNack { nack } => {
-                                nack_count += 1;
-
-                                assert!(
-                                    nack.reason.contains(expected_err_content),
-                                    "unexpected error message in Nack: {}",
-                                    nack.reason
-                                );
-
-                                assert_eq!(nack.permanent, expect_permanent_nack,);
-
-                                if nack_count >= expected_nacks {
-                                    break;
-                                }
-                            }
-                            PipelineCompletionMsg::DeliverAck { .. } => {
-                                panic!("unexpected Ack message")
-                            }
-                        }
-                    }
-                    assert_eq!(nack_count, expected_nacks);
-                })
-            })
+                let PipelineCompletionMsg::DeliverNack { nack } = completed else {
+                    panic!("invalid TLS must Nack");
+                };
+                assert!(
+                    nack.reason.contains(expected_err_content),
+                    "unexpected error message in Nack: {}",
+                    nack.reason
+                );
+                assert_eq!(nack.permanent, expect_permanent_nack);
+            }
+            exporter.stop().await;
+            server_cancellation_token.cancel();
+        }));
     }
 
     #[test]
@@ -4678,6 +4817,8 @@ mod test {
         );
     }
 
+    /// Scenario: HTTP mTLS specifies a client certificate but no private key.
+    /// Guarantees: exporter startup rejects the incomplete identity before sending.
     #[test]
     fn test_start_returns_error_if_mtls_cert_without_key() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -4725,7 +4866,7 @@ mod test {
                     let err = result.unwrap_err();
                     let err_message = err.to_string();
                     assert!(
-                        err_message.contains("both cert and key must be provided"),
+                        err_message.contains("both client certificate and key must be provided"),
                         "unexpected error: {}",
                         err_message
                     )
@@ -4733,6 +4874,8 @@ mod test {
             });
     }
 
+    /// Scenario: HTTP mTLS specifies a private key but no client certificate.
+    /// Guarantees: exporter startup rejects the incomplete identity before sending.
     #[test]
     fn test_start_returns_error_if_mtls_key_without_cert() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -4780,7 +4923,7 @@ mod test {
                     let err = result.unwrap_err();
                     let err_message = err.to_string();
                     assert!(
-                        err_message.contains("both cert and key must be provided"),
+                        err_message.contains("both client certificate and key must be provided"),
                         "unexpected error: {}",
                         err_message
                     )

@@ -36,7 +36,7 @@ use otel_arrow_dfe_config::tls::TlsClientConfig;
 use otel_arrow_dfe_telemetry::{otel_info, otel_warn};
 
 use crate::tls_utils::{
-    LoadedClientTlsMaterial, capture_client_tls_material, load_client_tls_material,
+    ClientTlsTransport, LoadedClientTlsMaterial, capture_client_tls_material_for_transport,
 };
 
 /// An immutable, validated generation of client TLS material.
@@ -85,6 +85,7 @@ pub struct ClientTlsProvider {
     config: Option<TlsClientConfig>,
     /// Endpoint URI, used to reproduce the scheme-driven load decisions.
     endpoint_uri: String,
+    transport: ClientTlsTransport,
     /// Interval between reload checks, or `None` when reload is disabled.
     reload_interval: Option<Duration>,
     /// Prevents overlapping loads from publishing generations out of order.
@@ -105,7 +106,7 @@ impl ClientTlsProvider {
     /// Loads the initial generation and returns a provider, or `Ok(None)` when
     /// the connection does not use a configured TLS block (plaintext `http://`
     /// or `insecure` with no custom CA) -- the same decision as
-    /// [`load_client_tls_material`].
+    /// [`crate::tls_utils::load_client_tls_material`].
     ///
     /// Fails if the initial material is missing or invalid, or if an active
     /// provider is configured with a zero reload interval. In particular, the
@@ -114,7 +115,29 @@ impl ClientTlsProvider {
         config: Option<&TlsClientConfig>,
         endpoint_uri: &str,
     ) -> Result<Option<Self>, io::Error> {
-        let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
+        Self::new_for_transport(config, endpoint_uri, ClientTlsTransport::Grpc).await
+    }
+
+    /// Loads HTTP client TLS material, independent of endpoint schemes.
+    ///
+    /// HTTP leaves scheme selection and `insecure_skip_verify` to reqwest.
+    /// An explicit TLS block is captured even with `insecure: true`, since
+    /// HTTPS endpoints still use its CA and mTLS settings.
+    pub async fn new_http(config: Option<&TlsClientConfig>) -> Result<Option<Self>, io::Error> {
+        Self::new_for_transport(config, "", ClientTlsTransport::Http).await
+    }
+
+    async fn new_for_transport(
+        config: Option<&TlsClientConfig>,
+        endpoint_uri: &str,
+        transport: ClientTlsTransport,
+    ) -> Result<Option<Self>, io::Error> {
+        let Some(material) =
+            capture_client_tls_material_for_transport(config, endpoint_uri, transport)
+                .await?
+                .map(|candidate| candidate.validate())
+                .transpose()?
+        else {
             return Ok(None);
         };
 
@@ -135,6 +158,7 @@ impl ClientTlsProvider {
         Ok(Some(Self {
             config: config.cloned(),
             endpoint_uri: endpoint_uri.to_string(),
+            transport,
             reload_interval,
             reload_guard: tokio::sync::Mutex::new(()),
             current: Arc::new(ArcSwap::from(generation)),
@@ -179,7 +203,13 @@ impl ClientTlsProvider {
             return ReloadOutcome::Busy;
         };
 
-        match capture_client_tls_material(self.config.as_ref(), &self.endpoint_uri).await {
+        match capture_client_tls_material_for_transport(
+            self.config.as_ref(),
+            &self.endpoint_uri,
+            self.transport,
+        )
+        .await
+        {
             Ok(Some(candidate)) if candidate.matches(&self.current.load().material) => {
                 ReloadOutcome::Unchanged
             }
@@ -266,6 +296,63 @@ mod tests {
     use tempfile::TempDir;
 
     const ENDPOINT: &str = "https://backend.example.com:4317";
+
+    /// Scenario: an HTTP client has file-backed mTLS with `insecure` and
+    /// `insecure_skip_verify` set, unlike tonic's stricter TLS policy.
+    /// Guarantees: HTTP still captures and reloads its identity, even without
+    /// custom or system roots, while gRPC retains its existing load decisions.
+    #[tokio::test]
+    async fn http_policy_preserves_identity_with_insecure_options() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = TempDir::new().unwrap();
+        let mut config = write_material(dir.path(), "HTTP CA", "client-0");
+        config.ca_file = None;
+        config.insecure = Some(true);
+        config.insecure_skip_verify = Some(true);
+        let provider = ClientTlsProvider::new_http(Some(&config))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(provider.current().material.client_identity.is_some());
+        assert!(!provider.current().material.include_system_ca);
+        assert!(provider.is_file_backed());
+        let client = tls_certs::generate_self_signed_cert("client-1", None, false);
+        fs::write(dir.path().join("tls.crt"), client.cert_pem).unwrap();
+        fs::write(dir.path().join("tls.key"), client.key_pem).unwrap();
+        assert_eq!(provider.poll_once().await, ReloadOutcome::Updated(1));
+        assert!(
+            ClientTlsProvider::new(Some(&config), ENDPOINT)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Scenario: HTTP has no explicit TLS block or has a configured reload
+    /// interval that is zero or explicitly disabled.
+    /// Guarantees: absent TLS needs no provider, zero is rejected, and null
+    /// retains the static generation without starting periodic reload.
+    #[tokio::test]
+    async fn http_provider_validates_reload_interval() {
+        crate::crypto::ensure_crypto_provider();
+        assert!(ClientTlsProvider::new_http(None).await.unwrap().is_none());
+        let mut config = TlsClientConfig::default();
+        config.config.reload_interval = Some(Duration::ZERO);
+        assert_eq!(
+            ClientTlsProvider::new_http(Some(&config))
+                .await
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        config.config.reload_interval = None;
+        let provider = ClientTlsProvider::new_http(Some(&config))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(provider.reload_interval(), None);
+    }
 
     /// Writes a CA, client cert, and client key into `dir` and returns a
     /// file-backed client config that trusts only that CA (no system store, so

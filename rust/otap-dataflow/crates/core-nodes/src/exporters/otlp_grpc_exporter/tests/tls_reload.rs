@@ -309,7 +309,8 @@ async fn shutdown_and_replacement_release_reload_and_retry_state() {
             tokio::task::yield_now().await;
             timeout(Duration::from_secs(1), task.stop())
                 .await
-                .expect("shutdown must not wait for installation retry");
+                .expect("shutdown must not wait for installation retry")
+                .expect("reload task stopped cleanly");
             assert!(tokio::time::Instant::now() < installation.retry_at);
             assert!(task.handle.is_none());
             assert_eq!(Rc::strong_count(&fixture.provider), 1);

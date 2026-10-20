@@ -143,6 +143,8 @@ bench = []
 dev-tools = []
 
 [dev-dependencies]
+rustls.workspace = true
+tokio-rustls.workspace = true
 serde_yaml.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true

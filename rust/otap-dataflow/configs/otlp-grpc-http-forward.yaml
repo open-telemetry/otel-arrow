@@ -49,7 +49,19 @@ groups:
           http_exporter:
             type: exporter:otlp_http
             config:
-              http: {}
+              http:
+                # The URL scheme controls TLS, even when tls.insecure is true.
+                # tls:
+                #   ca_file: "/path/to/ca.crt"
+                #   cert_file: "/path/to/client.crt"  # optional mTLS identity
+                #   key_file: "/path/to/client.key"
+                #   # File-backed client TLS reloads every 5m by default.
+                #   reload_interval: "30s"           # custom polling interval
+                #   # reload_interval: null           # disable TLS reload
+                # Reload failures keep working clients and retry automatically.
+                # Rotate related standalone files atomically. Kubernetes projected
+                # Secret updates are supported; subPath mounts do not update.
+                {}
               endpoint: "http://127.0.0.1:4318"
               client_pool_size: 1
 

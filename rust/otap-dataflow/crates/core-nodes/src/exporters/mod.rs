@@ -30,3 +30,6 @@ pub mod otlp_grpc_exporter;
 /// OTLP HTTP exporter.
 #[cfg(feature = "otlp")]
 pub mod otlp_http_exporter;
+
+#[cfg(feature = "otlp")]
+mod tls_reload;

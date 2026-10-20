@@ -57,13 +57,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tonic::Code;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
+use super::tls_reload::LocalTlsReloadTask;
 use otel_arrow_dfe_otap::http_client_auth::*;
 
 mod metrics;
@@ -195,48 +194,6 @@ impl OTLPExporter {
             metrics,
             auth_provider,
         })
-    }
-}
-
-struct LocalTlsReloadTask {
-    cancel: CancellationToken,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl LocalTlsReloadTask {
-    fn start(provider: Rc<ClientTlsProvider>) -> Self {
-        let cancel = CancellationToken::new();
-        let task_cancel = cancel.clone();
-        let handle = tokio::task::spawn_local(async move {
-            provider.run(task_cancel.cancelled()).await;
-        });
-        Self {
-            cancel,
-            handle: Some(handle),
-        }
-    }
-
-    async fn stop(&mut self) {
-        self.cancel.cancel();
-        if let Some(handle) = self.handle.take()
-            && let Err(error) = handle.await
-            && !error.is_cancelled()
-        {
-            otel_warn!(
-                "otlp.exporter.grpc.tls_reload_task_failed",
-                error = %error,
-                message = "TLS reload task failed during shutdown"
-            );
-        }
-    }
-}
-
-impl Drop for LocalTlsReloadTask {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        if let Some(handle) = self.handle.take() {
-            handle.abort();
-        }
     }
 }
 
@@ -657,8 +614,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otel_info!("otlp.exporter.grpc.shutdown");
-                    if let Some(task) = tls_reload_task.as_mut() {
-                        task.stop().await;
+                    if let Some(task) = tls_reload_task.as_mut()
+                        && let Err(error) = task.stop().await
+                    {
+                        otel_warn!(
+                            "otlp.exporter.grpc.tls_reload_task_failed",
+                            error = %error,
+                            message = "TLS reload task failed during shutdown"
+                        );
                     }
                     // A batch can only still be parked here because the auth gate
                     // was shut when it last came up for dispatch: un-parking is

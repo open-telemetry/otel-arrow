@@ -3,17 +3,19 @@
 
 //! Shared configuration for HTTP-based clients.
 
+use otel_arrow_dfe_config::tls::TlsClientConfig;
 use reqwest::ClientBuilder;
 use reqwest::header::HeaderValue;
+use reqwest::{Certificate, Identity};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
-use {
-    crate::tls_utils::read_file_with_limit_async, otel_arrow_dfe_config::tls::TlsClientConfig,
-    otel_arrow_dfe_telemetry::otel_error, reqwest::Certificate, reqwest::Identity,
+
+use crate::tls_utils::{
+    ClientTlsTransport, LoadedClientTlsMaterial, capture_client_tls_material_for_transport,
 };
 
 use crate::compression::{CompressionMethod, deserialize_compression_method};
@@ -179,6 +181,33 @@ impl HttpClientSettings {
 
     /// Returns a configured client-builder
     pub async fn client_builder(&self) -> Result<ClientBuilder, HttpClientError> {
+        let material = capture_client_tls_material_for_transport(
+            self.tls.as_ref(),
+            "",
+            ClientTlsTransport::Http,
+        )
+        .await?
+        .map(|candidate| candidate.validate())
+        .transpose()?;
+        self.client_builder_with_optional_tls_material(material.as_ref())
+    }
+
+    /// Builds a fresh transport from captured TLS bytes without reopening files.
+    ///
+    /// A new reqwest builder constructs an independent rustls configuration and
+    /// session cache for each client, while retaining reqwest's platform trust
+    /// verifier, proxy handling, and HTTP protocol configuration.
+    pub fn client_builder_with_tls_material(
+        &self,
+        material: &LoadedClientTlsMaterial,
+    ) -> Result<ClientBuilder, HttpClientError> {
+        self.client_builder_with_optional_tls_material(Some(material))
+    }
+
+    fn client_builder_with_optional_tls_material(
+        &self,
+        material: Option<&LoadedClientTlsMaterial>,
+    ) -> Result<ClientBuilder, HttpClientError> {
         let mut client_builder = ClientBuilder::new()
             .use_rustls_tls()
             .connect_timeout(self.connect_timeout)
@@ -203,102 +232,31 @@ impl HttpClientSettings {
             client_builder = client_builder.timeout(timeout)
         }
 
-        if let Some(tls) = &self.tls {
+        if let Some(material) = material {
             let mut certs = vec![];
 
-            if let Some(ca_pem) = &tls.ca_pem {
-                let cert = Certificate::from_pem(ca_pem.as_bytes())?;
-                certs.push(cert);
+            for ca_pem in &material.ca_pems {
+                certs.extend(Certificate::from_pem_bundle(ca_pem)?);
             }
 
-            if let Some(ca_file) = &tls.ca_file {
-                let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
-                    otel_error!(
-                        "tls.ca_file.read_error",
-                        ca_file = ?ca_file,
-                        error = ?e,
-                        message = "Failed to read CA file"
-                    );
-                    e
-                })?;
-                let cert = Certificate::from_pem(&ca_pem)?;
-                certs.push(cert);
-            }
-
-            if tls.include_system_ca_certs_pool.unwrap_or(true) {
+            if material.include_system_ca {
                 client_builder = client_builder.tls_certs_merge(certs);
             } else {
                 client_builder = client_builder.tls_certs_only(certs);
             }
 
-            if let Some(true) = &tls.insecure_skip_verify {
+            if self
+                .tls
+                .as_ref()
+                .is_some_and(|tls| tls.insecure_skip_verify == Some(true))
+            {
                 client_builder = client_builder.danger_accept_invalid_certs(true);
             }
 
-            // mTLS client certificate configuration
-            let client_cert_configured = tls.config.cert_file.is_some()
-                || tls
-                    .config
-                    .cert_pem
-                    .as_ref()
-                    .is_some_and(|pem| !pem.trim().is_empty());
-            let client_key_configured = tls.config.key_file.is_some()
-                || tls
-                    .config
-                    .key_pem
-                    .as_ref()
-                    .is_some_and(|pem| !pem.trim().is_empty());
-
-            if client_cert_configured || client_key_configured {
-                if !(client_cert_configured && client_key_configured) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "TLS configuration error: both cert and key must be provided for mTLS. \
-                             Provide both cert_file/cert_pem and key_file/key_pem, or neither.",
-                    )
-                    .into());
-                }
-
-                // Read cert and key
-                let cert_pem = if let Some(cert_file) = &tls.config.cert_file {
-                    read_file_with_limit_async(cert_file).await.map_err(|e| {
-                        otel_error!(
-                            "tls.cert_file.read_error",
-                            cert_file = ?cert_file,
-                            error = ?e, message = "Failed to read client cert file"
-                        );
-                        e
-                    })?
-                } else if let Some(cert_pem) = &tls.config.cert_pem {
-                    cert_pem.as_bytes().to_vec()
-                } else {
-                    unreachable!()
-                };
-
-                let key_pem = if let Some(key_file) = &tls.config.key_file {
-                    read_file_with_limit_async(key_file).await.map_err(|e| {
-                        otel_error!(
-                            "tls.key_file.read_error",
-                            key_file = ?key_file,
-                            error = ?e,
-                            message = "Failed to read client key file"
-                        );
-                        e
-                    })?
-                } else if let Some(key_pem) = &tls.config.key_pem {
-                    key_pem.as_bytes().to_vec()
-                } else {
-                    unreachable!()
-                };
-
-                // Reject a certificate/key that do not form a matching pair,
-                // so a misconfiguration fails fast at build time rather than at
-                // connect time (matches the gRPC exporter behavior).
-                crate::tls_utils::validate_client_keys_match(&cert_pem, &key_pem)?;
-
+            if let Some(identity) = &material.client_identity {
                 // Combine cert and key into PEM format for Identity
-                let mut identity_pem = cert_pem;
-                identity_pem.extend_from_slice(&key_pem);
+                let mut identity_pem = identity.cert_pem.clone();
+                identity_pem.extend_from_slice(&identity.key_pem);
 
                 let identity = Identity::from_pem(&identity_pem).map_err(|e| {
                     io::Error::new(
@@ -318,6 +276,10 @@ impl HttpClientSettings {
 /// Errors that occur configuring Http ClientBuilder
 #[derive(thiserror::Error, Debug)]
 pub enum HttpClientError {
+    /// The blocking transport-construction task failed.
+    #[error("http client build task failed: {0}")]
+    BuildTask(#[from] tokio::task::JoinError),
+
     /// Error occurred configuring reqwest client
     #[error("http client build error: {0}")]
     Reqwest(#[from] reqwest::Error),
@@ -370,6 +332,55 @@ mod tests {
             }
             ResponseTemplate::new(200)
         }
+    }
+
+    /// Scenario: a complete CA and mTLS generation is captured before all of its
+    /// source files disappear.
+    /// Guarantees: fresh HTTP clients build only from captured bytes, whereas a
+    /// normal file-backed build reports the missing source.
+    #[tokio::test]
+    async fn snapshot_builders_do_not_reopen_tls_sources() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = tls_certs::generate_ca("snapshot CA");
+        ca.write_cert_to_dir(dir.path(), "ca");
+        ca.issue_leaf(
+            "client",
+            None,
+            Some(tls_certs::ExtendedKeyUsage::ClientAuth),
+        )
+        .write_to_dir(dir.path(), "client");
+        let settings = HttpClientSettings {
+            tls: Some(TlsClientConfig {
+                ca_file: Some(dir.path().join("ca.crt")),
+                include_system_ca_certs_pool: Some(false),
+                config: TlsConfig {
+                    cert_file: Some(dir.path().join("client.crt")),
+                    key_file: Some(dir.path().join("client.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let provider = crate::client_tls_reload::ClientTlsProvider::new_http(settings.tls.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        for name in ["ca.crt", "client.crt", "client.key"] {
+            std::fs::remove_file(dir.path().join(name)).unwrap();
+        }
+        for _ in 0..3 {
+            let _client = settings
+                .client_builder_with_tls_material(provider.current().material())
+                .unwrap()
+                .build()
+                .unwrap();
+        }
+        let HttpClientError::Io(error) = settings.client_builder().await.unwrap_err() else {
+            panic!("normal build must report the missing TLS source");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     /// Scenario: build an HTTP client whose mTLS cert and key are from different

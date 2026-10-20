@@ -179,7 +179,7 @@ impl fmt::Debug for ClientIdentityMaterial {
 /// A validated, immutable snapshot of client TLS material.
 ///
 /// This captures the bytes and policy needed to build a client transport
-/// (tonic `ClientTlsConfig` today, other backends later) without re-reading any
+/// (tonic channels or reqwest clients) without re-reading any
 /// files. Loading, validation, and transport construction are separated so a
 /// reload loop can read + validate one generation and build the transport from
 /// exactly those bytes.
@@ -423,13 +423,29 @@ pub(crate) async fn capture_client_tls_material(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
 ) -> Result<Option<CapturedClientTlsMaterial>, io::Error> {
+    capture_client_tls_material_for_transport(config, endpoint_uri, ClientTlsTransport::Grpc).await
+}
+
+/// Transport-specific TLS policy; file capture and validation remain shared.
+#[derive(Clone, Copy)]
+pub(crate) enum ClientTlsTransport {
+    Grpc,
+    Http,
+}
+
+pub(crate) async fn capture_client_tls_material_for_transport(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+    transport: ClientTlsTransport,
+) -> Result<Option<CapturedClientTlsMaterial>, io::Error> {
+    let is_grpc = matches!(transport, ClientTlsTransport::Grpc);
     let wants_tls = endpoint_uri.starts_with("https://");
 
     let Some(config) = config else {
         // Go collector behavior: absence of a TLS block means "use scheme defaults".
         // - https:// => TLS enabled with default trust anchors
         // - http://  => plaintext
-        if !wants_tls {
+        if !is_grpc || !wants_tls {
             return Ok(None);
         }
 
@@ -451,11 +467,11 @@ pub(crate) async fn capture_client_tls_material(
     // Align with Go configtls.ClientConfig.LoadTLSConfig:
     // when insecure=true and no custom CA is configured, return None and let the
     // endpoint scheme decide whether the connection is plaintext or TLS.
-    if insecure && !custom_ca_configured {
+    if is_grpc && insecure && !custom_ca_configured {
         return Ok(None);
     }
 
-    if let Some(true) = config.insecure_skip_verify {
+    if is_grpc && config.insecure_skip_verify == Some(true) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "TLS configuration error: insecure_skip_verify=true is not supported by the current Rust OTLP client implementation (tonic/rustls). \
@@ -481,7 +497,7 @@ pub(crate) async fn capture_client_tls_material(
 
     // Validate trust anchors are configured.
     let include_system = config.include_system_ca_certs_pool.unwrap_or(true);
-    if !include_system && !custom_ca_configured {
+    if is_grpc && !include_system && !custom_ca_configured {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "TLS configuration error: no trust anchors configured. \
