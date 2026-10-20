@@ -635,6 +635,99 @@ mod tests {
         }));
     }
 
+    /// Scenario: a `SimClock` is installed, shutdown is initiated for an
+    /// extension that never exits, and `drain_until_deadline` is polled while
+    /// simulated time is advanced by hand.
+    /// Guarantees: the grace deadline and the drain timeout follow the
+    /// installed clock. Draining stays pending until simulated time reaches
+    /// grace + slack, then times out, keeps the stuck task and marks the
+    /// extension `TimedOut`.
+    #[test]
+    fn drain_until_deadline_times_out_on_sim_clock() {
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let (key, channel, _shutdown_rx) = make_shutdown_channel("stuck");
+            let entity_key =
+                ext_ctx.register_extension_entity("stuck".into(), ExtensionVariant::Local);
+            let mut monitor = ExtensionMetricsMonitor::new(
+                ext_ctx.clone(),
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            );
+            monitor.register(&ext_ctx, key.clone(), entity_key, None);
+
+            let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
+                FuturesUnordered::new();
+            let handle = local_tasks.spawn_local({
+                let key = key.clone();
+                async move {
+                    std::future::pending::<()>().await;
+                    (key, Ok(()))
+                }
+            });
+            let mut task_id_to_key = HashMap::new();
+            let _ = task_id_to_key.insert(handle.id(), key.clone());
+            futures.push(handle);
+
+            let (_started_tx, started_rx) = mpsc::unbounded_channel();
+            let mut lifecycle = ExtensionLifecycle {
+                futures,
+                task_id_to_key,
+                shutdown_channels: vec![(key.clone(), channel)],
+                _passive: Vec::new(),
+                phase: LifecyclePhase::Running,
+                monitor,
+                started_rx,
+                pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
+            };
+
+            let shutdown_at = clock.now();
+            lifecycle.initiate_shutdown(None);
+            let grace_deadline = match lifecycle.phase {
+                LifecyclePhase::ShuttingDown { deadline } => deadline,
+                LifecyclePhase::Running => panic!("initiate_shutdown must enter ShuttingDown"),
+            };
+            assert_eq!(
+                grace_deadline,
+                shutdown_at + EXTENSION_SHUTDOWN_GRACE,
+                "grace deadline must be taken from the installed clock",
+            );
+            let drain_deadline = grace_deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK;
+
+            {
+                let mut drain = std::pin::pin!(lifecycle.drain_until_deadline());
+                assert!(
+                    drain.as_mut().now_or_never().is_none(),
+                    "drain must wait for the stuck extension",
+                );
+                clock.advance_to(drain_deadline - Duration::from_millis(1));
+                assert!(
+                    drain.as_mut().now_or_never().is_none(),
+                    "drain must stay pending before the simulated grace + slack deadline",
+                );
+                clock.advance_to(drain_deadline);
+                assert!(
+                    drain.as_mut().now_or_never().is_some(),
+                    "drain must time out once simulated time reaches grace + slack",
+                );
+            }
+
+            assert!(
+                !lifecycle.futures.is_empty(),
+                "stuck extension should still be present after the bounded drain timed out",
+            );
+            assert_eq!(
+                lifecycle.monitor.state_for(&key),
+                Some(crate::extension_monitor::ExtensionRuntimeState::TimedOut),
+                "stuck extension must be marked TimedOut after the drain deadline",
+            );
+        }));
+    }
+
     /// A panicking extension task must surface as a terminal `Failed`
     /// state and bump the `completed_panic` counter.
     #[test]
@@ -1546,6 +1639,63 @@ mod tests {
                     assert_eq!(timeout, probe_timeout);
                 }
                 other => panic!("expected ExtensionReadinessTimeout; got {other:?}"),
+            }
+        }));
+    }
+
+    /// Scenario: a `SimClock` is installed, an extension opts into readiness
+    /// but never signals, and `wait_all_ready` is polled while simulated time
+    /// is advanced by hand.
+    /// Guarantees: the probe timeout follows the installed clock. The gate
+    /// stays pending until simulated time reaches the timeout, then fails
+    /// with `ExtensionReadinessTimeout` naming the extension.
+    #[test]
+    fn wait_all_ready_timeout_follows_sim_clock() {
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            // Far beyond what a wall-clock test could wait for: only the
+            // simulated clock can reach this deadline.
+            let probe_timeout = Duration::from_secs(30);
+            let (sig, probe) = crate::extension::ReadinessSignaller::pair(probe_timeout);
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("slow-ext".into(), ExtensionVariant::Shared),
+                probe,
+            ));
+
+            // The timeout is armed on the first poll, so advance only after it.
+            let mut gate = std::pin::pin!(lifecycle.wait_all_ready());
+            assert!(
+                gate.as_mut().now_or_never().is_none(),
+                "gate must wait for the unready extension",
+            );
+            clock.advance(probe_timeout - Duration::from_millis(1));
+            assert!(
+                gate.as_mut().now_or_never().is_none(),
+                "gate must stay pending before the simulated deadline",
+            );
+            clock.advance(Duration::from_millis(1));
+            let outcome = gate.now_or_never();
+            // Hold sig across the polls so drop-detect can't race the timeout.
+            drop(sig);
+
+            match outcome {
+                Some(Err(Error::ExtensionReadinessTimeout {
+                    extension,
+                    variant,
+                    timeout,
+                })) => {
+                    assert_eq!(extension, "slow-ext");
+                    assert_eq!(variant, "shared");
+                    assert_eq!(timeout, probe_timeout);
+                }
+                other => panic!(
+                    "expected ExtensionReadinessTimeout at the simulated deadline; got {other:?}"
+                ),
             }
         }));
     }
