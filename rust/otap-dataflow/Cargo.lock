@@ -7392,7 +7392,6 @@ dependencies = [
 name = "otel-arrow-dfe"
 version = "0.62.0"
 dependencies = [
- "cfg-if",
  "clap",
  "dhat",
  "mimalloc",
@@ -7932,7 +7931,6 @@ dependencies = [
  "base64 0.23.1",
  "bitflags 2.13.2",
  "bytes",
- "cfg-if",
  "flate2",
  "futures",
  "http",

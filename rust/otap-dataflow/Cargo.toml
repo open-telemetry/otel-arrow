@@ -19,7 +19,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.88.0"
+rust-version = "1.98.1"
 
 [package]
 name = "otel-arrow-dfe"
@@ -50,7 +50,6 @@ otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
-cfg-if.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -108,7 +107,6 @@ bitflags = "2.10"
 bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
-cfg-if = "1.0.4"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
