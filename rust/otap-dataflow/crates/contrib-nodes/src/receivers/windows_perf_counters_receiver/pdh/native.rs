@@ -442,6 +442,43 @@ mod tests {
         }
     }
 
+    /// Scenario: Windows formats both raw-fraction types with positive and zero current denominators.
+    /// Guarantees: Native API/data status validation preserves PDH's defined zero-base result without a previous sample.
+    #[test]
+    fn native_raw_fraction_zero_base_formats_as_zero() {
+        for native_type in [0x2002_0400, 0x2002_0500] {
+            for (base, expected) in [(100, 25.0), (0, 0.0)] {
+                let current = PDH_RAW_COUNTER {
+                    CStatus: PDH_CSTATUS_VALID_DATA,
+                    FirstValue: 25,
+                    SecondValue: base,
+                    ..Default::default()
+                };
+                let time_base = 1;
+                let value =
+                    NativePdh::formatted_with("fixture", ValueFormat::Double, |flags, value| {
+                        // SAFETY: Input and output are initialized; raw fractions need no previous sample.
+                        unsafe {
+                            PdhFormatFromRawValue(
+                                native_type,
+                                flags,
+                                &time_base,
+                                &current,
+                                null(),
+                                value,
+                            )
+                        }
+                    })
+                    .unwrap();
+                assert_eq!(
+                    value,
+                    Some(Number::Double(expected)),
+                    "native type 0x{native_type:08X}, base {base}"
+                );
+            }
+        }
+    }
+
     /// Scenario: Windows formats elapsed time from a current raw sample without a previous sample.
     /// Guarantees: PERF_ELAPSED_TIME uses the current timestamp and frequency without two-sample warm-up.
     #[test]
