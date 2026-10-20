@@ -93,6 +93,8 @@ pub enum Error {
     ResponseBody {
         /// The HTTP status received before the body failed.
         status: http::StatusCode,
+        /// Server-specified minimum retry delay parsed before the body failed.
+        retry_after: Option<std::time::Duration>,
         /// The underlying response-body error.
         #[source]
         source: reqwest::Error,
@@ -212,7 +214,9 @@ impl Error {
             Self::Network { .. } | Self::RateLimited { .. } | Self::ServerError { .. } => true,
             Self::UnexpectedStatus { status, .. } => *status == http::StatusCode::REQUEST_TIMEOUT,
             Self::ResponseBody { status, .. } => {
-                *status == http::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                *status == http::StatusCode::REQUEST_TIMEOUT
+                    || *status == http::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error()
             }
             _ => false,
         }
@@ -262,9 +266,9 @@ impl Error {
     #[must_use]
     pub fn retry_after(&self) -> Option<std::time::Duration> {
         match self {
-            Self::RateLimited { retry_after, .. } | Self::ServerError { retry_after, .. } => {
-                *retry_after
-            }
+            Self::RateLimited { retry_after, .. }
+            | Self::ServerError { retry_after, .. }
+            | Self::ResponseBody { retry_after, .. } => *retry_after,
             _ => None,
         }
     }

@@ -332,7 +332,7 @@ impl AzureDataExplorerClient {
 
         let retry_after = Self::parse_retry_after(&response);
         let (body, response_bytes, response_truncated) =
-            match Self::read_error_response(response, status).await {
+            match Self::read_error_response(response, status, retry_after).await {
                 Ok(response) => response,
                 Err(error) => {
                     self.metrics
@@ -409,6 +409,7 @@ impl AzureDataExplorerClient {
     async fn read_error_response(
         mut response: reqwest::Response,
         status: reqwest::StatusCode,
+        retry_after: Option<Duration>,
     ) -> Result<(String, u64, bool), Error> {
         let advertised_size = response.content_length();
         let mut bytes = Vec::with_capacity(
@@ -422,7 +423,11 @@ impl AzureDataExplorerClient {
             let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|source| Error::ResponseBody { status, source })?
+                .map_err(|source| Error::ResponseBody {
+                    status,
+                    retry_after,
+                    source,
+                })?
             else {
                 break;
             };
@@ -438,7 +443,11 @@ impl AzureDataExplorerClient {
             truncated = response
                 .chunk()
                 .await
-                .map_err(|source| Error::ResponseBody { status, source })?
+                .map_err(|source| Error::ResponseBody {
+                    status,
+                    retry_after,
+                    source,
+                })?
                 .is_some();
         }
         let retained_size = bytes.len() as u64;
@@ -457,13 +466,9 @@ impl AzureDataExplorerClient {
         timeout: Duration,
         retry_after: Option<Duration>,
     ) -> Result<(), Error> {
-        let base = INITIAL_BACKOFF * 2u32.saturating_pow(attempt.saturating_sub(1));
-        let capped = base.min(MAX_BACKOFF);
         let jitter_factor = 0.7 + rng.random_range(0.0..0.6_f64);
-        let delay = retry_after
-            .map(|server_delay| server_delay.max(capped.mul_f64(jitter_factor)))
-            .unwrap_or_else(|| capped.mul_f64(jitter_factor))
-            .min(deadline.saturating_duration_since(Instant::now()));
+        let requested_delay = Self::retry_delay(attempt, jitter_factor, retry_after);
+        let delay = requested_delay.min(deadline.saturating_duration_since(Instant::now()));
         otel_debug!(
             "azure_data_explorer_exporter.client.backoff",
             attempt = attempt,
@@ -472,14 +477,24 @@ impl AzureDataExplorerClient {
         tokio::time::timeout_at(deadline, tokio::time::sleep(delay))
             .await
             .map_err(|_| Error::OperationTimeout { timeout })?;
+        if Instant::now() >= deadline {
+            return Err(Error::OperationTimeout { timeout });
+        }
         Ok(())
+    }
+
+    fn retry_delay(attempt: u32, jitter_factor: f64, retry_after: Option<Duration>) -> Duration {
+        let base = INITIAL_BACKOFF * 2u32.saturating_pow(attempt.saturating_sub(1));
+        let capped = base.min(MAX_BACKOFF);
+        let client_delay = capped.mul_f64(jitter_factor).min(MAX_BACKOFF);
+        retry_after.map_or(client_delay, |server_delay| server_delay.max(client_delay))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AzureDataExplorerClient, ExportAttemptMetadata, MAX_ERROR_RESPONSE_BYTES,
+        AzureDataExplorerClient, ExportAttemptMetadata, MAX_BACKOFF, MAX_ERROR_RESPONSE_BYTES,
         MAX_RESPONSE_DETAIL_CHUNKS, RESPONSE_DETAIL_CHUNK_LENGTH,
     };
     use crate::exporters::azure_data_explorer_exporter::error::Error;
@@ -545,7 +560,7 @@ mod tests {
         let status = response.status();
 
         let (body, response_bytes, truncated) =
-            AzureDataExplorerClient::read_error_response(response, status)
+            AzureDataExplorerClient::read_error_response(response, status, None)
                 .await
                 .expect("bounded body");
 
@@ -570,6 +585,75 @@ mod tests {
                 .all(|chunk| chunk.len() <= RESPONSE_DETAIL_CHUNK_LENGTH)
         );
         assert_eq!(chunks.concat(), body);
+    }
+
+    async fn truncated_error_response(status_line: &str, retry_after: Option<u64>) -> Error {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let retry_after_header =
+            retry_after.map_or_else(String::new, |seconds| format!("Retry-After: {seconds}\r\n"));
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\n\
+             Content-Length: 7\r\n\
+             {retry_after_header}\
+             Connection: close\r\n\r\n\
+             x"
+        );
+        let server = async move {
+            let (mut stream, _) = listener.accept().await.expect("client connection");
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await.expect("request bytes");
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("truncated response");
+        };
+        let request = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send();
+
+        let (_, response) = tokio::join!(server, request);
+        let response = response.expect("response headers");
+        let status = response.status();
+        let retry_after = AzureDataExplorerClient::parse_retry_after(&response);
+        AzureDataExplorerClient::read_error_response(response, status, retry_after)
+            .await
+            .expect_err("truncated body")
+    }
+
+    /// Scenario: retryable HTTP statuses close a declared response body before it is complete.
+    /// Guarantees: 429/503 preserve `Retry-After`, and a truncated 408 remains retryable.
+    #[tokio::test]
+    async fn truncated_retryable_response_preserves_retry_policy() {
+        for status_line in ["429 Too Many Requests", "503 Service Unavailable"] {
+            let error = truncated_error_response(status_line, Some(60)).await;
+            assert!(error.is_retryable(), "{status_line}");
+            assert_eq!(
+                error.retry_after(),
+                Some(Duration::from_secs(60)),
+                "{status_line}"
+            );
+        }
+
+        let error = truncated_error_response("408 Request Timeout", None).await;
+        assert!(error.is_retryable());
+        assert_eq!(error.retry_after(), None);
+    }
+
+    /// Scenario: the local exponential delay reaches its cap before positive jitter is applied.
+    /// Guarantees: jitter cannot exceed 30 seconds, while `Retry-After` may require a longer delay.
+    #[test]
+    fn retry_delay_caps_jitter_before_server_minimum() {
+        assert_eq!(
+            AzureDataExplorerClient::retry_delay(5, 1.2, None),
+            MAX_BACKOFF
+        );
+        assert_eq!(
+            AzureDataExplorerClient::retry_delay(5, 1.2, Some(Duration::from_secs(60))),
+            Duration::from_secs(60)
+        );
     }
 
     fn test_metrics() -> AzureDataExplorerExporterMetricsRc {
@@ -999,6 +1083,16 @@ mod tests {
                 timeout: actual_timeout
             } if actual_timeout == timeout
         ));
+        let snapshots = metrics.borrow_mut().terminal_snapshots();
+        assert_eq!(
+            attempted_metric(&snapshots, Outcome::Failure, "messages"),
+            1
+        );
+        assert_eq!(http_response_metric(&snapshots, "http_5xx"), 1);
+        assert!(!snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.azure_data_explorer.http"
+                && snapshot.measurement_attribute_value("response") == Some("network_error")
+        }));
     }
 
     /// Scenario: an ADX request remains in flight until the operation deadline.
