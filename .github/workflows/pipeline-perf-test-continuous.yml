@@ -187,10 +187,12 @@ jobs:
           docker images df_engine_win
           docker run --rm df_engine_win --version
 
-      - name: Install Python dependencies
-        if: ${{ !cancelled() }}
+      - name: Install orchestrator dependencies
         run: |
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+
+      - name: Install load generator dependencies
+        run: |
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
       - name: Run pipeline performance test log suite
@@ -213,7 +215,7 @@ jobs:
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
 
       - name: Run idle state test (1 core) - warmup + repeated samples
-        if: matrix.platform == 'windows' && !cancelled()
+        if: matrix.platform == 'windows'
         shell: pwsh
         working-directory: ./tools/pipeline_perf_test
         run: |
@@ -243,7 +245,7 @@ jobs:
           }
 
       - name: Analyze idle memory variance (1 core)
-        if: matrix.platform == 'windows' && !cancelled()
+        if: matrix.platform == 'windows'
         shell: pwsh
         env:
           PYTHONUTF8: "1"
