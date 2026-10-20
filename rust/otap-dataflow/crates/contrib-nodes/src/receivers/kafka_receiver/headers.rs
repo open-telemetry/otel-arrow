@@ -464,7 +464,7 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
     use otel_arrow_dfe_pdata::{OtlpProtoBytes, Producer, TryIntoWithOptions};
-    use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use prost::Message;
     use std::collections::BTreeMap;
 
@@ -874,11 +874,11 @@ mod tests {
             .apply_plaintext_logs(input)
             .expect("should succeed");
         let payload: OtapPayload = pdata.take_payload();
-        let arrow_records = match payload.into_data() {
-            PayloadData::OtapRecords(records @ OtapArrowRecords::Logs(_)) => records,
-            _ => panic!("expected plaintext to produce OtapArrowRecords::Logs"),
-        };
-        let mut pdata = OtapPdata::new(Default::default(), arrow_records.into());
+        assert!(matches!(
+            payload.otap_ref(),
+            Some(OtapArrowRecords::Logs(_))
+        ));
+        let mut pdata = OtapPdata::new(Default::default(), payload);
         let proto: OtlpProtoBytes = pdata
             .take_payload()
             .try_into_with_default()

@@ -1,6 +1,6 @@
 [package]
 name = "otel-arrow-dfe-filelog-checkpoint"
-description = "Version-1 wire codec and transactional replay for OTAP filelog checkpoints"
+description = "Version-1 codec, replay, and Linux storage for OTAP filelog checkpoints"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -21,3 +21,10 @@ thiserror.workspace = true
 [dev-dependencies]
 dhat.workspace = true
 hex.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["user", "dir"] }
+rustix.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile.workspace = true

@@ -12,7 +12,7 @@ use otel_arrow_dfe_scraper::database::{
     PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
-use std::{net::IpAddr, time::Duration};
+use std::{net::IpAddr, path::Path, time::Duration};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +31,36 @@ pub(crate) struct Connection {
     #[serde(default = "default_port")]
     pub port: u16,
     pub database: String,
+    #[serde(default)]
+    tls: Tls,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Tls {
+    #[serde(default = "default_tls_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    ca_file: Option<String>,
+}
+
+impl Default for Tls {
+    fn default() -> Self {
+        Self {
+            enabled: default_tls_enabled(),
+            ca_file: None,
+        }
+    }
+}
+
+impl Connection {
+    pub(crate) const fn tls_enabled(&self) -> bool {
+        self.tls.enabled
+    }
+
+    pub(crate) fn ca_file(&self) -> Option<&Path> {
+        self.tls.ca_file.as_deref().map(Path::new)
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -89,6 +119,9 @@ pub(crate) struct Checkpoint {
 
 const fn default_port() -> u16 {
     5432
+}
+const fn default_tls_enabled() -> bool {
+    true
 }
 const fn default_interval() -> Duration {
     Duration::from_secs(60)
@@ -177,6 +210,17 @@ impl PostgreSqlReceiverConfig {
                 return Err(Error::Config);
             }
             connection.host.make_ascii_lowercase();
+        }
+        if connection
+            .tls
+            .ca_file
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty() || path.contains('\0'))
+        {
+            return Err(Error::Config);
+        }
+        if !connection.tls.enabled && connection.tls.ca_file.is_some() {
+            return Err(Error::Config);
         }
         let query = &self.query;
         if !(60..=86400).contains(&query.interval.as_secs()) || query.interval.subsec_nanos() != 0 {

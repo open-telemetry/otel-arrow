@@ -42,8 +42,6 @@ use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-#[cfg(test)]
-use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, OtapPayload, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::metrics::{
@@ -2742,10 +2740,10 @@ mod tests {
             assert_eq!(output.len(), 1);
             // Both streams should be present: verify by converting the output
             // to OTLP and checking we have 2 resource_metrics entries.
-            let actual = match output[0].payload_ref().data() {
-                PayloadData::OtapRecords(r) => r,
-                _ => panic!("expected OtapArrowRecords payload"),
-            };
+            let actual = output[0]
+                .payload_ref()
+                .otap_ref()
+                .expect("expected native OTAP payload");
             let otlp = otap_to_otlp(actual);
             let md = match otlp {
                 otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
@@ -3483,11 +3481,10 @@ mod tests {
         });
     }
 
+    /// Scenario: An encoded delta sum without a resource passes through immediately.
+    /// Guarantees: Passthrough preserves the original bytes, OTLP encoding, and metrics signal.
     #[test]
     fn test_none_resource_passthrough() {
-        // A delta sum under a None resource should pass through immediately.
-        // This uses OTLP bytes encoding and the full passthrough path forwards
-        // the original pdata unchanged (still as OTLP bytes, not OTAP records).
         run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 ScopeMetrics::new(
@@ -3497,16 +3494,18 @@ mod tests {
             ])]);
 
             let pdata = make_otlp_bytes_pdata(input_data);
+            let expected_bytes = pdata.payload_ref().encoded_bytes().unwrap().clone();
             ctx.process(Message::PData(pdata)).await.unwrap();
 
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "delta sum should pass through immediately");
-            // Full passthrough forwards original OTLP bytes unchanged -
-            // just verify something was emitted, the payload format is preserved.
-            assert!(
-                matches!(output[0].payload_ref().data(), PayloadData::OtlpBytes(_)),
-                "full passthrough should preserve OTLP bytes payload"
-            );
+            let view = output[0]
+                .payload_ref()
+                .encoded_view()
+                .expect("full passthrough should preserve an encoded payload");
+            assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+            assert_eq!(view.signal_type(), SignalType::Metrics);
+            assert_eq!(view.bytes(), expected_bytes.as_ref());
         });
     }
 
