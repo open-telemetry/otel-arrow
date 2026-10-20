@@ -8,6 +8,7 @@
 //! is synchronous and ordered; a slow consumer stops traversal, with no handles
 //! retained across delivery. Cancellation cannot interrupt a blocked kernel call.
 
+mod batch;
 mod budget;
 mod linux;
 mod probe;
@@ -143,6 +144,39 @@ pub enum ScanReason {
     DescriptorExhausted,
     /// Caller cancelled; the pass cannot authorize negative conclusions.
     Cancelled,
+}
+
+impl ScanReason {
+    /// Whether this outcome invalidates required scan coverage or policy evidence.
+    ///
+    /// Classify the operation's context before assigning a reason. A false result
+    /// does not authorize admission or prove absence. Locator presence is separate
+    /// evidence and can accompany both coverage failures and candidate-local failures.
+    #[must_use]
+    pub const fn invalidates_coverage(self) -> bool {
+        match self {
+            Self::VerificationUnavailable
+            | Self::RootUnavailable
+            | Self::RootChanged
+            | Self::Coverage
+            | Self::Resumption
+            | Self::UnqualifiedResumption
+            | Self::Cycle
+            | Self::Limit
+            | Self::Policy
+            | Self::Unstable
+            | Self::ProbeBusy
+            | Self::DescriptorExhausted
+            | Self::Cancelled => true,
+            Self::Directory
+            | Self::PresenceOnly
+            | Self::Missing
+            | Self::LeafLoop
+            | Self::Unsupported
+            | Self::Excluded
+            | Self::Content => false,
+        }
+    }
 }
 
 /// Evidence from a single name. Contains no handles, leases, or durable identity.

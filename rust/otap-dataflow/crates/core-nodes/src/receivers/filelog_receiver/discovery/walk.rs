@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::linux::Batch;
+use super::batch::Batch;
 use super::probe::{ProbeContext, ProbeScratch, probe};
 use super::*;
 use rustix::fs::{

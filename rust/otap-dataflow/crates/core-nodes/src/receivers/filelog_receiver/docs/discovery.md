@@ -6,6 +6,12 @@ bounded, descriptor-free batches followed by a completion marker. It does not
 register a receiver, assign durable identities, select pending candidates,
 reconcile bindings, or finalize readers.
 
+Outcome classification lives on `ScanReason`; `batch` owns reusable storage and
+completion accounting without filesystem calls. Linux orchestration, root
+resolution, traversal, and probing remain separate from those rules. Linux is
+the only implemented backend; future backends can reuse the evidence and
+batching contracts without adopting Linux directory traversal.
+
 ## Integration contract
 
 - Configuration supplies absolute directory prefixes, matching policy, explicit

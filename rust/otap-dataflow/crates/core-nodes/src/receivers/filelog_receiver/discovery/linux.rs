@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::batch::{Batch, deliver};
 use super::probe::{ProbeContext, ProbeScratch};
 use super::roots::{ExclusionRoot, resolve_exclusion, resolve_include_root};
 use super::walk::Walker;
@@ -8,62 +9,6 @@ use super::*;
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-
-// Retain allocation capacity across delivery and subsequent passes. The consumer
-// borrows only the initialized prefix; no descriptor or unbounded queue lives here.
-pub(super) struct Batch {
-    slots: Vec<Observation>,
-    used: usize,
-}
-
-impl Batch {
-    pub(super) fn new(limits: ScanLimits) -> Self {
-        Self {
-            slots: (0..limits.batch)
-                .map(|_| Observation {
-                    path: PathBuf::with_capacity(limits.path_bytes),
-                    locator: None,
-                    size: None,
-                    modified: None,
-                    fingerprint: Vec::with_capacity(limits.fingerprint_bytes),
-                    reason: None,
-                    errno: None,
-                })
-                .collect(),
-            used: 0,
-        }
-    }
-    pub(super) fn clear(&mut self) {
-        self.used = 0;
-    }
-    pub(super) fn is_full(&self) -> bool {
-        self.used == self.slots.len()
-    }
-    pub(super) fn emit(&mut self, path: &Path, reason: ScanReason, errno: Option<i32>) {
-        // Overflow is an internal invariant violation: stop rather than lose
-        // evidence and risk reporting incomplete coverage as complete.
-        assert!(!self.is_full(), "deliver a full batch before emitting");
-        let out = &mut self.slots[self.used];
-        self.used += 1;
-        out.path.clear();
-        out.path.push(path);
-        out.locator = None;
-        out.size = None;
-        out.modified = None;
-        out.fingerprint.clear();
-        out.reason = Some(reason);
-        out.errno = errno;
-    }
-    pub(super) fn last_mut(&mut self) -> &mut Observation {
-        &mut self.slots[self.used - 1]
-    }
-}
-impl std::ops::Deref for Batch {
-    type Target = [Observation];
-    fn deref(&self) -> &Self::Target {
-        &self.slots[..self.used]
-    }
-}
 
 /// Linux scanner with bounded reusable scratch and root baselines.
 ///
@@ -175,13 +120,7 @@ impl<P: MatchPolicy> Scanner<P> {
             + self.target.capacity()
             + self.directory_buffer.capacity()
             + self.walker.heap_bytes()
-            + self.batch.slots.capacity() * size_of::<Observation>()
-            + self
-                .batch
-                .slots
-                .iter()
-                .map(|o| o.path.capacity() + o.fingerprint.capacity())
-                .sum::<usize>()
+            + self.batch.heap_bytes()
     }
 
     /// Scans roots in configuration order and delivers batches synchronously.
@@ -368,46 +307,4 @@ impl<P: MatchPolicy> Scanner<P> {
         self.batch.clear();
         completion
     }
-}
-
-fn deliver(
-    batch: &mut Batch,
-    completion: &mut ScanCompletion,
-    consume: &mut impl FnMut(&[Observation]) -> bool,
-) -> bool {
-    if batch.is_empty() {
-        return !completion.cancelled;
-    }
-    for observation in batch.iter() {
-        if matches!(
-            observation.reason,
-            Some(
-                ScanReason::VerificationUnavailable
-                    | ScanReason::RootUnavailable
-                    | ScanReason::RootChanged
-                    | ScanReason::Coverage
-                    | ScanReason::Resumption
-                    | ScanReason::UnqualifiedResumption
-                    | ScanReason::Cycle
-                    | ScanReason::Limit
-                    | ScanReason::Policy
-                    | ScanReason::Unstable
-                    | ScanReason::ProbeBusy
-                    | ScanReason::DescriptorExhausted
-                    | ScanReason::Cancelled
-            )
-        ) {
-            completion.complete = false;
-        }
-        if observation.reason == Some(ScanReason::Cancelled) {
-            completion.cancelled = true;
-        }
-    }
-    completion.observations = completion.observations.saturating_add(batch.len() as u64);
-    if !consume(batch) {
-        completion.complete = false;
-        completion.cancelled = true;
-    }
-    batch.clear();
-    !completion.cancelled
 }
