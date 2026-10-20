@@ -393,6 +393,70 @@ async fn sdk_default_retry_recovers_transient_failure() {
     assert_eq!(transport.request_count(), 4);
 }
 
+/// Scenario: Acquisition is dropped while the default SDK's Tokio retry delay is pending.
+/// Guarantees: Cancellation starts no later request and leaves no in-flight transport work after time advances.
+#[tokio::test(start_paused = true)]
+async fn sdk_retry_delay_is_cancelled_with_acquisition() {
+    use super::testing::*;
+    use azure_core::http::RetryOptions;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    let transport = FakeTransport::new(vec![failure(503), secret("user"), secret("password")]);
+    let source = source(
+        config(),
+        Arc::clone(&transport),
+        Arc::new(FakeCredential::default()),
+        RetryOptions::default(),
+    );
+    {
+        let acquisition = source.fetch_pair();
+        tokio::pin!(acquisition);
+        assert!(futures::poll!(acquisition.as_mut()).is_pending());
+        assert_eq!(transport.request_count(), 2);
+    }
+    tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+    assert_eq!(transport.request_count(), 2);
+    assert_eq!(transport.in_flight.load(Ordering::SeqCst), 0);
+}
+
+/// Scenario: The SDK's default HTTP transport receives a redirect to a second loopback endpoint.
+/// Guarantees: The redirect is returned without following it, including with Core's default features enabled.
+#[tokio::test]
+async fn sdk_default_transport_does_not_follow_redirects() {
+    use azure_core::http::{Method, Request, StatusCode, Url};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MockServer::builder().listener(listener).start().await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/target", server.uri())),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(path("/target"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let request = Request::new(
+        Url::parse(&format!("{}/start", server.uri())).unwrap(),
+        Method::Get,
+    );
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        azure_core::http::new_http_client(None).execute_request(&request),
+    )
+    .await
+    .expect("loopback response within timeout")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::Found);
+}
+
 /// Scenario: SDK debug logs and operational events observe successful reads and secret-bearing errors.
 /// Guarantees: Captured diagnostics contain stages/categories but no token, secret value, or raw error-body marker.
 #[tokio::test]

@@ -268,9 +268,12 @@ cpu-time = "1.0.0"
 
 one_collect = "0.1.35021"
 
-azure_core = { version = "1.2.0-beta.1", default-features = false }
-azure_identity = { version = "1.1.0-beta.1", default-features = false }
-azure_security_keyvault_secrets = { version = "1.1.0-beta.1", path = "../vendor/azure_security_keyvault_secrets", default-features = false }
+# Temporary beta.1-compatible official SDK pin; keep native credential types on one source.
+# Secrets at this revision still enables Core defaults (including AWS-LC).
+# Opt-out fixed upstream in Azure/azure-sdk-for-rust#5489; migrate to a compatible release.
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "e1f93542648359690c640935f271f49a66dccc25", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "e1f93542648359690c640935f271f49a66dccc25", default-features = false }
+azure_security_keyvault_secrets = { git = "https://github.com/Azure/azure-sdk-for-rust", rev = "e1f93542648359690c640935f271f49a66dccc25", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).

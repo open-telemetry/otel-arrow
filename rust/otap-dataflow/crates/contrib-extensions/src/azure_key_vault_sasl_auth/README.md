@@ -167,13 +167,47 @@ cargo build --release --features azure-key-vault-sasl-auth
 
 Enable exactly one workspace `crypto-*` backend in the deployed binary. The
 workspace default enables `crypto-ring`; custom no-default-feature builds must
-select a backend explicitly. The Azure SDK uses provider-neutral rustls/reqwest
-TLS and reuses the workspace crypto-provider initialization.
+select a backend explicitly. The Azure SDK reuses the workspace crypto-provider
+initialization. The selected provider still handles SDK HTTPS connections when
+it is installed before client construction.
 
-The Secrets client is pinned to an official preview SDK source compatible with
-the existing Azure identity/core family. Its runtime source is unchanged; a
-minimal dependency-feature correction preserves crypto neutrality. See the
-[SDK provenance and update policy](../../../../../vendor/azure_security_keyvault_secrets/PROVENANCE.md).
+### Temporary SDK source dependency
+
+Secrets `1.1.0-beta.1`, Core `1.2.0-beta.1`, and Identity `1.1.0-beta.1` are
+pinned to the same immutable [official Azure SDK revision][sdk-pin]. Core and
+Identity match the source of the project's original published previews; their
+shared Git source keeps SDK credential/client types interoperable. No SDK code
+is copied into this repository, patched locally, or obtained from a private fork.
+
+This older compatible revision still enables Core defaults through Secrets,
+adding AWS-LC, SDK Tokio, and compression features even when Secrets defaults are
+disabled. These additional dependencies are intentionally accepted for this
+draft's integration evaluation, but still deviate from the repository's
+crypto-provider neutrality guidance; this is not a provider-neutral production
+recommendation.
+AWS-LC does not replace an explicitly installed Ring, OpenSSL, or SymCrypt
+provider, but adds a compiled backend and allows an AWS-LC fallback without an
+installed provider. Keep selecting and initializing the intended workspace
+`crypto-*` backend; this exception does not establish product/FIPS approval.
+
+The opt-out fix has merged as [Azure/azure-sdk-for-rust#5489][sdk-fix].
+Move to a compatible official release containing that fix when available,
+reassessing the shared Core/Identity family and crypto feature graph together.
+The fixed upstream revision uses a newer Core preview and is not assumed to be
+a drop-in replacement for this `beta.1` pin.
+
+Windows builds of the Git dependency require symlink-capable Git checkouts
+(`core.symlinks=true`, with Windows Developer Mode or equivalent permissions).
+The official Secrets source links its authorization module to the Keys crate.
+Check the actual Cargo dependency checkout: Cargo can materialize the link as
+pathname text even when the Git CLI enables symlinks. In that case, enable
+`core.symlinks` in that dependency checkout and use Git to restore its original
+Secrets and Certificates `src/authorizer.rs` links from `HEAD`. The tracked
+checkout must remain clean at the pinned revision; do not replace the links
+with copied or patched SDK source.
+
+[sdk-pin]: https://github.com/Azure/azure-sdk-for-rust/tree/e1f93542648359690c640935f271f49a66dccc25
+[sdk-fix]: https://github.com/Azure/azure-sdk-for-rust/pull/5489
 
 Automated tests inject deterministic SDK transports/credentials and use no
 real Azure resources, accounts, or secrets.

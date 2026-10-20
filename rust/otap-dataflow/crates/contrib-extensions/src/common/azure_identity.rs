@@ -424,6 +424,63 @@ mod tests {
         );
     }
 
+    /// Scenario: SDK defaults also compile AWS-LC while the application explicitly installs its chosen provider.
+    /// Guarantees: Identity, default HTTP, and Key Vault client construction retain that exact provider without token I/O.
+    #[cfg(all(
+        feature = "azure-key-vault-sasl-auth",
+        any(
+            feature = "crypto-ring",
+            feature = "crypto-aws-lc",
+            feature = "crypto-openssl",
+            feature = "crypto-symcrypt"
+        )
+    ))]
+    #[test]
+    fn sdk_preserves_explicit_crypto_provider() {
+        const CHILD: &str = "OTEL_ARROW_TEST_SDK_CRYPTO_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+            let selected = otel_arrow_dfe_otap::crypto::selected_crypto_provider();
+            selected
+                .as_ref()
+                .clone()
+                .install_default()
+                .expect("install the application's selected provider");
+            let installed = Arc::clone(rustls::crypto::CryptoProvider::get_default().unwrap());
+            let config = IdentityConfig {
+                method: AuthMethod::Development,
+                ..Default::default()
+            };
+            let credential = create_credential(IdentityOptions::from(&config)).unwrap();
+            let _http = azure_core::http::new_http_client(None);
+            let _vault = azure_security_keyvault_secrets::SecretClient::new(
+                "https://test-vault.vault.azure.net",
+                credential,
+                None,
+            )
+            .unwrap();
+            assert!(Arc::ptr_eq(
+                &installed,
+                rustls::crypto::CryptoProvider::get_default().unwrap()
+            ));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "common::azure_identity::tests::sdk_preserves_explicit_crypto_provider",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "SDK provider child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// Scenario: Workload identity inputs are omitted, partially supplied, or fully supplied.
     /// Guarantees: Explicit inputs are unchanged and each omitted input stays None for SDK env fallback.
     #[test]
