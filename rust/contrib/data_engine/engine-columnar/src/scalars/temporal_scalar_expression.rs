@@ -25,6 +25,8 @@ mod tests {
 
     use super::*;
 
+    /// Scenario: Evaluate a Now scalar expression without input records.
+    /// Guarantees: Evaluation returns a single DateTime value with a UTC offset.
     #[test]
     fn test_execute_now_temporal_scalar_expression() {
         run_scalar_expression_test(
