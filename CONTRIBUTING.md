@@ -159,6 +159,24 @@ Testing is crucial to ensure code reliability. When contributing:
 - Run the test suite before submitting a pull request to verify changes.
 - Ensure test coverage remains high, and add tests for edge cases when applicable.
 
+### Writing Reliable Tests
+
+Tests must pass independently and alongside other tests, without depending on
+execution order, machine speed, or unrelated global state.
+
+- Wait for observable readiness and completion, not a fixed sleep or an assumed
+  scheduler order. Bound waits so a regression fails rather than hangs.
+- Control inputs, clocks, and randomness where possible. Assert the documented
+  contract, not incidental ordering or a lucky random outcome.
+- Give each test its own resources and measure only the operation under test;
+  process-wide counters can include unrelated work.
+- Stop and join background work, propagate its failures, and clean up fixtures.
+- Fix the cause of intermittent failures. Extra retries, longer sleeps, and
+  weaker assertions are not substitutes for a reliable test.
+
+Rust contributors must follow the detailed
+[reliable test guidelines](rust/otap-dataflow/CONTRIBUTING.md#reliable-tests).
+
 ### Community Standards and Style Guides
 
 This project adheres to the OpenTelemetry community's standards. Please ensure
