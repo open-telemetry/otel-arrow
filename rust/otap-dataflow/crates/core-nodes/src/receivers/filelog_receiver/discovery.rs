@@ -11,6 +11,8 @@
 mod budget;
 mod linux;
 mod probe;
+mod roots;
+mod walk;
 
 pub use budget::{ProbeBudget, ProbeReservation};
 pub use linux::Scanner;

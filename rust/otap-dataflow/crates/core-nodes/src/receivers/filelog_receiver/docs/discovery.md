@@ -103,6 +103,12 @@ Validated files in a changed include root may still be observed without adopting
 that root as the expected baseline. Positive observations remain usable during
 incomplete passes.
 
+A persistent dangling or looping link under a followed recursive include can
+hide a required subtree. It makes every affected pass incomplete, blocking
+discovery-derived finalization and retention receiver-wide. Diagnostics identify
+the link; positive observations and qualified resident unlink handling remain
+available. A leaf-only broken link follows the candidate-local rules instead.
+
 Limits cover roots, native path bytes, recursion depth, fingerprint bytes, batch
 size, traversal/replay work, and the fixed 8 KiB directory buffer. The work limit
 counts enumeration steps (including replay) and traversal-directory opens; it

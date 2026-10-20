@@ -1579,3 +1579,159 @@ fn transient_budget_contention_can_recover() {
     assert_eq!(candidates, 1);
     assert!(budget.try_reserve().is_some());
 }
+
+/// Scenario: Missing include roots surround a valid root with batches of one, two, or three slots.
+/// Guarantees: Root errors and candidates are delivered without overflow or losing positive observations.
+#[test]
+fn small_batches_preserve_multiple_root_errors_and_candidates() {
+    let dir = fixture();
+    fs::write(dir.path().join("log"), b"data").unwrap();
+    for batch_size in 1..=3 {
+        let mut cfg = config(dir.path());
+        cfg.include_roots = vec![
+            dir.path().join("missing-a"),
+            dir.path().to_owned(),
+            dir.path().join("missing-b"),
+        ];
+        cfg.limits.batch = batch_size;
+        let mut scanner = Scanner::new(
+            cfg,
+            Policy {
+                recursive: false,
+                exclude_secret: false,
+            },
+        )
+        .unwrap();
+        let mut missing = 0;
+        let mut candidates = 0;
+        let end = scanner.scan(
+            1,
+            &ProbeBudget::default(),
+            || false,
+            |batch| {
+                assert!(batch.len() <= batch_size);
+                missing += batch
+                    .iter()
+                    .filter(|o| o.reason == Some(ScanReason::RootUnavailable))
+                    .count();
+                candidates += batch.iter().filter(|o| o.reason.is_none()).count();
+                true
+            },
+        );
+        assert!(!end.complete);
+        assert!(!end.cancelled);
+        assert_eq!(missing, 2);
+        assert_eq!(candidates, 1);
+    }
+}
+
+/// Scenario: Traversal exhausts its work allowance after earlier root errors, with one output slot.
+/// Guarantees: Limit diagnostics fit the batch, coverage stays incomplete, and a later pass can retry.
+#[test]
+fn one_slot_root_errors_then_work_exhaustion() {
+    let dir = fixture();
+    fs::write(dir.path().join("log"), b"data").unwrap();
+    let mut cfg = config(dir.path());
+    cfg.include_roots.insert(0, dir.path().join("missing"));
+    cfg.limits.batch = 1;
+    cfg.limits.work_units = 1;
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let budget = ProbeBudget::default();
+    for generation in 1..=2 {
+        let mut missing = false;
+        let mut limit = false;
+        let end = scanner.scan(
+            generation,
+            &budget,
+            || false,
+            |batch| {
+                assert_eq!(batch.len(), 1);
+                missing |= batch[0].reason == Some(ScanReason::RootUnavailable);
+                limit |= batch[0].reason == Some(ScanReason::Limit);
+                true
+            },
+        );
+        assert!(missing && limit);
+        assert!(!end.complete && !end.cancelled);
+        assert!(budget.try_reserve().is_some());
+    }
+}
+
+/// Scenario: Cancellation is reported once inside exclusion resolution with a one-slot or larger batch.
+/// Guarantees: The cancellation reason is delivered immediately and traversal cannot continue as a policy failure.
+#[test]
+fn exclusion_resolution_preserves_one_shot_cancellation() {
+    let dir = fixture();
+    for batch_size in [1, 4] {
+        let mut cfg = config(dir.path());
+        cfg.exclusion_roots = vec![dir.path().to_owned()];
+        cfg.limits.batch = batch_size;
+        let mut scanner = Scanner::new(
+            cfg,
+            Policy {
+                recursive: false,
+                exclude_secret: false,
+            },
+        )
+        .unwrap();
+        let mut checks = 0;
+        let mut cancelled = 0;
+        let end = scanner.scan(
+            1,
+            &ProbeBudget::default(),
+            || {
+                checks += 1;
+                checks == 3 // Initial check, exclusion-loop check, then resolver check.
+            },
+            |batch| {
+                assert_eq!(batch.len(), 1);
+                assert_eq!(batch[0].reason, Some(ScanReason::Cancelled));
+                cancelled += 1;
+                true
+            },
+        );
+        assert!(end.cancelled && !end.complete);
+        assert_eq!(cancelled, 1);
+    }
+}
+
+/// Scenario: The consumer cancels delivery of the first error among several missing roots.
+/// Guarantees: A one-slot batch stops further root processing and the next pass starts with clean traversal state.
+#[test]
+fn cancellation_between_root_errors() {
+    let dir = fixture();
+    let mut cfg = config(dir.path());
+    cfg.include_roots = vec![dir.path().join("a"), dir.path().join("b")];
+    cfg.limits.batch = 1;
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let mut delivered = 0;
+    let end = scanner.scan(
+        1,
+        &ProbeBudget::default(),
+        || false,
+        |batch| {
+            assert_eq!(batch.len(), 1);
+            delivered += 1;
+            false
+        },
+    );
+    assert!(end.cancelled && !end.complete);
+    assert_eq!(delivered, 1);
+    let (end, observations) = run(&mut scanner);
+    assert!(!end.cancelled && !end.complete);
+    assert_eq!(observations.len(), 2);
+}

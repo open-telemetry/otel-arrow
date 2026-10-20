@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::roots::ExclusionRoot;
 use super::*;
 use crate::receivers::filelog_receiver::source::{FileAccessError, PinnedSource, SourceFile};
 use rustix::fs::{AtFlags, CWD, Mode, OFlags, ResolveFlags, openat2, readlinkat_raw, statat};
@@ -9,13 +10,6 @@ use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-
-pub(super) struct ExclusionRoot {
-    pub locator: FileLocator,
-    pub index: usize,
-    // When the literal prefix is absent, map through its verified ancestor.
-    pub missing_suffix: PathBuf,
-}
 
 pub(super) fn locator(stat: &rustix::fs::Stat) -> FileLocator {
     FileLocator {
