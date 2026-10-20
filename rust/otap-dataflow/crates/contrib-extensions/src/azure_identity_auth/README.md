@@ -112,7 +112,30 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 
 `startup_timeout` accepts human-readable durations such as `30s` or `1m`.
 
-### Authentication methods
+### Managed identity execution bounds
+
+Managed identity credential construction and acquisition run on one Tokio
+blocking worker per extension instance. The worker acquires its admission
+permit before it is submitted and holds that permit until it exits, even if
+the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
+detection and challenge-file access off the thread-per-core executor without
+allowing cancellation or repeated refresh attempts to create unbounded workers.
+
+`startup_timeout` bounds how long pipeline startup waits for the first token;
+it does not terminate an in-progress blocking worker. Tokio cannot forcibly
+cancel `spawn_blocking` work safely. The Azure SDK version used by this crate
+configures Arc acquisition with six retries and a 72-second retry budget, while
+its default HTTP transport uses a 20-second connection timeout and a 60-second
+read timeout per attempt. Retry elapsed time is checked between attempts, so
+the budget is not a hard wall-clock deadline for the complete operation.
+Synchronous operating-system filesystem calls also have no user-space
+cancellation mechanism.
+
+If startup or shutdown cancels an acquisition, the worker continues until the
+SDK call returns and retains admission in the meantime. Subsequent attempts
+wait for that worker instead of starting another one.
+
+## Authentication methods
 
 | `method` | Aliases | Credential | Notes |
 | --- | --- | --- | --- |

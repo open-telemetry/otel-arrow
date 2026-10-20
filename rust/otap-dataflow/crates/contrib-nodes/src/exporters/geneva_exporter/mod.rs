@@ -1839,6 +1839,7 @@ mod tests {
         UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
 
     use bytes::Bytes;
@@ -2119,11 +2120,14 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct MockBearerTokenExtension;
+    struct MockBearerTokenExtension {
+        calls: Arc<AtomicUsize>,
+    }
 
     #[async_trait]
     impl SharedBearerTokenProvider for MockBearerTokenExtension {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            let _ = self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(BearerToken::without_expiry("test-entra-token".to_string()))
         }
 
@@ -2194,14 +2198,19 @@ mod tests {
             .expect("resolve local-only capabilities")
     }
 
-    fn resolved_external_token_capabilities(node_config: &NodeUserConfig) -> Capabilities {
+    fn resolved_external_token_capabilities(
+        node_config: &NodeUserConfig,
+    ) -> (Capabilities, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let extension = MockBearerTokenExtension {
+            calls: Arc::clone(&calls),
+        };
         let extension_capabilities = extension_capabilities!(
             shared: MockBearerTokenExtension => [BearerTokenProviderCap]
         );
         let mut registry = CapabilityRegistry::new();
-        let instance_factory = SharedInstanceFactory::new(|| {
-            Box::new(MockBearerTokenExtension) as Box<dyn Any + Send>
-        });
+        let instance_factory =
+            SharedInstanceFactory::new(move || Box::new(extension.clone()) as Box<dyn Any + Send>);
         (extension_capabilities.register_shared)(
             "azure-identity".into(),
             instance_factory,
@@ -2210,8 +2219,11 @@ mod tests {
         .expect("register capabilities");
         let known_extensions =
             HashSet::from([otel_arrow_dfe_config::ExtensionId::from("azure-identity")]);
-        resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
-            .expect("resolve capabilities")
+        (
+            resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+                .expect("resolve capabilities"),
+            calls,
+        )
     }
 
     fn resolved_local_only_external_token_capabilities(
@@ -2974,11 +2986,94 @@ mod tests {
     fn external_token_provider_builds_geneva_client() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let node_config = external_token_node_config(Some("azure-identity"));
-        let capabilities = resolved_external_token_capabilities(&node_config);
+        let (capabilities, _) = resolved_external_token_capabilities(&node_config);
         let config = Config::parse(&node_config.config).expect("valid external-token config");
 
         let _ = create_geneva_client(&config, &node_config, &capabilities)
             .expect("shared bearer-token provider should construct the client");
+    }
+
+    /// Scenario: A shared bearer-token capability authenticates a GCS request and two uploads.
+    /// Guarantees: The Entra token is used only for GCS, while the returned Geneva credential
+    /// and account routing are cached and reused for ingestion.
+    #[tokio::test]
+    async fn external_token_capability_drives_gcs_and_cached_uploads() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method, path, query_param},
+        };
+
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let server = MockServer::start().await;
+        let mut node_config = external_token_node_config(Some("azure-identity"));
+        node_config.config["endpoint"] = serde_json::Value::String(server.uri());
+        let (capabilities, provider_calls) = resolved_external_token_capabilities(&node_config);
+        let config = Config::parse(&node_config.config).expect("valid external-token config");
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/userapi/agent/v3/test/test-account/MonitoringStorageKeys/",
+            ))
+            .and(header("Authorization", "Bearer test-entra-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "IngestionGatewayInfo": {
+                    "Endpoint": server.uri(),
+                    "AuthToken": "test-geneva-ingestion-token",
+                    "AuthTokenExpiryTime": "2030-01-01T00:00:00Z"
+                },
+                "StorageAccountKeys": [{
+                    "AccountMonikerName": "test-moniker",
+                    "AccountGroupName": "test-group",
+                    "IsPrimaryMoniker": true
+                }],
+                "TagId": "test-tag"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = create_geneva_client(&config, &node_config, &capabilities)
+            .expect("external-token client");
+        let mut records = OtapArrowRecords::Logs(Default::default());
+        records
+            .set(ArrowPayloadType::Logs, create_test_logs_batch())
+            .expect("logs batch");
+        let view = OtapLogsView::try_from(&records).expect("logs view");
+        let batches = client
+            .encode_and_compress_logs(&view)
+            .expect("encoded logs");
+        assert!(!batches.is_empty());
+
+        Mock::given(method("POST"))
+            .and(header(
+                "Authorization",
+                "Bearer test-geneva-ingestion-token",
+            ))
+            .and(query_param("moniker", "test-moniker"))
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(serde_json::json!({"ticket": "accepted"})),
+            )
+            .expect((batches.len() * 2) as u64)
+            .mount(&server)
+            .await;
+
+        let mut exporter = GenevaExporter {
+            config,
+            metrics: GenevaExporterMetrics::register(&create_test_pipeline_context()),
+            geneva_client: client,
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                exporter
+                    .upload_batches_concurrent(&batches, SignalType::Logs)
+                    .await
+                    .expect("upload succeeds"),
+                batches.len()
+            );
+        }
+
+        assert_eq!(provider_calls.load(Ordering::Relaxed), 1);
+        server.verify().await;
     }
 
     /// Scenario: A configuration carries a field the exporter does not define.

@@ -214,6 +214,17 @@ reuses it for later refreshes, and polls the SDK token future away from the
 thread-per-core executor. This is required for Azure Arc credentials, whose SDK
 path includes synchronous agent detection and challenge-file reads.
 
+Cancellation stops waiting for a managed identity result but cannot terminate
+the `spawn_blocking` worker. The worker deliberately retains admission until it
+exits so cancellation and refresh retries cannot create an unbounded worker
+queue. `startup_timeout` bounds readiness waiting, not worker lifetime. The
+current Azure SDK configures Arc acquisition with six retries and a 72-second
+retry budget; its default HTTP transport applies a 20-second connection timeout
+and a 60-second read timeout per attempt. Because retry expiry is evaluated
+between attempts, these settings are practical network bounds rather than a
+hard deadline for the complete operation. Synchronous operating-system
+filesystem calls cannot be forcibly cancelled.
+
 ### Internal state
 
 The cache, refresh loop, and capability implementation are not specific to
@@ -469,9 +480,11 @@ Metrics are recorded in both the background refresh loop and the slow-path
    work and drops its capability handle.
 2. After all consumers drain, the engine sends `ExtensionControlMsg::Shutdown`
    on the control channel. The refresh loop returns the final metric snapshot as
-   its terminal state and drops the credential and `watch` sender; a token
-   acquisition in flight at that moment is cancelled (see
-   [Refresh Loop](#refresh-loop)) so shutdown is not delayed by a slow request.
+   its terminal state and drops the credential and `watch` sender. Async
+   credential futures are cancelled when the refresh task is dropped. An
+   in-flight managed identity blocking worker cannot be forcibly cancelled; the
+   refresh task stops awaiting it, while the worker retains admission and
+   continues until the Azure SDK call returns.
 
 ### Live reconfiguration
 

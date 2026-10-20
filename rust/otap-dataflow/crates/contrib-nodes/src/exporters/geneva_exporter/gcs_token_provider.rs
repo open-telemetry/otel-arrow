@@ -13,14 +13,14 @@ use tokio::sync::Mutex;
 /// Supplies the uploader from one shared bearer-token capability binding.
 pub(crate) struct GenevaGcsTokenProvider {
     provider: Mutex<Box<dyn BearerTokenProvider>>,
-    resource: String,
+    expected_resource: String,
 }
 
 impl GenevaGcsTokenProvider {
-    pub(crate) fn new(provider: Box<dyn BearerTokenProvider>, resource: String) -> Self {
+    pub(crate) fn new(provider: Box<dyn BearerTokenProvider>, expected_resource: String) -> Self {
         Self {
             provider: Mutex::new(provider),
-            resource,
+            expected_resource,
         }
     }
 
@@ -32,7 +32,7 @@ impl GenevaGcsTokenProvider {
 impl std::fmt::Debug for GenevaGcsTokenProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GenevaGcsTokenProvider")
-            .field("resource", &self.resource)
+            .field("expected_resource", &self.expected_resource)
             .finish_non_exhaustive()
     }
 }
@@ -40,12 +40,16 @@ impl std::fmt::Debug for GenevaGcsTokenProvider {
 impl GcsTokenProvider for GenevaGcsTokenProvider {
     fn get_token<'a>(&'a self, resource: &'a str) -> GcsTokenFuture<'a> {
         Box::pin(async move {
-            if resource != self.resource {
+            // This protects the adapter contract if the uploader requests a
+            // different resource later. The capability is scope-preconfigured
+            // and does not expose that scope, so GCS remains authoritative for
+            // validating the token's actual audience.
+            if resource != self.expected_resource {
                 return Err(Self::error(
                     ErrorKind::InvalidInput,
                     format!(
                         "Geneva requested Entra resource '{resource}', but the provider is configured for '{}'",
-                        self.resource
+                        self.expected_resource
                     ),
                 ));
             }
