@@ -43,6 +43,7 @@ routing mechanism, not a boundary around participation.
 A pull request is ready to merge when:
 
 - at least one approver or maintainer has approved it;
+- active native approval-count and `CODEOWNERS` requirements are satisfied;
 - significant feedback is resolved;
 - required continuous integration checks pass; and
 - changes that cross ownership boundaries have received appropriate domain
@@ -52,7 +53,8 @@ The repository's existing `CODEOWNERS` file remains the source of truth for
 formal GitHub code-owner review. Component metadata supplements it with finer
 review domains; it does not replace or weaken the existing approval rules.
 
-### Advisory component-owner coverage
+
+### Advisory owner coverage
 
 The non-required `contrib-owner-coverage` status is red while any
 affected contrib node or extension lacks owner coverage. Owners come from
@@ -66,7 +68,14 @@ The status description names missing or unknown components when they fit,
 otherwise shows a count; the linked summary always lists all affected components.
 PRs sharing a head commit share this advisory status; the last report wins.
 
-Approvers and maintainers may defer review until owner coverage is present.
+Request owner input by default when coverage is red. Approvers and maintainers
+may proceed without it when they can responsibly review the affected area,
+satisfy all native requirements, and document why separate owner review is
+unnecessary. Otherwise, defer or seek additional expertise.
+
+Red does not require an extra approval or prohibit merging. Two non-owner
+approvals do not make the signal green; neither red nor green changes the
+native approval count.
 
 ## Component ownership metadata
 
