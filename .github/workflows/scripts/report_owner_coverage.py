@@ -16,13 +16,6 @@ from request_metadata_reviews import (
 )
 
 
-COMPONENT_PARENTS = (
-    *(
-        f"rust/otap-dataflow/crates/contrib-nodes/src/{kind}"
-        for kind in ("exporters", "processors", "receivers")
-    ),
-    "rust/otap-dataflow/crates/contrib-extensions/src",
-)
 API_ERRORS = (urllib.error.URLError, TimeoutError)
 
 
@@ -54,11 +47,22 @@ def component_metadata(files: list[dict]) -> list[str]:
         path = PurePosixPath(filename)
         if path.is_absolute() or ".." in path.parts or str(path) != filename:
             raise ValueError("Changed files contain a non-canonical path")
-        for parent in COMPONENT_PARENTS:
-            if filename.startswith(f"{parent}/"):
-                relative = path.relative_to(parent)
-                if len(relative.parts) > 1:
-                    metadata.add(f"{parent}/{relative.parts[0]}/metadata.yaml")
+        # Nodes use category/name; extensions use name.
+        for crate, name_depth in (("contrib-nodes", 2), ("contrib-extensions", 1)):
+            parent = f"rust/otap-dataflow/crates/{crate}"
+            if not filename.startswith(f"{parent}/"):
+                continue
+            section, *parts = path.relative_to(parent).parts
+            if section not in {"src", "benches"} or not parts or parts[0] == "common":
+                continue
+            if section == "benches" and len(parts) == name_depth and path.suffix == ".rs":
+                parts[-1] = path.stem
+            elif len(parts) <= name_depth:
+                continue
+            if section == "benches" and parts[name_depth - 1] in {"common", "mod"}:
+                continue
+            source = "/".join(parts[:name_depth])
+            metadata.add(f"{parent}/src/{source}/metadata.yaml")
     return sorted(metadata)
 
 

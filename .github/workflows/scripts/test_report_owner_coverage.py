@@ -187,6 +187,107 @@ class OwnerCoverageTests(unittest.TestCase):
             self.report(core + self.files(self.receiver), author="Alice")[0], "success"
         )
 
+    # Scenario: Directory and flat-file benchmarks touch each contrib node kind or an extension.
+    # Guarantees: Coverage uses source ownership, including inherited owners, not benchmark-local metadata.
+    def test_benchmarks_use_source_ownership(self):
+        nodes = "rust/otap-dataflow/crates/contrib-nodes"
+        processor = f"{nodes}/src/processors/transform"
+        self.write_owners(processor, ["Bob"])
+        future_node = f"{nodes}/src/future_kind/source"
+        self.write_owners(future_node, ["Alice"])
+        self.write_owners(self.extensions, ["Bob"])
+        self.write_owners(f"{nodes}/benches/exporters/sink", ["Mallory"])
+        cases = [
+            (f"{nodes}/benches/receivers/source/throughput.rs", self.receiver, "Alice"),
+            (f"{nodes}/benches/receivers/source.rs", self.receiver, "Alice"),
+            (f"{nodes}/benches/exporters/sink/throughput.rs", self.exporter, "Bob"),
+            (f"{nodes}/benches/exporters/sink.rs", self.exporter, "Bob"),
+            (f"{nodes}/benches/exporters/sink/notes.md", self.exporter, "Bob"),
+            (f"{nodes}/benches/processors/transform/throughput.rs", processor, "Bob"),
+            (f"{nodes}/benches/processors/transform.rs", processor, "Bob"),
+            (f"{nodes}/benches/future_kind/source/run.rs", future_node, "Alice"),
+            (f"{nodes}/benches/future_kind/source.rs", future_node, "Alice"),
+            (f"{future_node}/lib.rs", future_node, "Alice"),
+            (f"{self.extensions}/benches/auth/throughput.rs", f"{self.extensions}/src/auth", "Bob"),
+            (f"{self.extensions}/benches/auth.rs", f"{self.extensions}/src/auth", "Bob"),
+        ]
+        for filename, source, owner in cases:
+            with self.subTest(filename=filename):
+                files = [{"filename": filename, "status": "modified"}]
+                self.assertEqual(
+                    reporter.component_metadata(files), [f"{source}/metadata.yaml"]
+                )
+                self.assertEqual(self.report(files, author="Mallory")[0], "failure")
+                state, _, summary = self.report(files, author=owner)
+                self.assertEqual(state, "success")
+                self.assertIn(f"`{source}`: owner coverage author @{owner.lower()}.", summary)
+                self.assertEqual(self.report(files, [self.review(owner)])[0], "success")
+
+    # Scenario: Source, directory benchmarks, and a flat benchmark touch the same node.
+    # Guarantees: The node appears once in coverage regardless of how many layouts are changed.
+    def test_benchmark_and_source_paths_are_deduplicated(self):
+        benches = "rust/otap-dataflow/crates/contrib-nodes/benches/exporters"
+        files = self.files(self.exporter, f"{benches}/sink")
+        files.append({"filename": f"{benches}/sink.rs", "status": "modified"})
+        self.assertEqual(
+            reporter.component_metadata(files), [f"{self.exporter}/metadata.yaml"]
+        )
+        state, _, summary = self.report(files, author="Bob")
+        self.assertEqual(state, "success")
+        self.assertEqual(summary.count(f"`{self.exporter}`:"), 1)
+
+    # Scenario: A flat benchmark is renamed to another node's benchmark or source.
+    # Guarantees: Both nodes retain owner-coverage requirements across rename layouts.
+    def test_benchmark_renames_cover_both_nodes(self):
+        benches = "rust/otap-dataflow/crates/contrib-nodes/benches"
+        for destination in (f"{benches}/exporters/sink/throughput.rs", f"{self.exporter}/lib.rs"):
+            with self.subTest(destination=destination):
+                files = [{
+                    "filename": destination,
+                    "previous_filename": f"{benches}/receivers/source.rs",
+                    "status": "renamed",
+                }]
+                self.assertEqual(self.report(files, author="Alice")[0], "failure")
+                state, _, summary = self.report(
+                    files, [self.review("Bob")], author="Alice"
+                )
+                self.assertEqual(state, "success")
+                self.assertIn(f"`{self.receiver}`", summary)
+                self.assertIn(f"`{self.exporter}`", summary)
+
+    # Scenario: A new benchmark has local metadata but no established source owners.
+    # Guarantees: Benchmark metadata cannot establish ownership or hide an unknown-owner error.
+    def test_unknown_benchmark_ownership_is_an_error(self):
+        benchmark = "rust/otap-dataflow/crates/contrib-nodes/benches/receivers/new"
+        self.write_owners(benchmark, ["Alice"])
+        for files in (
+            self.files(benchmark),
+            [{"filename": f"{benchmark}.rs", "status": "removed"}],
+        ):
+            with self.subTest(files=files):
+                state, description, _ = self.report(files, author="Alice")
+                self.assertEqual(state, "error")
+                self.assertEqual(description, "Owner coverage unknown: receivers/new")
+
+    # Scenario: Changes affect shared source/benchmark helpers, registration, or category docs.
+    # Guarantees: Shared paths are not misidentified as individual nodes or extensions.
+    def test_shared_contrib_paths_are_not_node_paths(self):
+        nodes = "rust/otap-dataflow/crates/contrib-nodes/benches"
+        files = self.files(
+            f"{nodes}/common",
+            f"{nodes}/exporters/common",
+            f"{self.extensions}/benches/common",
+            "rust/otap-dataflow/crates/contrib-nodes/src/common/kafka",
+            f"{self.extensions}/src/common/token_refresh",
+        )
+        for parent in (f"{nodes}/processors", f"{self.extensions}/benches"):
+            for filename in ("mod.rs", "common.rs", "README.md"):
+                files.append({"filename": f"{parent}/{filename}", "status": "modified"})
+        self.assertEqual(reporter.component_metadata(files), [])
+        self.assertEqual(
+            self.report(files)[:2], ("success", "No contrib components affected")
+        )
+
     # Scenario: Descriptions fit exactly, overflow, or contain a very long node name.
     # Guarantees: Status text stays within 140 characters without losing full paths in the summary.
     def test_description_limit_and_full_summary(self):
