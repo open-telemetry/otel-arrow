@@ -17,6 +17,9 @@
 //! ```
 //!
 //! Important operational notes:
+//! * Shorthand notation: `<scope>.<instrument>` (e.g. `receiver.etw.dropped.dropped`) is used in this
+//!   module and counter algebra as convenient shorthand; native OTLP emits `<scope>` and `<instrument>`
+//!   as separate fields, and the Prometheus admin endpoint carries the scope separately.
 //! * `receiver.etw.events.received`: Ingress denominator, counted on producer (`ProcessTrace`) callback
 //!   before channel enqueue.
 //! * `receiver.etw.decode.errors`: TDH decode/parsing failures. Note that decode failures are still
@@ -24,6 +27,8 @@
 //! * `receiver.etw.kernel.events_lost`: Events lost inside Windows kernel ETW buffers before the receiver
 //!   ever saw them (kernel buffer overrun). These come from a different boundary and are distinct from
 //!   `receiver.etw.events.received`.
+//! * `receiver.etw.buffers.written`: Number of kernel ETW buffers written by the session (activity/throughput denominator).
+//! * `receiver.etw.buffer_losses.lost`: Number of kernel ETW buffers lost, partitioned by `path` (`real_time`, `log`).
 //! * Slow-worker drop rate = `receiver.etw.dropped.dropped{reason="slow_worker"} / receiver.etw.events.received`
 //! * Forward-failure rate = `receiver.etw.dropped.dropped{reason="forward_failed"} / receiver.etw.events.received`
 
@@ -109,37 +114,46 @@ pub struct EtwDroppedMetrics {
     pub dropped: Counter<u64>,
 }
 
-// -- Buffer outcome attributes ------------------------------------------------
+// -- Buffer metrics -----------------------------------------------------------
 
-/// Outcome/status of kernel ETW buffers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum BufferOutcome {
-    /// Buffers written by the session.
-    Written,
-    /// Real-time delivery buffers lost because the consumer could not drain fast enough.
-    RealTimeLost,
-    /// Log buffers that could not be flushed.
-    LogLost,
-}
-
-/// Attributes for kernel buffer metrics.
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-pub struct BufferAttributes {
-    /// Outcome or status of the kernel buffer.
-    pub outcome: BufferOutcome,
-}
-
-/// Kernel buffer metrics for the ETW receiver.
-#[metric_set(
-    name = "receiver.etw.buffers",
-    measurement_attributes = BufferAttributes
-)]
+/// Kernel buffer metrics for the ETW receiver tracking buffers written.
+#[metric_set(name = "receiver.etw.buffers")]
 #[derive(Debug, Default, Clone)]
 pub struct EtwBufferMetrics {
-    /// Number of kernel ETW buffers.
+    /// Number of kernel ETW buffers written by the session.
     #[metric(unit = "{buffer}")]
-    pub buffers: Counter<u64>,
+    pub written: Counter<u64>,
+}
+
+// -- Buffer loss attributes ---------------------------------------------------
+
+/// Delivery path where kernel buffer loss occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum BufferLossPath {
+    /// Real-time delivery buffers lost because the consumer could not drain fast enough.
+    RealTime,
+    /// Log buffers that could not be flushed.
+    Log,
+}
+
+/// Attributes for kernel buffer loss metrics.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct BufferLossAttributes {
+    /// Delivery path where buffer loss occurred.
+    pub path: BufferLossPath,
+}
+
+/// Kernel buffer loss metrics for the ETW receiver.
+#[metric_set(
+    name = "receiver.etw.buffer_losses",
+    measurement_attributes = BufferLossAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct EtwBufferLossMetrics {
+    /// Number of kernel ETW buffers lost.
+    #[metric(unit = "{buffer}")]
+    pub lost: Counter<u64>,
 }
 
 // -- Top-level wrapper --------------------------------------------------------
@@ -154,8 +168,10 @@ pub struct EtwReceiverMetrics {
     pub decode: MetricSet<EtwDecodeMetrics>,
     /// Kernel event loss metrics.
     pub kernel: MetricSet<EtwKernelMetrics>,
-    /// Kernel buffer metrics partitioned by outcome.
-    pub buffers: MeasurementMetricSet<EtwBufferMetrics>,
+    /// Kernel buffer metrics (buffers written).
+    pub buffers: MetricSet<EtwBufferMetrics>,
+    /// Kernel buffer loss metrics partitioned by delivery path.
+    pub buffer_losses: MeasurementMetricSet<EtwBufferLossMetrics>,
 }
 
 impl EtwReceiverMetrics {
@@ -167,6 +183,7 @@ impl EtwReceiverMetrics {
             decode: EtwDecodeMetrics::register(pipeline_ctx),
             kernel: EtwKernelMetrics::register(pipeline_ctx),
             buffers: EtwBufferMetrics::register(pipeline_ctx),
+            buffer_losses: EtwBufferLossMetrics::register(pipeline_ctx),
         }
     }
 
@@ -183,7 +200,10 @@ impl EtwReceiverMetrics {
         if self.kernel.needs_flush() {
             snapshots.extend(self.kernel.terminal_snapshots());
         }
-        snapshots.extend(self.buffers.terminal_snapshots());
+        if self.buffers.needs_flush() {
+            snapshots.extend(self.buffers.terminal_snapshots());
+        }
+        snapshots.extend(self.buffer_losses.terminal_snapshots());
         snapshots
     }
 
@@ -193,7 +213,8 @@ impl EtwReceiverMetrics {
         reporter.report_measurement(&mut self.dropped)?;
         reporter.report(&mut self.decode)?;
         reporter.report(&mut self.kernel)?;
-        reporter.report_measurement(&mut self.buffers)?;
+        reporter.report(&mut self.buffers)?;
+        reporter.report_measurement(&mut self.buffer_losses)?;
         Ok(())
     }
 
@@ -232,22 +253,21 @@ mod tests {
         assert_eq!(attr.reason, DropReason::SlowWorker);
     }
 
-    /// Scenario: Buffer outcome enum variants and attributes are constructed.
-    /// Guarantees: Enum equality and attributes capture the right outcome.
+    /// Scenario: Buffer loss path enum variants and attributes are constructed.
+    /// Guarantees: Enum equality and attributes capture the right path.
     #[test]
-    fn test_buffer_attributes() {
-        assert_eq!(BufferOutcome::Written, BufferOutcome::Written);
-        assert_eq!(BufferOutcome::RealTimeLost, BufferOutcome::RealTimeLost);
-        assert_eq!(BufferOutcome::LogLost, BufferOutcome::LogLost);
-        assert_ne!(BufferOutcome::Written, BufferOutcome::RealTimeLost);
+    fn test_buffer_loss_attributes() {
+        assert_eq!(BufferLossPath::RealTime, BufferLossPath::RealTime);
+        assert_eq!(BufferLossPath::Log, BufferLossPath::Log);
+        assert_ne!(BufferLossPath::RealTime, BufferLossPath::Log);
 
-        let attr = BufferAttributes {
-            outcome: BufferOutcome::Written,
+        let attr = BufferLossAttributes {
+            path: BufferLossPath::RealTime,
         };
-        assert_eq!(attr.outcome, BufferOutcome::Written);
+        assert_eq!(attr.path, BufferLossPath::RealTime);
     }
 
-    /// Scenario: Delivery, decode, kernel, drop, and buffer metrics are recorded.
+    /// Scenario: Delivery, decode, kernel, drop, buffer, and buffer loss metrics are recorded.
     /// Guarantees: Each metric set correctly isolates its values without overlap.
     #[test]
     fn test_etw_metrics_separation() {
@@ -280,26 +300,20 @@ mod tests {
             .dropped
             .add(5);
 
+        metrics.buffers.written.add(12);
         metrics
-            .buffers
-            .with(BufferAttributes {
-                outcome: BufferOutcome::Written,
+            .buffer_losses
+            .with(BufferLossAttributes {
+                path: BufferLossPath::RealTime,
             })
-            .buffers
-            .add(12);
-        metrics
-            .buffers
-            .with(BufferAttributes {
-                outcome: BufferOutcome::RealTimeLost,
-            })
-            .buffers
+            .lost
             .add(6);
         metrics
-            .buffers
-            .with(BufferAttributes {
-                outcome: BufferOutcome::LogLost,
+            .buffer_losses
+            .with(BufferLossAttributes {
+                path: BufferLossPath::Log,
             })
-            .buffers
+            .lost
             .add(8);
 
         assert_eq!(metrics.events.received.get(), 10);
@@ -338,33 +352,24 @@ mod tests {
             5
         );
 
+        assert_eq!(metrics.buffers.written.get(), 12);
         assert_eq!(
             metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::Written,
+                .buffer_losses
+                .get(BufferLossAttributes {
+                    path: BufferLossPath::RealTime,
                 })
-                .buffers
-                .get(),
-            12
-        );
-        assert_eq!(
-            metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::RealTimeLost,
-                })
-                .buffers
+                .lost
                 .get(),
             6
         );
         assert_eq!(
             metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::LogLost,
+                .buffer_losses
+                .get(BufferLossAttributes {
+                    path: BufferLossPath::Log,
                 })
-                .buffers
+                .lost
                 .get(),
             8
         );
@@ -385,16 +390,17 @@ mod tests {
             })
             .dropped
             .add(2);
+        metrics.buffers.written.add(9);
         metrics
-            .buffers
-            .with(BufferAttributes {
-                outcome: BufferOutcome::Written,
+            .buffer_losses
+            .with(BufferLossAttributes {
+                path: BufferLossPath::RealTime,
             })
-            .buffers
-            .add(9);
+            .lost
+            .add(3);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 5);
+        assert_eq!(snapshots.len(), 6);
 
         assert!(
             snapshots
@@ -417,7 +423,11 @@ mod tests {
         }));
         assert!(snapshots.iter().any(|s| {
             s.descriptor().name == "receiver.etw.buffers"
-                && s.measurement_attribute_value("outcome") == Some("written")
+                && s.descriptor().metrics[0].name == "written"
+        }));
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "receiver.etw.buffer_losses"
+                && s.measurement_attribute_value("path") == Some("real_time")
         }));
 
         // Measurement buckets are cleared after first snapshot collection
@@ -444,15 +454,16 @@ mod tests {
             })
             .dropped
             .add(1);
+        metrics.buffers.written.add(1);
         metrics
-            .buffers
-            .with(BufferAttributes {
-                outcome: BufferOutcome::Written,
+            .buffer_losses
+            .with(BufferLossAttributes {
+                path: BufferLossPath::RealTime,
             })
-            .buffers
+            .lost
             .add(1);
 
         metrics.report(&mut reporter).unwrap();
-        assert_eq!(receiver.try_iter().count(), 5);
+        assert_eq!(receiver.try_iter().count(), 6);
     }
 }

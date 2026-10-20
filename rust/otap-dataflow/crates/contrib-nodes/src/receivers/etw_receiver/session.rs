@@ -1001,14 +1001,14 @@ pub(super) struct SessionWideMetrics {
     pub kernel_events_lost: AtomicU64,
     /// Real-time delivery buffers lost (consumer too slow to drain the ETW
     /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
-    /// Published as `buffers` with `outcome="real_time_lost"` (`receiver.etw.buffers.buffers`).
+    /// Published as `buffer_losses.lost` with `path="real_time"` (scope `receiver.etw.buffer_losses`, instrument `lost`).
     pub kernel_real_time_buffers_lost: AtomicU64,
     /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`. Published as `buffers` with `outcome="log_lost"` (`receiver.etw.buffers.buffers`).
+    /// `TraceStats::log_buffers_lost`. Published as `buffer_losses.lost` with `path="log"` (scope `receiver.etw.buffer_losses`, instrument `lost`).
     pub kernel_log_buffers_lost: AtomicU64,
     /// Total ETW buffers written by the session, from
     /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal. Published as `buffers` with `outcome="written"` (`receiver.etw.buffers.buffers`).
+    /// than a loss signal. Published as `buffers.written` (scope `receiver.etw.buffers`, instrument `written`).
     pub kernel_buffers_written: AtomicU64,
 }
 

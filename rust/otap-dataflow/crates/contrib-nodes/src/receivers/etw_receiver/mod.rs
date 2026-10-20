@@ -672,30 +672,24 @@ impl EventCountsDelta {
         }
         if self.kernel_real_time_buffers_lost > 0 {
             metrics
-                .buffers
-                .with(BufferAttributes {
-                    outcome: BufferOutcome::RealTimeLost,
+                .buffer_losses
+                .with(BufferLossAttributes {
+                    path: BufferLossPath::RealTime,
                 })
-                .buffers
+                .lost
                 .add(self.kernel_real_time_buffers_lost);
         }
         if self.kernel_log_buffers_lost > 0 {
             metrics
-                .buffers
-                .with(BufferAttributes {
-                    outcome: BufferOutcome::LogLost,
+                .buffer_losses
+                .with(BufferLossAttributes {
+                    path: BufferLossPath::Log,
                 })
-                .buffers
+                .lost
                 .add(self.kernel_log_buffers_lost);
         }
         if self.kernel_buffers_written > 0 {
-            metrics
-                .buffers
-                .with(BufferAttributes {
-                    outcome: BufferOutcome::Written,
-                })
-                .buffers
-                .add(self.kernel_buffers_written);
+            metrics.buffers.written.add(self.kernel_buffers_written);
         }
     }
 }
@@ -1449,34 +1443,25 @@ mod tests {
         assert_eq!(metrics.kernel.events_lost.get(), 2);
         assert_eq!(
             metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::RealTimeLost,
+                .buffer_losses
+                .get(BufferLossAttributes {
+                    path: BufferLossPath::RealTime,
                 })
-                .buffers
+                .lost
                 .get(),
             3
         );
         assert_eq!(
             metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::LogLost,
+                .buffer_losses
+                .get(BufferLossAttributes {
+                    path: BufferLossPath::Log,
                 })
-                .buffers
+                .lost
                 .get(),
             1
         );
-        assert_eq!(
-            metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::Written,
-                })
-                .buffers
-                .get(),
-            9
-        );
+        assert_eq!(metrics.buffers.written.get(), 9);
     }
 
     /// Scenario: A second claim on unchanged atomics yields empty deltas.
@@ -1573,34 +1558,25 @@ mod tests {
         assert_eq!(metrics.kernel.events_lost.get(), 0);
         assert_eq!(
             metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::RealTimeLost,
+                .buffer_losses
+                .get(BufferLossAttributes {
+                    path: BufferLossPath::RealTime,
                 })
-                .buffers
+                .lost
                 .get(),
             0
         );
         assert_eq!(
             metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::LogLost,
+                .buffer_losses
+                .get(BufferLossAttributes {
+                    path: BufferLossPath::Log,
                 })
-                .buffers
+                .lost
                 .get(),
             0
         );
-        assert_eq!(
-            metrics
-                .buffers
-                .get(BufferAttributes {
-                    outcome: BufferOutcome::Written,
-                })
-                .buffers
-                .get(),
-            0
-        );
+        assert_eq!(metrics.buffers.written.get(), 0);
     }
 }
 
