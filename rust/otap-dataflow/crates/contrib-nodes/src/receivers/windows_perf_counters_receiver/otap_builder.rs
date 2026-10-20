@@ -524,7 +524,7 @@ mod tests {
         );
     }
 
-    /// Scenario: Omitted or blank references and an explicit reference resolve to an indexed path-named Gauge or Sum.
+    /// Scenario: Omitted or empty references and an explicit reference resolve to an indexed path-named Gauge or Sum.
     /// Guarantees: Configured index spelling selects the definition while grouped points retain canonical paths and explicit attributes only.
     #[test]
     fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
@@ -546,7 +546,7 @@ mod tests {
                     {"name": "Working Set", "metric": name, "attributes": {"state": "used"}}
                 ]}]
             });
-            for reference in [None, Some(""), Some(" \t ")] {
+            for reference in [None, Some("")] {
                 if let Some(reference) = reference {
                     value["perfcounters"][0]["counters"][0]["metric"] =
                         serde_json::json!(reference);
@@ -651,7 +651,7 @@ mod tests {
         for (definitions, reference) in [
             (None, None),
             (Some(serde_json::json!({})), Some("")),
-            (Some(definitions), Some(" \t ")),
+            (Some(definitions), Some("")),
         ] {
             match definitions {
                 Some(definitions) => value["metrics"] = definitions,

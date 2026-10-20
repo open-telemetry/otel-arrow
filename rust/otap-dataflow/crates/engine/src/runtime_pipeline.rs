@@ -512,6 +512,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
+        // Codec decoding currently uses the built-in best-effort default.
+        // User-facing codec configuration is introduced separately.
         let runtime_services = PipelineRuntimeServices::new(Default::default())?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();

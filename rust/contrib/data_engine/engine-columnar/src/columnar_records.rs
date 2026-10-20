@@ -82,6 +82,52 @@ pub trait ColumnarRecords<'pipeline>: RecordTable<'pipeline> {
     ) -> ColumnarRecordsWriteResult;
 }
 
+#[derive(Debug)]
+pub(crate) struct EmptyRecords {}
+
+impl<'pipeline> ColumnarRecords<'pipeline> for EmptyRecords {
+    fn get_diagnostic_level(&self) -> Option<ColumnarEngineDiagnosticLevel> {
+        None
+    }
+
+    fn get_key_data_type(&self) -> DictionaryKeyType {
+        // Note: This shouldn't ever be called for empty records.
+        unreachable!()
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+
+    fn get_attached_records(&self, _name: &str) -> Option<&dyn RecordTable<'pipeline>> {
+        None
+    }
+
+    fn set_values<T: ColumnarEngineDiagnosticReceiver<'pipeline>>(
+        &mut self,
+        _diagnostic_receiver: &T,
+        _expression: &'pipeline dyn Expression,
+        _root: &ColumnarEngineSelectionPath<'pipeline>,
+        _path: &[ColumnarEngineSelectionPath<'pipeline>],
+        _key_filter: Option<&roaring::RoaringBitmap>,
+        _values: Dictionary<'pipeline>,
+    ) -> ColumnarRecordsWriteResult {
+        ColumnarRecordsWriteResult::NotFound
+    }
+}
+
+impl<'pipeline> RecordTable<'pipeline> for EmptyRecords {
+    fn get_values(&self, _key: &str) -> Option<RecordTableValue<'pipeline, '_>> {
+        None
+    }
+}
+
+impl Display for EmptyRecords {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
 pub trait RecordTable<'pipeline>: Display + Debug {
     fn get_values(&self, key: &str) -> Option<RecordTableValue<'pipeline, '_>>;
 }

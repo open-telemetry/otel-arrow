@@ -17,7 +17,7 @@ pub mod oracle_receiver;
 #[cfg(feature = "postgresql")]
 pub mod postgresql_receiver;
 
-/// SQL Server configuration and query preparation without a runtime factory.
+/// SQL Server configuration and injected driver adapter without a runtime factory.
 #[cfg(feature = "sql-server")]
 pub mod sql_server_receiver;
 
