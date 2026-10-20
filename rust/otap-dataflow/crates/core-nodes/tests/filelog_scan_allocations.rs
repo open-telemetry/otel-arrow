@@ -30,7 +30,7 @@ impl MatchPolicy for Policy {
     }
 }
 
-/// Scenario: Flat, nested, and 255/256/257/1024-byte native paths alternate full and presence-only probing.
+/// Scenario: Native paths up to 1024 bytes and dot-containing exclusion prefixes alternate full and presence-only probing.
 /// Guarantees: Retained heap does not grow across passes and transient allocations stay below one per file.
 #[test]
 fn steady_state_storage_is_reused() {
@@ -86,7 +86,7 @@ fn steady_state_storage_is_reused() {
             .keys()
             .filter(|path| path.starts_with(&long_parent))
             .count();
-    let missing_exclusion = long_parent.join("not-created/child");
+    let missing_exclusion = long_parent.join("not-created/./child/.");
     let _profiler = dhat::Profiler::builder().testing().build();
     let mut scanner = Scanner::new(
         ScanConfig {

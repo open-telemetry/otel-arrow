@@ -31,7 +31,7 @@ pub struct Scanner<P> {
 
 impl<P: MatchPolicy> Scanner<P> {
     /// Checks all explicit bounds before allocating scratch.
-    pub fn new(config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
+    pub fn new(mut config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
         let limits = config.limits;
         if !(1..=1024).contains(&limits.depth)
             || !(1..=65536).contains(&limits.path_bytes)
@@ -60,6 +60,14 @@ impl<P: MatchPolicy> Scanner<P> {
                 })
         {
             return Err(InvalidScanConfig);
+        }
+        // Normalize only exclusion lookup prefixes, once and after validation.
+        // Trailing "/" or "/." must not hide a final alias from no-follow checks.
+        // Include spellings remain unchanged because matchers see those paths.
+        for root in &mut config.exclusion_roots {
+            let mut normalized = PathBuf::with_capacity(root.as_os_str().len());
+            normalized.extend(root.components());
+            *root = normalized;
         }
         Ok(Self {
             include_baselines: vec![None; config.include_roots.len()],

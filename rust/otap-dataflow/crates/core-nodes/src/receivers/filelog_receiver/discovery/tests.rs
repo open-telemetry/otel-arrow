@@ -1398,8 +1398,8 @@ fn exclusion_mappings_are_per_pass_and_keep_indexes() {
     }
 }
 
-/// Scenario: An exclusion prefix fails because an intermediate alias dangles.
-/// Guarantees: An unresolved alias is not mistaken for an absent literal directory with an evaluable mapping.
+/// Scenario: An exclusion alias dangles, including prefixes ending in separators or dot components.
+/// Guarantees: Every spelling fails closed; the alias is never mistaken for a missing literal directory.
 #[test]
 fn dangling_exclusion_alias_fails_closed() {
     let dir = fixture();
@@ -1407,28 +1407,101 @@ fn dangling_exclusion_alias_fails_closed() {
     fs::create_dir(&watched).unwrap();
     fs::write(watched.join("log"), b"data").unwrap();
     symlink("absent", dir.path().join("broken")).unwrap();
-    let mut cfg = config(&watched);
-    cfg.exclusion_roots = vec![dir.path().join("broken/child")];
-    let (end, observations) = run(&mut Scanner::new(
-        cfg,
-        Policy {
-            recursive: false,
-            exclude_secret: false,
-        },
-    )
-    .unwrap());
-    assert!(!end.complete);
-    assert!(observations.iter().all(|o| o.1.is_some()));
-    assert!(
-        observations
-            .iter()
-            .any(|o| o.1 == Some(ScanReason::ExclusionUnavailable) && o.2.is_none())
-    );
-    assert!(
-        observations
-            .iter()
-            .any(|o| o.0.ends_with("log") && o.1 == Some(ScanReason::Policy) && o.2.is_some())
-    );
+    for suffix in [
+        "broken",
+        "broken/",
+        "broken/.",
+        "broken/./",
+        "broken//.//",
+        "broken/child",
+        "broken/child/",
+        "broken/child/.",
+        "broken/./missing-child",
+        "broken/./missing-child/.",
+        "broken//./missing-child//.//",
+    ] {
+        let mut cfg = config(&watched);
+        cfg.exclusion_roots = vec![dir.path().join(suffix)];
+        let (end, observations) = run(&mut Scanner::new(
+            cfg,
+            Policy {
+                recursive: false,
+                exclude_secret: false,
+            },
+        )
+        .unwrap());
+        assert!(!end.complete, "prefix: {suffix}");
+        assert!(observations.iter().all(|o| o.1.is_some()));
+        assert!(
+            observations
+                .iter()
+                .any(|o| o.1 == Some(ScanReason::ExclusionUnavailable) && o.2.is_none())
+        );
+        assert!(
+            observations
+                .iter()
+                .any(|o| o.0.ends_with("log") && o.1 == Some(ScanReason::Policy) && o.2.is_some())
+        );
+    }
+}
+
+/// Scenario: A missing literal exclusion prefix has trailing separators or dot components.
+/// Guarantees: Its verified ancestor, missing suffix, and original pattern index remain correct and admission stays available.
+#[test]
+fn missing_exclusion_directory_suffixes_remain_evaluable() {
+    use super::roots::{ExclusionRoot, resolve_exclusion};
+    let dir = fixture();
+    let watched = dir.path().join("watched");
+    fs::create_dir(&watched).unwrap();
+    fs::write(watched.join("log"), b"data").unwrap();
+    for suffix in [
+        "missing/child",
+        "missing/child/",
+        "missing/child/.",
+        "missing/child//.//./",
+        "missing/./child/.",
+    ] {
+        let prefix = dir.path().join(suffix);
+        let mut raw = vec![0; 4096];
+        let mut native = NativePath::new(4096);
+        let mut mapping = ExclusionRoot {
+            index: 7,
+            locator: FileLocator {
+                device: 0,
+                inode: 0,
+            },
+            missing_suffix: PathBuf::new(),
+        };
+        // Scanner construction normalizes the resolver's lookup prefixes.
+        let normalized: PathBuf = prefix.components().collect();
+        resolve_exclusion(
+            &normalized,
+            &mut raw,
+            &mut native,
+            &mut mapping,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(
+            mapping.locator,
+            FileLocator::from_metadata(&fs::metadata(dir.path()).unwrap())
+        );
+        assert_eq!(mapping.missing_suffix, Path::new("missing/child"));
+        assert_eq!(mapping.index, 7);
+        let mut cfg = config(&watched);
+        cfg.exclusion_roots = vec![prefix];
+        let (end, observations) = run(&mut Scanner::new(
+            cfg,
+            Policy {
+                recursive: false,
+                exclude_secret: false,
+            },
+        )
+        .unwrap());
+        assert!(end.complete);
+        assert_eq!(observations.len(), 1);
+        assert!(observations[0].1.is_none());
+    }
 }
 
 /// Scenario: The caller requests only presence for a known file, then the name is replaced.
@@ -2450,4 +2523,51 @@ fn short_fingerprint_detects_truncate_and_regrow() {
     assert!(read_checks >= 4);
     assert!(unstable && !end.complete);
     assert_eq!(fs::metadata(path).unwrap().len(), 500);
+}
+
+/// Scenario: Exclusion prefixes contain native bytes and dot components, or a forbidden parent step.
+/// Guarantees: Normalization preserves native names and include spelling, keeps root valid, and rejects parent steps.
+#[test]
+fn exclusion_normalization_preserves_path_contract() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = fixture();
+    let watched = dir.path().join("watched");
+    fs::create_dir(&watched).unwrap();
+    fs::write(watched.join("log"), b"data").unwrap();
+    let native = dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"excluded-\xff"));
+    fs::create_dir(&native).unwrap();
+    let mut decorated = native.as_os_str().to_owned();
+    decorated.push("//./");
+    let include = dir.path().join("./watched");
+    let mut cfg = config(&include);
+    cfg.exclusion_roots = vec![PathBuf::from("/./"), PathBuf::from(decorated)];
+    let (end, observations) = run(&mut Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap());
+    assert!(end.complete);
+    assert_eq!(observations.len(), 1);
+    assert!(observations[0].1.is_none());
+    assert_eq!(
+        observations[0].0.as_os_str().as_bytes(),
+        include.join("log").as_os_str().as_bytes()
+    );
+    let mut cfg = config(&watched);
+    cfg.exclusion_roots = vec![native.join("../other")];
+    assert!(
+        Scanner::new(
+            cfg,
+            Policy {
+                recursive: false,
+                exclude_secret: false
+            }
+        )
+        .is_err()
+    );
 }

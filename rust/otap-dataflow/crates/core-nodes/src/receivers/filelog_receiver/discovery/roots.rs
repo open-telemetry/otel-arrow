@@ -68,6 +68,8 @@ fn verify_directory<'a>(
 
 // Only an initial path lookup returning ENOENT can shorten a literal prefix.
 // A dangling prefix alias or a failure after opening a root remains a failure.
+// Scanner construction removes redundant separators and "." components, so
+// the no-follow lookup below examines the final named entry itself.
 pub(super) fn resolve_exclusion(
     root: &Path,
     scratch: &mut [u8],
