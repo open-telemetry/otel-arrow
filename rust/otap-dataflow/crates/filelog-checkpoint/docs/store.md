@@ -6,10 +6,17 @@ ownership, publication, WAL appends, synchronization, and startup recovery.
 
 ## Usage and ownership
 
-`open` takes a borrowed directory descriptor from the engine's provisioned
-`StateDirectory`, the exact checkpoint ID, and `StoreConfig`. The caller must
-have validated and synchronized the root and its ancestors. The store uses
-relative directory operations, never a pathname fallback.
+`CheckpointStore::open` takes `&StateRoot`, the exact checkpoint ID, and
+`StoreConfig`. Construct `StateRoot` from the engine's provisioned
+`StateDirectory` using `StateRoot::from_borrowed_fd`. The caller must first
+validate and synchronize the root and its ancestors. Use a readable directory
+descriptor; `O_PATH` handles are rejected.
+
+`StateRoot` owns a duplicate of the supplied descriptor. Each store retains
+its own root handle and revalidates it when opening the namespace, so the
+caller may close the original descriptor and drop `StateRoot` after opening.
+A root capability can serve multiple checkpoint IDs. Filesystem access stays
+relative to held directory handles, without reopening paths.
 
 Run the store on the dedicated read/checkpoint worker. It creates no threads
 and performs no automatic retries. The caller owns bounded lock acquisition
@@ -56,6 +63,9 @@ artifacts fail closed. `RecoveryReport` exposes interrupted creation, repaired
 byte count, and cleanup for caller-owned health reporting.
 
 ## Writes, synchronization, and failures
+
+Active-file writes use `O_APPEND`, so recovery reads and seeks cannot redirect
+later writes into the snapshot or earlier WAL.
 
 `append` encodes and preflights the entire transaction before writing, then
 commits its state only after the complete write succeeds. Preparation stages
