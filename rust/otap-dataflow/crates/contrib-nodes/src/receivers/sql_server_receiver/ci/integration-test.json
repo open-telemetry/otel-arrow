@@ -1,0 +1,28 @@
+{
+  "id": "sql-server-receiver",
+  "name": "SQL Server receiver live",
+  "runner": "ubuntu-24.04",
+  "platform": "Linux",
+  "timeout_minutes": 30,
+  "required": false,
+  "paths": [
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/sql_server_receiver/**",
+    "rust/otap-dataflow/crates/scraper/**",
+    "rust/otap-dataflow/crates/engine/src/capability/**",
+    "rust/otap-dataflow/crates/engine/src/local/capability/**",
+    "rust/otap-dataflow/crates/otap/src/crypto.rs",
+    "rust/otap-dataflow/scripts/sql-server-fixture.py",
+    "rust/otap-dataflow/scripts/test_sql_server_fixture.py",
+    "rust/otap-dataflow/configs/sql-server-console.yaml"
+  ],
+  "command": [
+    "python3",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/sql_server_receiver/ci/run.py",
+    "test"
+  ],
+  "cleanup": [
+    "python3",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/sql_server_receiver/ci/run.py",
+    "cleanup"
+  ]
+}

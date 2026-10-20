@@ -49,7 +49,7 @@ fn config_with_bytes(snapshot: bool, bytes: u64) -> SqlServerReceiverConfig {
     serde_json::from_value(raw_config(snapshot, bytes)).unwrap()
 }
 
-fn raw_config(snapshot: bool, bytes: u64) -> Value {
+pub(super) fn raw_config(snapshot: bool, bytes: u64) -> Value {
     json!({
         "source_id":"events",
         "connection":{"host":"localhost","database":"fixture"},
@@ -214,7 +214,7 @@ fn row_conversion_checks_metadata_and_cursor() {
     assert!(ResultPlan::new(vec![column(NativeType::BigInt, 0, true)], &query).is_err());
 }
 
-struct Credentials;
+pub(super) struct Credentials;
 #[async_trait(?Send)]
 impl BasicAuthProvider for Credentials {
     async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
@@ -683,24 +683,24 @@ fn login_field(login: &[u8], offset: usize, password: bool) -> String {
     String::from_utf16(&value).unwrap()
 }
 
-fn packet(body: Vec<u8>) -> Vec<u8> {
+pub(super) fn packet(body: Vec<u8>) -> Vec<u8> {
     let length = u16::try_from(body.len() + 8).unwrap().to_be_bytes();
     let mut bytes = vec![4, 1, length[0], length[1], 0, 0, 1, 0];
     bytes.extend(body);
     bytes
 }
 
-fn done() -> Vec<u8> {
+pub(super) fn done() -> Vec<u8> {
     vec![0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 }
 
-fn attention_done() -> Vec<u8> {
+pub(super) fn attention_done() -> Vec<u8> {
     let mut bytes = done();
     bytes[1] = 0x20;
     packet(bytes)
 }
 
-fn login() -> Vec<u8> {
+pub(super) fn login() -> Vec<u8> {
     let mut body = vec![0xad, 10, 0, 1, 0x74, 0, 0, 4, 0, 16, 0, 0, 0];
     body.extend(done());
     packet(body)
@@ -719,7 +719,7 @@ fn nvarchar(bytes: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
-fn metadata_response() -> Vec<u8> {
+pub(super) fn metadata_response() -> Vec<u8> {
     metadata_response_with(false, None)
 }
 
@@ -776,7 +776,7 @@ fn metadata_response_with_type(
     packet(body)
 }
 
-fn rows_response(values: &[i64]) -> Vec<u8> {
+pub(super) fn rows_response(values: &[i64]) -> Vec<u8> {
     let mut body = vec![0x81, 1, 0, 0, 0, 0, 0, 0, 0, 0x7f, 2, b'I', 0, b'D', 0];
     for value in values {
         body.push(0xd1);

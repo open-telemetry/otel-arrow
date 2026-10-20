@@ -178,7 +178,7 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
-# Independently opt-in adapter; the production connector and factory are deferred.
+# SQL Server remains independently opt-in and uses platform-native TLS.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
     "dep:sqlparser",
@@ -187,6 +187,8 @@ sql-server = [
     "dep:humantime-serde",
     "dep:secrecy",
     "dep:tiberius",
+    "dep:tokio-util",
+    "tokio-util/compat",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
@@ -282,6 +284,8 @@ aws = [
 ]
 
 [dev-dependencies]
+rcgen.workspace = true
+rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true
 chrono.workspace = true

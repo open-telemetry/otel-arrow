@@ -1,0 +1,6 @@
+type: sql_server
+status:
+  class: receiver
+  codeowners:
+    active:
+      - juanjosalco
