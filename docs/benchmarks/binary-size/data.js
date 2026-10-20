@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792459159016,
+  "lastUpdate": 1792461349640,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -66898,6 +66898,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "deb11d902b4f3fe50622314a827df44cc39477ad",
+          "message": "chore(deps): update rust patch versions (#4444)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.3` → `2.9.4` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.3` → `2.9.4` |\n| [wasmtime](https://redirect.github.com/bytecodealliance/wasmtime) |\nworkspace.dependencies | patch | `49.0.3` → `49.0.4` |\n| [wasmtime-wasi](https://redirect.github.com/bytecodealliance/wasmtime)\n| workspace.dependencies | patch | `49.0.3` → `49.0.4` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.9.4`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.9.4)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.9.3...v2.9.4)\n\n##### What's Changed\n\n- add Cargo.lock for reproducible builds (fixes\n[#&#8203;1161](https://redirect.github.com/pest-parser/pest/issues/1161))\nby [@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1230](https://redirect.github.com/pest-parser/pest/pull/1230)\n- validator: reject repetitions that loop because of the stack by\n[@&#8203;yuxi-liu-wired](https://redirect.github.com/yuxi-liu-wired) in\n[#&#8203;1227](https://redirect.github.com/pest-parser/pest/pull/1227)\n- Fix typos in three-string fast path of skip_until by\n[@&#8203;shivampwm2020](https://redirect.github.com/shivampwm2020) in\n[#&#8203;1231](https://redirect.github.com/pest-parser/pest/pull/1231)\n\n##### New Contributors\n\n- [@&#8203;yuxi-liu-wired](https://redirect.github.com/yuxi-liu-wired)\nmade their first contribution in\n[#&#8203;1227](https://redirect.github.com/pest-parser/pest/pull/1227)\n- [@&#8203;shivampwm2020](https://redirect.github.com/shivampwm2020)\nmade their first contribution in\n[#&#8203;1231](https://redirect.github.com/pest-parser/pest/pull/1231)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.9.3...v2.9.4>\n\n##### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.9\", features = [\"grammar-extras\"] }\n```\n\n</details>\n\n<details>\n<summary>bytecodealliance/wasmtime (wasmtime)</summary>\n\n###\n[`v49.0.4`](https://redirect.github.com/bytecodealliance/wasmtime/releases/tag/v49.0.4)\n\n[Compare\nSource](https://redirect.github.com/bytecodealliance/wasmtime/compare/v49.0.3...v49.0.4)\n\n##### 49.0.4\n\nReleased 2026-10-19.\n\n##### Fixed\n\n- wasi-http: Guests can add conflicting content lengths to messages\n\n[GHSA-r8xh-cgf7-392j](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-r8xh-cgf7-392j)\n- wasi-http p3: forwarded trailers aren't checked against\n`is_forbidden_header` hook\n\n[GHSA-jxcf-8qw5-5c33](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-jxcf-8qw5-5c33)\n- wasi-http p3: Guests can set incorrect content-length for spliced\nresponse bodies\n\n[GHSA-9prg-84vf-g5fc](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-9prg-84vf-g5fc)\n- Cranelift backend on aarch64 can jump to incorrect target on large\nWasm `br_table` instruction\n\n[GHSA-mghf-wjfp-p5xm](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-mghf-wjfp-p5xm)\n- Update rustls to 0.23.46\n\n[#&#8203;14767](https://redirect.github.com/bytecodealliance/wasmtime/pull/14767)\n- Panic lowering a host-created component model stream into a guest that\nexpects a different payload type.\n\n[GHSA-9pvw-hwfg-92h5](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-9pvw-hwfg-92h5)\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xNjQuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjE2NC4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-20T00:47:28Z",
+          "tree_id": "76942cddc53b670bd335fa547c514faa0e1bc2b6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/deb11d902b4f3fe50622314a827df44cc39477ad"
+        },
+        "date": 1792461331228,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.68,
             "unit": "MB"
           },
           {
