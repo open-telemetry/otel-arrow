@@ -1,84 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792430164250,
+  "lastUpdate": 1792467608088,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Laurent Quérel",
-            "username": "lquerel",
-            "email": "l.querel@f5.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "a956ea9c21e62d7e83b77ccf3604394ac440ca5c",
-          "message": "Refactor transform processor internal telemetry (#3620)\n\n# Change Summary\n\n- Replace transform processor message counters with operation outcome\nand failure metric sets.\n- Reuse bounded shared `signal` and `outcome` attributes and add bounded\n`language` and `error.type` attributes.\n- Classify conversion, query, routing, capacity, send, and internal\nfailures.\n- Document the metric contract and migration from the removed counters.\n\n## What issue does this PR close?\n\nContributes to #3530.\n\n## How are these changes tested?\n\n- Focused transform processor tests\n- `cargo xtask check`\n- Changelog note and subtext length controls\n\n## Are there any user-facing changes?\n\nYes. This is a breaking internal-metric change. Consumers must replace\n`msgs_transformed` and `msgs_transform_failed` queries with\n`processor.transform.operations` and `processor.transform.failures`,\nusing their bounded attributes.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
-          "timestamp": "2026-08-01T07:53:01Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/a956ea9c21e62d7e83b77ccf3604394ac440ca5c"
-        },
-        "date": 1785637120327,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 0.9125,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 0.8588,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 0.8805,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 0.8382,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 0.8725,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          },
-          {
-            "name": "otap_scaling_efficiency_2_cores",
-            "value": 0.9836,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_4_cores",
-            "value": 0.9568,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_8_cores",
-            "value": 0.6972,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_avg",
-            "value": 0.8792,
-            "unit": "",
-            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -7598,6 +7522,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.9864,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c3ff42082802a6eb6fc586e153f6f3ab55145b9b",
+          "message": "chore(deps): update otel/opentelemetry-collector-contrib docker tag to v0.163.1 (#4445)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[otel/opentelemetry-collector-contrib](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases)\n| final | minor | `0.161.0` → `0.163.1` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-collector-releases\n(otel/opentelemetry-collector-contrib)</summary>\n\n###\n[`v0.163.1`](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/blob/HEAD/CHANGELOG.md#v01631)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/compare/v0.162.0...v0.163.1)\n\n###\n[`v0.162.0`](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/blob/HEAD/CHANGELOG.md#v01620)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/compare/v0.161.0...v0.162.0)\n\n##### 🛑 Breaking changes 🛑\n\n- `otelcol-contrib`: Remove `wavefrontreceiver` from the contrib\ndistribution after its deprecation period.\n([#&#8203;1673](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1673))\n\n##### 🚀 New components 🚀\n\n- `otelcol-contrib`: Add `sdnotifyextension` to the contrib\ndistribution.\n([#&#8203;49607](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/49607))\n\n- `otelcol-prometheus`: Create the new otelcol-prometheus distribution,\nwhich includes \"Prometheus exporters\" as metric receivers.\n([#&#8203;1618](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1618))\nThe new otelcol-prometheus distribution is a collaboration between the\nPrometheus and OpenTelemetry communities.\nExisting [Prometheus\nexporters](https://prometheus.io/docs/instrumenting/exporters/) are\nslowly being refactored to be usable as Collector receivers in custom\nCollector distributions built with OCB.\n\nAs more Prometheus exporters are refactored to be usable as Collector\nreceivers, we will add them to the otelcol-prometheus distribution.\n\nThe otelcol-prometheus distribution is experimental, and is not\nrecommended for production use.\n\n[Build a custom Collector\ndistribution](https://opentelemetry.io/docs/collector/extend/ocb/) if\nyou need components from other OpenTelemetry Collector distributions\nsuch as contrib.\n\n- `receiver/blackbox`: Add the [Prometheus\nblackbox_exporter](https://redirect.github.com/prometheus/blackbox_exporter)\nas a receiver for probe metrics in otelcol-prometheus distribution.\n([#&#8203;1664](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1664))\n\n- `receiver/postgres`: Add the [Prometheus\npostgres_exporter](https://redirect.github.com/prometheus-community/postgres_exporter)\nas a receiver for PostgreSQL metrics in otelcol-prometheus distribution.\n([#&#8203;1664](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1664))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xNjQuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjE2NC4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-20T00:55:30Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c3ff42082802a6eb6fc586e153f6f3ab55145b9b"
+        },
+        "date": 1792467607083,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 1.2319,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 1.1623,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 1.0467,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 1.1527,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 1.1484,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 1.0333,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 0.8237,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.9427,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 0.9332,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
