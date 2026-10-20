@@ -7618,6 +7618,7 @@ dependencies = [
  "prost 0.14.4",
  "quick-xml 0.41.0",
  "rand 0.10.3",
+ "rcgen",
  "rdkafka",
  "regex",
  "reqwest 0.13.5",
@@ -7652,6 +7653,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "wiremock",
+ "x509-parser",
  "xxhash-rust",
 ]
 
