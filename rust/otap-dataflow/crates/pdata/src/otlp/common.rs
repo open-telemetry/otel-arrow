@@ -1,15 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// Note! This file is disorganized and should be separated into smaller
+// pieces; at least 50% of the file is encoder support but the other half
+// quite separate. Reorganize this in a separate PR.
+
 use crate::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
-use crate::error::{Error, Result};
-use crate::otlp::{
-    EncodeFailure, EncodeResult, EncodeSuccess,
-    attributes::{Attribute16Arrays, encode_key_value},
-};
+use crate::error::{Error, Result as PDataResult};
+use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -90,7 +91,7 @@ pub(crate) fn proto_encode_resource(
 impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> PDataResult<Self> {
         // Resource column is optional - if it's missing, return all None values
         let resource_column = rb.column_by_name(consts::RESOURCE);
 
@@ -153,7 +154,7 @@ impl ScopeArrays<'_> {
 impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> PDataResult<Self> {
         // Scope column is optional - if it's missing, return all None values
         let scope_column = rb.column_by_name(consts::SCOPE);
 
@@ -291,7 +292,7 @@ pub(crate) struct AnyValueArrays<'a> {
 impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> PDataResult<Self> {
         let attr_type = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
         let attr_str = rb
             .column_by_name(consts::ATTRIBUTE_STR)
@@ -327,6 +328,41 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
 /// Suffix appended to truncated strings.
 pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 
+/// Indicating success.
+pub type EncodeSuccess = ();
+
+/// Returned when a buffer write cannot fit within the size limit.
+///
+/// Used as the error type in [`EncodeResult`] which is returned from
+/// buffer write methods. This is used for to indicate truncation, no
+/// distinction is made for partial/total drop.
+#[derive(Debug)]
+pub enum EncodeFailure {
+    /// Ran out of space.
+    Dropped,
+    /// Invalid data (e.g., CBOR decode failure) in OTAP/OTLP encoding.
+    /// Note: Not saved!
+    Invalid,
+}
+
+impl std::error::Error for EncodeFailure {}
+
+impl fmt::Display for EncodeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dropped => write!(f, "dropped"),
+            Self::Invalid => write!(f, "invalid"),
+        }
+    }
+}
+
+impl From<Error> for EncodeFailure {
+    fn from(_: Error) -> Self {
+        // Note! We discard here. Could keep it, would slow the encoder.
+        EncodeFailure::Invalid
+    }
+}
+
 /// Truncation status.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Truncation {
@@ -342,8 +378,11 @@ impl From<EncodeSuccess> for Truncation {
     }
 }
 
-/// Result type for buffer write methods.
-pub type TruncateResult = std::result::Result<Truncation, EncodeFailure>;
+/// Result type for encoding methods without truncation.
+pub type EncodeResult = Result<EncodeSuccess, EncodeFailure>;
+
+/// Result type for encoding methods with truncation.
+pub type TruncateResult = Result<Truncation, EncodeFailure>;
 
 /// Saved buffer position for transactional encoding.
 ///
@@ -581,8 +620,8 @@ pub trait BoundedBuf {
     fn encode_len_delimited<T, E: From<EncodeFailure>>(
         &mut self,
         field_tag: u64,
-        f: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
-    ) -> std::result::Result<T, E>
+        f: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E>
     where
         Self: Sized,
     {
@@ -601,10 +640,10 @@ pub trait BoundedBuf {
         &mut self,
         field_tag: u64,
         f: F,
-    ) -> std::result::Result<T, E>
+    ) -> Result<T, E>
     where
         E: From<EncodeFailure>,
-        F: FnOnce(&mut Self) -> std::result::Result<T, E>,
+        F: FnOnce(&mut Self) -> Result<T, E>,
         Self: Sized,
     {
         self.encode_field_tag(field_tag, wire_types::LEN)?;
@@ -1078,7 +1117,7 @@ impl BatchSorter {
         &mut self,
         record_batch: &RecordBatch,
         cursor: &mut SortedBatchCursor,
-    ) -> Result<()> {
+    ) -> PDataResult<()> {
         let mut sort_columns_idx = 0;
         let mut sort_columns: [Option<&UInt16Array>; 3] = [None, None, None];
         for col_name in [consts::RESOURCE, consts::SCOPE] {

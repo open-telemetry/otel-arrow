@@ -4,15 +4,14 @@
 //! This module contains traits and utilities for OTLP (OpenTelemetry
 //! Protocol) message types.
 
-use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
 pub use common::{
-    BoundedBuf, Checkpoint, MAX_OTLP_SIZE_LIMIT, ProtoBuffer, StackProtoBuffer, TRUNCATION_SUFFIX,
-    TruncateResult, Truncation,
+    BoundedBuf, Checkpoint, EncodeFailure, EncodeResult, EncodeSuccess, MAX_OTLP_SIZE_LIMIT,
+    ProtoBuffer, StackProtoBuffer, TRUNCATION_SUFFIX, TruncateResult, Truncation,
     encode_len_placeholder, patch_len_placeholder,
 };
 pub use otel_arrow_dfe_pdata_otlp_macros::Message; // Required for derived code
@@ -38,44 +37,6 @@ mod batching_tests;
 
 #[cfg(test)]
 mod tests;
-
-/// Indicating success.
-pub type EncodeSuccess = ();
-
-/// Returned when a buffer write cannot fit within the size limit.
-///
-/// Used as the error type in [`EncodeResult`] which is returned from
-/// buffer write methods. This is used for to indicate truncation, no
-/// distinction is made for partial/total drop.
-#[derive(Debug)]
-pub enum EncodeFailure {
-    /// Ran out of space.
-    Dropped,
-    /// Invalid data (e.g., CBOR decode failure) in OTAP/OTLP encoding.
-    /// Note: Not saved!
-    Invalid,
-}
-
-impl std::error::Error for EncodeFailure {}
-
-impl std::fmt::Display for EncodeFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Dropped => write!(f, "dropped"),
-            Self::Invalid => write!(f, "invalid"),
-        }
-    }
-}
-
-impl From<Error> for EncodeFailure {
-    fn from(_: Error) -> Self {
-        // Note! We discard here. Could keep it, would slow the encoder.
-        EncodeFailure::Invalid
-    }
-}
-
-/// Result type for buffer write methods.
-pub type EncodeResult = Result<EncodeSuccess, EncodeFailure>;
 
 /// Pipeline data represented as protobuf serialized OTLP request messages
 #[derive(Clone, Debug)]
