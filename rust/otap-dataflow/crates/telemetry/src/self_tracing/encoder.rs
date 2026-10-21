@@ -416,7 +416,7 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
     fn nested(
         &mut self,
         field: u64,
-        body: impl FnOnce(&mut NestedEncoder<'a, B>) -> TruncateResult,
+        body: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
         self.buf.encode_len_delimited(field, |buf| {
             let mut encoder = NestedEncoder::new(buf);
@@ -482,12 +482,12 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
         outcome: &mut TruncateResult,
         mut f: impl FnMut() -> TruncateResult,
     ) -> TruncateResult {
-        match *outcome {
+        match outcome.clone() {
             Ok(Truncation::Some) => Ok(Truncation::Some),
             Err(err) => Err(err),
             _ => {
                 *outcome = f();
-                *outcome
+                outcome.clone()
             }
         }
     }
@@ -495,18 +495,18 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
     fn entry(
         &'a mut self,
         key: &str,
-        mut f: impl FnMut(&'a mut ValueEncoder<'a, B>) -> TruncateResult,
+        mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        Self::unless_truncating(&mut self.outcome, move || {
+        Self::unless_truncating(&mut self.outcome, || {
             bounded::key_value_encoder(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f)
         })
     }
 
     fn element(
         &'a mut self,
-        mut f: impl FnMut(&'a mut ValueEncoder<'a, B>) -> TruncateResult,
+        mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        Self::unless_truncating(&mut self.outcome, move || {
+        Self::unless_truncating(&mut self.outcome, || {
             bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, &mut f)
         })
     }
