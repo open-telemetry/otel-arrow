@@ -189,13 +189,10 @@ impl AzureDataExplorerClient {
                 Ok(duration) => return Ok(duration),
                 Err(error) if !error.is_retryable() => return Err(error),
                 Err(error) if attempt > self.max_retries => {
-                    if let Error::Network { kind, source } = error {
-                        return Err(Error::ExportFailed {
-                            attempts: attempt,
-                            last_error: Box::new(Error::Network { kind, source }),
-                        });
-                    }
-                    return Err(error);
+                    return Err(Error::ExportFailed {
+                        attempts: attempt,
+                        last_error: Box::new(error),
+                    });
                 }
                 Err(error) => {
                     match &error {
@@ -896,8 +893,8 @@ mod tests {
         );
     }
 
-    /// Scenario: ADX rejects one request with 429 and fails another with 500.
-    /// Guarantees: shared exporter metrics classify backend refusals separately from failures.
+    /// Scenario: ADX returns 429 or 500 with no retries configured.
+    /// Guarantees: exhaustion reports one attempt and preserves refusal/failure classification in errors and metrics.
     #[tokio::test]
     async fn classifies_shared_attempt_outcomes() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -923,19 +920,24 @@ mod tests {
             );
             let (attempt, metadata) = export_attempt(&metrics, 2, payload.len());
 
+            let error = client
+                .send(
+                    "table",
+                    Some("mapping"),
+                    HeaderValue::from_static("Bearer test"),
+                    payload.clone(),
+                    attempt,
+                    metadata,
+                )
+                .await
+                .expect_err("retry budget should be exhausted");
+            assert!(matches!(&error, Error::ExportFailed { attempts: 1, .. }));
             assert!(
-                client
-                    .send(
-                        "table",
-                        Some("mapping"),
-                        HeaderValue::from_static("Bearer test"),
-                        payload.clone(),
-                        attempt,
-                        metadata,
-                    )
-                    .await
-                    .is_err()
+                error
+                    .to_string()
+                    .starts_with("Export failed after 1 attempts: ")
             );
+            assert_eq!(error.is_refusal(), status == 429);
         }
 
         let snapshots = metrics.borrow_mut().boundary.terminal_snapshots();
@@ -1198,6 +1200,83 @@ mod tests {
             snapshot.descriptor().name == "exporter.azure_data_explorer.http"
                 && snapshot.measurement_attribute_value("response") == Some("http_5xx")
         }));
+    }
+
+    /// Scenario: ADX keeps returning 429 or 503 to a batch configured with one retry.
+    /// Guarantees: exhaustion reports two attempts, retains the last error, and keeps response bodies out of log-safe summaries.
+    #[tokio::test]
+    async fn retry_exhaustion_reports_attempt_count() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        for status in [429, 503] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("service response"))
+                .expect(2)
+                .mount(&server)
+                .await;
+            let metrics = test_metrics();
+            let client = AzureDataExplorerClient::new(
+                &server.uri(),
+                "db",
+                reqwest::Client::new(),
+                metrics.clone(),
+                1,
+                Duration::from_secs(60),
+                false,
+            );
+            let payload = Bytes::from_static(b"payload");
+            let (attempt, metadata) = export_attempt(&metrics, 2, payload.len());
+
+            let error = client
+                .send(
+                    "table",
+                    None,
+                    HeaderValue::from_static("Bearer test-token"),
+                    payload,
+                    attempt,
+                    metadata,
+                )
+                .await
+                .expect_err("retry budget should be exhausted");
+
+            let Error::ExportFailed {
+                attempts,
+                ref last_error,
+            } = error
+            else {
+                panic!("expected retry exhaustion, got {error:?}");
+            };
+            assert_eq!(attempts, 2);
+            match last_error.as_ref() {
+                Error::RateLimited { body, .. } => {
+                    assert_eq!(status, 429);
+                    assert_eq!(body, "service response");
+                }
+                Error::ServerError {
+                    status: actual_status,
+                    body,
+                    ..
+                } => {
+                    assert_eq!(actual_status.as_u16(), status);
+                    assert_eq!(body, "service response");
+                }
+                other => panic!("unexpected last error: {other:?}"),
+            }
+            assert_eq!(
+                error.to_string(),
+                format!("Export failed after 2 attempts: {last_error}")
+            );
+            assert_eq!(
+                error.log_safe_summary(),
+                format!(
+                    "Export failed after 2 attempts: {}",
+                    last_error.log_safe_summary()
+                )
+            );
+            assert!(!error.log_safe_summary().contains("service response"));
+            assert_eq!(error.is_refusal(), status == 429);
+            assert!(!error.is_permanent_refusal());
+        }
     }
 
     /// Scenario: an ADX batch configured with one retry receives a 500 followed by success.
