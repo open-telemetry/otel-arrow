@@ -9,6 +9,7 @@ permissions: {}
 
 jobs:
   notify:
+    if: github.actor != 'Copilot'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:

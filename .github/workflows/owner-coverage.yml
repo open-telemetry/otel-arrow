@@ -30,7 +30,10 @@ concurrency:
 
 jobs:
   report:
-    if: github.repository == 'open-telemetry/otel-arrow'
+    if: >-
+      github.repository == 'open-telemetry/otel-arrow' &&
+      (github.event_name != 'workflow_run' ||
+      github.event.workflow_run.actor.login != 'Copilot')
     permissions:
       contents: read
       pull-requests: read
