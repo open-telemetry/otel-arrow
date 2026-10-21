@@ -31,7 +31,7 @@ groups:
           processor:
             type: urn:otel:processor:transform
             config:
-              opl_query: 'logs | rename attributes["exception.kind"] = attributes["exception.type"]'
+              opl_query: 'logs | rename attributes "exception.type" as "exception.kind"'
           exporter:
             type: urn:otel:exporter:otap
             config:
