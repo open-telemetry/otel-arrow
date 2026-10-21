@@ -8,7 +8,7 @@ change_type: new_component
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add an opt-in experimental SQL Server query-polling receiver with verified native TLS by default and acknowledged file checkpoints.
+note: Add an opt-in SQL Server query-polling receiver with verified native TLS by default and acknowledged file checkpoints.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3918, 4361]
@@ -22,4 +22,4 @@ subtext: |
   Enable sql-server and bind basic_auth_provider. Linux needs OpenSSL libraries
   and roots; Windows uses Schannel. Run one poller per range. Unconfirmed cleanup
   can quarantine the source. Driver allocation bounds and deployment
-  qualification remain experimental.
+  qualification remain outstanding.

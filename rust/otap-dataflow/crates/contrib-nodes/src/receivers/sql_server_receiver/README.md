@@ -4,7 +4,7 @@
 { "MD013": { "tables": false, "code_blocks": false } }
 -->
 
-This is an **experimental scheduled query-to-logs receiver**, not CDC or
+This is a **scheduled query-to-logs receiver**, not CDC or
 database-monitoring metrics. Enable `sql-server` explicitly to register
 `urn:otel:receiver:sql_server`. The feature is excluded from all aggregates;
 the root feature also enables `flat-file-user-pass-auth`.
@@ -17,7 +17,8 @@ The shared scraper provides scheduling, backpressure, feedback, and persistence;
 it contains no vendor driver and Oracle behavior is unchanged.
 
 The receiver follows the shared database polling architecture described in
-[RFC #3918][rfc]. It remains experimental and is not production-qualified.
+[RFC #3918][rfc]. See the operating limits and deployment qualification
+requirements below.
 
 ## Getting Started
 
@@ -475,8 +476,8 @@ on Windows, `readelf -d`/`ldd` in a trusted Linux build environment). Retain
 crate/native-library versions, linking mode, image/OS and root-store ownership,
 scan/SBOM results, and applicable organizational component-governance approval.
 `cargo deny` alone does not scan system OpenSSL or establish compliance.
-No applicable external governance approval is implied by this experimental
-component or by choosing an OS-native crypto library.
+Using this component or an OS-native crypto library does not imply applicable
+external governance approval.
 
 The production connector honors CA/name verification and the explicit SQL
 Server test modes without changing checkpoint fingerprints. Its owned

@@ -2,12 +2,12 @@
 
 <!-- markdownlint-configure-file { "MD013": { "tables": false } } -->
 
-This walkthrough demonstrates the experimental SQL Server receiver on Windows
+This walkthrough demonstrates the SQL Server receiver on Windows
 using PowerShell and a disposable SQL Server 2022 Linux container. It shows
 initial catch-up, polling for new rows, and resuming from acknowledged progress.
 
-Use only generated demo data. This is not a production-readiness or
-exactly-once-delivery demonstration.
+Use only generated demo data. This walkthrough covers functionality, not
+deployment qualification or exactly-once delivery.
 
 ## What we are demonstrating
 

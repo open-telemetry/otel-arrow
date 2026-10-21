@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Experimental SQL Server polling receiver using the shared database scraper.
+//! SQL Server polling receiver using the shared database scraper.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = SQL_SERVER_RECEIVER_URN,
