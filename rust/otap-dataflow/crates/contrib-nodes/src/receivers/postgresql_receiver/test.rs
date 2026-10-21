@@ -849,6 +849,10 @@ fn rejects_invalid_tls_configuration() {
 fn tls_settings_do_not_change_source_fingerprint() {
     let base = config(&sql(KEY));
     let expected = validate(&base).expect("default TLS").fingerprint;
+    assert_eq!(
+        expected,
+        "1a9e23808ba11ad37b24545510b5373a59d3140cbaa3571490c2c62cd6ff2068"
+    );
 
     let mut custom_ca = base.clone();
     custom_ca["connection"]["tls"] = json!({"ca_file": "private-ca.pem"});
@@ -865,6 +869,40 @@ fn tls_settings_do_not_change_source_fingerprint() {
             .fingerprint,
         expected
     );
+}
+
+/// Scenario: One logical PostgreSQL source is configured with each watermark mode.
+/// Guarantees: Composite keeps its durable identity while scalar and snapshot cannot reuse its checkpoint.
+#[test]
+fn watermark_modes_have_distinct_source_fingerprints() {
+    let composite = config(&sql(KEY));
+
+    let mut scalar = composite.clone();
+    scalar["query"]["statement"] =
+        json!("SELECT e.id, e.ts FROM public.events AS e WHERE e.id > :last_value ORDER BY e.id");
+    scalar["watermark"] = json!({
+        "mode": "scalar",
+        "value": {
+            "column": "id",
+            "bind": "last_value",
+            "type": "int64",
+            "initial": 0
+        }
+    });
+
+    let mut snapshot = composite.clone();
+    snapshot["query"]["statement"] =
+        json!("SELECT e.ts, e.id FROM public.events AS e ORDER BY e.ts, e.id");
+    snapshot["watermark"] = json!({"mode": "snapshot"});
+
+    let fingerprints = [
+        validate(&composite).expect("composite").fingerprint,
+        validate(&scalar).expect("scalar").fingerprint,
+        validate(&snapshot).expect("snapshot").fingerprint,
+    ];
+    assert_ne!(fingerprints[0], fingerprints[1]);
+    assert_ne!(fingerprints[0], fingerprints[2]);
+    assert_ne!(fingerprints[1], fingerprints[2]);
 }
 
 pub(super) fn test_validated() -> super::config::Validated {
@@ -965,6 +1003,11 @@ fn relative_temporal_literals_rejected() {
         (Type::DATE.oid(), "today", false),
         (Type::TIMESTAMP.oid(), "2026-10-05 00:00:00", true),
         (Type::TIMESTAMP.oid(), "2026-10-05T00:00:00.123456", true),
+        (
+            Type::TIMESTAMP.oid(),
+            "2026-10-05T00:00:00.123456789Z",
+            true,
+        ),
         (Type::TIMESTAMP.oid(), "2026-10-05T00:00:00Z", true),
         (Type::TIMESTAMP.oid(), "now", false),
         (Type::TIMESTAMPTZ.oid(), "2026-10-05T00:00:00Z", true),
@@ -1021,7 +1064,10 @@ fn canonicalizes_exact_postgresql_timestamp_values() {
             .as_composite()
             .expect("composite watermark");
         assert_eq!(watermark.initial.timestamp, "2026-01-01T00:00:00.123456Z");
-        let super::config::Watermark::Composite { timestamp, .. } = &validated.config.watermark;
+        let super::config::Watermark::Composite { timestamp, .. } = &validated.config.watermark
+        else {
+            panic!("composite watermark")
+        };
         assert_eq!(timestamp.initial, "2026-01-01T00:00:00.123456Z");
         assert_eq!(timestamp.timezone, "UTC");
         if let Some(fingerprint) = &baseline {
