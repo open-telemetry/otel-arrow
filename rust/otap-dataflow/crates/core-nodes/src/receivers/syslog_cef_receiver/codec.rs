@@ -427,13 +427,59 @@ impl PdataBatcher for SyslogBatcher {
                 .unwrap_or(MAX_NATIVE_LOGS)
                 .min(MAX_NATIVE_LOGS)
         });
+        let limited_splits = settings.max_split_fragments.is_some()
+            || settings.max_split_overhead_bytes.is_some()
+            || settings.max_split_fragments_per_flush.is_some();
+        let mut split_fanout = 0_u64;
+        let mut budget_fallbacks = 0;
         let mut outputs = Vec::new();
         let mut output = RawBatchWriter::new();
         let mut first_input = 0;
         let mut last_input = 0;
         for (input_index, input) in inputs.into_iter().enumerate() {
-            let (_, frames) = validated_frames(&input)
+            let (count, frames) = validated_frames(&input)
                 .map_err(|error| operation_error(CodecOperation::Batch, error))?;
+            // With finite budgets, avoid splitting a whole input merely to fill
+            // pending space. Split oversized inputs in isolation so preflight
+            // and whole-input fallback cannot partially emit the same input.
+            if limited_splits && count > max_items - output.len() {
+                if !output.is_empty() {
+                    outputs.push(
+                        output
+                            .finish()
+                            .map(|(bytes, _)| (bytes, first_input..=last_input))
+                            .map_err(|error| operation_error(CodecOperation::Batch, error))?,
+                    );
+                    output = RawBatchWriter::new();
+                }
+                if count > max_items {
+                    let fragments = count.div_ceil(max_items) as u64;
+                    if exceeds_split_budget(&input, max_items, fragments, split_fanout, settings)
+                        .map_err(|error| operation_error(CodecOperation::Batch, error))?
+                    {
+                        // Even a zero-copy fallback must validate every frame;
+                        // a plausible header alone does not certify the input.
+                        for frame in frames {
+                            let _ = frame
+                                .map_err(|error| operation_error(CodecOperation::Batch, error))?;
+                        }
+                        if count > MAX_NATIVE_LOGS {
+                            return Err(operation_error(
+                                CodecOperation::Batch,
+                                framing_error(
+                                    "split budget exhausted for syslog input exceeding native log ID capacity",
+                                ),
+                            ));
+                        }
+                        outputs.push((input, input_index..=input_index));
+                        budget_fallbacks += 1;
+                        continue;
+                    }
+                    // One whole output per input is mandatory; only additional
+                    // outputs consume the cumulative split fan-out allowance.
+                    split_fanout = split_fanout.saturating_add(fragments - 1);
+                }
+            }
             for frame in frames {
                 let frame = frame.map_err(|error| operation_error(CodecOperation::Batch, error))?;
                 if output.len() == max_items {
@@ -466,9 +512,49 @@ impl PdataBatcher for SyslogBatcher {
             batches: outputs,
             // Framing rejects empty inputs; every accepted input contributes to an output.
             completed_inputs: Vec::new(),
-            budget_fallbacks: 0,
+            budget_fallbacks,
         })
     }
+}
+
+// Preflight without allocating output buffers. The input batch is the split
+// entry; its existing wrappers are the baseline for byte amplification. Finite
+// limits remain u64, including values above a 32-bit target's address space.
+fn exceeds_split_budget(
+    input: &[u8],
+    max_items: usize,
+    fragments: u64,
+    split_fanout: u64,
+    settings: &BatchSettings,
+) -> Result<bool, SyslogFramingError> {
+    if settings
+        .max_split_fragments
+        .is_some_and(|limit| fragments > limit.get())
+        || settings
+            .max_split_fragments_per_flush
+            .is_some_and(|limit| split_fanout.saturating_add(fragments - 1) > limit.get())
+    {
+        return Ok(true);
+    }
+    let Some(overhead_limit) = settings.max_split_overhead_bytes else {
+        return Ok(false);
+    };
+    let (_, frames) = validated_frames(input)?;
+    let mut output_bytes = 0_u64;
+    let mut previous_time = None;
+    for (index, frame) in frames.enumerate() {
+        let frame = frame?;
+        if index % max_items == 0 {
+            output_bytes += BATCH_HEADER_LEN as u64;
+            previous_time = None;
+        }
+        if previous_time != Some(frame.observed_time) {
+            output_bytes += RUN_HEADER_LEN as u64;
+            previous_time = Some(frame.observed_time);
+        }
+        output_bytes += frame.encoded.len() as u64;
+    }
+    Ok(output_bytes.saturating_sub(input.len() as u64) > overhead_limit.get())
 }
 
 struct RawBatchWriter {
@@ -1080,5 +1166,308 @@ mod tests {
         assert_eq!(result.batches.len(), 1);
         assert_eq!(result.batches[0].1, 0..=1);
         assert_eq!(validated_item_count(&result.batches[0].0).unwrap(), 5);
+    }
+
+    /// Scenario: One four-item input exceeds each finite split budget independently.
+    /// Guarantees: Fallback retains the original buffer and count, while exact and wide budgets allow decoding every split.
+    #[test]
+    fn native_batching_honors_each_split_budget() {
+        let input = batch(&[b"one", b"two", b"three", b"four"], 11);
+        let base = BatchSettings {
+            min_size: Some(1),
+            max_size: NonZeroU64::new(1),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        for (fragments, overhead, flush) in [
+            (Some(3), None, None),
+            (None, Some(59), None),
+            (None, None, Some(2)),
+            (Some(1), Some(1), Some(1)),
+        ] {
+            let settings = BatchSettings {
+                max_split_fragments: fragments.and_then(NonZeroU64::new),
+                max_split_overhead_bytes: overhead.and_then(NonZeroU64::new),
+                max_split_fragments_per_flush: flush.and_then(NonZeroU64::new),
+                ..base.clone()
+            };
+            let result = SyslogBatcher
+                .batch(SignalType::Logs, &settings, vec![input.clone()])
+                .unwrap();
+            assert_eq!(result.budget_fallbacks, 1);
+            assert!(result.completed_inputs.is_empty());
+            assert_eq!(result.batches.len(), 1);
+            assert_eq!(result.batches[0].1, 0..=0);
+            assert_eq!(result.batches[0].0.as_ptr(), input.as_ptr());
+            assert_eq!(result.batches[0].0, input);
+            assert_eq!(
+                SyslogDecoder
+                    .decode(SignalType::Logs, &result.batches[0].0)
+                    .unwrap()
+                    .num_items(),
+                4
+            );
+        }
+        // Four single-item outputs duplicate three 20-byte wrappers. The flush
+        // allowance counts the three additional outputs, excluding the whole-input floor.
+        for (fragments, overhead, flush) in [(4, 60, 3), (u64::MAX, u64::MAX, u64::MAX)] {
+            let settings = BatchSettings {
+                max_split_fragments: NonZeroU64::new(fragments),
+                max_split_overhead_bytes: NonZeroU64::new(overhead),
+                max_split_fragments_per_flush: NonZeroU64::new(flush),
+                ..base.clone()
+            };
+            let result = SyslogBatcher
+                .batch(SignalType::Logs, &settings, vec![input.clone()])
+                .unwrap();
+            assert_eq!(result.budget_fallbacks, 0);
+            assert_eq!(result.batches.len(), 4);
+            assert_eq!(
+                result
+                    .batches
+                    .iter()
+                    .map(|(bytes, _)| bytes.len())
+                    .sum::<usize>()
+                    - input.len(),
+                60
+            );
+            for (bytes, range) in result.batches {
+                assert_eq!(range, 0..=0);
+                assert_eq!(
+                    SyslogDecoder
+                        .decode(SignalType::Logs, &bytes)
+                        .unwrap()
+                        .num_items(),
+                    1
+                );
+            }
+        }
+    }
+
+    /// Scenario: Multiple oversized inputs share a flush with whole single-item inputs.
+    /// Guarantees: Additional split fan-out is cumulative, whole inputs consume no allowance, and provenance and order survive fallback.
+    #[test]
+    fn native_batching_bounds_cumulative_split_fanout() {
+        let inputs = vec![
+            batch(&[b"one", b"two", b"three"], 11),
+            batch(&[b"four"], 22),
+            batch(&[b"five", b"six", b"seven"], 33),
+            batch(&[b"eight"], 44),
+        ];
+        let settings = BatchSettings {
+            min_size: Some(1),
+            max_size: NonZeroU64::new(1),
+            max_split_fragments_per_flush: NonZeroU64::new(2),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &settings, inputs.clone())
+            .unwrap();
+        assert_eq!(result.budget_fallbacks, 1);
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(_, range)| range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..=0, 0..=0, 0..=0, 1..=1, 2..=2, 3..=3]
+        );
+        assert_eq!(result.batches[4].0.as_ptr(), inputs[2].as_ptr());
+        let mut messages = Vec::new();
+        let mut observed = Vec::new();
+        for (bytes, _) in &result.batches {
+            assert!(SyslogDecoder.decode(SignalType::Logs, bytes).is_ok());
+            for frame in validated_frames(bytes).unwrap().1 {
+                let frame = frame.unwrap();
+                messages.push(frame.message.to_vec());
+                observed.push(frame.observed_time);
+            }
+        }
+        assert_eq!(
+            messages,
+            [
+                b"one".as_slice(),
+                b"two",
+                b"three",
+                b"four",
+                b"five",
+                b"six",
+                b"seven",
+                b"eight"
+            ]
+        );
+        assert_eq!(observed, [11, 11, 11, 22, 33, 33, 33, 44]);
+        assert!(result.completed_inputs.is_empty());
+    }
+
+    /// Scenario: A pending partial batch precedes an input that cannot be split within budget.
+    /// Guarantees: Fallback emits no partial input, and fitting inputs remain whole without consuming the split allowance.
+    #[test]
+    fn native_batching_fallback_preserves_pending_input_ownership() {
+        let inputs = vec![
+            batch(&[b"first"], 11),
+            batch(&[b"second", b"third", b"fourth", b"fifth"], 22),
+            batch(&[b"last"], 33),
+        ];
+        let mut settings = BatchSettings {
+            min_size: Some(2),
+            max_size: NonZeroU64::new(2),
+            max_split_fragments: NonZeroU64::new(1),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &settings, inputs.clone())
+            .unwrap();
+        assert_eq!(result.budget_fallbacks, 1);
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(_, range)| range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..=0, 1..=1, 2..=2]
+        );
+        assert_eq!(result.batches[1].0, inputs[1]);
+        assert_eq!(result.batches[1].0.as_ptr(), inputs[1].as_ptr());
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(bytes, _)| validated_item_count(bytes).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 4, 1]
+        );
+
+        settings.max_size = NonZeroU64::new(3);
+        let result = SyslogBatcher
+            .batch(
+                SignalType::Logs,
+                &settings,
+                vec![
+                    batch(&[b"one", b"two"], 11),
+                    batch(&[b"three", b"four"], 22),
+                ],
+            )
+            .unwrap();
+        assert_eq!(result.budget_fallbacks, 0);
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(bytes, range)| (validated_item_count(bytes).unwrap(), range.clone()))
+                .collect::<Vec<_>>(),
+            vec![(2, 0..=0), (2, 1..=1)]
+        );
+    }
+
+    /// Scenario: Splitting on existing timestamp-run boundaries duplicates only batch headers.
+    /// Guarantees: The overhead budget measures actual framing amplification and includes its exact boundary.
+    #[test]
+    fn native_batching_measures_actual_split_wrapper_overhead() {
+        let mut settings = SYSLOG_BATCH_SETTINGS;
+        let merged = SyslogBatcher
+            .batch(
+                SignalType::Logs,
+                &settings,
+                vec![
+                    batch(&[b"one", b"two"], 11),
+                    batch(&[b"three", b"four"], 22),
+                ],
+            )
+            .unwrap();
+        let input = merged.batches[0].0.clone();
+        settings.min_size = Some(2);
+        settings.max_size = NonZeroU64::new(2);
+        for (budget, expected_batches, expected_fallbacks) in [(7, 1, 1), (8, 2, 0)] {
+            settings.max_split_overhead_bytes = NonZeroU64::new(budget);
+            let result = SyslogBatcher
+                .batch(SignalType::Logs, &settings, vec![input.clone()])
+                .unwrap();
+            assert_eq!(result.batches.len(), expected_batches);
+            assert_eq!(result.budget_fallbacks, expected_fallbacks);
+            for (bytes, _) in &result.batches {
+                assert!(SyslogDecoder.decode(SignalType::Logs, bytes).is_ok());
+            }
+            if expected_fallbacks == 0 {
+                assert_eq!(
+                    result
+                        .batches
+                        .iter()
+                        .map(|(bytes, _)| bytes.len())
+                        .sum::<usize>()
+                        - input.len(),
+                    8
+                );
+            }
+        }
+    }
+
+    /// Scenario: A budget fallback encounters malformed framing or more than 65,535 records.
+    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the native limit.
+    #[test]
+    fn native_batching_budget_fallback_validates_framing_and_native_capacity() {
+        let mut settings = BatchSettings {
+            min_size: Some(1),
+            max_size: NonZeroU64::new(1),
+            max_split_fragments: NonZeroU64::new(1),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        let valid = batch(&[b"one", b"two"], 11);
+        let truncated = valid.slice(..valid.len() - 1);
+        let mut batcher = SyslogBatcher;
+        assert!(
+            batcher
+                .batch(SignalType::Logs, &settings, vec![truncated])
+                .is_err()
+        );
+        let mut builder = SyslogBatchBuilder::new();
+        for _ in 0..MAX_NATIVE_LOGS {
+            builder.append_with_year(b"message", 2024).unwrap();
+        }
+        let maximum = builder.finish(11).unwrap().bytes;
+        let result = batcher
+            .batch(SignalType::Logs, &settings, vec![maximum.clone()])
+            .unwrap();
+        assert_eq!(result.budget_fallbacks, 1);
+        assert_eq!(result.batches[0].0.as_ptr(), maximum.as_ptr());
+        // Create one more valid frame without changing the native decoder limit.
+        let mut oversized = maximum.to_vec();
+        oversized[4..8].copy_from_slice(&((MAX_NATIVE_LOGS + 1) as u32).to_be_bytes());
+        oversized[16..20].copy_from_slice(&((MAX_NATIVE_LOGS + 1) as u32).to_be_bytes());
+        oversized.extend_from_slice(&1_u32.to_be_bytes());
+        oversized.extend_from_slice(&2024_i32.to_be_bytes());
+        oversized.push(b'x');
+        let oversized = Bytes::from(oversized);
+        assert!(
+            batcher
+                .batch(SignalType::Logs, &settings, vec![oversized.clone()])
+                .is_err()
+        );
+        let recovered = batcher
+            .batch(SignalType::Logs, &settings, vec![valid])
+            .unwrap();
+        assert_eq!(recovered.budget_fallbacks, 1);
+        assert_eq!(
+            SyslogDecoder
+                .decode(SignalType::Logs, &recovered.batches[0].0)
+                .unwrap()
+                .num_items(),
+            2
+        );
+
+        settings.max_size = NonZeroU64::new(u64::MAX);
+        settings.max_split_fragments = None;
+        let split = batcher
+            .batch(SignalType::Logs, &settings, vec![oversized])
+            .unwrap();
+        assert_eq!(split.budget_fallbacks, 0);
+        assert_eq!(
+            split
+                .batches
+                .iter()
+                .map(|(bytes, _)| validated_item_count(bytes).unwrap())
+                .collect::<Vec<_>>(),
+            vec![MAX_NATIVE_LOGS, 1]
+        );
+        assert!(split.batches.iter().all(|(_, range)| range == &(0..=0)));
     }
 }

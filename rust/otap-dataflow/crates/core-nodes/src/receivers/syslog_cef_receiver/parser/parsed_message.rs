@@ -440,7 +440,6 @@ impl ParsedSyslogMessage<'_> {
 mod tests {
     use super::*;
     use crate::receivers::syslog_cef_receiver::parser::parse;
-    use chrono::NaiveDate;
 
     #[test]
     fn test_parsed_syslog_message_timestamp_rfc5424() {
@@ -503,6 +502,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_rfc3164_local_dst_transitions() {
+        use chrono::NaiveDate;
+
         const CHILD: &str = "OTEL_SYSLOG_DST_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
             // A subprocess avoids mutating process-wide TZ while other tests run.
