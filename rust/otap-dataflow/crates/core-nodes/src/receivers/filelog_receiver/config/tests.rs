@@ -747,6 +747,10 @@ fn glob_reference_equivalence() {
         Path::new("/logs/.hidden.log"),
         Path::new("/logs/*abc.log"),
         Path::new("/logs/a/b/c.log"),
+        Path::new("/logs/\u{e9}clair.log"),
+        Path::new("/logs/\u{e9}"),
+        Path::new(std::ffi::OsStr::from_bytes(b"/logs/\xc3")),
+        Path::new(std::ffi::OsStr::from_bytes(b"/logs/\xa9")),
         Path::new(std::ffi::OsStr::from_bytes(b"/logs/\xff.log")),
     ];
     for pattern in [
@@ -757,6 +761,8 @@ fn glob_reference_equivalence() {
         r"/logs/\**.log",
         "/logs/[a-z]*.log",
         "/logs/[a/../b]",
+        "/logs/\u{e9}*",
+        "/logs/[\u{e9}]",
     ] {
         let reference = globset::GlobBuilder::new(pattern)
             .literal_separator(true)
@@ -895,4 +901,65 @@ fn missing_base_requires_absolute_patterns() {
     config.exclude = vec!["private/**".into()];
     let error = config.compile("g", "p", "n", Path::new("")).unwrap_err();
     assert_eq!(error.setting, "exclude[0]");
+}
+
+/// Scenario: Several include/exclude patterns overlap and contain an exact duplicate.
+/// Guarantees: Set matching and deduplication preserve globset's union semantics for matching and nonmatching paths.
+#[cfg(unix)]
+#[test]
+fn glob_set_reference_equivalence() {
+    let patterns: Vec<String> = [
+        "/logs/app/*.log",
+        "/logs/{db,worker}/**/*.txt",
+        "/logs/\u{e9}*",
+        "/logs/app/*.log",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in &patterns {
+        let _ = builder.add(
+            globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .backslash_escape(true)
+                .build()
+                .unwrap(),
+        );
+    }
+    let reference = builder.build().unwrap();
+    let policy = PathPolicy::compile(&patterns, &patterns, Path::new("/work")).unwrap();
+    for (candidate, expected) in [
+        ("/logs/app/one.log", true),
+        ("/logs/db/one.txt", true),
+        ("/logs/worker/sub/one.txt", true),
+        ("/logs/\u{e9}clair", true),
+        ("/logs/app/sub/one.log", false),
+        ("/logs/db/one.log", false),
+        ("/logs/other/one.txt", false),
+        ("/elsewhere/app/one.log", false),
+    ] {
+        let path = Path::new(candidate);
+        assert_eq!(reference.is_match(path), expected, "{candidate}");
+        assert_eq!(policy.includes(path), expected, "include {candidate}");
+        assert_eq!(policy.excludes(path), expected, "exclude {candidate}");
+    }
+}
+
+/// Scenario: A Windows directory contains an unpaired UTF-16 surrogate.
+/// Guarantees: Both directory-rule forms conservatively permit traversal when matching is unrepresentable.
+#[cfg(windows)]
+#[test]
+fn windows_unrepresentable_directory_traversal() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let base = Path::new(r"C:\work");
+    let directory = base.join("logs").join(OsString::from_wide(&[0xD800]));
+    assert!(directory.to_str().is_none());
+    for pattern in ["logs/{a/b,c}/*.log", "logs/*/app/*.log"] {
+        let policy = PathPolicy::compile(&[pattern.into()], &[], base).unwrap();
+        assert!(policy.may_descend(&directory), "{pattern}");
+        // This hardening does not claim support for matching native Windows
+        // paths that the current byte adapter cannot represent.
+        assert!(!policy.includes(&directory.join("one.log")));
+    }
 }

@@ -328,7 +328,7 @@ impl PathPolicy {
                     return self
                         .directory_components
                         .as_ref()
-                        .is_some_and(|program| program.matches_pattern(pattern, suffix, false));
+                        .is_some_and(|program| program.matches_pattern(pattern, suffix, true));
                 }
                 for (index, component) in suffix.components().enumerate() {
                     let Some(pattern) = rule.components.get(index) else {
