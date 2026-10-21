@@ -9,60 +9,60 @@
     "extra": "DFE OTAP Transform Insert (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 27.51440154497422
+    "value": 27.052682679527702
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 27.84390365968095
+    "value": 27.646402496099842
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 63.094140625
+    "value": 75.34700520833333
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 63.9296875
+    "value": 76.1328125
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 397661.1478453056
+    "value": 397075.77367811656
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 401828.8208882469
+    "value": 397075.77367811656
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000562
+    "value": 60.000708
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 54804473.59554093
+    "value": 54725631.64959829
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 46999754.38253368
+    "value": 46924696.03688934
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/400k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 136.3876127013365
+    "value": 137.82163324313206
   }
 ]
