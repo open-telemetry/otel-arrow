@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Note! This file is disorganized and should be separated into smaller
+// TODO(4482): This file is disorganized and should be separated into smaller
 // pieces; at least 50% of the file is encoder support but the other half
 // quite separate. Reorganize this in a separate PR.
 
@@ -328,20 +328,22 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
 /// Suffix appended to truncated strings.
 pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 
-/// Indicating success.
+/// Indicating success. This is an alias so that Result<()> can
+/// map into EncodeSuccess; it enables Iterator.try_for_each
+/// expressions to be used inside encode functions.
 pub type EncodeSuccess = ();
 
-/// Returned when a buffer write cannot fit within the size limit.
-///
-/// Used as the error type in [`EncodeResult`] which is returned from
-/// buffer write methods. This is used for to indicate truncation, no
-/// distinction is made for partial/total drop.
+/// Returned when a encode operation fails. Users explicitly choose
+/// EncodeResult or TruncateResult to indicate whether they handle
+/// truncation.
 #[derive(Debug)]
 pub enum EncodeFailure {
-    /// Ran out of space.
+    /// Dropped due to space limit. If a TruncateResult, it means no
+    /// valid data could be written in the available space.
     Dropped,
     /// Invalid data (e.g., CBOR decode failure) in OTAP/OTLP encoding.
-    /// Note: Not saved!
+    /// We do not save this error, on purpose, since there are very few
+    /// cases where it can arise and the cost is not negligible.
     Invalid,
 }
 
@@ -358,7 +360,6 @@ impl fmt::Display for EncodeFailure {
 
 impl From<Error> for EncodeFailure {
     fn from(_: Error) -> Self {
-        // Note! We discard here. Could keep it, would slow the encoder.
         EncodeFailure::Invalid
     }
 }
@@ -372,6 +373,7 @@ pub enum Truncation {
     Some,
 }
 
+// EncodeSuccess equals Truncation::None.
 impl From<EncodeSuccess> for Truncation {
     fn from(_: EncodeSuccess) -> Self {
         Truncation::None
@@ -385,10 +387,8 @@ pub type EncodeResult = Result<EncodeSuccess, EncodeFailure>;
 pub type TruncateResult = Result<Truncation, EncodeFailure>;
 
 /// Saved buffer position for transactional encoding.
-///
-/// Created internally by [`BoundedBuf::try_encode`].
 #[derive(Debug, Clone, Copy)]
-pub struct Checkpoint {
+struct Checkpoint {
     pos: usize,
 }
 
@@ -443,6 +443,10 @@ const fn make_len_placeholder<const N: usize>() -> [u8; N] {
 /// dropped fields. The [`try_encode`](Self::try_encode) method provides
 /// atomic field-level writes: either the entire field is written, or the
 /// buffer is rolled back to its previous state.
+///
+/// TODO(4482): This interface is too wide: it feaures public methods
+/// as well as ~5 internal methods that could become either private
+/// free functions or part of an internal storage trait.
 pub trait BoundedBuf {
     /// Current write position (encoded byte count).
     fn len(&self) -> usize;
@@ -451,19 +455,24 @@ pub trait BoundedBuf {
     fn limit(&self) -> usize;
 
     /// Set a new write limit.
+    /// TODO(4482): Can be a private storage trait and pub fn on the impls.
     fn set_limit(&mut self, limit: usize);
 
     /// Append bytes if they fit within the limit; otherwise return `Err(Dropped)`
     /// without writing any bytes.
+    /// TODO(4482): Note that extend_from_slice() is a deprecated alias for
+    //// this method.
     fn try_extend(&mut self, slice: &[u8]) -> EncodeResult;
 
     /// Truncate the buffer to the given position. Used for rollback.
+    /// TODO(4482): Can be an private storage trait.
     fn truncate(&mut self, pos: usize);
 
     /// Borrow the encoded bytes.
     fn as_slice(&self) -> &[u8];
 
     /// Borrow the encoded bytes mutably (used by [`patch_len_placeholder`]).
+    /// TODO(4482): Can be a private storage trait.
     fn as_mut_slice(&mut self) -> &mut [u8];
 
     /// Reset the buffer to empty (preserves any underlying allocation).
@@ -481,7 +490,8 @@ pub trait BoundedBuf {
         self.limit().saturating_sub(self.len())
     }
 
-    /// Append pre-encoded protocol bytes (alias for [`try_extend`]).
+    /// TODO(4482): This is an alias, and it is harmful because Vec's
+    /// extend_from_slice() is infallible, however a wide impact fix.
     #[inline]
     fn extend_from_slice(&mut self, slice: &[u8]) -> EncodeResult {
         self.try_extend(slice)
@@ -553,23 +563,16 @@ pub trait BoundedBuf {
         let suffix_len = TRUNCATION_SUFFIX.len();
         let avail = self.remaining();
 
-        // Minimum encoding is: tag + 1-byte length varint + suffix bytes
-        // (suffix_len is small enough that a payload of just the suffix
-        // always uses a 1-byte length varint).
+        // Minimum encoding is: tag + 1-byte length varint + suffix bytes.
         let min_overhead = tag_bytes + 1 + suffix_len;
         if avail < min_overhead {
             return Err(EncodeFailure::Dropped);
         }
 
-        // After the tag, we have `len_and_payload` bytes for the length
-        // varint plus the payload (content + suffix). We bound the
-        // length-varint width using `len_and_payload` itself; this may
-        // leave at most one byte unused when the actual payload's varint
-        // is shorter (subtracting `len_varint_size` from `len_and_payload`
-        // can drop the value across at most one 2^7 threshold). Closed-
-        // form, never overshoots `avail`. The `min_overhead` check above
-        // guarantees there is room for the varint and the suffix, so
-        // `content_len` is non-negative.
+        // After the tag, we have `len_and_payload` bytes for the
+        // length varint plus the payload (content + suffix). The
+        // `min_overhead` check above guarantees there is room for the
+        // varint and the suffix, so `content_len` is non-negative.
         let len_and_payload = avail - tag_bytes;
         let len_varint_size = varint_len(len_and_payload as u64);
         debug_assert!(
@@ -594,8 +597,9 @@ pub trait BoundedBuf {
         Ok(Truncation::Some)
     }
 
-    /// Returns the narrowest placeholder width (1-4 bytes) sufficient
-    /// for this buffer's remaining space.
+    /// Returns the narrowest placeholder width sufficient for this
+    /// buffer's remaining space.
+    /// TODO(4482): Can be a private free function.
     #[inline]
     fn placeholder_width(&self) -> usize {
         let rem = self.remaining();
@@ -610,12 +614,8 @@ pub trait BoundedBuf {
         }
     }
 
-    /// Encode a length-delimited field atomically.
-    ///
-    /// Selects the narrowest placeholder width based on the buffer's
-    /// remaining space, then writes the field tag, a length placeholder, the
-    /// closure's content, and patches the length. If any write fails,
-    /// the error propagates via `?`.
+    /// Encode a length-delimited field atomically, whether truncating
+    /// or not.
     #[inline]
     fn encode_len_delimited<T, E: From<EncodeFailure>>(
         &mut self,
@@ -633,8 +633,9 @@ pub trait BoundedBuf {
         }
     }
 
-    /// Implementation of [`encode_len_delimited`](Self::encode_len_delimited)
-    /// with an explicit `B`-byte placeholder width.
+    /// Implementation of encode_len_delimited with an explicit
+    /// placeholder width. Supports TruncateResult or EncodeResult.
+    /// TODO(4482): Can be a private free function.
     #[inline]
     fn encode_len_delimited_width<const B: usize, T, E, F>(
         &mut self,
@@ -955,25 +956,9 @@ impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
     }
 }
 
-/// Write an `N`-byte length placeholder for later patching.
-///
-/// Do not call directly, use [`BoundedBuf::encode_len_delimited`].
-#[inline]
-pub fn encode_len_placeholder<const N: usize, B: BoundedBuf>(buf: &mut B) -> EncodeResult {
-    const {
-        assert!(
-            N >= 1 && N <= MAX_TAG_WIDTH,
-            "placeholder must be 1-4 bytes"
-        )
-    }
-    buf.try_extend(&make_len_placeholder::<N>())
-}
-
 /// Patch a previously written length placeholder with the actual length.
-///
-/// Do not call directly, use [`BoundedBuf::encode_len_delimited`].
 #[inline]
-pub fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
+fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
     buf: &mut B,
     len: usize,
     len_start_pos: usize,
