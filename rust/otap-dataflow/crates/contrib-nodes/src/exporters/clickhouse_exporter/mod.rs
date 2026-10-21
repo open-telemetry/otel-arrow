@@ -32,6 +32,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.exporter.clickhouse",
 );
 
+use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
@@ -50,6 +51,7 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
@@ -184,7 +186,7 @@ impl ClickhouseExporter {
 fn transform_raw_otlp_logs(
     payload: &OtapPayload,
     transformer: &mut OtlpLogsTransformer,
-) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
+) -> Option<Result<Option<RecordBatch>, error::ClickhouseExporterError>> {
     let view = payload.encoded_view()?;
     if view.signal_type() != SignalType::Logs || view.encoding() != &PdataEncoding::OTLP {
         return None;
@@ -213,6 +215,46 @@ async fn notify_permanent_rejection(
     effect_handler
         .notify_nack(NackMsg::new_permanent(reason, pdata))
         .await
+}
+
+/// Transforms arrow records into ClickHouse-shaped record batches according to signal type
+/// and logs transform paths.
+///
+/// Records transform telemetry only after a transformation succeeds. When a raw OTLP batch
+/// falls back to the generic arrow transform, only the legacy fallback bucket is recorded.
+fn transform_arrow_records(
+    arrow_records: OtapArrowRecords,
+    signal_type: SignalType,
+    input_was_native: bool,
+    is_otlp_fallback: bool,
+    batch_transformer: &mut BatchTransformer,
+    logs_fast_transformer: &mut LogsFastTransformer,
+    ch_metrics: &mut ClickhouseExporterMetrics,
+) -> Result<HashMap<ArrowPayloadType, RecordBatch>, error::ClickhouseExporterError> {
+    if signal_type == SignalType::Logs && input_was_native {
+        match logs_fast_transformer.try_apply(&arrow_records) {
+            Ok(LogsFastTransform::Applied(batch)) => {
+                ch_metrics.record_log_fast_path();
+                Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+            }
+            Ok(LogsFastTransform::NotApplicable(_)) => {
+                let batches = batch_transformer.apply_plan(arrow_records)?;
+                ch_metrics.record_log_transform_fallback();
+                Ok(batches)
+            }
+            Err(error) => Err(error),
+        }
+    } else {
+        let batches = batch_transformer.apply_plan(arrow_records)?;
+        if signal_type == SignalType::Logs {
+            if is_otlp_fallback {
+                ch_metrics.record_log_otlp_transform_fallback();
+            } else {
+                ch_metrics.record_log_transform_fallback();
+            }
+        }
+        Ok(batches)
+    }
 }
 
 /// Register Clickhouse exporter with the OTAP exporter factory
@@ -338,7 +380,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             "ClickHouse exporter does not support non-empty metrics payloads"
                                 .to_owned();
                         self.ch_metrics
-                            .record_attempt(attempt, Outcome::Failure)
+                            .record_attempt(attempt, Outcome::Refused)
                             .await;
                         otel_warn!(
                             "clickhouse.exporter.signal.unsupported",
@@ -351,6 +393,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
                     let payload = pdata.payload_ref().clone();
 
+                    let mut is_otlp_fallback = false;
                     let direct_otlp_batches =
                         match transform_raw_otlp_logs(&payload, &mut otlp_logs_transformer) {
                             Some(result) => match result {
@@ -379,13 +422,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     continue;
                                 }
                                 Err(error) => {
-                                    self.ch_metrics.record_log_otlp_transform_fallback();
                                     otel_debug!(
                                         "clickhouse.exporter.otlp.transform.fallback",
                                         message =
                                             "Using the legacy ClickHouse transform for OTLP logs.",
                                         reason = error.to_string(),
                                     );
+                                    is_otlp_fallback = true;
                                     None
                                 }
                             },
@@ -432,27 +475,15 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             continue;
                         }
 
-                        let transform_result =
-                            if signal_type == SignalType::Logs && input_was_native {
-                                match logs_fast_transformer.try_apply(&arrow_records) {
-                                    Ok(LogsFastTransform::Applied(batch)) => {
-                                        self.ch_metrics.record_log_fast_path();
-                                        Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
-                                    }
-                                    Ok(LogsFastTransform::NotApplicable(_)) => {
-                                        self.ch_metrics.record_log_transform_fallback();
-                                        batch_transformer.apply_plan(arrow_records)
-                                    }
-                                    Err(error) => Err(error),
-                                }
-                            } else {
-                                if signal_type == SignalType::Logs {
-                                    self.ch_metrics.record_log_transform_fallback();
-                                }
-                                batch_transformer.apply_plan(arrow_records)
-                            };
-
-                        match transform_result {
+                        match transform_arrow_records(
+                            arrow_records,
+                            signal_type,
+                            input_was_native,
+                            is_otlp_fallback,
+                            &mut batch_transformer,
+                            &mut logs_fast_transformer,
+                            &mut self.ch_metrics,
+                        ) {
                             Ok(batches) => batches,
                             Err(e) => {
                                 let reason = format!("Error transforming batch for export: {e}");
@@ -492,13 +523,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exporters::clickhouse_exporter::metrics::ClickhouseTransformPath;
     use bytes::Bytes;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata};
-    use otel_arrow_dfe_pdata::OtapArrowRecords;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, ResourceMetrics, ScopeMetrics,
@@ -715,5 +746,173 @@ mod tests {
             PipelineCompletionMsg::DeliverNack { nack } => assert!(!nack.permanent),
             PipelineCompletionMsg::DeliverAck { .. } => panic!("expected retryable NACK"),
         }
+    }
+
+    fn valid_logs_arrow_records() -> OtapArrowRecords {
+        use otel_arrow_dfe_pdata::TryIntoWithOptions;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue,
+        };
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+            LogRecord, ResourceLogs, ScopeLogs,
+        };
+        use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(
+                                otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    "test-service".to_string(),
+                                ),
+                            ),
+                        }),
+                    }],
+                    ..Default::default()
+                }),
+                schema_url: String::new(),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "test-scope".to_string(),
+                        ..Default::default()
+                    }),
+                    schema_url: String::new(),
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        severity_number: 9,
+                        severity_text: "INFO".to_string(),
+                        body: Some(AnyValue {
+                            value: Some(
+                                otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    "test-log".to_string(),
+                                ),
+                            ),
+                        }),
+                        ..Default::default()
+                    }],
+                }],
+            }],
+        };
+        let mut buf = Vec::new();
+        request.encode(&mut buf).expect("encode OTLP logs request");
+        let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(Bytes::from(buf)).into();
+        let mut records: OtapArrowRecords = payload
+            .try_into_with_default()
+            .expect("convert OTLP logs to OTAP Arrow");
+        records
+            .decode_transport_optimized_ids()
+            .expect("decode transport optimized IDs");
+        records
+    }
+
+    fn invalid_logs_arrow_records() -> OtapArrowRecords {
+        use arrow::array::{ArrayRef, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use otel_arrow_dfe_pdata::otap::testing::make_test_batch;
+        use otel_arrow_dfe_pdata::otap::{Logs, OtapBatchStore};
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "resource",
+            DataType::Utf8,
+            true,
+        )]));
+        let bad_batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["not-a-struct"])) as ArrayRef],
+        )
+        .expect("create bad batch");
+
+        let logs =
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![(ArrowPayloadType::Logs, bad_batch)]);
+        OtapArrowRecords::Logs(logs)
+    }
+
+    /// Scenario: a raw OTLP log batch takes the legacy fallback path and succeeds.
+    /// Guarantees: only the `otlp_legacy_fallback` metric is incremented by 1, with no double-counting
+    /// into generic_fallback, fast_path, or otlp_direct.
+    #[test]
+    fn successful_raw_otlp_fallback_increments_only_legacy_fallback_metric() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0);
+        let mut ch_metrics = ClickhouseExporterMetrics::new(&pipeline);
+        let mut batch_transformer = BatchTransformer::new();
+        let mut logs_fast_transformer = LogsFastTransformer::default();
+
+        let records = valid_logs_arrow_records();
+        let result = transform_arrow_records(
+            records,
+            SignalType::Logs,
+            false,
+            true,
+            &mut batch_transformer,
+            &mut logs_fast_transformer,
+            &mut ch_metrics,
+        );
+        assert!(result.is_ok());
+
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::OtlpLegacyFallback),
+            1
+        );
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::GenericFallback),
+            0
+        );
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::FastPath),
+            0
+        );
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::OtlpDirect),
+            0
+        );
+    }
+
+    /// Scenario: a raw OTLP log batch takes the legacy fallback path but transformation fails.
+    /// Guarantees: no transform metric buckets are incremented when transformation fails.
+    #[test]
+    fn failed_fallback_transformation_increments_no_metric_buckets() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0);
+        let mut ch_metrics = ClickhouseExporterMetrics::new(&pipeline);
+        let mut batch_transformer = BatchTransformer::new();
+        let mut logs_fast_transformer = LogsFastTransformer::default();
+
+        let records = invalid_logs_arrow_records();
+        let result = transform_arrow_records(
+            records,
+            SignalType::Logs,
+            false,
+            true,
+            &mut batch_transformer,
+            &mut logs_fast_transformer,
+            &mut ch_metrics,
+        );
+        assert!(result.is_err());
+
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::OtlpLegacyFallback),
+            0
+        );
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::GenericFallback),
+            0
+        );
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::FastPath),
+            0
+        );
+        assert_eq!(
+            ch_metrics.transform_count(ClickhouseTransformPath::OtlpDirect),
+            0
+        );
     }
 }

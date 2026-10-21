@@ -335,7 +335,6 @@ Input PData message volume is reported by the engine through
 | --- | --- | --- | --- |
 | `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of ClickHouse export attempts, including preparation-only outcomes. |
 | `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal ClickHouse write result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
-| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Encoded application payload bytes submitted by the attempt. Emitted when size measurement is enabled. |
 | `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
 
 #### `exporter.clickhouse`

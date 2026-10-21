@@ -64,8 +64,8 @@ pub struct ClickhouseBatchMetrics {
 pub struct ClickhouseExporterMetrics {
     /// Shared exporter boundary metrics (attempted, duration, payload, items).
     pub boundary: ExporterMetrics,
-    row_metrics: MeasurementMetricSet<ClickhouseRowMetrics>,
-    batch_metrics: MeasurementMetricSet<ClickhouseBatchMetrics>,
+    pub(crate) row_metrics: MeasurementMetricSet<ClickhouseRowMetrics>,
+    pub(crate) batch_metrics: MeasurementMetricSet<ClickhouseBatchMetrics>,
 }
 
 impl ClickhouseExporterMetrics {
@@ -166,6 +166,16 @@ impl ClickhouseExporterMetrics {
         snapshots.extend(self.row_metrics.terminal_snapshots());
         snapshots.extend(self.batch_metrics.terminal_snapshots());
         snapshots
+    }
+
+    /// Returns the transform counter for the given transform path (for testing).
+    #[cfg(test)]
+    #[must_use]
+    pub fn transform_count(&self, path: ClickhouseTransformPath) -> u64 {
+        self.batch_metrics
+            .get(ClickhouseTransformAttributes { path })
+            .transformed
+            .get()
     }
 }
 
