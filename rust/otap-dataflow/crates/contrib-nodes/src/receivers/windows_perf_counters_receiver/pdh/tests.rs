@@ -88,6 +88,7 @@ struct State {
     counters: Vec<CounterFixture>,
     opens: usize,
     adds: usize,
+    added_paths: Vec<String>,
     closes: usize,
     collects: usize,
     open_status: u32,
@@ -110,6 +111,7 @@ fn fake(counters: Vec<CounterFixture>) -> (Rc<RefCell<State>>, Vec<CounterConfig
         counters,
         opens: 0,
         adds: 0,
+        added_paths: Vec::new(),
         closes: 0,
         collects: 0,
         open_status: 0,
@@ -149,6 +151,7 @@ impl PdhApi for FakePdh {
         let mut state = self.0.borrow_mut();
         let index = state.adds;
         state.adds += 1;
+        state.added_paths.push(path.to_owned());
         check(
             "PdhAddEnglishCounterW",
             path,
@@ -244,6 +247,34 @@ impl Drop for FakePdh {
         state.closes += 1;
         state.handles.clear();
     }
+}
+
+/// Scenario: Exact configuration contains padded native components and zero or leading-zero suffixes.
+/// Guarantees: The native adapter receives every configured path verbatim without trimming or suffix rewriting.
+#[test]
+fn passes_configured_path_spelling_to_adapter() {
+    let config = RuntimeConfig::from_json(&serde_json::json!({"perfcounters": [
+        {"object": " Process ", "instances": [" app#0 ", "app#01"], "counters": [
+            {"name": " Private Bytes "}
+        ]},
+        {"object": "Memory", "counters": [{"name": "Available Bytes "}]}
+    ]}))
+    .unwrap();
+    let (state, _) = fake(
+        [11, 22, 33]
+            .into_iter()
+            .map(|value| CounterFixture::new(0x0001_0000, Number::Integer(value)))
+            .collect(),
+    );
+    let _query = open_fake(&state, &config.counters).unwrap();
+    assert_eq!(
+        state.borrow().added_paths,
+        [
+            r"\ Process ( app#0 )\ Private Bytes ",
+            r"\ Process (app#01)\ Private Bytes ",
+            r"\Memory\Available Bytes ",
+        ]
+    );
 }
 
 /// Scenario: A configured counter fails to add while an earlier or later counter is usable.
@@ -1211,8 +1242,8 @@ fn spawn_counter_process(executable: &Path) -> CounterProcess {
     child
 }
 
-/// Scenario: Parsed configuration names duplicate live process instances using #0 and #1.
-/// Guarantees: The normalized omitted-zero and indexed paths read exactly the fixture's process IDs, not unrelated processes, and project checked samples.
+/// Scenario: Parsed configuration names duplicate live process instances using #0 and #01.
+/// Guarantees: Preserved zero and leading-zero paths read exactly the fixture's process IDs, not unrelated processes, and project checked samples.
 #[test]
 #[ignore = "requires live Windows performance counters; run explicitly with --ignored"]
 fn live_pdh_collects_parsed_instance_paths() {
@@ -1235,18 +1266,18 @@ fn live_pdh_collects_parsed_instance_paths() {
         },
         "perfcounters": [{
             "object": "Process",
-            "instances": [format!("{instance}#0"), format!("{instance}#1")],
+            "instances": [format!("{instance}#0"), format!("{instance}#01")],
             "counters": [{"name": "ID Process", "metric": "process.id"}]
         }]
     }))
     .unwrap();
     assert_eq!(
         config.counters[0].path,
-        format!(r"\Process({instance})\ID Process")
+        format!(r"\Process({instance}#0)\ID Process")
     );
     assert_eq!(
         config.counters[1].path,
-        format!(r"\Process({instance}#1)\ID Process")
+        format!(r"\Process({instance}#01)\ID Process")
     );
     let mut query = Query::open(&config.counters, "parsed".to_owned()).unwrap();
     assert!(query.startup_failures.is_empty());
