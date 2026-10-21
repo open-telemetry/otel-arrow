@@ -4,7 +4,7 @@
 use crate::receivers::syslog_cef_receiver::parser::{
     cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message,
 };
-use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
 use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 
 // Common attribute key constants for both RFC5424 and RFC3164 messages
@@ -36,6 +36,75 @@ const CEF_SEVERITY: &str = "cef.severity";
 
 // Attribute key constant for detected input format
 const INPUT_FORMAT: &str = "input.format";
+
+/// Decodes a fixed-width ASCII field without allocating or accepting signs.
+#[inline]
+fn parse_two_digits(input: &[u8]) -> Option<u32> {
+    let [tens, ones] = input else {
+        return None;
+    };
+    if !tens.is_ascii_digit() || !ones.is_ascii_digit() {
+        return None;
+    }
+
+    Some(u32::from(tens - b'0') * 10 + u32::from(ones - b'0'))
+}
+
+/// Fast path for the usual 15-byte RFC 3164 timestamp, with calendar validation.
+/// Noncanonical inputs and leap seconds retain the legacy parser as a fallback.
+#[inline]
+fn parse_rfc3164_naive_timestamp(input: &[u8], year: i32) -> Option<NaiveDateTime> {
+    if input.len() != 15
+        || input[3] != b' '
+        || input[6] != b' '
+        || input[9] != b':'
+        || input[12] != b':'
+    {
+        return None;
+    }
+
+    let month = match &input[..3] {
+        b"Jan" => 1,
+        b"Feb" => 2,
+        b"Mar" => 3,
+        b"Apr" => 4,
+        b"May" => 5,
+        b"Jun" => 6,
+        b"Jul" => 7,
+        b"Aug" => 8,
+        b"Sep" => 9,
+        b"Oct" => 10,
+        b"Nov" => 11,
+        b"Dec" => 12,
+        _ => return None,
+    };
+
+    let day = match input[4] {
+        b' ' => {
+            let digit = input[5];
+            if !digit.is_ascii_digit() {
+                return None;
+            }
+            u32::from(digit - b'0')
+        }
+        b'0'..=b'9' => parse_two_digits(&input[4..6])?,
+        _ => return None,
+    };
+    let hour = parse_two_digits(&input[7..9])?;
+    let minute = parse_two_digits(&input[10..12])?;
+    let second = parse_two_digits(&input[13..15])?;
+
+    NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, second)
+}
+
+/// Preserves Chrono's acceptance of uncommon forms such as mixed-case months,
+/// whitespace-padded time fields, and leap seconds without penalizing normal input.
+#[cold]
+#[inline(never)]
+fn parse_rfc3164_naive_timestamp_fallback(input: &[u8], year: i32) -> Option<NaiveDateTime> {
+    let timestamp = std::str::from_utf8(input).ok()?;
+    NaiveDateTime::parse_from_str(&format!("{year} {timestamp}"), "%Y %b %d %H:%M:%S").ok()
+}
 
 /// Enum to represent different parsed message types
 #[derive(Debug, Clone, PartialEq)]
@@ -135,15 +204,12 @@ impl ParsedSyslogMessage<'_> {
                     // compatibility path infers it from the clock here. Resolve
                     // local time for the event date, preserving DST behavior.
                     let year = received_local_year.unwrap_or_else(|| Local::now().year());
-                    let timestamp = std::str::from_utf8(ts).ok()?;
-                    let naive = NaiveDateTime::parse_from_str(
-                        &format!("{year} {timestamp}"),
-                        "%Y %b %d %H:%M:%S",
-                    )
-                    .ok()?;
-                    Local.from_local_datetime(&naive).single().map(|local| {
-                        local.with_timezone(&Utc).timestamp_nanos_opt().unwrap_or(0) as u64
-                    })
+                    let naive = parse_rfc3164_naive_timestamp(ts, year)
+                        .or_else(|| parse_rfc3164_naive_timestamp_fallback(ts, year))?;
+                    Local
+                        .from_local_datetime(&naive)
+                        .single()
+                        .map(|local| local.timestamp_nanos_opt().unwrap_or(0) as u64)
                 })
             }
             ParsedSyslogMessage::Cef(_) => None,
@@ -454,26 +520,174 @@ mod tests {
         assert_eq!(timestamp_nanos, expected_nanos);
     }
 
-    /// Scenario: A plain RFC 3164 message omits the event year.
-    /// Guarantees: The eager compatibility path uses the current year and local timezone.
+    /// Scenario: A plain RFC 3164 message contains a valid fixed-format timestamp.
+    /// Guarantees: Timestamp conversion uses the current year and local timezone.
     #[test]
     fn test_parsed_syslog_message_timestamp_rfc3164() {
         let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8";
         let result = parse(input).unwrap();
 
-        // Test the ParsedSyslogMessage::timestamp method
         let timestamp_nanos = result.timestamp().unwrap();
-        // For RFC 3164, we expect the current year to be used since it's not specified
         let current_year = Local::now().year();
-        let full_timestamp = format!("{current_year} Oct 11 22:14:15");
-        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S")
-            && let Some(local_dt) = Local.from_local_datetime(&naive_dt).single()
-        {
-            let expected_nanos = local_dt
-                .with_timezone(&Utc)
-                .timestamp_nanos_opt()
-                .unwrap_or(0) as u64;
-            assert_eq!(timestamp_nanos, expected_nanos);
+        let expected_naive = NaiveDate::from_ymd_opt(current_year, 10, 11)
+            .unwrap()
+            .and_hms_opt(22, 14, 15)
+            .unwrap();
+        let expected_nanos = Local
+            .from_local_datetime(&expected_naive)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        assert_eq!(timestamp_nanos, expected_nanos);
+    }
+
+    /// Scenario: RFC 3164 dates use supported day padding and every month abbreviation.
+    /// Guarantees: The direct decoder accepts space-padded, zero-padded, and two-digit days.
+    #[test]
+    fn test_parse_rfc3164_naive_timestamp_accepts_days_and_months() {
+        let day_cases: &[(&[u8], u32)] = &[
+            (b"Jan  1 00:00:00", 1),
+            (b"Jan 01 00:00:00", 1),
+            (b"Jan 31 00:00:00", 31),
+        ];
+        for (input, expected_day) in day_cases {
+            let parsed = parse_rfc3164_naive_timestamp(input, 2024).unwrap();
+            assert_eq!(parsed.date().day(), *expected_day);
+        }
+
+        let month_cases: &[(&[u8], u32)] = &[
+            (b"Jan 01 00:00:00", 1),
+            (b"Feb 01 00:00:00", 2),
+            (b"Mar 01 00:00:00", 3),
+            (b"Apr 01 00:00:00", 4),
+            (b"May 01 00:00:00", 5),
+            (b"Jun 01 00:00:00", 6),
+            (b"Jul 01 00:00:00", 7),
+            (b"Aug 01 00:00:00", 8),
+            (b"Sep 01 00:00:00", 9),
+            (b"Oct 01 00:00:00", 10),
+            (b"Nov 01 00:00:00", 11),
+            (b"Dec 01 00:00:00", 12),
+        ];
+        for (input, expected_month) in month_cases {
+            let parsed = parse_rfc3164_naive_timestamp(input, 2024).unwrap();
+            assert_eq!(parsed.date().month(), *expected_month);
+        }
+    }
+
+    /// Scenario: RFC 3164 input contains leap dates and out-of-range calendar days.
+    /// Guarantees: The direct decoder applies Gregorian calendar validation for the supplied year.
+    #[test]
+    fn test_parse_rfc3164_naive_timestamp_validates_calendar_dates() {
+        assert!(parse_rfc3164_naive_timestamp(b"Feb 29 00:00:00", 2024).is_some());
+        assert!(parse_rfc3164_naive_timestamp(b"Feb 29 00:00:00", 2023).is_none());
+        assert!(parse_rfc3164_naive_timestamp(b"Jan 00 00:00:00", 2024).is_none());
+        assert!(parse_rfc3164_naive_timestamp(b"Jan 32 00:00:00", 2024).is_none());
+        assert!(parse_rfc3164_naive_timestamp(b"Apr 31 00:00:00", 2024).is_none());
+    }
+
+    /// Scenario: RFC 3164 input has invalid length, fields, digits, separators, or time values.
+    /// Guarantees: Malformed fixed-format timestamps return `None` without accepting partial input.
+    #[test]
+    fn test_parse_rfc3164_naive_timestamp_rejects_malformed_input() {
+        let invalid: &[&[u8]] = &[
+            b"",
+            b"Jan 01 00:00:00x",
+            b"Jan 01 00:00:0",
+            b"J\xffn 01 00:00:00",
+            b"Jan  \xff 00:00:00",
+            b"Jan 01 00:00:\xff0",
+            b"Jax 01 00:00:00",
+            b"Jan-01 00:00:00",
+            b"Jan 01-00:00:00",
+            b"Jan 01 00-00:00",
+            b"Jan 01 00:00-00",
+            b"Jan  x 00:00:00",
+            b"Jan 0x 00:00:00",
+            b"Jan 01 0x:00:00",
+            b"Jan 01 00:0x:00",
+            b"Jan 01 00:00:0x",
+            b"Jan 01 24:00:00",
+            b"Jan 01 00:60:00",
+            b"Jan 01 00:00:60",
+        ];
+        for input in invalid {
+            assert!(
+                parse_rfc3164_naive_timestamp(input, 2024).is_none(),
+                "accepted malformed timestamp: {input:?}"
+            );
+        }
+    }
+
+    /// Scenario: An RFC 3164 message has timestamp-shaped bytes with an invalid month.
+    /// Guarantees: Message parsing still succeeds while timestamp conversion returns `None`.
+    #[test]
+    fn test_malformed_rfc3164_timestamp_does_not_reject_message() {
+        let result = parse(b"<34>Jax 01 00:00:00 host tag: message").unwrap();
+
+        assert!(matches!(result, ParsedSyslogMessage::Rfc3164(_)));
+        assert_eq!(result.timestamp(), None);
+    }
+
+    /// Scenario: A CEF event is wrapped by an RFC 3164 syslog header.
+    /// Guarantees: The combined representation uses the same local timestamp conversion as RFC 3164.
+    #[test]
+    fn test_parsed_syslog_message_timestamp_cef_with_rfc3164() {
+        let input = b"<134>Oct 11 22:14:15 host CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, ParsedSyslogMessage::CefWithRfc3164(_, _)));
+
+        let current_year = Local::now().year();
+        let expected_naive = NaiveDate::from_ymd_opt(current_year, 10, 11)
+            .unwrap()
+            .and_hms_opt(22, 14, 15)
+            .unwrap();
+        let expected_nanos = Local
+            .from_local_datetime(&expected_naive)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        assert_eq!(result.timestamp(), Some(expected_nanos));
+    }
+
+    /// Scenario: RFC 3164 and wrapped CEF contain normal, unusual, or malformed timestamps.
+    /// Guarantees: The fast path and fallback preserve the former Chrono timestamp results.
+    #[test]
+    fn test_rfc3164_timestamp_preserves_legacy_acceptance() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"Jan 01 01:02:03", true),
+            (b"jAn 01 01:02:03", true),
+            (b"JAN 01 01:02:03", true),
+            (b"Jan \t1 01:02:03", true),
+            (b"Jan  1  1: 2: 3", true),
+            (b"Jun 30 23:59:60", true),
+            (b"Jan 01 01:02:61", false),
+            (b"Jan 00 01:02:03", false),
+            (b"Jax 01 01:02:03", false),
+            (b"J\xffn 01 01:02:03", false),
+        ];
+        let year = Local::now().year();
+        for &(timestamp, accepted) in cases {
+            let naive = std::str::from_utf8(timestamp).ok().and_then(|text| {
+                NaiveDateTime::parse_from_str(&format!("{year} {text}"), "%Y %b %d %H:%M:%S").ok()
+            });
+            assert_eq!(
+                naive.is_some(),
+                accepted,
+                "legacy acceptance: {timestamp:?}"
+            );
+            let expected = naive
+                .and_then(|dt| Local.from_local_datetime(&dt).single())
+                .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64);
+            for body in ["tag: message", "CEF:0|Security|product|1.0|100|test|10|"] {
+                let mut input = b"<34>".to_vec();
+                input.extend_from_slice(timestamp);
+                input.extend_from_slice(format!(" host {body}").as_bytes());
+                let parsed = parse(&input).expect("timestamp failure must not reject a message");
+                assert_eq!(parsed.timestamp(), expected, "timestamp: {timestamp:?}");
+            }
         }
     }
 
