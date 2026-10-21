@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792557556271,
+  "lastUpdate": 1792561361618,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -68808,6 +68808,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 118.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6d6255f89f6585ce698b332def8fdaabd6ffe780",
+          "message": "chore(filelog): add bounded Linux file discovery (#4459)\n\n## PR description\n\n### What this adds\n\nImplements Task 7a of #2844: finding and checking files for the Filelog\nreceiver.\n\nThe scanner walks configured directories, applies include/exclude rules,\nand\nreports files in small batches. It limits memory, open file handles, and\nwork\nper scan so large directory trees cannot grow its resource use without\nbounds.\n\n### How it works\n\n- Checks exclusions before opening a file for reading.\n- Checks new candidates twice to detect changes during scanning.\n- Supports a lighter presence check for files already being tracked.\n- Handles symlinks, missing files, directory changes, and cancellation.\n- Reports when a scan is incomplete, so later stages do not mistake\nmissing\n  observations for files being gone.\n- Keeps the receiver's checkpoint directory out of collection.\n\nFor example, if `app.log` changes while discovery is checking it, the\nscanner\nreports the uncertainty instead of returning it as a stable candidate.\n\n### Scope\n\nThis adds the Linux scanning building block. It does not yet wire up the\nreceiver, continuously read and export logs, or decide when rotated\nfiles\nare finished. Reconciliation follows in Task 7b.\n\nThe checkpoint format is unchanged.\n\n### Compatibility and limits\n\nThe scanner requires `openat2`, introduced in Linux 5.6, to be available\nand\nallowed by the host or container security settings. It checks actual\navailability,\nso vendor backports can work too. If verification is unavailable or\nblocked, it\nreports `VerificationUnavailable` and admits no files. There is no\nfallback yet.\n\nReceiver integration (Task 24, tested by Task 18) will check this before\nreporting\nReady, without waiting for a full scan, and give a clear startup error\nwhen the\nrequired verification cannot run. Temporary resource shortages remain\nretryable.\nThis startup wiring is not part of this PR. Task 25 covers deployment\nguidance;\nTask 35 tracks support for environments without `openat2`.\n\nDirectory resumption uses native support on ext4, XFS, and btrfs. Other\nfilesystems use conservative replay. A scan that needs replay remains\nincomplete, which can delay later cleanup.\n\n### Validation\n\n- **macOS:** Full workspace checks (`cargo xtask check`) passed.\n- **Linux test VM:** Affected-crate checks, strict Clippy, and 202\nFilelog tests\n  passed.\n- **Linux filesystems:** Discovery tests passed on tmpfs, XFS, btrfs,\nand\n  overlayfs.\n- **Linux allocations:** The allocation test recorded zero allocations\nacross\n  six warm scans, including long paths.\n\nThese checks validate the scanner; end-to-end receiver performance\nremains\npart of integration testing.",
+          "timestamp": "2026-10-21T04:35:11Z",
+          "tree_id": "b07f52ebd41b0aef197d70257c3808d55ce552f9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/6d6255f89f6585ce698b332def8fdaabd6ffe780"
+        },
+        "date": 1792561338886,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.14,
             "unit": "MB"
           },
           {
