@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792540066722,
+  "lastUpdate": 1792541302658,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -68278,6 +68278,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 125.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 112.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "28323f92d008b7d138efe25b03070744d739dacb",
+          "message": "chore(windows_perf_counters): preserve static attribute keys  (#4461)\n\n# Chore Summary\n\nPreserve configured static attribute keys verbatim in the Windows\nperformance-counter receiver. Reject only literal empty keys and keys\nstarting with the exact `windows.perf_counter.` prefix.\n\nRemove key trimming and post-trim collision checks so whitespace-only,\npadded, and space-distinct keys keep their configured spelling. This\nmatches the Go receiver, which preserves attribute-key and string-value\nspelling. String values, static `instance` precedence, and ignored\nattributes on implicit mappings are unchanged. Native counter-name\nvalidation is unchanged.\n\nUpdate tests that expected trimming, and add decoded-output coverage for\nexact key/value preservation and attribute uniqueness.\n\n**Note:** this PR also includes a code restructure in a separate commit\nfor easier review:\n\n- [**Attribute-key behavior and\ntests**](https://github.com/open-telemetry/otel-arrow/commit/3664156305775aa1f0b2235dbe1c2e4e98b94e03):\nthe primary change described above.\n- [**Code\nrestructure**](https://github.com/open-telemetry/otel-arrow/commit/efa21b411e1301f5ca399764d2d91beda021e0c1):\nmove the OTAP builder implementation and tests into\n`otap_builder/mod.rs` and `otap_builder/tests.rs`.\n\n## Related issue\n\nPart of #4074.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>\nCopilot-Session: 6914d667-93ca-4306-947d-3c3dfc46a5cf",
+          "timestamp": "2026-10-20T22:50:17Z",
+          "tree_id": "d4e8e4c42cc36989e5d4454de91a1c1298a5297c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/28323f92d008b7d138efe25b03070744d739dacb"
+        },
+        "date": 1792541286761,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.2,
             "unit": "MB"
           },
           {
