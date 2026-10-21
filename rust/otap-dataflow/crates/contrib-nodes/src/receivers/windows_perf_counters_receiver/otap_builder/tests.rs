@@ -3,16 +3,13 @@
 
 use super::super::config::RuntimeConfig;
 use super::super::model::{SamplePoint, scale_integer};
+use super::super::test_utils::decode;
 use super::*;
 use arrow::array::{Array, TimestampNanosecondArray};
-use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, metric, number_data_point,
 };
-use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
-use otel_arrow_dfe_pdata_codec::OtapPayload;
-use prost::Message;
 use std::sync::Arc;
 
 fn counter(name: &str, kind: MetricKind) -> CounterConfig {
@@ -30,24 +27,31 @@ fn counter(name: &str, kind: MetricKind) -> CounterConfig {
 fn point(counter_index: usize, value: SampleValue) -> SamplePoint {
     SamplePoint {
         counter_index,
+        path: Arc::from("fixture"),
+        timestamp_unix_nano: 1,
+        start_time_unix_nano: None,
         value,
     }
 }
 
-fn sample(start: i64, timestamp: i64, points: Vec<SamplePoint>) -> Sample {
+fn sample(
+    counters: &[CounterConfig],
+    start: i64,
+    timestamp: i64,
+    mut points: Vec<SamplePoint>,
+) -> Sample {
+    for point in &mut points {
+        if let Some(counter) = counters.get(point.counter_index) {
+            point.path = Arc::from(counter.path.as_str());
+        }
+        point.timestamp_unix_nano = timestamp;
+        point.start_time_unix_nano = Some(start);
+    }
     Sample {
-        start_time_unix_nano: start,
         timestamp_unix_nano: timestamp,
         points,
         failures: Vec::new(),
     }
-}
-
-fn decode(records: OtapArrowRecords) -> ExportMetricsServiceRequest {
-    let bytes: OtlpProtoBytes = OtapPayload::from_otap(records)
-        .try_into_with_default()
-        .unwrap();
-    ExportMetricsServiceRequest::decode(bytes.as_bytes()).unwrap()
 }
 
 fn attributes(attrs: &[KeyValue]) -> BTreeMap<&str, &str> {
@@ -85,6 +89,7 @@ fn projects_metric_kinds_and_numeric_types() {
     let records = into_otap(
         &counters,
         sample(
+            &counters,
             start,
             timestamp,
             values
@@ -199,6 +204,7 @@ fn projects_shared_metric_with_attributes_and_omissions() {
     let records = into_otap(
         &config.counters,
         sample(
+            &config.counters,
             0,
             10,
             vec![
@@ -290,6 +296,7 @@ fn projects_static_attribute_spelling_verbatim() {
         into_otap(
             &config.counters,
             sample(
+                &config.counters,
                 0,
                 10,
                 vec![
@@ -344,6 +351,7 @@ fn projects_optional_metric_metadata_without_empty_records() {
         into_otap(
             &config.counters,
             sample(
+                &config.counters,
                 5,
                 10,
                 vec![
@@ -405,6 +413,7 @@ fn projects_optional_metric_metadata_without_empty_records() {
         into_otap(
             &config.counters,
             sample(
+                &config.counters,
                 5,
                 10,
                 (0..config.counters.len())
@@ -448,6 +457,7 @@ fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
                 into_otap(
                     &config.counters,
                     sample(
+                        &config.counters,
                         5,
                         10,
                         vec![
@@ -511,6 +521,7 @@ fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
                 into_otap(
                     &config.counters,
                     sample(
+                        &config.counters,
                         5,
                         10,
                         vec![
@@ -565,6 +576,7 @@ fn projects_configured_path_names_with_exact_definition_lookup() {
             into_otap(
                 &config.counters,
                 sample(
+                    &config.counters,
                     0,
                     10,
                     vec![
@@ -639,6 +651,7 @@ fn sum_configuration_preserves_decoded_output() {
         into_otap(
             &config.counters,
             sample(
+                &config.counters,
                 start,
                 timestamp,
                 vec![
@@ -697,6 +710,7 @@ fn gauges_ignore_cumulative_start_time() {
         let records = into_otap(
             &counters,
             sample(
+                &counters,
                 start,
                 10,
                 vec![point(0, SampleValue::Value(Number::Integer(7)))],
@@ -724,9 +738,10 @@ fn validates_emitted_sum_start_time() {
             into_otap(
                 &counters,
                 sample(
+                    &counters,
                     start,
                     10,
-                    vec![point(0, SampleValue::Value(Number::Integer(1)))]
+                    vec![point(0, SampleValue::Value(Number::Integer(1)))],
                 )
             ),
             Err(ArrowError::InvalidArgumentError(message))
@@ -740,6 +755,7 @@ fn validates_emitted_sum_start_time() {
             into_otap(
                 &counters,
                 sample(
+                    &counters,
                     start,
                     10,
                     vec![point(0, SampleValue::Value(Number::Integer(1)))],
@@ -757,8 +773,8 @@ fn validates_emitted_sum_start_time() {
     }
 }
 
-/// Scenario: Observation time is zero or negative, with ready, omitted or empty points.
-/// Guarantees: All samples require a positive observation timestamp; errors retain the invalid value.
+/// Scenario: The sample timestamp is zero or negative, including empty and omitted samples.
+/// Guarantees: All samples require a positive envelope timestamp; errors retain the invalid value.
 #[test]
 fn rejects_nonpositive_observation_time() {
     let counters = [counter("gauge", MetricKind::Gauge)];
@@ -769,7 +785,7 @@ fn rejects_nonpositive_observation_time() {
             vec![point(0, SampleValue::Value(Number::Integer(1)))],
         ] {
             assert!(matches!(
-                into_otap(&counters, sample(1, timestamp, points)),
+                into_otap(&counters, sample(&counters, 1, timestamp, points)),
                 Err(ArrowError::InvalidArgumentError(message))
                     if message == format!("sample has non-positive timestamp {timestamp}")
             ));
@@ -785,13 +801,13 @@ fn omits_empty_and_unobserved_samples() {
     for start in [-1, 0, 11] {
         for points in [vec![], vec![point(0, SampleValue::NoObservation)]] {
             assert!(
-                into_otap(&counters, sample(start, 10, points))
+                into_otap(&counters, sample(&counters, start, 10, points))
                     .unwrap()
                     .is_none()
             );
         }
     }
-    assert!(into_otap(&[], sample(0, 1, vec![])).unwrap().is_none());
+    assert!(into_otap(&[], sample(&[], 0, 1, vec![])).unwrap().is_none());
 }
 
 /// Scenario: A point references a missing counter or an emit-ready value is a non-finite double.
@@ -804,9 +820,10 @@ fn rejects_invalid_counter_references_and_values() {
             into_otap(
                 &counters,
                 sample(
+                    &counters,
                     0,
                     1,
-                    vec![point(0, SampleValue::Value(Number::Double(value)))]
+                    vec![point(0, SampleValue::Value(Number::Double(value)))],
                 )
             ),
             Err(ArrowError::InvalidArgumentError(message))
@@ -819,7 +836,7 @@ fn rejects_invalid_counter_references_and_values() {
             SampleValue::NoObservation,
         ] {
             assert!(matches!(
-                into_otap(&counters, sample(0, 1, vec![point(index, value)])),
+                into_otap(&counters, sample(&counters, 0, 1, vec![point(index, value)])),
                 Err(ArrowError::InvalidArgumentError(message))
                     if message == format!("sample references missing configured counter {index}")
             ));
@@ -827,10 +844,10 @@ fn rejects_invalid_counter_references_and_values() {
     }
 }
 
-/// Scenario: A configured counter occurs twice with numeric values, omissions or a mix of both.
-/// Guarantees: A repeated counter rejects the whole sample, whether its points have values or not.
+/// Scenario: One mapping/path pair occurs twice with values or omissions and equal or different timestamps.
+/// Guarantees: Timestamp differences and omitted values do not make a duplicate observation distinct.
 #[test]
-fn rejects_duplicate_counter_indices() {
+fn rejects_duplicate_concrete_observations() {
     let counters = [counter("gauge", MetricKind::Gauge)];
     for first in [
         SampleValue::Value(Number::Integer(7)),
@@ -840,14 +857,138 @@ fn rejects_duplicate_counter_indices() {
             SampleValue::Value(Number::Integer(9)),
             SampleValue::NoObservation,
         ] {
-            assert!(matches!(
-                into_otap(
-                    &counters,
-                    sample(0, 1, vec![point(0, first), point(0, second)])
-                ),
-                Err(ArrowError::InvalidArgumentError(message))
-                    if message == r"sample repeats counter \Object\gauge (metric gauge) at index 0"
-            ));
+            for timestamp in [1, 2] {
+                let mut sample = sample(&counters, 0, 1, vec![point(0, first), point(0, second)]);
+                sample.points[1].timestamp_unix_nano = timestamp;
+                assert!(matches!(
+                    into_otap(&counters, sample),
+                    Err(ArrowError::InvalidArgumentError(message))
+                        if message == r"sample repeats counter \Object\gauge (metric gauge) at index 0"
+                ));
+            }
         }
+    }
+}
+
+/// Scenario: One mapping carries two concrete paths/times that differ from the envelope timestamp.
+/// Guarantees: Gauge and existing Sum output retain each observation's identity, time, value and static attributes without new fields.
+#[test]
+fn projects_distinct_observations_under_one_mapping() {
+    for kind in [MetricKind::Gauge, MetricKind::Sum] {
+        let mut config = counter("shared", kind);
+        config.attributes = Arc::new(BTreeMap::from([("state".to_owned(), "used".to_owned())]));
+        let observations = [
+            (r"\Object(worker#01)\Counter", 17, 9, 42),
+            (r"\Object(app)\Counter", 11, 3, -7),
+        ];
+        let sample = Sample {
+            timestamp_unix_nano: 30,
+            points: observations
+                .iter()
+                .map(|(path, timestamp, start, value)| SamplePoint {
+                    counter_index: 0,
+                    path: Arc::from(*path),
+                    timestamp_unix_nano: *timestamp,
+                    start_time_unix_nano: Some(*start),
+                    value: SampleValue::Value(Number::Integer(*value)),
+                })
+                .collect(),
+            failures: Vec::new(),
+        };
+        let decoded = decode(into_otap(&[config], sample).unwrap().unwrap());
+        let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "shared");
+        let points = match metrics[0].data.as_ref().unwrap() {
+            metric::Data::Gauge(gauge) if kind == MetricKind::Gauge => &gauge.data_points,
+            metric::Data::Sum(sum) if kind == MetricKind::Sum => {
+                assert_eq!(
+                    sum.aggregation_temporality,
+                    AggregationTemporality::Cumulative as i32
+                );
+                assert!(!sum.is_monotonic);
+                &sum.data_points
+            }
+            _ => panic!("unexpected metric kind"),
+        };
+        assert_eq!(points.len(), observations.len());
+        for (point, (path, timestamp, start, value)) in points.iter().zip(observations) {
+            assert_eq!(point.time_unix_nano, timestamp as u64);
+            assert_eq!(
+                point.start_time_unix_nano,
+                if kind == MetricKind::Sum {
+                    start as u64
+                } else {
+                    0
+                }
+            );
+            assert_eq!(point.value, Some(number_data_point::Value::AsInt(value)));
+            assert_eq!(point.attributes.len(), 2);
+            assert_eq!(
+                attributes(&point.attributes),
+                BTreeMap::from([("state", "used"), ("windows.perf_counter.path", path)])
+            );
+        }
+    }
+}
+
+/// Scenario: A later Gauge has a non-positive time or a Sum has a missing or future start.
+/// Guarantees: Emitted observations validate their own times with path context; omitted points do not require output timestamps.
+#[test]
+fn validates_each_concrete_observation() {
+    const PATH: &str = r"\Object(app)\Counter";
+    const TIMESTAMP: i64 = 20;
+    let counters = [counter("sum", MetricKind::Sum)];
+    for (start, expected) in [
+        (None, "has no start time"),
+        (Some(21), "invalid start time 21"),
+    ] {
+        let sample = Sample {
+            timestamp_unix_nano: 30,
+            points: vec![
+                SamplePoint {
+                    path: Arc::from(r"\Object(healthy)\Counter"),
+                    timestamp_unix_nano: 10,
+                    start_time_unix_nano: Some(5),
+                    ..point(0, SampleValue::Value(Number::Integer(1)))
+                },
+                SamplePoint {
+                    path: Arc::from(PATH),
+                    timestamp_unix_nano: TIMESTAMP,
+                    start_time_unix_nano: start,
+                    ..point(0, SampleValue::Value(Number::Integer(2)))
+                },
+            ],
+            failures: Vec::new(),
+        };
+        assert!(matches!(
+            into_otap(&counters, sample),
+            Err(ArrowError::InvalidArgumentError(message))
+                if message.contains(expected) && message.contains(PATH)
+        ));
+    }
+
+    let counters = [counter("gauge", MetricKind::Gauge)];
+    for timestamp in [i64::MIN, -1, 0] {
+        let mut sample = sample(
+            &counters,
+            0,
+            TIMESTAMP,
+            vec![
+                point(0, SampleValue::Value(Number::Integer(1))),
+                point(0, SampleValue::Value(Number::Integer(2))),
+            ],
+        );
+        sample.points[0].path = Arc::from(r"\Object(healthy)\Counter");
+        sample.points[1].path = Arc::from(PATH);
+        sample.points[1].timestamp_unix_nano = timestamp;
+        let mut omitted = sample.clone();
+        omitted.points[1].value = SampleValue::NoObservation;
+        assert!(matches!(
+            into_otap(&counters, sample),
+            Err(ArrowError::InvalidArgumentError(message))
+                if message == format!("counter {PATH} has non-positive timestamp {timestamp}")
+        ));
+        assert!(into_otap(&counters, omitted).unwrap().is_some());
     }
 }
