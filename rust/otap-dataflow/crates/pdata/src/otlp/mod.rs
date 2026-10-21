@@ -56,6 +56,17 @@ pub enum EncodeFailure {
     Invalid,
 }
 
+impl std::error::Error for EncodeFailure {}
+
+impl std::fmt::Display for EncodeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dropped => write!(f, "dropped"),
+            Self::Invalid => write!(f, "invalid"),
+        }
+    }
+}
+
 impl From<Error> for EncodeFailure {
     fn from(_: Error) -> Self {
         // Note! We discard here. Could keep it, would slow the encoder.
