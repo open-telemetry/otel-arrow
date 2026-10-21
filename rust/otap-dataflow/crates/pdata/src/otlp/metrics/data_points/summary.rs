@@ -6,7 +6,7 @@ use crate::arrays::{
     get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::ProtoBuffer;
+use crate::otlp::{ProtoBuffer, EncodeResult};
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
@@ -117,7 +117,7 @@ pub(crate) fn proto_encode_summary_data_point(
     attr_arrays: Option<&Attribute32Arrays<'_>>,
     attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     if let Some(attrs) = attr_arrays
         && let Some(id) = summary_dp_arrays.id.value_at(index)
     {
@@ -185,7 +185,7 @@ pub(crate) fn proto_encode_value_quantile(
     index: usize,
     quantile_arrays: &QuantileArrays<'_>,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     if let Some(val) = quantile_arrays.quantile_array.value_at(index) {
         result_buf.encode_field_tag(VALUE_AT_QUANTILE_QUANTILE, wire_types::FIXED64)?;
         result_buf.extend_from_slice(&val.to_le_bytes())?;

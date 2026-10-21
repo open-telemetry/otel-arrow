@@ -7,9 +7,11 @@ use num_enum::TryFromPrimitive;
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{Error, Result};
-use crate::otlp::attributes::cbor::proto_encode_cbor_bytes;
-use crate::otlp::common::BoundedBuf;
-use crate::otlp::common::{AnyValueArrays, ProtoBuffer};
+use crate::otlp::{
+    EncodeResult,
+    attributes::cbor::proto_encode_cbor_bytes,
+    common::{AnyValueArrays, BoundedBuf, ProtoBuffer},
+};
 use crate::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_BYTES_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE,
     ANY_VALUE_STRING_VALUE, KEY_VALUE_KEY, KEY_VALUE_VALUE,
@@ -83,7 +85,7 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     attr_arrays: &AttributeArrays<'_, T>,
     index: usize,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     if let Some(key) = attr_arrays.attr_key.str_at(index) {
         result_buf.encode_string(KEY_VALUE_KEY, key)?;
     }
@@ -107,7 +109,7 @@ pub(crate) fn encode_any_value(
     index: usize,
     value_type: AttributeValueType,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     match value_type {
         AttributeValueType::Str => {
             let val = attr_arrays

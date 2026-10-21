@@ -4,8 +4,9 @@
 //! This module contains traits and utilities for OTLP (OpenTelemetry
 //! Protocol) message types.
 
+use crate::error::Error;
+use crate::otap::OtapArrowRecords;
 use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
-use crate::{error::Result, otap::OtapArrowRecords};
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
@@ -36,6 +37,33 @@ mod batching_tests;
 
 #[cfg(test)]
 mod tests;
+
+/// Indicating success.
+pub type EncodeSuccess = ();
+
+/// Returned when a buffer write cannot fit within the size limit.
+///
+/// Used as the error type in [`EncodeResult`] which is returned from
+/// buffer write methods. This is used for to indicate truncation, no
+/// distinction is made for partial/total drop.
+#[derive(Debug)]
+pub enum EncodeFailure {
+    /// Ran out of space.
+    Dropped,
+    /// Invalid data (e.g., CBOR decode failure) in OTAP/OTLP encoding.
+    /// Note: Not saved!
+    Invalid,
+}
+
+impl From<Error> for EncodeFailure {
+    fn from(_: Error) -> Self {
+        // Note! We discard here. Could keep it, would slow the encoder.
+        EncodeFailure::Invalid
+    }
+}
+
+/// Result type for buffer write methods.
+pub type EncodeResult = Result<EncodeSuccess, EncodeFailure>;
 
 /// Pipeline data represented as protobuf serialized OTLP request messages
 #[derive(Clone, Debug)]
@@ -137,7 +165,7 @@ pub trait ProtoBytesEncoder {
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         proto_buffer: &mut ProtoBuffer,
-    ) -> Result<()>;
+    ) -> EncodeResult;
 }
 
 // Into implementations for OTLP common types to support builder APIs

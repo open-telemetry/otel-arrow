@@ -3,8 +3,7 @@
 
 //! Error and result types
 
-use crate::otlp::common::EncodeFailure;
-use crate::otlp::metrics::MetricType;
+use crate::otlp::{EncodeFailure, metrics::MetricType};
 use crate::{
     otlp::attributes::AttributeValueType, proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };

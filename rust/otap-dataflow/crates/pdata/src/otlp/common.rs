@@ -6,7 +6,10 @@ use crate::arrays::{
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 use crate::error::{Error, Result};
-use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
+use crate::otlp::{
+    EncodeFailure, EncodeResult, EncodeSuccess,
+    attributes::{Attribute16Arrays, encode_key_value},
+};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -60,7 +63,7 @@ pub(crate) fn proto_encode_resource(
     resource_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     // add attributes
     if let Some(attrs_arrays) = resource_attrs_arrays
         && let Some(res_id) = resource_arrays.id.value_at(index)
@@ -191,7 +194,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     if let Some(col) = &scope_arrays.name
         && let Some(val) = col.str_at(index)
     {
@@ -324,19 +327,23 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
 /// Suffix appended to truncated strings.
 pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 
-/// Returned when a buffer write cannot fit within the size limit.
-///
-/// Used as the error type in [`EncodeResult`] which is returned from
-/// buffer write methods. This is used for to indicate truncation, no
-/// distinction is made for partial/total drop.
+/// Truncation status.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EncodeFailure {
-    /// Ran out of space.
-    Dropped,
+pub enum Truncation {
+    /// No truncation.
+    None,
+    /// Some truncation
+    Some,
+}
+
+impl From<EncodeSuccess> for Truncation {
+    fn from(_: EncodeSuccess) -> Self {
+        Truncation::None
+    }
 }
 
 /// Result type for buffer write methods.
-pub type EncodeResult = std::result::Result<(), EncodeFailure>;
+pub type TruncateResult = std::result::Result<Truncation, EncodeFailure>;
 
 /// Saved buffer position for transactional encoding.
 ///
@@ -494,16 +501,14 @@ pub trait BoundedBuf {
     }
 
     /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
-    ///
-    /// Returns `Err(Dropped)` if the string is truncated or entirely dropped.
-    fn encode_string_bounded(&mut self, field_tag: u64, val: &str) -> EncodeResult {
+    fn encode_string_truncating(&mut self, field_tag: u64, val: &str) -> TruncateResult {
         let full_len = val.len();
         let tag_bytes = varint_len((field_tag << 3) | wire_types::LEN);
 
         // Check if the full string fits.
         let full_field_size = tag_bytes + varint_len(full_len as u64) + full_len;
         if self.len() + full_field_size <= self.limit() {
-            return self.encode_string(field_tag, val);
+            return Ok(self.encode_string(field_tag, val)?.into());
         }
 
         let suffix_len = TRUNCATION_SUFFIX.len();
@@ -547,32 +552,7 @@ pub trait BoundedBuf {
             .expect("pre-validated fit");
         self.try_extend(TRUNCATION_SUFFIX)
             .expect("pre-validated fit");
-        Err(EncodeFailure::Dropped)
-    }
-
-    /// Encode a string field, truncating with a suffix if it won't fit.
-    ///
-    /// Returns:
-    /// - `Ok(false)` if the full string was written.
-    /// - `Ok(true)` if the value was truncated (with `[...]` suffix appended).
-    /// - `Err(Dropped)` if even a minimum truncated form would not fit;
-    ///   the buffer is left unchanged in this case.
-    fn encode_string_truncating(
-        &mut self,
-        field_tag: u64,
-        val: &str,
-    ) -> std::result::Result<bool, EncodeFailure> {
-        let start = self.len();
-        match self.encode_string_bounded(field_tag, val) {
-            Ok(()) => Ok(false),
-            Err(failure) => {
-                if self.len() == start {
-                    Err(failure)
-                } else {
-                    Ok(true)
-                }
-            }
-        }
+        Ok(Truncation::Some)
     }
 
     /// Returns the narrowest placeholder width (1-4 bytes) sufficient
@@ -598,88 +578,42 @@ pub trait BoundedBuf {
     /// closure's content, and patches the length. If any write fails,
     /// the error propagates via `?`.
     #[inline]
-    fn encode_len_delimited<E: From<EncodeFailure>>(
+    fn encode_len_delimited<T, E: From<EncodeFailure>>(
         &mut self,
         field_tag: u64,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E>
+        f: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
     where
         Self: Sized,
     {
         match self.placeholder_width() {
-            1 => self.encode_len_delimited_width::<1, E, _>(field_tag, f),
-            2 => self.encode_len_delimited_width::<2, E, _>(field_tag, f),
-            3 => self.encode_len_delimited_width::<3, E, _>(field_tag, f),
-            _ => self.encode_len_delimited_width::<4, E, _>(field_tag, f),
+            1 => self.encode_len_delimited_width::<1, _, E, _>(field_tag, f),
+            2 => self.encode_len_delimited_width::<2, _, E, _>(field_tag, f),
+            3 => self.encode_len_delimited_width::<3, _, E, _>(field_tag, f),
+            _ => self.encode_len_delimited_width::<4, _, E, _>(field_tag, f),
         }
     }
 
     /// Implementation of [`encode_len_delimited`](Self::encode_len_delimited)
     /// with an explicit `B`-byte placeholder width.
     #[inline]
-    fn encode_len_delimited_width<const B: usize, E, F>(
+    fn encode_len_delimited_width<const B: usize, T, E, F>(
         &mut self,
         field_tag: u64,
         f: F,
-    ) -> std::result::Result<(), E>
+    ) -> std::result::Result<T, E>
     where
         E: From<EncodeFailure>,
-        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
+        F: FnOnce(&mut Self) -> std::result::Result<T, E>,
         Self: Sized,
     {
         self.encode_field_tag(field_tag, wire_types::LEN)?;
         let len_start_pos = self.len();
         self.try_extend(&make_len_placeholder::<B>())?;
-        f(self)?;
+        let ok = f(self)?;
         let len = self.len() - len_start_pos - B;
         patch_len_placeholder::<B, _>(self, len, len_start_pos);
-        Ok(())
-    }
-
-    /// Like [`encode_len_delimited`], but always patches the length placeholder
-    /// even if the inner closure returns `Err`.
-    ///
-    /// This is intended for nested truncating encoders that may write partial
-    /// content and signal truncation via `Err`. The caller is responsible for
-    /// arranging that any "hard failure" (where no useful bytes were written)
-    /// is rolled back at an outer transaction boundary via [`try_encode`].
-    #[inline]
-    fn encode_len_delimited_partial<E: From<EncodeFailure>>(
-        &mut self,
-        field_tag: u64,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E>
-    where
-        Self: Sized,
-    {
-        match self.placeholder_width() {
-            1 => self.encode_len_delimited_partial_with::<1, E, _>(field_tag, f),
-            2 => self.encode_len_delimited_partial_with::<2, E, _>(field_tag, f),
-            3 => self.encode_len_delimited_partial_with::<3, E, _>(field_tag, f),
-            _ => self.encode_len_delimited_partial_with::<4, E, _>(field_tag, f),
-        }
-    }
-
-    /// Implementation of [`encode_len_delimited_partial`](Self::encode_len_delimited_partial)
-    /// with an explicit `N`-byte placeholder width.
-    #[inline]
-    fn encode_len_delimited_partial_with<const N: usize, E, F>(
-        &mut self,
-        field_tag: u64,
-        f: F,
-    ) -> std::result::Result<(), E>
-    where
-        E: From<EncodeFailure>,
-        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
-        Self: Sized,
-    {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
-        let len_start_pos = self.len();
-        self.try_extend(&make_len_placeholder::<N>())?;
-        let result = f(self);
-        let len = self.len() - len_start_pos - N;
-        patch_len_placeholder::<N, _>(self, len, len_start_pos);
-        result
+        Ok(ok)
     }
 
     /// Run a closure with a temporarily reduced limit.
@@ -707,16 +641,13 @@ pub trait BoundedBuf {
     /// error type), the buffer is rolled back to its state before the
     /// call and the error is returned.
     #[inline]
-    fn try_encode<E>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E>
+    fn try_encode(&mut self, f: impl FnOnce(&mut Self) -> EncodeResult) -> EncodeResult
     where
         Self: Sized,
     {
         let cp = Checkpoint { pos: self.len() };
         match f(self) {
-            Ok(()) => Ok(()),
+            Ok(t) => Ok(t),
             Err(e) => {
                 self.truncate(cp.pos);
                 Err(e)
@@ -1366,13 +1297,11 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use crate::proto::opentelemetry::common::v1::AnyValue;
+    use crate::proto::opentelemetry::common::v1::any_value::Value::StringValue;
     use crate::{
         arrays::MaybeDictArrayAccessor,
-        otlp::common::{
-            BatchSorter, BoundedBuf, ChildIndexIter, EncodeFailure, EncodeResult, ProtoBuffer,
-            Result, SortedBatchCursor, StackProtoBuffer, TRUNCATION_SUFFIX, encode_len_placeholder,
-            patch_len_placeholder,
-        },
         proto::OtlpProtoMessage,
         proto::consts::wire_types,
         schema::consts,
@@ -1794,7 +1723,7 @@ mod test {
     fn test_encode_len_delimited_auto_width() {
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
         let mut buf = StackProtoBuffer::<127>::default();
-        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> Result<()> {
+        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> EncodeResult {
             Ok(buf.encode_string(1, "hi")?)
         })
         .unwrap();
@@ -1803,7 +1732,7 @@ mod test {
 
         // A 128-byte inline buffer should use a 2-byte placeholder (128 >= 2^7).
         let mut buf = StackProtoBuffer::<128>::default();
-        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> Result<()> {
+        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> EncodeResult {
             Ok(buf.encode_string(1, "hi")?)
         })
         .unwrap();
@@ -1812,7 +1741,7 @@ mod test {
 
         // A default (256MiB limit) buffer should use a 4-byte placeholder.
         let mut buf = ProtoBuffer::default();
-        buf.encode_len_delimited(1, |buf| -> Result<()> { Ok(buf.encode_string(1, "hi")?) })
+        buf.encode_len_delimited(1, |buf| -> EncodeResult { Ok(buf.encode_string(1, "hi")?) })
             .unwrap();
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
         assert_eq!(buf.len(), 9);
@@ -1831,7 +1760,7 @@ mod test {
             b.encode_varint(0xDEAD_BEEF)?;
             Err(EncodeFailure::Dropped)
         });
-        assert_eq!(res, Err(EncodeFailure::Dropped));
+        assert!(matches!(res, Err(EncodeFailure::Dropped)));
         assert_eq!(buf.len(), snapshot_len, "len must be restored");
         assert_eq!(buf.as_ref(), snapshot.as_slice(), "bytes must be identical");
 
@@ -1853,7 +1782,7 @@ mod test {
             b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA")?;
             Ok(())
         });
-        assert_eq!(r, Err(EncodeFailure::Dropped));
+        assert!(matches!(r, Err(EncodeFailure::Dropped)));
         // tag(1) + placeholder(1) was written, plus partial content bytes.
         // The placeholder is unpatched (still 0x00), so a parser would read
         // the body as 0 bytes and continue at the partial content as garbage.
@@ -1865,7 +1794,7 @@ mod test {
         let r: EncodeResult = buf.try_encode(|b| {
             b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
         });
-        assert_eq!(r, Err(EncodeFailure::Dropped));
+        assert!(matches!(r, Err(EncodeFailure::Dropped)));
         assert_eq!(buf.len(), 0, "try_encode rolled back partial bytes");
     }
 
@@ -1879,12 +1808,13 @@ mod test {
         buf.encode_string(7, "marker").unwrap();
         let len_before = buf.len();
 
-        let r: EncodeResult = buf.encode_len_delimited_partial(1, |b| {
-            b.extend_from_slice(b"abcde")?;
-            // Caller signals "partial" via Err to outer logic, but bytes stay.
-            Err(EncodeFailure::Dropped)
-        });
-        assert_eq!(r, Err(EncodeFailure::Dropped));
+        let r: Truncation = buf
+            .encode_len_delimited(1, |b| {
+                b.extend_from_slice(b"abcde")?;
+                Ok::<_, EncodeFailure>(Truncation::Some)
+            })
+            .unwrap();
+        assert_eq!(r, Truncation::Some);
 
         // Read back: tag for field 1 (LEN), then patched length, then 5 bytes.
         let bytes = &buf.as_ref()[len_before..];
@@ -1908,14 +1838,14 @@ mod test {
         // (a) Full fit -> Ok(false), no suffix.
         let mut buf = StackProtoBuffer::<64>::default();
         let r = buf.encode_string_truncating(1, "hi");
-        assert_eq!(r, Ok(false));
+        assert!(matches!(r, Ok(Truncation::None)));
         assert!(!buf.as_ref().windows(5).any(|w| w == TRUNCATION_SUFFIX));
 
         // (b) Truncated -> Ok(true), output ends with suffix.
         let mut buf = StackProtoBuffer::<32>::default();
         let long = "X".repeat(1000);
         let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Ok(true));
+        assert!(matches!(r, Ok(Truncation::Some)));
         assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
 
         // (c) Hard fail -> Dropped, buffer unchanged.
@@ -1924,7 +1854,7 @@ mod test {
         buf.extend_from_slice(b"abcd").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
         let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Err(EncodeFailure::Dropped));
+        assert!(matches!(r, Err(EncodeFailure::Dropped)));
         assert_eq!(
             buf.as_ref(),
             snapshot.as_slice(),
@@ -1940,13 +1870,12 @@ mod test {
         let mut buf = StackProtoBuffer::<48>::default();
         let long = "Y".repeat(500);
         let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Ok(true));
+        assert!(matches!(r, Ok(Truncation::Some)));
 
         // Decode as AnyValue (field 1 = string_value).
-        use crate::proto::opentelemetry::common::v1::AnyValue;
         let av = AnyValue::decode(buf.to_bytes()).expect("valid wire bytes");
         let s = match av.value {
-            Some(crate::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s,
+            Some(StringValue(s)) => s,
             other => panic!("unexpected AnyValue variant: {:?}", other),
         };
         assert!(
@@ -1967,7 +1896,7 @@ mod test {
         //   - of length <= max_bytes
         //   - of length >= max_bytes - 3 (since chars are at most 4 bytes)
         for max_bytes in 0..=s.len() {
-            let out = super::truncate_utf8(&s, max_bytes);
+            let out = truncate_utf8(&s, max_bytes);
             assert!(out.len() <= max_bytes, "max_bytes={max_bytes}");
             assert!(
                 max_bytes < 4 || out.len() >= max_bytes - 3,
@@ -1980,7 +1909,7 @@ mod test {
         }
 
         // Above the input length, returns the whole string.
-        assert_eq!(super::truncate_utf8(&s, 1000), s.as_str());
+        assert_eq!(truncate_utf8(&s, 1000), s.as_str());
     }
 
     #[test]

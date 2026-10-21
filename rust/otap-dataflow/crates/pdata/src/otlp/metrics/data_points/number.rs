@@ -6,7 +6,7 @@ use crate::arrays::{
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::ProtoBuffer;
+use crate::otlp::{EncodeResult, ProtoBuffer};
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
@@ -67,7 +67,7 @@ pub(crate) fn proto_encode_number_data_point(
     exemplar_attr_arrays: Option<&Attribute32Arrays<'_>>,
     exemplar_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     if let Some(attrs) = attr_arrays
         && let Some(id) = number_dp_arrays.id.value_at(index)
     {

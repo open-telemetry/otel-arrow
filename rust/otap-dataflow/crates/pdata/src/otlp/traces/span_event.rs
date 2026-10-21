@@ -11,7 +11,7 @@ use crate::{
     },
     error::{Error, Result},
     otlp::{
-        ProtoBuffer,
+        ProtoBuffer, EncodeResult,
         attributes::{Attribute32Arrays, encode_key_value},
         common::{ChildIndexIter, SortedBatchCursor},
     },
@@ -56,7 +56,7 @@ pub fn encode_span_event(
     attrs_cursor: &mut SortedBatchCursor,
     attrs_arrays: Option<&Attribute32Arrays<'_>>,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> EncodeResult {
     if let Some(col) = &event_arrays.time_unix_nano
         && let Some(val) = col.value_at(index)
     {

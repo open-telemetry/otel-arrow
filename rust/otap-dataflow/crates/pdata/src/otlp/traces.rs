@@ -7,7 +7,7 @@ use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
-use crate::otlp::common::BoundedBuf;
+use crate::otlp::{EncodeResult, BoundedBuf};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
     proto_encode_instrumentation_scope, proto_encode_resource,
@@ -119,7 +119,7 @@ impl ProtoBytesEncoder for TracesProtoBytesEncoder {
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         otap_batch.decode_transport_optimized_ids()?;
 
         let Some(spans_rb) = otap_batch.root_record_batch() else {
@@ -226,7 +226,7 @@ impl TracesProtoBytesEncoder {
         &mut self,
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -286,7 +286,7 @@ impl TracesProtoBytesEncoder {
         &mut self,
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -345,7 +345,7 @@ impl TracesProtoBytesEncoder {
         &mut self,
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -502,7 +502,7 @@ impl TracesProtoBytesEncoder {
         index: usize,
         status_arrays: &SpanStatusArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         if let Some(col) = &status_arrays.message
             && let Some(val) = col.str_at(index)
         {

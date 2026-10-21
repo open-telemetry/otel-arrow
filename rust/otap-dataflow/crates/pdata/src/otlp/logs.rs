@@ -12,7 +12,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::ProtoBytesEncoder;
+use crate::otlp::{EncodeResult, ProtoBytesEncoder};
 use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
@@ -207,7 +207,7 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         otap_batch.decode_transport_optimized_ids()?;
 
         let Some(logs_rb) = otap_batch.root_record_batch() else {
@@ -279,7 +279,7 @@ impl LogsProtoBytesEncoder {
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -337,7 +337,7 @@ impl LogsProtoBytesEncoder {
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -395,7 +395,7 @@ impl LogsProtoBytesEncoder {
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> Result<()> {
+    ) -> EncodeResult {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
