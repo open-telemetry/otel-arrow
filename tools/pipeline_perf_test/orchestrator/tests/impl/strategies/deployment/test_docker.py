@@ -226,6 +226,7 @@ def test_start_applies_default_ulimits_when_unset(
     mock_context,
 ):
     mock_client = MagicMock()
+    mock_client.info.return_value = {"OSType": "linux"}
     mock_docker_client.return_value = mock_client
     config = DockerDeploymentConfig(
         image="my-image:latest",
