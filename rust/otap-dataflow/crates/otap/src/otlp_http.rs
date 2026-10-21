@@ -35,7 +35,6 @@ use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
@@ -842,11 +841,16 @@ impl HttpHandler {
                     Context::default()
                 };
 
-                let payload = match signal {
-                    SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(body),
-                    SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(body),
-                    SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(body),
-                };
+                // SAFETY: PipelineRuntimeServices validates the immutable global
+                // registry before starting receivers; the built-in OTLP codec
+                // is always registered and cannot disappear at runtime.
+                let payload = otel_arrow_dfe_pdata_codec::builtins::resolve_otlp()
+                    .expect("validated OTLP codec")
+                    .admit(signal, body)
+                    .map_err(|_| {
+                        self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
+                        processing.refused(signal, Box::new(unsupported_media_type()))
+                    })?;
 
                 let mut pdata = OtapPdata::new(context, payload.into());
                 pdata.set_peer_addr(self.peer_addr);
@@ -1021,6 +1025,7 @@ pub async fn serve(
     let tracker = TaskTracker::new();
 
     let maybe_tls_acceptor = build_tls_acceptor(settings.tls.as_ref()).await?;
+    effect_handler.signal_ready();
 
     loop {
         tokio::select! {

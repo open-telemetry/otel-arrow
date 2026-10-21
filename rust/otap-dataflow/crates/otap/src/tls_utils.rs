@@ -23,6 +23,7 @@ use rustls_pki_types::{PrivateKeyDer, UnixTime};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -194,6 +195,189 @@ pub(crate) struct LoadedClientTlsMaterial {
     pub(crate) client_identity: Option<ClientIdentityMaterial>,
 }
 
+#[derive(Debug)]
+struct CapturedCaBundle {
+    field: &'static str,
+    pem: Vec<u8>,
+}
+
+/// A bounded snapshot of client TLS sources that has not yet been validated.
+///
+/// Reload polling compares this snapshot with the last validated generation
+/// before doing certificate parsing or private-key work.
+#[derive(Debug)]
+pub(crate) struct CapturedClientTlsMaterial {
+    server_name: Option<String>,
+    include_system_ca: bool,
+    ca_pems: Vec<CapturedCaBundle>,
+    client_identity: Option<ClientIdentityMaterial>,
+}
+
+impl CapturedClientTlsMaterial {
+    /// Returns whether the captured bytes and policy match a validated snapshot.
+    pub(crate) fn matches(&self, loaded: &LoadedClientTlsMaterial) -> bool {
+        self.server_name == loaded.server_name
+            && self.include_system_ca == loaded.include_system_ca
+            && self
+                .ca_pems
+                .iter()
+                .map(|bundle| bundle.pem.as_slice())
+                .eq(loaded.ca_pems.iter().map(Vec::as_slice))
+            && client_identities_equal(&self.client_identity, &loaded.client_identity)
+    }
+
+    /// Validates this captured snapshot and promotes it to publishable material.
+    pub(crate) fn validate(self) -> Result<LoadedClientTlsMaterial, io::Error> {
+        let mut ca_pems = Vec::with_capacity(self.ca_pems.len());
+        for bundle in self.ca_pems {
+            validate_ca_bundle(&bundle.pem, bundle.field)?;
+            ca_pems.push(bundle.pem);
+        }
+
+        if let Some(identity) = &self.client_identity {
+            validate_client_keys_match(&identity.cert_pem, &identity.key_pem)?;
+        }
+
+        Ok(LoadedClientTlsMaterial {
+            server_name: self.server_name,
+            include_system_ca: self.include_system_ca,
+            ca_pems,
+            client_identity: self.client_identity,
+        })
+    }
+}
+
+fn client_identities_equal(
+    captured: &Option<ClientIdentityMaterial>,
+    loaded: &Option<ClientIdentityMaterial>,
+) -> bool {
+    match (captured, loaded) {
+        (None, None) => true,
+        (Some(captured), Some(loaded)) => {
+            captured.cert_pem == loaded.cert_pem && captured.key_pem == loaded.key_pem
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug)]
+struct ClientTlsFilePaths {
+    ca: Option<PathBuf>,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
+}
+
+impl ClientTlsFilePaths {
+    /// Captures one Kubernetes AtomicWriter generation for each projected
+    /// volume represented by configured files. Non-projected paths are left
+    /// unchanged.
+    async fn resolve(config: &TlsClientConfig) -> Result<Self, io::Error> {
+        let mut paths = Self {
+            ca: config.ca_file.clone(),
+            cert: config.config.cert_file.clone(),
+            key: config.config.key_file.clone(),
+        };
+
+        let mut projected_generations = Vec::new();
+        pin_projected_path(&mut paths.ca, &mut projected_generations).await?;
+        pin_projected_path(&mut paths.cert, &mut projected_generations).await?;
+        pin_projected_path(&mut paths.key, &mut projected_generations).await?;
+        Ok(paths)
+    }
+}
+
+async fn pin_projected_path(
+    path: &mut Option<PathBuf>,
+    projected_generations: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<(), io::Error> {
+    let Some(configured_path) = path.as_ref() else {
+        return Ok(());
+    };
+    let Some(root) = projected_volume_root(configured_path).await? else {
+        return Ok(());
+    };
+    let relative = safe_relative_path(configured_path, &root).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "projected TLS path {:?} is not safely contained by {:?}",
+                configured_path, root
+            ),
+        )
+    })?;
+
+    let generation_dir = if let Some((_, generation)) = projected_generations
+        .iter()
+        .find(|(projected_root, _)| projected_root == &root)
+    {
+        generation.clone()
+    } else {
+        let generation = tokio::fs::canonicalize(root.join("..data")).await?;
+        projected_generations.push((root, generation.clone()));
+        generation
+    };
+    *path = Some(generation_dir.join(relative));
+    Ok(())
+}
+
+/// Finds the projected-volume root whose top-level entry points through
+/// `..data`, including when `path` names a regular file below that entry.
+async fn projected_volume_root(path: &Path) -> Result<Option<PathBuf>, io::Error> {
+    use std::path::Component;
+
+    for root in path.ancestors().skip(1) {
+        let data_link = root.join("..data");
+        let metadata = match tokio::fs::symlink_metadata(&data_link).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        let Some(relative) = safe_relative_path(path, root) else {
+            continue;
+        };
+        let Some(Component::Normal(top_level)) = relative.components().next() else {
+            continue;
+        };
+        let top_level_link = root.join(top_level);
+        let metadata = match tokio::fs::symlink_metadata(&top_level_link).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        let target = tokio::fs::read_link(top_level_link).await?;
+        let mut target_components = target.components();
+        if matches!(
+            (target_components.next(), target_components.next()),
+            (
+                Some(Component::Normal(data)),
+                Some(Component::Normal(target_top_level))
+            ) if data == "..data" && target_top_level == top_level
+        ) && target_components.next().is_none()
+        {
+            return Ok(Some(root.to_path_buf()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn safe_relative_path(path: &Path, root: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(root).ok()?.to_path_buf();
+    (!relative.as_os_str().is_empty()
+        && relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))))
+    .then_some(relative)
+}
+
 /// Loads TLS configuration for a client.
 ///
 /// This is used by **exporters** and other components that initiate TLS connections.
@@ -217,13 +401,28 @@ pub(crate) async fn load_client_tls_config(
 ///
 /// Files are read exactly once here; the returned snapshot owns the resulting
 /// bytes so a transport can be built from them without touching the filesystem
-/// again. Returns `Ok(None)` when the connection should not use a configured TLS
-/// block (plaintext `http://` with no config, or `insecure` with no custom CA),
-/// letting the endpoint scheme decide.
+/// again. Configured custom CA bundles must contain at least one valid
+/// certificate. Returns `Ok(None)` when the connection should not use a
+/// configured TLS block (plaintext `http://` with no config, or `insecure` with
+/// no custom CA), letting the endpoint scheme decide.
 pub(crate) async fn load_client_tls_material(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
 ) -> Result<Option<LoadedClientTlsMaterial>, io::Error> {
+    capture_client_tls_material(config, endpoint_uri)
+        .await?
+        .map(CapturedClientTlsMaterial::validate)
+        .transpose()
+}
+
+/// Captures one bounded generation of client TLS sources without parsing it.
+///
+/// This lets reload polling compare raw bytes with the last validated
+/// generation before paying certificate parsing and private-key costs.
+pub(crate) async fn capture_client_tls_material(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+) -> Result<Option<CapturedClientTlsMaterial>, io::Error> {
     let wants_tls = endpoint_uri.starts_with("https://");
 
     let Some(config) = config else {
@@ -234,7 +433,7 @@ pub(crate) async fn load_client_tls_material(
             return Ok(None);
         }
 
-        return Ok(Some(LoadedClientTlsMaterial {
+        return Ok(Some(CapturedClientTlsMaterial {
             server_name: None,
             include_system_ca: true,
             ca_pems: Vec::new(),
@@ -290,15 +489,20 @@ pub(crate) async fn load_client_tls_material(
         ));
     }
 
+    let file_paths = ClientTlsFilePaths::resolve(config).await?;
+
     // Custom CA bundles, captured in configuration order (ca_file then ca_pem)
     // to match tonic's append semantics for `ca_certificate`.
-    let mut ca_pems: Vec<Vec<u8>> = Vec::new();
-    if let Some(ca_file) = &config.ca_file {
+    let mut ca_pems = Vec::new();
+    if let Some(ca_file) = &file_paths.ca {
         let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
             otel_error!("tls.ca_file.read_error", ca_file = ?ca_file, error = ?e, message = "Failed to read CA file");
             e
         })?;
-        ca_pems.push(ca_pem);
+        ca_pems.push(CapturedCaBundle {
+            field: "ca_file",
+            pem: ca_pem,
+        });
     }
     if let Some(ca_pem) = &config.ca_pem {
         if ca_pem.trim().is_empty() {
@@ -307,7 +511,10 @@ pub(crate) async fn load_client_tls_material(
                 "TLS configuration error: ca_pem is set but empty or contains only whitespace",
             ));
         }
-        ca_pems.push(ca_pem.as_bytes().to_vec());
+        ca_pems.push(CapturedCaBundle {
+            field: "ca_pem",
+            pem: ca_pem.as_bytes().to_vec(),
+        });
     }
 
     // Client identity (mTLS).
@@ -319,7 +526,7 @@ pub(crate) async fn load_client_tls_material(
             ));
         }
 
-        let cert_pem = if let Some(cert_path) = &config.config.cert_file {
+        let cert_pem = if let Some(cert_path) = &file_paths.cert {
             read_file_with_limit_async(cert_path).await.map_err(|e| {
                 otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = %e, message = "Failed to read client cert file");
                 e
@@ -335,7 +542,7 @@ pub(crate) async fn load_client_tls_material(
                 .to_vec()
         };
 
-        let key_pem = if let Some(key_path) = &config.config.key_file {
+        let key_pem = if let Some(key_path) = &file_paths.key {
             read_file_with_limit_async(key_path).await.map_err(|e| {
                 otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
                 e
@@ -351,21 +558,53 @@ pub(crate) async fn load_client_tls_material(
                 .to_vec()
         };
 
-        // Reject a certificate/key that do not form a matching pair, so a
-        // misconfiguration fails fast at load time rather than at connect time.
-        validate_client_keys_match(&cert_pem, &key_pem)?;
-
         Some(ClientIdentityMaterial { cert_pem, key_pem })
     } else {
         None
     };
 
-    Ok(Some(LoadedClientTlsMaterial {
+    Ok(Some(CapturedClientTlsMaterial {
         server_name: config.server_name.clone(),
         include_system_ca: include_system,
         ca_pems,
         client_identity,
     }))
+}
+
+fn validate_ca_bundle(ca_pem: &[u8], field: &str) -> Result<(), io::Error> {
+    let mut roots = RootCertStore::empty();
+    let count = add_pem_certificates_to_root_store(&mut roots, ca_pem, field)?;
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("TLS configuration error: {field} contains no CA certificates"),
+        ));
+    }
+    Ok(())
+}
+
+fn add_pem_certificates_to_root_store(
+    roots: &mut RootCertStore,
+    ca_pem: &[u8],
+    field: &str,
+) -> Result<usize, io::Error> {
+    let mut count = 0;
+    for cert in CertificateDer::pem_slice_iter(ca_pem) {
+        let cert = cert.map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("TLS configuration error: failed to parse {field}: {error}"),
+            )
+        })?;
+        roots.add(cert).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("TLS configuration error: invalid certificate in {field}: {error}"),
+            )
+        })?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Builds a tonic [`ClientTlsConfig`] from a validated material snapshot.
@@ -405,12 +644,16 @@ pub(crate) async fn build_tonic_client_tls(
 /// message and verifies that signature against the leaf certificate's public
 /// key.
 ///
-/// When no crypto provider is installed, certificate parsing is unsupported,
-/// or the key cannot produce a verifiable signature, the check is skipped
-/// rather than failing. Only a direct public-key mismatch or a rejected probe
-/// signature is treated as a definitive mismatch.
+/// Certificate parsing errors are rejected. When no crypto provider is
+/// installed or the key cannot produce a verifiable signature, only the
+/// cert/key match check is skipped.
 pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Result<(), io::Error> {
     use std::io::BufReader;
+
+    let certs = collect_pem_certificate_chain(cert_pem, "client certificate")?;
+    validate_client_certificate_chain(&certs)?;
+    let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     // Without a default provider we cannot load a signing key. Skip: the
     // transport layer installs a provider before it performs a handshake.
@@ -422,26 +665,17 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
         return Ok(());
     };
 
-    // Parse the leaf (end-entity) certificate: the first certificate in the PEM.
-    let leaf = CertificateDer::pem_reader_iter(&mut BufReader::new(cert_pem))
-        .next()
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "TLS configuration error: no certificates found in client certificate",
-            )
-        })?
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
     // Load the private key through the active provider.
-    let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let signing_key = provider
         .key_provider
         .load_private_key(key)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let certified_key = CertifiedKey::new(vec![leaf.clone()], Arc::clone(&signing_key));
+    let leaf = certs
+        .first()
+        .expect("collect_pem_certificate_chain rejects empty chains")
+        .clone();
+    let certified_key = CertifiedKey::new(certs, Arc::clone(&signing_key));
     match certified_key.keys_match() {
         Ok(()) => return Ok(()),
         Err(RustlsError::InconsistentKeys(InconsistentKeys::KeyMismatch)) => {
@@ -449,16 +683,47 @@ pub(crate) fn validate_client_keys_match(cert_pem: &[u8], key_pem: &[u8]) -> Res
         }
         Err(RustlsError::InconsistentKeys(InconsistentKeys::Unknown)) => {}
         Err(error) => {
-            otel_debug!(
-                "tls.client_keys_match.skipped",
-                error = %error,
-                message = "rustls could not compare client cert/key; skipping match check"
-            );
-            return Ok(());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, error));
         }
     }
 
     validate_client_key_with_probe(&leaf, signing_key.as_ref(), provider)
+}
+
+fn collect_pem_certificate_chain(
+    cert_pem: &[u8],
+    description: &str,
+) -> Result<Vec<CertificateDer<'static>>, io::Error> {
+    let certs = CertificateDer::pem_reader_iter(&mut io::BufReader::new(cert_pem))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse {description} PEM: {error}"),
+            )
+        })?;
+
+    if certs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("no certificates found in {description}"),
+        ));
+    }
+
+    Ok(certs)
+}
+
+fn validate_client_certificate_chain(certs: &[CertificateDer<'static>]) -> Result<(), io::Error> {
+    for cert in certs {
+        let _trust_anchor = webpki::anchor_from_trusted_cert(cert).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid DER certificate in client certificate: {error}"),
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 fn validate_client_key_with_probe(
@@ -1410,15 +1675,7 @@ fn build_webpki_verifier(
     }
 
     // Add user-provided CAs
-    let mut reader = io::BufReader::new(ca_pem);
-    let mut count = 0;
-    for cert in CertificateDer::pem_reader_iter(&mut reader) {
-        let cert = cert.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        roots
-            .add(cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        count += 1;
-    }
+    let count = add_pem_certificates_to_root_store(&mut roots, ca_pem, "client CA bundle")?;
 
     if roots.is_empty() {
         return Err(io::Error::new(
@@ -1475,16 +1732,8 @@ fn parse_certified_key(
 ) -> Result<CertifiedKey, io::Error> {
     use std::io::BufReader;
 
-    let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut BufReader::new(cert_pem))
-        .collect::<Result<_, _>>()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    if certs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("No certificates found in file: {:?}", cert_path_debug),
-        ));
-    }
+    let certs =
+        collect_pem_certificate_chain(cert_pem, &format!("certificate file {cert_path_debug:?}"))?;
 
     let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -1777,37 +2026,56 @@ where
 /// material from disk, so a misconfigured or hostile path cannot OOM the
 /// collector.
 pub async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
-    let metadata = tokio::fs::metadata(path).await?;
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path).await?;
+    let metadata = file.metadata().await?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "File {:?} is too large ({} bytes). Max allowed is {} bytes.",
-                path,
-                metadata.len(),
-                MAX_TLS_FILE_SIZE
-            ),
-        ));
+        return Err(file_too_large_error(path, Some(metadata.len())));
     }
-    tokio::fs::read(path).await
+
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    let _bytes_read = file
+        .take(MAX_TLS_FILE_SIZE + 1)
+        .read_to_end(&mut contents)
+        .await?;
+    if contents.len() as u64 > MAX_TLS_FILE_SIZE {
+        return Err(file_too_large_error(path, None));
+    }
+    Ok(contents)
 }
 
 /// Blocking counterpart to [`read_file_with_limit_async`], for callers that
 /// load PEM material outside an async context.
 pub fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
-    let metadata = std::fs::metadata(path)?;
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "File {:?} is too large ({} bytes). Max allowed is {} bytes.",
-                path,
-                metadata.len(),
-                MAX_TLS_FILE_SIZE
-            ),
-        ));
+        return Err(file_too_large_error(path, Some(metadata.len())));
     }
-    std::fs::read(path)
+
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    let _bytes_read = file
+        .take(MAX_TLS_FILE_SIZE + 1)
+        .read_to_end(&mut contents)?;
+    if contents.len() as u64 > MAX_TLS_FILE_SIZE {
+        return Err(file_too_large_error(path, None));
+    }
+    Ok(contents)
+}
+
+fn file_too_large_error(path: &Path, size: Option<u64>) -> io::Error {
+    let detail = size.map_or_else(
+        || "more than the allowed limit".to_string(),
+        |size| format!("{size} bytes"),
+    );
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "File {:?} is too large ({detail}). Max allowed is {} bytes.",
+            path, MAX_TLS_FILE_SIZE
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -2822,6 +3090,332 @@ mod tests {
             .expect("client identity must be captured");
         assert_eq!(identity.cert_pem, leaf.cert_pem.into_bytes());
         assert_eq!(identity.key_pem, leaf.key_pem.into_bytes());
+    }
+
+    /// Scenario: load client TLS material from an empty or malformed custom CA
+    /// bundle.
+    /// Guarantees: unusable trust material is rejected before it can become a
+    /// validated generation.
+    #[tokio::test]
+    async fn load_client_tls_material_rejects_invalid_ca_bundles() {
+        let dir = TempDir::new().expect("temp dir");
+        let empty_ca = dir.path().join("empty-ca.pem");
+        fs::write(&empty_ca, []).expect("write empty CA file");
+
+        let file_config = TlsClientConfig {
+            config: TlsConfig::default(),
+            ca_file: Some(empty_ca),
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+        let error = load_client_tls_material(Some(&file_config), "https://localhost:4317")
+            .await
+            .expect_err("empty CA file must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        let inline_config = TlsClientConfig {
+            config: TlsConfig::default(),
+            ca_file: None,
+            ca_pem: Some(
+                "-----BEGIN CERTIFICATE-----\nnot-valid-base64\n-----END CERTIFICATE-----"
+                    .to_string(),
+            ),
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+        let error = load_client_tls_material(Some(&inline_config), "https://localhost:4317")
+            .await
+            .expect_err("malformed inline CA must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// Scenario: Kubernetes swaps a projected volume's `..data` symlink after
+    /// the loader resolves the volume but before it reads any TLS files.
+    /// Guarantees: every captured file path remains pinned to one timestamped
+    /// directory, so a reload attempt cannot mix CA, certificate, and key
+    /// generations.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_volume_paths_pin_one_generation_across_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        let v1 = root.join("..2026_09_17_08_06_30.1");
+        let v2 = root.join("..2026_09_18_08_06_30.2");
+        fs::create_dir(&v1).expect("create v1");
+        fs::create_dir(&v2).expect("create v2");
+        for name in ["ca.crt", "tls.crt", "tls.key"] {
+            fs::write(v1.join(name), format!("v1-{name}")).expect("write v1 material");
+            fs::write(v2.join(name), format!("v2-{name}")).expect("write v2 material");
+            symlink(Path::new("..data").join(name), root.join(name))
+                .expect("create projected leaf symlink");
+        }
+        symlink(&v1, root.join("..data")).expect("point ..data at v1");
+        let canonical_v1 = fs::canonicalize(&v1).expect("canonicalize v1");
+
+        let config = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: Some(root.join("tls.crt")),
+                cert_pem: None,
+                key_file: Some(root.join("tls.key")),
+                key_pem: None,
+                reload_interval: Some(Duration::from_secs(1)),
+            },
+            ca_file: Some(root.join("ca.crt")),
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let paths = ClientTlsFilePaths::resolve(&config)
+            .await
+            .expect("resolve projected generation");
+        let replacement = root.join("..data_tmp");
+        symlink(&v2, &replacement).expect("point temporary link at v2");
+        fs::rename(replacement, root.join("..data")).expect("swap ..data");
+
+        for (path, expected) in [
+            (paths.ca.as_deref(), "v1-ca.crt"),
+            (paths.cert.as_deref(), "v1-tls.crt"),
+            (paths.key.as_deref(), "v1-tls.key"),
+        ] {
+            let path = path.expect("configured projected path");
+            assert!(path.starts_with(&canonical_v1));
+            assert_eq!(
+                fs::read_to_string(path).expect("read captured path"),
+                expected
+            );
+        }
+    }
+
+    /// Scenario: CA and identity files use nested paths whose top-level
+    /// directories point through one Kubernetes projected volume's `..data`.
+    /// Guarantees: resolving the common volume root once pins every nested file
+    /// to one generation across a subsequent `..data` swap.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_volume_paths_pin_nested_files_across_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        let v1 = root.join("..2026_09_17_08_06_30.1");
+        let v2 = root.join("..2026_09_18_08_06_30.2");
+        for (generation, prefix) in [(&v1, "v1"), (&v2, "v2")] {
+            fs::create_dir_all(generation.join("identity")).expect("create identity dir");
+            fs::create_dir_all(generation.join("trust")).expect("create trust dir");
+            fs::write(
+                generation.join("identity/tls.crt"),
+                format!("{prefix}-tls.crt"),
+            )
+            .expect("write certificate");
+            fs::write(
+                generation.join("identity/tls.key"),
+                format!("{prefix}-tls.key"),
+            )
+            .expect("write key");
+            fs::write(generation.join("trust/ca.crt"), format!("{prefix}-ca.crt"))
+                .expect("write CA");
+        }
+        symlink(&v1, root.join("..data")).expect("point ..data at v1");
+        symlink("..data/identity", root.join("identity")).expect("project identity directory");
+        symlink("..data/trust", root.join("trust")).expect("project trust directory");
+        let canonical_v1 = fs::canonicalize(&v1).expect("canonicalize v1");
+
+        let config = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: Some(root.join("identity/tls.crt")),
+                cert_pem: None,
+                key_file: Some(root.join("identity/tls.key")),
+                key_pem: None,
+                reload_interval: Some(Duration::from_secs(1)),
+            },
+            ca_file: Some(root.join("trust/ca.crt")),
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let paths = ClientTlsFilePaths::resolve(&config)
+            .await
+            .expect("resolve nested projected generation");
+        let replacement = root.join("..data_tmp");
+        symlink(&v2, &replacement).expect("point temporary link at v2");
+        fs::rename(replacement, root.join("..data")).expect("swap ..data");
+
+        for (path, expected) in [
+            (paths.ca.as_deref(), "v1-ca.crt"),
+            (paths.cert.as_deref(), "v1-tls.crt"),
+            (paths.key.as_deref(), "v1-tls.key"),
+        ] {
+            let path = path.expect("configured projected path");
+            assert!(path.starts_with(&canonical_v1));
+            assert_eq!(
+                fs::read_to_string(path).expect("read captured path"),
+                expected
+            );
+        }
+    }
+
+    /// Scenario: client certificate and key paths share a projected volume
+    /// while the CA path is a regular file.
+    /// Guarantees: the projected identity is pinned to one generation and the
+    /// unrelated CA path remains unchanged.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_volume_paths_pin_group_with_unrelated_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path().join("identity");
+        fs::create_dir(&root).expect("create projected root");
+        let v1 = root.join("..2026_09_17_08_06_30.1");
+        let v2 = root.join("..2026_09_18_08_06_30.2");
+        fs::create_dir(&v1).expect("create v1");
+        fs::create_dir(&v2).expect("create v2");
+        for name in ["tls.crt", "tls.key"] {
+            fs::write(v1.join(name), format!("v1-{name}")).expect("write v1 material");
+            fs::write(v2.join(name), format!("v2-{name}")).expect("write v2 material");
+            symlink(Path::new("..data").join(name), root.join(name))
+                .expect("create projected leaf symlink");
+        }
+        symlink(&v1, root.join("..data")).expect("point ..data at v1");
+
+        let ca_path = dir.path().join("ca.crt");
+        fs::write(&ca_path, "regular-ca").expect("write regular CA");
+        let config = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: Some(root.join("tls.crt")),
+                cert_pem: None,
+                key_file: Some(root.join("tls.key")),
+                key_pem: None,
+                reload_interval: Some(Duration::from_secs(1)),
+            },
+            ca_file: Some(ca_path.clone()),
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let paths = ClientTlsFilePaths::resolve(&config)
+            .await
+            .expect("resolve projected identity");
+        let replacement = root.join("..data_tmp");
+        symlink(&v2, &replacement).expect("point temporary link at v2");
+        fs::rename(replacement, root.join("..data")).expect("swap ..data");
+
+        assert_eq!(paths.ca.as_deref(), Some(ca_path.as_path()));
+        for (path, expected) in [
+            (paths.cert.as_deref(), "v1-tls.crt"),
+            (paths.key.as_deref(), "v1-tls.key"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(path.expect("configured projected path"))
+                    .expect("read captured path"),
+                expected
+            );
+        }
+    }
+
+    /// Scenario: CA and identity files come from two independently rotated
+    /// Kubernetes projected volumes.
+    /// Guarantees: each projected group resolves its own `..data` target once,
+    /// so neither group can mix generations during one capture.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_volume_paths_pin_independent_groups() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().expect("temp dir");
+        let identity_root = dir.path().join("identity");
+        let trust_root = dir.path().join("trust");
+        fs::create_dir(&identity_root).expect("create identity root");
+        fs::create_dir(&trust_root).expect("create trust root");
+
+        for (root, names) in [
+            (&identity_root, ["tls.crt", "tls.key"].as_slice()),
+            (&trust_root, ["ca.crt"].as_slice()),
+        ] {
+            let v1 = root.join("..2026_09_17_08_06_30.1");
+            let v2 = root.join("..2026_09_18_08_06_30.2");
+            fs::create_dir(&v1).expect("create v1");
+            fs::create_dir(&v2).expect("create v2");
+            for name in names {
+                fs::write(v1.join(name), format!("v1-{name}")).expect("write v1 material");
+                fs::write(v2.join(name), format!("v2-{name}")).expect("write v2 material");
+                symlink(Path::new("..data").join(name), root.join(name))
+                    .expect("create projected leaf symlink");
+            }
+            symlink(&v1, root.join("..data")).expect("point ..data at v1");
+        }
+
+        let config = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: Some(identity_root.join("tls.crt")),
+                cert_pem: None,
+                key_file: Some(identity_root.join("tls.key")),
+                key_pem: None,
+                reload_interval: Some(Duration::from_secs(1)),
+            },
+            ca_file: Some(trust_root.join("ca.crt")),
+            ca_pem: None,
+            include_system_ca_certs_pool: Some(false),
+            server_name: None,
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+
+        let paths = ClientTlsFilePaths::resolve(&config)
+            .await
+            .expect("resolve projected groups");
+        for root in [&identity_root, &trust_root] {
+            let v2 = root.join("..2026_09_18_08_06_30.2");
+            let replacement = root.join("..data_tmp");
+            symlink(&v2, &replacement).expect("point temporary link at v2");
+            fs::rename(replacement, root.join("..data")).expect("swap ..data");
+        }
+
+        for (path, expected) in [
+            (paths.ca.as_deref(), "v1-ca.crt"),
+            (paths.cert.as_deref(), "v1-tls.crt"),
+            (paths.key.as_deref(), "v1-tls.key"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(path.expect("configured projected path"))
+                    .expect("read captured path"),
+                expected
+            );
+        }
+    }
+
+    /// Scenario: read a sparse TLS file larger than the configured maximum.
+    /// Guarantees: the opened file is read through a hard cap and oversized
+    /// material is rejected rather than returned to a caller.
+    #[tokio::test]
+    async fn async_file_read_rejects_oversized_material() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("oversized.pem");
+        let file = fs::File::create(&path).expect("create oversized file");
+        file.set_len(MAX_TLS_FILE_SIZE + 1)
+            .expect("size oversized file");
+
+        let error = read_file_with_limit_async(&path)
+            .await
+            .expect_err("oversized file must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("is too large"));
     }
 
     /// Scenario: format captured client identity material directly and through

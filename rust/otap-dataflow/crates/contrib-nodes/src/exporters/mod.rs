@@ -9,6 +9,10 @@ pub mod geneva_exporter;
 #[cfg(feature = "geneva")]
 pub mod geneva_metrics_exporter;
 
+/// Azure Data Explorer (ADX) Exporter for Kusto streaming ingestion.
+#[cfg(feature = "azure-data-explorer")]
+pub mod azure_data_explorer_exporter;
+
 /// Azure Monitor Exporter for Azure Logs Ingestion API
 #[cfg(feature = "azure-monitor")]
 pub mod azure_monitor_exporter;
@@ -16,6 +20,7 @@ pub mod azure_monitor_exporter;
 /// ClickHouse Exporter for columnar telemetry storage
 #[cfg(feature = "clickhouse")]
 pub mod clickhouse_exporter;
+
 /// Kafka Exporter for Apache Kafka
 #[cfg(feature = "kafka")]
 pub mod kafka_exporter;

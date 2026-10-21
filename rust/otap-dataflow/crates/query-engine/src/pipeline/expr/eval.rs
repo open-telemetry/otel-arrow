@@ -13,11 +13,11 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt32Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
+    RecordBatchOptions, StringArray, StructArray, UInt8Array, UInt32Array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
@@ -81,6 +81,26 @@ impl<'a> EvalContext<'a> {
         Self {
             data_point_type: Some(data_point_type),
             session_context: session_ctx,
+        }
+    }
+
+    /// Returns the record batch whose rows are the records being evaluated, with its data
+    /// scope: the data points batch when evaluating metric data points, otherwise the root
+    /// batch. Returns `None` if that batch is absent.
+    pub(crate) fn record_batch<'b>(
+        &self,
+        otap_batch: &'b OtapArrowRecords,
+    ) -> Option<(&'b RecordBatch, DataScope)> {
+        match self.data_point_type.as_ref() {
+            Some(dp_type) => otap_batch.get(dp_type.payload_type()).map(|rb| {
+                (
+                    rb,
+                    DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+                )
+            }),
+            None => otap_batch
+                .root_record_batch()
+                .map(|rb| (rb, DataScope::Record(RecordScope::Signal))),
         }
     }
 
@@ -241,6 +261,16 @@ pub(super) fn eval_datafusion_expr_value(
                             parent_ids: None,
                         }));
                     }
+                    if projection_opts.default_null_columns {
+                        // The expression treats absent data as null (e.g. `coalesce` of an
+                        // attribute no record has): its value is the same for every record.
+                        return eval_on_null_row(
+                            logical_expr,
+                            projection,
+                            projection_opts,
+                            eval_ctx,
+                        );
+                    }
                     return Ok(None);
                 }
             };
@@ -336,7 +366,22 @@ pub(super) fn join_and_eval_value(
             }
             None => {
                 if default_null_children {
-                    ScopedValue::new_scalar(ScalarValue::Null)
+                    // When children are aligned to the records, an absent child is a null for
+                    // every record. Using a null column with the records' row order (rather
+                    // than a null scalar) keeps the join input aligned even if every child is
+                    // absent.
+                    match eval_ctx.record_batch(otap_batch) {
+                        Some((record_rb, record_scope)) if align_children_to_record => {
+                            ScopedValue::new(
+                                ColumnarValue::Array(Arc::new(NullArray::new(
+                                    record_rb.num_rows(),
+                                ))),
+                                record_scope,
+                                record_rb,
+                            )
+                        }
+                        _ => ScopedValue::new_scalar(ScalarValue::Null),
+                    }
                 } else if let Some((strategy, default)) =
                     short_circuit.and_then(|s| s.absent_child_default().map(|d| (s, d)))
                 {
@@ -605,6 +650,45 @@ fn execute_bitmap_not_as_value(
 }
 
 /// Evaluate a DataFusion expression on a RecordBatch.
+/// A record batch with no columns and a single row, used to evaluate an expression once when
+/// all of its input data is absent from the batch.
+static NULL_ROW_RECORD_BATCH_INPUT: LazyLock<RecordBatch> = LazyLock::new(|| {
+    RecordBatch::try_new_with_options(
+        Arc::new(Schema::empty()),
+        Vec::new(),
+        &RecordBatchOptions::new().with_row_count(Some(1)),
+    )
+    .expect("a record batch with no columns and one row is valid")
+});
+
+/// Evaluate an expression whose input data is absent from the whole batch as if every column
+/// it reads were null. The result applies to every record, so it is returned as a static
+/// scalar, or `None` if it is null.
+///
+/// The physical expression is planned for this evaluation only rather than cached in the
+/// [`LeafEval`]: the null placeholder columns don't have the types the columns have when the
+/// data is present in a later batch.
+fn eval_on_null_row(
+    logical_expr: &Expr,
+    projection: &Projection,
+    projection_opts: &ProjectionOptions,
+    eval_ctx: &EvalContext<'_>,
+) -> Result<Option<ScopedValue>> {
+    let Some(projected_rb) =
+        projection.project_with_options(NULL_ROW_RECORD_BATCH_INPUT.deref(), projection_opts)?
+    else {
+        return Ok(None);
+    };
+    let value = match evaluate_df_expr(logical_expr, &mut None, eval_ctx, &projected_rb)? {
+        ColumnarValue::Scalar(value) => value,
+        ColumnarValue::Array(values) => ScalarValue::try_from_array(&values, 0)?,
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(ScopedValue::new_scalar(value)))
+}
+
 fn evaluate_df_expr(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,
@@ -615,7 +699,12 @@ fn evaluate_df_expr(
         // lazily plan the physical expression
         let session_state = eval_ctx.session_context.state();
         let df_schema = DFSchema::try_from(record_batch.schema_ref().as_ref().clone())?;
-        let expr = create_physical_expr(logical_expr, &df_schema, session_state.execution_props())?;
+        let expr = create_physical_expr(
+            logical_expr,
+            &df_schema,
+            session_state.execution_props(),
+            &Default::default(),
+        )?;
         *physical_expr = Some(expr);
     }
 

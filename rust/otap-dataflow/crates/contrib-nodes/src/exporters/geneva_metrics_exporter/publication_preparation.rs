@@ -3,9 +3,10 @@
 
 use super::encoder;
 use super::otlp_to_geneva::{self, Config};
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata::{OtlpProtoBytes, PayloadData};
+use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,9 +20,9 @@ pub(super) fn prepare_publication(
     data: &OtapPdata,
     config: &Config,
 ) -> Result<PublicationPreparation, PrepareError> {
-    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
-        data.payload_ref().data()
-    else {
+    let Some(view) = data.payload_ref().encoded_view().filter(|view| {
+        view.encoding() == &PdataEncoding::OTLP && view.signal_type() == SignalType::Metrics
+    }) else {
         return Err(PrepareError::UnsupportedPayload);
     };
     let receive_time = SystemTime::now()
@@ -30,7 +31,7 @@ pub(super) fn prepare_publication(
         .as_nanos();
     let receive_time = u64::try_from(receive_time).map_err(|_| PrepareError::SystemTime)?;
     // Only top-level framing is validated; other content is read best-effort (see #4029).
-    let metrics = RawMetricsData::try_new(bytes.as_ref()).map_err(PrepareError::Decode)?;
+    let metrics = RawMetricsData::try_new(view.bytes()).map_err(PrepareError::Decode)?;
     let mapped = otlp_to_geneva::map_metrics(&metrics, config, receive_time)?;
     let rejected_data_points = mapped.rejected_data_points;
     let cardinality_overflows = mapped.cardinality_overflows.len();
@@ -65,7 +66,6 @@ mod tests {
     use super::super::{AuthConfig, ExporterConfig};
     use super::*;
     use bytes::Bytes;
-    use otel_arrow_dfe_pdata::OtapPayload;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
@@ -73,6 +73,8 @@ mod tests {
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
 
     fn metrics_pdata(request: ExportMetricsServiceRequest) -> OtapPdata {
         let payload = OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
@@ -89,6 +91,24 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+        }
+    }
+
+    /// Scenario: Preparation receives native OTAP metrics or OTLP bytes for a non-metrics signal.
+    /// Guarantees: Unsupported payloads are rejected before their content is interpreted as OTLP metrics.
+    #[test]
+    fn rejects_unsupported_payloads() {
+        for payload in [
+            OtapPayload::from_otap(OtapArrowRecords::Metrics(Default::default())),
+            OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            OtlpProtoBytes::ExportTracesRequest(Bytes::new()).into(),
+        ] {
+            let data = OtapPdata::new_default(payload);
+
+            assert!(matches!(
+                prepare_publication(&data, &mapping_config()),
+                Err(PrepareError::UnsupportedPayload)
+            ));
         }
     }
 

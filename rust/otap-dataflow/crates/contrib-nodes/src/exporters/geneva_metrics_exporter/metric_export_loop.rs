@@ -6,7 +6,7 @@ use super::otlp_to_geneva::Config;
 use super::publication_preparation::prepare_publication;
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -19,6 +19,7 @@ use otel_arrow_dfe_otap::http_client_auth::{
     new_http_client_auth_provider_from_bearer_token_provider,
 };
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::otel_warn;
 use std::future::poll_fn;
@@ -113,12 +114,11 @@ impl GenevaMetricsExporter {
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> PublicationStart {
         let signal_type = data.signal_type();
-        let signal_format = data.signal_format();
         if signal_type != SignalType::Metrics {
             let nack = NackMsg::new_permanent(UNSUPPORTED_SIGNAL_MESSAGE, data);
             return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
         }
-        if signal_format != SignalFormat::OtlpBytes {
+        if data.payload_ref().encoding() != Some(&PdataEncoding::OTLP) {
             let nack = NackMsg::new_permanent(UNSUPPORTED_FORMAT_MESSAGE, data);
             return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
         }
@@ -376,12 +376,12 @@ mod tests {
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
     use otel_arrow_dfe_otap::testing::TestCallData;
-    use otel_arrow_dfe_pdata::OtapPayload;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::cell::RefCell;
     use std::time::{Duration, Instant};

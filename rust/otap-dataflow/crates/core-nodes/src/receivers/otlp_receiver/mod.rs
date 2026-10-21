@@ -29,8 +29,6 @@ use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::{
 };
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
-#[cfg(test)]
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -233,12 +231,10 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             )?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
-        Ok(ReceiverWrapper::shared(
-            receiver,
-            node,
-            node_config,
-            receiver_config,
-        ))
+        Ok(
+            ReceiverWrapper::shared(receiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
     },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -616,8 +612,22 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             let server_layers = ServiceBuilder::new()
                 .layer(limit_layer)
                 .option_layer(authorization_layer);
-            let mut server =
-                common::apply_server_tuning(Server::builder(), grpc_config).layer(server_layers);
+            // Apply the HTTP/2 `max_concurrent_streams` limit here rather than in
+            // `common::apply_server_tuning`. OTLP uses unary RPCs (one short-lived HTTP/2 stream
+            // per request), so tracking the request limit is safe: the stream limit only throttles
+            // in-flight exports transiently. Streaming protocols (OTAP) need a different policy and
+            // apply their own limit.
+            let tuned = common::apply_server_tuning(Server::builder(), grpc_config);
+            let fallback_streams =
+                grpc_config.max_concurrent_requests.min(u32::MAX as usize) as u32;
+            let max_concurrent_streams = grpc_config
+                .max_concurrent_streams
+                .map(|value| if value == 0 { fallback_streams } else { value })
+                .unwrap_or(fallback_streams)
+                .max(1);
+            let mut server = tuned
+                .max_concurrent_streams(Some(max_concurrent_streams))
+                .layer(server_layers);
 
             if let Some(timeout) = grpc_config.timeout {
                 server = server.timeout(timeout);
@@ -680,6 +690,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             } else {
                 None
             };
+
+        // gRPC setup is complete above, but HTTP binds and configures TLS when its future is
+        // first polled. Let the HTTP path signal readiness after that deferred setup finishes.
+        if http_task.is_none() {
+            effect_handler.signal_ready();
+        }
 
         // Run the event loop based on which protocols are enabled.
         let terminal_state = self
@@ -928,7 +944,7 @@ mod tests {
     use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot;
     use otel_arrow_dfe_otap::otlp_http::RpcStatus;
     use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
-    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata_codec::builtins::resolve_otlp;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -1050,6 +1066,193 @@ mod tests {
                 http: Some(http),
             },
         }
+    }
+
+    fn test_pipeline_context() -> PipelineContext {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        ControllerContext::new(telemetry_registry_handle).pipeline_context_with(
+            "grp".into(),
+            "pipeline".into(),
+            0,
+            1,
+            0,
+        )
+    }
+
+    async fn start_receiver_expect_error(mut receiver: OTLPReceiver) -> Error {
+        receiver.tune_max_concurrent_requests(1);
+        let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+        let _ctrl_tx = ctrl_tx;
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (readiness_signaller, readiness_probe) =
+            otel_arrow_dfe_engine::readiness::ReadinessSignaller::pair_for_test(
+                Duration::from_secs(1),
+            );
+        let (_metrics_rx, metrics_reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = shared_receiver::EffectHandler::<OtapPdata>::new(
+            test_node("otlp_startup_failure"),
+            HashMap::new(),
+            None,
+            runtime_ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+        .with_readiness_signaller_for_test(readiness_signaller);
+
+        let error = match <OTLPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
+            Box::new(receiver),
+            shared_receiver::ControlChannel::new(SharedReceiver::mpsc(ctrl_rx)),
+            effect_handler,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("receiver startup should fail"),
+        };
+        assert_eq!(
+            readiness_probe.wait_ready().await,
+            Err(otel_arrow_dfe_engine::readiness::ReadinessProbeError::SignallerDropped),
+            "failed startup must not signal readiness"
+        );
+        error
+    }
+
+    /// Scenario: The OTLP gRPC listening address is already owned by another TCP listener.
+    /// Guarantees: gRPC startup returns the original bind failure before entering its serving loop.
+    #[tokio::test]
+    async fn otlp_grpc_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve gRPC listen address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "grpc": {
+                        "listening_addr": addr.to_string()
+                    }
+                }
+            }),
+        )
+        .expect("valid OTLP gRPC config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::IoError {
+                    ref error,
+                    ..
+                } if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                )
+            ),
+            "expected bind conflict error, got {error}"
+        );
+    }
+
+    /// Scenario: The OTLP HTTP listening address is already owned by another TCP listener.
+    /// Guarantees: HTTP startup reports a transport failure instead of reaching its serving loop.
+    #[tokio::test]
+    async fn otlp_http_startup_reports_bind_failure() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve HTTP listen address");
+        let addr = listener.local_addr().expect("reserved listener address");
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "http": {
+                        "listening_addr": addr.to_string()
+                    }
+                }
+            }),
+        )
+        .expect("valid OTLP HTTP config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Transport,
+                    ..
+                }
+            ),
+            "expected HTTP transport error, got {error}"
+        );
+    }
+
+    /// Scenario: OTLP gRPC startup receives incomplete server TLS material.
+    /// Guarantees: TLS configuration fails before the receiver signals readiness or serves traffic.
+    #[tokio::test]
+    async fn otlp_grpc_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "grpc": {
+                        "listening_addr": "127.0.0.1:0",
+                        "tls": {
+                            "cert_pem": "incomplete TLS material"
+                        }
+                    }
+                }
+            }),
+        )
+        .expect("syntactically valid OTLP gRPC TLS config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    ..
+                }
+            ),
+            "expected gRPC TLS configuration error, got {error}"
+        );
+    }
+
+    /// Scenario: OTLP HTTP startup receives incomplete server TLS material.
+    /// Guarantees: TLS initialization fails before the HTTP server signals readiness.
+    #[tokio::test]
+    async fn otlp_http_startup_reports_tls_failure() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({
+                "protocols": {
+                    "http": {
+                        "listening_addr": "127.0.0.1:0",
+                        "tls": {
+                            "cert_pem": "incomplete TLS material"
+                        }
+                    }
+                }
+            }),
+        )
+        .expect("syntactically valid OTLP HTTP TLS config");
+
+        let error = start_receiver_expect_error(receiver).await;
+        assert!(
+            matches!(
+                error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Transport,
+                    ..
+                }
+            ),
+            "expected HTTP TLS transport error, got {error}"
+        );
+        assert!(
+            error.to_string().contains("TLS"),
+            "expected TLS configuration detail, got {error}"
+        );
     }
 
     async fn post_otlp_http_with_encoding(
@@ -1204,13 +1407,31 @@ mod tests {
         }
     }
 
+    fn encoded_request(pdata: &OtapPdata, signal: SignalType) -> &[u8] {
+        assert_eq!(
+            pdata.payload_ref().encoding(),
+            Some(&otel_arrow_dfe_pdata_codec::PdataEncoding::OTLP)
+        );
+        assert_eq!(pdata.signal_type(), signal);
+        pdata
+            .payload_ref()
+            .encoded_bytes()
+            .expect("OTLP receiver must preserve encoded storage")
+    }
+
     fn create_logs_pdata() -> OtapPdata {
         let request = create_logs_service_request();
         let mut bytes = Vec::new();
         request
             .encode(&mut bytes)
             .expect("encode test OTLP request");
-        OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
+        OtapPdata::new_default(
+            resolve_otlp()
+                .expect("validated OTLP codec")
+                .admit(SignalType::Logs, Bytes::from(bytes))
+                .expect("admit OTLP logs")
+                .into(),
+        )
     }
 
     async fn yield_cycles(count: usize) {
@@ -1511,6 +1732,9 @@ mod tests {
         assert_eq!(grpc.max_decoding_message_size, Some(4 * 1024 * 1024));
         assert_eq!(grpc.http2_keepalive_interval, Some(Duration::from_secs(30)));
         assert_eq!(grpc.http2_keepalive_timeout, Some(Duration::from_secs(10)));
+        // Parsed config value only. When unset, the OTLP serve path derives the applied HTTP/2
+        // stream limit from `max_concurrent_requests` (unary RPCs make that safe); the OTAP
+        // receiver applies a different policy.
         assert_eq!(grpc.max_concurrent_streams, None);
 
         // Test gRPC with compression
@@ -1955,17 +2179,12 @@ mod tests {
                     .expect("No logs message received");
 
                 // Validate logs payload
-                let logs_proto: OtlpProtoBytes = logs_pdata
-                    .clone()
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
+                let logs_proto = encoded_request(&logs_pdata, SignalType::Logs);
 
                 let expected = create_logs_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, logs_proto.as_bytes());
+                assert_eq!(&expected_bytes, logs_proto);
 
                 // Send Ack back to unblock the gRPC handler
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
@@ -1981,20 +2200,12 @@ mod tests {
                     .expect("No metrics message received");
 
                 // Validate metrics payload
-                let metrics_proto: OtlpProtoBytes = metrics_pdata
-                    .clone()
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(
-                    metrics_proto,
-                    OtlpProtoBytes::ExportMetricsRequest(_)
-                ));
+                let metrics_proto = encoded_request(&metrics_pdata, SignalType::Metrics);
 
                 let expected = create_metrics_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, metrics_proto.as_bytes());
+                assert_eq!(&expected_bytes, metrics_proto);
 
                 // Send Ack back to unblock the gRPC handler
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(metrics_pdata)) {
@@ -2010,20 +2221,12 @@ mod tests {
                     .expect("No trace message received");
 
                 // Validate trace payload
-                let trace_proto: OtlpProtoBytes = trace_pdata
-                    .clone()
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(
-                    trace_proto,
-                    OtlpProtoBytes::ExportTracesRequest(_)
-                ));
+                let trace_proto = encoded_request(&trace_pdata, SignalType::Traces);
 
                 let expected = create_traces_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, trace_proto.as_bytes());
+                assert_eq!(&expected_bytes, trace_proto);
 
                 // Send Ack back to unblock the gRPC handler
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(trace_pdata)) {
@@ -2077,9 +2280,8 @@ mod tests {
             .run_validation_concurrent(validation_procedure());
     }
 
-    /// Scenario: the HTTP receiver runs without a bound authorizer capability.
-    /// Guarantees: existing unauthenticated OTLP traffic is forwarded and
-    /// acknowledged unchanged.
+    /// Scenario: An HTTP OTLP receiver runs without an authorizer and waits for downstream acknowledgment.
+    /// Guarantees: Unauthenticated logs, metrics, and traces remain encoded and complete after Ack.
     #[test]
     fn test_otlp_http_receiver_ack() {
         let test_runtime = TestRuntime::new();
@@ -2124,21 +2326,29 @@ mod tests {
 
         let scenario = move |ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
-                let request = create_logs_service_request();
-                let mut request_bytes = Vec::new();
-                request.encode(&mut request_bytes).unwrap();
-
-                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
-                    .await
-                    .expect("http request should succeed");
-
-                assert_eq!(status, http::StatusCode::OK);
-
-                let mut expected = Vec::new();
-                ExportLogsServiceResponse::default()
-                    .encode(&mut expected)
-                    .unwrap();
-                assert_eq!(body.as_ref(), expected.as_slice());
+                for (path, request_bytes, expected) in [
+                    (
+                        "/v1/logs",
+                        create_logs_service_request().encode_to_vec(),
+                        ExportLogsServiceResponse::default().encode_to_vec(),
+                    ),
+                    (
+                        "/v1/metrics",
+                        create_metrics_service_request().encode_to_vec(),
+                        ExportMetricsServiceResponse::default().encode_to_vec(),
+                    ),
+                    (
+                        "/v1/traces",
+                        create_traces_service_request().encode_to_vec(),
+                        ExportTraceServiceResponse::default().encode_to_vec(),
+                    ),
+                ] {
+                    let (status, body) = post_otlp_http(http_listen, path, request_bytes)
+                        .await
+                        .expect("http request should succeed");
+                    assert_eq!(status, http::StatusCode::OK);
+                    assert_eq!(body.as_ref(), expected.as_slice());
+                }
 
                 ctx.send_shutdown(Instant::now(), "Test complete")
                     .await
@@ -2146,37 +2356,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
-            Box::pin(async move {
-                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for logs message")
-                    .expect("No logs message received");
-
-                let logs_proto: OtlpProtoBytes = logs_pdata
-                    .clone()
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
-
-                let expected = create_logs_service_request();
-                let mut expected_bytes = Vec::new();
-                expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, logs_proto.as_bytes());
-
-                if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
-                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                        .await
-                        .expect("Failed to send Ack");
-                }
-            }) as Pin<Box<dyn Future<Output = ()>>>
-        };
-
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario)
-            .run_validation_concurrent(validation);
+            .run_validation_concurrent(validation_procedure());
     }
 
     /// Scenario: a gRPC receiver with a bound authorizer receives one denied
@@ -2259,15 +2442,14 @@ mod tests {
                     .await
                     .expect("allowed gRPC request must reach downstream")
                     .expect("downstream channel must remain open");
-                let payload: OtlpProtoBytes = pdata
-                    .payload()
-                    .try_into_with_default()
-                    .expect("convert allowed gRPC payload");
                 let mut expected = Vec::new();
                 create_logs_service_request()
                     .encode(&mut expected)
                     .expect("encode expected gRPC payload");
-                assert_eq!(payload.as_bytes(), expected.as_slice());
+                assert_eq!(
+                    encoded_request(&pdata, SignalType::Logs),
+                    expected.as_slice()
+                );
 
                 if let Ok(Ok(_)) = timeout(Duration::from_millis(200), ctx.recv()).await {
                     panic!("denied gRPC request reached downstream");
@@ -2449,15 +2631,14 @@ mod tests {
                     .await
                     .expect("allowed HTTP request must reach downstream")
                     .expect("downstream channel must remain open");
-                let payload: OtlpProtoBytes = pdata
-                    .payload()
-                    .try_into_with_default()
-                    .expect("convert allowed HTTP payload");
                 let mut expected = Vec::new();
                 create_logs_service_request()
                     .encode(&mut expected)
                     .expect("encode expected HTTP payload");
-                assert_eq!(payload.as_bytes(), expected.as_slice());
+                assert_eq!(
+                    encoded_request(&pdata, SignalType::Logs),
+                    expected.as_slice()
+                );
 
                 if let Ok(Ok(_)) = timeout(Duration::from_millis(200), ctx.recv()).await {
                     panic!("denied HTTP request reached downstream");
@@ -2636,6 +2817,8 @@ mod tests {
 
     /// Test HTTP-only mode: receiver configured with only HTTP protocol (no gRPC).
     /// This matches the new flexibility matching Go collector's behavior.
+    /// Scenario: The receiver enables HTTP without a gRPC listener.
+    /// Guarantees: HTTP requests produce unchanged encoded OTLP with normal acknowledgment handling.
     #[test]
     fn test_otlp_http_only_mode() {
         let test_runtime = TestRuntime::new();
@@ -2701,17 +2884,12 @@ mod tests {
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                let logs_proto: OtlpProtoBytes = logs_pdata
-                    .clone()
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OtlpProtoBytes");
-                assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
+                let logs_proto = encoded_request(&logs_pdata, SignalType::Logs);
 
                 let expected = create_logs_service_request();
                 let mut expected_bytes = Vec::new();
                 expected.encode(&mut expected_bytes).unwrap();
-                assert_eq!(&expected_bytes, logs_proto.as_bytes());
+                assert_eq!(&expected_bytes, logs_proto);
 
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
@@ -3925,13 +4103,10 @@ mod tests {
                     .await
                     .expect("Timed out waiting for admitted gRPC request")
                     .expect("No admitted gRPC request received");
-                let proto: OtlpProtoBytes = pdata
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OTLP bytes");
+                let proto = encoded_request(&pdata, SignalType::Logs);
                 let mut expected = Vec::new();
                 request.encode(&mut expected).unwrap();
-                assert_eq!(proto.as_bytes(), expected.as_slice());
+                assert_eq!(proto, expected.as_slice());
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
@@ -4069,11 +4244,8 @@ mod tests {
                     .await
                     .expect("Timed out waiting for admitted HTTP request")
                     .expect("No admitted HTTP request received");
-                let proto: OtlpProtoBytes = pdata
-                    .payload()
-                    .try_into_with_default()
-                    .expect("can convert to OTLP bytes");
-                assert_eq!(proto.as_bytes(), expected_request_bytes.as_slice());
+                let proto = encoded_request(&pdata, SignalType::Logs);
+                assert_eq!(proto, expected_request_bytes.as_slice());
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 

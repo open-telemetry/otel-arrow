@@ -5,16 +5,19 @@
 //!
 //! Primitive reads, writes, and all-stored selections always specify a source domain.
 //! Composite selections instead name the composite and optionally its member; the
-//! definition supplies each member's value source (a domain-backed field or configured
-//! constant) and the entire entry's presence gate.
+//! definition supplies each member's value source (a domain-backed field, configured
+//! constant, or random generator) and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
 
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
+/// Materializes selected constant and randomness composites at runtime.
+mod materialization;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
 
 pub use layout::*;
+pub use materialization::*;
 pub use propagation::CompiledHeaderPropagationPolicy;
 use propagation::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
@@ -65,6 +68,8 @@ enum SelectedSource<'a> {
     Field(ContextDomain, &'a ContextEntryName),
     /// Inline configured value with no source domain or wire name.
     Constant(&'a ContextEntryName),
+    /// Generated random value with no source domain or wire name.
+    Randomness(&'a ContextEntryName),
 }
 
 impl<'a> SelectedSource<'a> {
@@ -72,6 +77,7 @@ impl<'a> SelectedSource<'a> {
     fn from_part(part: &'a ContextEntryPart) -> Option<Self> {
         match part {
             ContextEntryPart::Constant { name, .. } => Some(Self::Constant(name)),
+            ContextEntryPart::Randomness { name, .. } => Some(Self::Randomness(name)),
             ContextEntryPart::TransportHeader { name, .. } => {
                 Some(Self::Field(ContextDomain::TransportHeader, name))
             }
@@ -93,13 +99,14 @@ impl ContextEntryTarget {
         }
     }
 
-    /// Resolves selected values, excluding condition-only fields.
-    fn selected_sources<'a>(
+    /// Visits selected values, excluding condition-only fields.
+    fn visit_selected_sources<'a>(
         &'a self,
         composites: &'a [ConfigContextEntryDeclaration],
-    ) -> Result<Vec<SelectedSource<'a>>, Error> {
+        mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => Ok(vec![SelectedSource::Field(*domain, name)]),
+            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -110,19 +117,22 @@ impl ContextEntryTarget {
                     .ok_or_else(|| {
                         invalid_context(format!("unknown context member `{composite}:{member}`"))
                     })?;
-                Ok(vec![
+                visit(
                     SelectedSource::from_part(part)
                         .expect("selected composite member is value-bearing"),
-                ])
+                )
             }
             Self::Composite { name } => {
                 let declaration = composite_declaration(name, composites)?;
-                Ok(declaration
+                for source in declaration
                     .definition
                     .0
                     .iter()
                     .filter_map(SelectedSource::from_part)
-                    .collect())
+                {
+                    visit(source)?;
+                }
+                Ok(())
             }
         }
     }
@@ -236,12 +246,10 @@ impl ContextDeclaration {
                 selector: ContextConsumerSelector::Entries { entries },
             } => {
                 for entry in entries {
-                    let sources = entry.target.selected_sources(composites)?;
-                    if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
-                        continue;
-                    }
-
-                    for source in sources {
+                    entry.target.visit_selected_sources(composites, |source| {
+                        if entry.form != ContextEntrySelectorForm::OriginalKeyValue {
+                            return Ok(());
+                        }
                         match source {
                             SelectedSource::Field(ContextDomain::TransportHeader, name) => {
                                 _ = requirements
@@ -259,8 +267,14 @@ impl ContextDeclaration {
                                     "original wire name requested for constant context entry `{name}`; constants have no original wire names"
                                 )));
                             }
+                            SelectedSource::Randomness(name) => {
+                                return Err(invalid_context(format!(
+                                    "original wire name requested for randomness context entry `{name}`; generated values have no original wire names"
+                                )));
+                            }
                         }
-                    }
+                        Ok(())
+                    })?;
                 }
             }
             Self::Consumes {
@@ -406,6 +420,8 @@ where
 pub struct CompiledContextBindings {
     /// Compiled node bindings indexed first by pipeline, then by node.
     by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
+    /// Constant/randomness materialization plans indexed by pipeline.
+    materialization_by_pipeline: HashMap<PipelineKey, ContextMaterializationPlan>,
 }
 
 /// Stores one node's component declarations, selected composites, and engine context policies.
@@ -662,6 +678,7 @@ impl CompiledContextBindings {
     pub fn empty() -> Self {
         Self {
             by_pipeline: HashMap::new(),
+            materialization_by_pipeline: HashMap::new(),
         }
     }
 
@@ -669,11 +686,23 @@ impl CompiledContextBindings {
     fn compile(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        let mut materialization_by_pipeline = HashMap::new();
         let by_pipeline = declarations
             .into_iter()
-            .map(|(pipeline, nodes)| {
-                let nodes = nodes
+            .map(|(pipeline, prepared_nodes)| {
+                let selected_composites = prepared_nodes
+                    .values()
+                    .flat_map(|prepared| prepared.composites.iter())
+                    .map(|declaration| (declaration.name.clone(), declaration.clone()))
+                    .collect::<BTreeMap<_, _>>()
+                    .into_values()
+                    .collect::<Vec<_>>();
+                let materialization = ContextMaterializationPlan::compile(&selected_composites)?;
+                if !materialization.is_empty() {
+                    _ = materialization_by_pipeline.insert(pipeline.clone(), materialization);
+                }
+                let nodes = prepared_nodes
                     .into_iter()
                     .map(|(node, declarations)| {
                         (
@@ -682,11 +711,27 @@ impl CompiledContextBindings {
                         )
                     })
                     .collect();
-                (pipeline, nodes)
+                Ok((pipeline, nodes))
             })
-            .collect();
+            .collect::<Result<_, Error>>()?;
 
-        Self { by_pipeline }
+        Ok(Self {
+            by_pipeline,
+            materialization_by_pipeline,
+        })
+    }
+
+    /// Returns the pipeline's constant/randomness materialization plan.
+    ///
+    /// Consumers may resolve existing [`ContextProjection`] values against this
+    /// plan. General consumer bindings and optimized lookup structures are
+    /// intentionally outside this API.
+    #[must_use]
+    pub fn context_materialization_plan(
+        &self,
+        pipeline: &PipelineKey,
+    ) -> Option<&ContextMaterializationPlan> {
+        self.materialization_by_pipeline.get(pipeline)
     }
 
     /// Returns the node's compiled header capture policy.
@@ -782,7 +827,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
         let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = Self::compile_bindings(declarations, &runtime_requirements);
+        let bindings = Self::compile_bindings(declarations, &runtime_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
             bindings,
@@ -797,7 +842,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ) -> Result<PreparedContext, EngineError> {
         let declarations = self.context_declarations(resolved)?;
         let runtime_requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = Self::compile_bindings(declarations, installed_requirements);
+        let bindings = Self::compile_bindings(declarations, installed_requirements)?;
         Ok(PreparedContext {
             runtime_requirements,
             bindings,
@@ -808,8 +853,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     fn compile_bindings(
         declarations: ContextDeclarationsByPipeline,
         requirements: &ContextRuntimeRequirements,
-    ) -> Arc<CompiledContextBindings> {
-        Arc::new(CompiledContextBindings::compile(declarations, requirements))
+    ) -> Result<Arc<CompiledContextBindings>, EngineError> {
+        CompiledContextBindings::compile(declarations, requirements)
+            .map(Arc::new)
+            .map_err(|error| EngineError::ConfigError(Box::new(error)))
     }
 
     /// Collects and validates component and engine declarations for each resolved pipeline node.
@@ -1029,6 +1076,21 @@ mod tests {
         name.try_into().expect("valid test context entry name")
     }
 
+    /// Collects selected sources for assertions over visitor traversal.
+    fn collect_selected_sources<'a>(
+        target: &'a ContextEntryTarget,
+        composites: &'a [ConfigContextEntryDeclaration],
+    ) -> Vec<SelectedSource<'a>> {
+        let mut sources = Vec::new();
+        target
+            .visit_selected_sources(composites, |source| {
+                sources.push(source);
+                Ok(())
+            })
+            .expect("selected sources");
+        sources
+    }
+
     /// Fails if context compilation unexpectedly constructs a receiver.
     fn unused_test_receiver(
         _: crate::context::PipelineContext,
@@ -1196,6 +1258,7 @@ groups:
         let declarations = declarations_by_pipeline(effective);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         CompiledContextBindings::compile(declarations, &requirements)
+            .expect("test bindings compile")
     }
 
     /// Derives runtime requirements from one test node's declarations.
@@ -1263,6 +1326,20 @@ groups:
                 {"type": "transport_header", "name": "workspace"}
             ]))
             .expect("valid constant composite"),
+        }
+    }
+
+    /// Builds a test composite containing one randomness member.
+    fn randomness_composite() -> ConfigContextEntryDeclaration {
+        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+
+        ConfigContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: context_name("idempotency"),
+            definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
+                {"type": "randomness", "name": "id", "value": "uuid7"}
+            ]))
+            .expect("valid randomness composite"),
         }
     }
 
@@ -1370,9 +1447,7 @@ groups:
         };
         let source_name = context_name("id");
         assert_eq!(
-            whole
-                .selected_sources(&context)
-                .expect("whole composite sources"),
+            collect_selected_sources(&whole, &context),
             [
                 SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
                 SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
@@ -1419,9 +1494,7 @@ groups:
         let constant_name = context_name("route_name");
         let header_name = context_name("workspace");
         assert_eq!(
-            whole
-                .selected_sources(&context)
-                .expect("whole composite sources"),
+            collect_selected_sources(&whole, &context),
             [
                 SelectedSource::Constant(&constant_name),
                 SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
@@ -1436,11 +1509,7 @@ groups:
             &context,
         )
         .expect("constant value selection");
-        assert!(
-            !prepared
-                .requirements
-                .preserves_original_name(&context_name("route_name"))
-        );
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member_target("route", "route_name"), whole] {
             let error = PreparedNodeContextDeclarations::new(
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
@@ -1452,6 +1521,72 @@ groups:
                     "original wire name requested for constant context entry `route_name`"
                 ),
                 "{error}"
+            );
+        }
+    }
+
+    /// Scenario: one pipeline consumer selects a constant member from a composite.
+    /// Guarantees: the compiled pipeline bindings include a materialization plan for that composite.
+    #[test]
+    fn selected_constant_builds_pipeline_materialization_plan() {
+        let pipeline = pipeline("group", "pipeline");
+        let declarations = HashMap::from([(
+            pipeline.clone(),
+            HashMap::from([(
+                ConfigNodeId::from("node"),
+                PreparedNodeContextDeclarations::new(
+                    consumer(
+                        member_target("route", "route_name"),
+                        ContextEntrySelectorForm::Value,
+                    ),
+                    &[constant_composite()],
+                )
+                .expect("constant selection is valid"),
+            )]),
+        )]);
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+
+        let bindings =
+            CompiledContextBindings::compile(declarations, &requirements).expect("valid bindings");
+
+        let plan = bindings
+            .context_materialization_plan(&pipeline)
+            .expect("pipeline materialization plan");
+        assert_eq!(plan.layout().entries().len(), 1);
+        assert_eq!(plan.layout().entries()[0].name, context_name("route"));
+    }
+
+    /// Scenario: a consumer selects a generated randomness member.
+    /// Guarantees: randomness adds no external requirements and rejects original wire names.
+    #[test]
+    fn randomness_members_have_no_external_or_original_name_requirements() {
+        let context = [randomness_composite()];
+        let member = member_target("idempotency", "id");
+        let whole = ContextEntryTarget::Composite {
+            name: context_name("idempotency"),
+        };
+        let randomness_name = context_name("id");
+        assert_eq!(
+            collect_selected_sources(&whole, &context),
+            [SelectedSource::Randomness(&randomness_name)]
+        );
+
+        let prepared = PreparedNodeContextDeclarations::new(
+            consumer(member.clone(), ContextEntrySelectorForm::Value),
+            &context,
+        )
+        .expect("randomness value selection");
+        assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
+        for target in [member, whole] {
+            let error = PreparedNodeContextDeclarations::new(
+                consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
+                &context,
+            )
+            .expect_err("randomness has no original wire name");
+            assert!(
+                error
+                    .to_string()
+                    .contains("original wire name requested for randomness context entry `id`")
             );
         }
     }
@@ -1564,6 +1699,35 @@ groups:
                 let error = result.expect_err("invalid consumer must fail preparation");
                 assert!(error.to_string().contains(expected), "{error}");
             }
+        }
+    }
+
+    /// Scenario: one selected composite references the same transport header with different casing.
+    /// Guarantees: startup and live-update preparation return a config error instead of panicking.
+    #[test]
+    fn full_yaml_preparation_rejects_case_variant_header_references() {
+        let valid = "[{type: constant, name: route_name, value: stable}, \
+            {type: transport_header, name: X-Tenant, store_as: upper}]";
+        let invalid = "[{type: constant, name: route_name, value: stable}, \
+            {type: transport_header, name: X-Tenant, store_as: upper}, \
+            {type: transport_header, name: x-tenant, store_as: lower}]";
+        let factory = test_pipeline_factory();
+        let installed = factory
+            .compile_initial_context(&resolve_consumer_pipeline(valid, "route_name", false))
+            .expect("valid initial context");
+        let invalid = resolve_consumer_pipeline(invalid, "route_name", false);
+
+        for result in [
+            factory.compile_initial_context(&invalid),
+            factory.compile_candidate_context(&invalid, &installed.runtime_requirements),
+        ] {
+            let error = result.expect_err("case-variant references must fail preparation");
+            assert!(
+                error
+                    .to_string()
+                    .contains("context entry `tenant` repeats `x-tenant`"),
+                "{error}"
+            );
         }
     }
 
@@ -2275,7 +2439,8 @@ default:
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
-        let bindings = CompiledContextBindings::compile(declarations, &requirements);
+        let bindings =
+            CompiledContextBindings::compile(declarations, &requirements).expect("valid bindings");
 
         assert!(
             bindings

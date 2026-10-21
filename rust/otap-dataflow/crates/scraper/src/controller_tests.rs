@@ -33,10 +33,10 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
 use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
-use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use otel_arrow_dfe_telemetry::metrics::MetricValue;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message;
@@ -670,12 +670,14 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
                     .recv()
                     .await
                     .expect("receiver should emit the next page");
-                let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
-                    pdata.clone().payload().into_data()
-                else {
-                    panic!("expected OTLP logs");
-                };
-                let logs = LogsData::decode(bytes).expect("valid OTLP logs");
+                let payload = pdata.payload_ref();
+                assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+                assert_eq!(
+                    payload.signal_type(),
+                    otel_arrow_dfe_config::SignalType::Logs
+                );
+                let bytes = payload.encoded_bytes().expect("OTLP bytes");
+                let logs = LogsData::decode(bytes.as_ref()).expect("valid OTLP logs");
                 let resource = logs.resource_logs[0].resource.as_ref().expect("resource");
                 let source_id = resource
                     .attributes
@@ -3051,12 +3053,14 @@ async fn stored_checkpoint(
 }
 
 fn assert_page_id(pdata: &OtapPdata, expected: u64) {
-    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
-        pdata.clone().payload().into_data()
-    else {
-        panic!("expected unchanged OTLP logs protobuf transport");
-    };
-    let logs = LogsData::decode(bytes).expect("valid OTLP logs");
+    let payload = pdata.payload_ref();
+    assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+    assert_eq!(
+        payload.signal_type(),
+        otel_arrow_dfe_config::SignalType::Logs
+    );
+    let bytes = payload.encoded_bytes().expect("OTLP bytes");
+    let logs = LogsData::decode(bytes.as_ref()).expect("valid OTLP logs");
     let records: Vec<_> = logs
         .resource_logs
         .iter()

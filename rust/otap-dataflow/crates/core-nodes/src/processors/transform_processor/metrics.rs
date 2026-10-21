@@ -49,6 +49,8 @@ pub(super) enum TransformErrorType {
     OutputSend,
     /// An internal transform processor invariant failed.
     Internal,
+    /// An output batch could not be sanitized.
+    Sanitization,
 }
 
 /// Signal and error dimensions for failed transform operations.

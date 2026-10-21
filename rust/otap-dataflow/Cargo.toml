@@ -5,24 +5,25 @@ members = [
     "xtask"
 ]
 exclude = [
-    # Reference WASM guest plugin, built on demand for the wasm-host
-    # integration test and compiled for the wasm32-wasip2 target only.
+    # Standalone WASM guest plugins, built on demand for wasm-host tests and
+    # compiled for the nightly wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
+    "crates/wasm-host/plugins/test-plugin",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.61.0"
+version = "0.62.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.88.0"
+rust-version = "1.98.1"
 
 [package]
 name = "otel-arrow-dfe"
-version = "0.61.0"
+version = "0.62.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
@@ -49,36 +50,35 @@ otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
-cfg-if.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
-otel-arrow-dfe-admin-api = { version = "0.61.0", path = "crates/admin-api" }
-otel-arrow-dfe-admin-types = { version = "0.61.0", path = "crates/admin-types" }
-otel-arrow-dfe-pdata-otlp-macros = { version = "0.61.0", path = "./crates/pdata/src/otlp/macros"}
-otel-arrow-dfe-pdata-otlp-model = { version = "0.61.0", path = "./crates/pdata/src/otlp/model"}
-otel-arrow-dfe-config = { version = "0.61.0", path = "crates/config" }
-otel-arrow-dfe-contrib-extensions = { version = "0.61.0", path = "crates/contrib-extensions" }
-otel-arrow-dfe-contrib-nodes = { version = "0.61.0", path = "crates/contrib-nodes" }
+otel-arrow-dfe-admin-api = { version = "0.62.0", path = "crates/admin-api" }
+otel-arrow-dfe-admin-types = { version = "0.62.0", path = "crates/admin-types" }
+otel-arrow-dfe-pdata-otlp-macros = { version = "0.62.0", path = "./crates/pdata/src/otlp/macros"}
+otel-arrow-dfe-pdata-otlp-model = { version = "0.62.0", path = "./crates/pdata/src/otlp/model"}
+otel-arrow-dfe-config = { version = "0.62.0", path = "crates/config" }
+otel-arrow-dfe-contrib-extensions = { version = "0.62.0", path = "crates/contrib-extensions" }
+otel-arrow-dfe-contrib-nodes = { version = "0.62.0", path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
-otel-arrow-dfe-controller = { version = "0.61.0", path = "crates/controller" }
-otel-arrow-dfe-core-nodes = { version = "0.61.0", path = "crates/core-nodes", default-features = false }
+otel-arrow-dfe-controller = { version = "0.62.0", path = "crates/controller" }
+otel-arrow-dfe-core-nodes = { version = "0.62.0", path = "crates/core-nodes", default-features = false }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
-otel-arrow-dfe-engine = { version = "0.61.0", path = "crates/engine" }
-otel-arrow-dfe-expohisto = { version = "0.61.0", path = "crates/expohisto" }
+otel-arrow-dfe-engine = { version = "0.62.0", path = "crates/engine" }
+otel-arrow-dfe-expohisto = { version = "0.62.0", path = "crates/expohisto" }
 otel-arrow-dfe-filelog-checkpoint = { path = "crates/filelog-checkpoint" }
-otel-arrow-dfe-otap = { version = "0.61.0", path = "crates/otap" }
-otel-arrow-dfe-scraper = { version = "0.61.0", path = "crates/scraper" }
+otel-arrow-dfe-otap = { version = "0.62.0", path = "crates/otap" }
+otel-arrow-dfe-scraper = { version = "0.62.0", path = "crates/scraper" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
-otel-arrow-dfe-pdata = { version = "0.61.0", path = "crates/pdata" }
-otel-arrow-dfe-pdata-codec = { version = "0.61.0", path = "crates/pdata-codec" }
+otel-arrow-dfe-pdata = { version = "0.62.0", path = "crates/pdata" }
+otel-arrow-dfe-pdata-codec = { version = "0.62.0", path = "crates/pdata-codec" }
 otel-arrow-dfe-pdata-views = { version = "0.54.1", path = "crates/pdata-views" }
-otel-arrow-dfe-telemetry = { version = "0.61.0", path = "crates/telemetry" }
-otel-arrow-dfe-quiver = { version = "0.61.0", path = "crates/quiver" }
+otel-arrow-dfe-telemetry = { version = "0.62.0", path = "crates/telemetry" }
+otel-arrow-dfe-quiver = { version = "0.62.0", path = "crates/quiver" }
 otel-arrow-contrib-data-engine-expressions = "0.1.1"
 otel-arrow-contrib-data-engine-kql-parser = "0.1.1"
 otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
@@ -89,14 +89,15 @@ aws-msk-iam-sasl-signer = "1.0.1"
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
-arrow = { version = "58.3", features=["prettyprint"] }
-arrow-buffer = { version = "58.3" }
-arrow-ipc = { version = "58.3", features=["zstd"] }
-arrow-schema = { version = "58.3" }
-arrow-array = { version = "58.3" }
-arrow-cast = { version = "58.3" }
-arrow-select = { version = "58.3" }
-wasmtime = { version = "48.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
+arrow = { version = "59.3", features=["prettyprint"] }
+arrow-buffer = { version = "59.3" }
+arrow-ipc = { version = "59.3", features=["zstd"] }
+arrow-schema = { version = "59.3" }
+arrow-array = { version = "59.3" }
+arrow-cast = { version = "59.3" }
+arrow-select = { version = "59.3" }
+wasmtime = { version = "49.0.3", default-features = false, features = ["runtime", "component-model", "component-model-async", "cranelift", "std"] }
+wasmtime-wasi = { version = "49.0.3", default-features = false, features = ["p3"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
@@ -106,7 +107,6 @@ bitflags = "2.10"
 bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
-cfg-if = "1.0.4"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
@@ -116,8 +116,9 @@ core_affinity = "0.8.3"
 criterion = "0.8.0"
 csv-core = "0.1.13"
 data-encoding = "2.9.0"
-datafusion = { version = "54.0.0", default-features = false }
+datafusion = { version = "55.1.0", default-features = false }
 dhat = "0.3.3"
+libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 fs2 = "0.4.3"
@@ -175,7 +176,7 @@ oracle = "0.6.3"
 
 parking_lot = "0.12.5"
 paste = "1"
-parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
+parquet = { version = "59.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
 pretty_assertions = "1.4.1"
@@ -190,13 +191,15 @@ rand = "0.10.1"
 rcgen = "0.14"
 rdkafka = { version = "=0.39.0", features = ["tokio", "tracing"] }
 regex = "1.12"
-regex-automata = "0.4.14"
+regex-automata = "0.4.18"
+regex-syntax = "0.8.11"
 ring = "0.17"
 roaring = "0.11.2"
 ryu = "1"
-rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"] }
+rustix = { version = "1.1.5", features = ["fs"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
 rustls-pki-types = { version = "1.11", features = ["std"] }
-rustls-webpki = { version = "0.103.15", default-features = false, features = ["std"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
 rustls-openssl = "0.4"
@@ -217,6 +220,8 @@ simdutf8 = "0.1.5"
 slotmap = "1.0.7"
 smallvec = { version = "1.15" , features = ["union", "const_new"] }
 socket2 = { version = "0.6.1", features = ["all"] }
+# SQL Server uses platform-native TLS independently of other components' crypto-* features.
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "native-tls"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
@@ -229,6 +234,9 @@ tracing-subscriber = { version = "0.3", default-features = false }
 tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process", "signal"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 tokio-stream = "0.1.17"
+tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime", "with-chrono-0_4"] }
+tokio-postgres-rustls = { version = "0.14.0", default-features = false }
+sqlparser = { version = "=0.62.0", default-features = false, features = ["std", "recursive-protection"] }
 tokio-util = { version = "0.7.17" }
 tonic = { version = "0.14", default-features = false, features = [
     "channel",
@@ -251,19 +259,20 @@ http-body-util = "0.1"
 trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
-uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+uuid = { version = "1.17.0", features = ["fast-rng", "v4", "v7"] }
+x509-parser = { version = "0.18.1", default-features = false }
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=8.6.0"
+zip = "=9.0.5"
 byte-unit = { version = "5.2.0", features = ["serde"] }
-clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
-clickhouse-ext-arrow = "0.1.0"
+clickhouse = { version = "0.15.3", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
+clickhouse-ext-arrow = "0.2.0"
 cpu-time = "1.0.0"
 
 one_collect = "0.1.35021"
@@ -277,6 +286,7 @@ flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
 time = ">=0.3.47, <0.3.56"
+windows-sys = "0.61.2"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -284,14 +294,14 @@ eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
-otel-arrow-dfe-admin = { version = "0.61.0", path = 'crates/admin' }
-otel-arrow-dfe-channel = { version = "0.61.0", path = 'crates/channel' }
-otel-arrow-dfe-engine-macros = { version = "0.61.0", path = 'crates/engine-macros' }
-otel-arrow-dfe-component-inventory-syntax = { version = "0.61.0", path = 'crates/component-inventory-syntax' }
-otel-arrow-dfe-query-engine-languages = { version = "0.61.0", path = 'crates/query-engine-languages' }
-otel-arrow-dfe-query-engine = { version = "0.61.0", path = 'crates/query-engine' }
-otel-arrow-dfe-state = { version = "0.61.0", path = 'crates/state' }
-otel-arrow-dfe-telemetry-macros = { version = "0.61.0", path = 'crates/telemetry-macros' }
+otel-arrow-dfe-admin = { version = "0.62.0", path = 'crates/admin' }
+otel-arrow-dfe-channel = { version = "0.62.0", path = 'crates/channel' }
+otel-arrow-dfe-engine-macros = { version = "0.62.0", path = 'crates/engine-macros' }
+otel-arrow-dfe-component-inventory-syntax = { version = "0.62.0", path = 'crates/component-inventory-syntax' }
+otel-arrow-dfe-query-engine-languages = { version = "0.62.0", path = 'crates/query-engine-languages' }
+otel-arrow-dfe-query-engine = { version = "0.62.0", path = 'crates/query-engine' }
+otel-arrow-dfe-state = { version = "0.62.0", path = 'crates/state' }
+otel-arrow-dfe-telemetry-macros = { version = "0.62.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.28"
@@ -348,11 +358,16 @@ contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
 kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 
 # Contrib receivers.
+postgresql = [
+    "otel-arrow-dfe-contrib-nodes/postgresql",
+    "flat-file-user-pass-auth",
+]
 etw = ["otel-arrow-dfe-contrib-nodes/etw"]
 oracle = [
     "otel-arrow-dfe-contrib-nodes/oracle",
     "flat-file-user-pass-auth",
 ]
+sql-server = ["otel-arrow-dfe-contrib-nodes/sql-server"]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
 windows-perf-counters = ["otel-arrow-dfe-contrib-nodes/windows-perf-counters"]
 
@@ -362,6 +377,10 @@ recordset-kql = ["otel-arrow-dfe-contrib-nodes/recordset-kql"]
 resource-validator = ["otel-arrow-dfe-contrib-nodes/resource-validator"]
 
 # Contrib exporters.
+azure-data-explorer = [
+    "otel-arrow-dfe-contrib-nodes/azure-data-explorer",
+    "azure-identity-auth",
+]
 # The Azure Monitor exporter requires the Azure Identity auth extension to
 # authenticate outbound requests, so enabling it pulls in that extension.
 azure-monitor = [
@@ -376,6 +395,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
 flat-file-api-key-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-api-key-auth"]
+flat-file-sasl-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-sasl-auth"]
 flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]
 k8s-service-account-token-auth = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth"]
 oauth2-client-auth = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth"]
@@ -491,14 +511,28 @@ missing_crate_level_docs = "deny"
 [profile.release]
 debug = "line-tables-only"  # minimum required for profiling
 
-[profile.profiling]
+# Opt in to whole-program optimization without changing the default release build.
+[profile.release-perf]
 inherits = "release"
-debug = 2
+opt-level = 3
+debug = 0
+strip = "debuginfo"
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+incremental = false
 
-# A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
-#[profile.release]
-#lto = "thin"
-#strip = true
+# Favor the smallest binary, accepting potential processing throughput loss.
+[profile.release-size]
+inherits = "release-perf"
+opt-level = "z"
+debug = 0
+strip = "debuginfo"
+
+[profile.profiling]
+inherits = "release-perf"
+debug = 2
+strip = "none"
 
 [profile.bench]
 inherits = "release"

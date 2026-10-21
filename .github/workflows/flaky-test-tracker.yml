@@ -56,16 +56,6 @@ jobs:
           set -euo pipefail
           mkdir -p junit-artifacts
 
-          # Get the workflow ID for Rust-CI
-          WORKFLOW_ID=$(gh api "repos/${{ github.repository }}/actions/workflows" \
-            --jq '.workflows[] | select(.name == "Rust-CI") | .id')
-
-          if [[ -z "$WORKFLOW_ID" ]]; then
-            echo "::error::Could not find Rust-CI workflow"
-            exit 1
-          fi
-
-          echo "Rust-CI workflow ID: $WORKFLOW_ID"
           RUN_CUTOFF=$(date -u -d "$RUN_LOOKBACK_DAYS days ago" \
             +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -97,8 +87,9 @@ jobs:
           # request. A label with no known pull request is kept: that is how
           # merge queue runs ("gh-readonly-queue/...") reach the report, and
           # it keeps a failed lookup from dropping every run.
+          # Address the workflow by filename, not a paginated name lookup.
           RUN_INFO=$(gh api --method GET \
-            "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs" \
+            "repos/${{ github.repository }}/actions/workflows/rust-ci.yml/runs" \
             -f status=completed -f created=">=$RUN_CUTOFF" -F per_page=100 \
             --jq '[.workflow_runs[] | {
                 id, created_at, conclusion,
