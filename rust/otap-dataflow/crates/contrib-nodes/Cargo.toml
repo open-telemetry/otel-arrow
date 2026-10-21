@@ -90,6 +90,7 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
@@ -194,6 +195,7 @@ windows-event-forwarding = [
     "uuid/v5",
     "dep:url",
     "dep:humantime-serde",
+    "dep:x509-parser",
 ]
 user-events = [
     "dep:base64",
@@ -295,6 +297,7 @@ otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
+rcgen.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls.workspace = true

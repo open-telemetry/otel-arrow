@@ -45,6 +45,9 @@ fn gen_fake_logs_batch(batch_size: usize) {
         return;
     }
 
+    // weaver fetches remote registries over rustls without choosing a crypto
+    // provider, so one must be installed before loading the registry.
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path =
         otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path();
 

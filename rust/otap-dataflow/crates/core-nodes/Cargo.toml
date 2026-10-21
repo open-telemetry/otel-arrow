@@ -79,6 +79,7 @@ xxhash-rust.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 nix.workspace = true
+rustix.workspace = true
 
 [features]
 # Compatibility default: existing consumers continue to compile every core node.
@@ -247,3 +248,8 @@ path = "benches/filelog_grouping/main.rs"
 [[test]]
 name = "filelog_path_memory"
 harness = false
+
+[[bench]]
+name = "filelog_scan"
+harness = false
+path = "benches/filelog_scan/main.rs"

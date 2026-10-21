@@ -1,0 +1,17 @@
+name: Owner coverage events
+run-name: 'Owner reviews for PR #${{ github.event.pull_request.number }}'
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.actor != 'Copilot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Notify trusted owner-coverage workflow
+        run: echo "Owner-coverage refresh requested"
