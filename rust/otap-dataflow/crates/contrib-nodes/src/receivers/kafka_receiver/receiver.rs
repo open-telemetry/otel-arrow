@@ -793,8 +793,45 @@ impl KafkaReceiver {
                     self.process_due_replays(consumer.as_ref());
                 }
 
-                // 4. Consume Kafka messages.
-                result = consumer.recv() => {
+                // 4. Drain completed DLQ deliveries. Each completion advances
+                // the source offset past the dead-lettered message (whether it
+                // was produced or lost) and frees an in-flight slot (there is
+                // no pending queue). The future borrows only the DLQ manager,
+                // so it never blocks the other branches; work is bounded and
+                // runs off the hot path (background producer thread /
+                // spawn_blocking re-read).
+                //
+                // Placed ABOVE `consumer.recv()`: this select is `biased`, so a
+                // continuously-ready Kafka input would otherwise starve this
+                // branch and in-flight slots would never drain. The `has_work`
+                // guard disables the branch when idle, and the completion future
+                // stays Pending until a delivery finishes, so this does not
+                // starve Kafka input.
+                // DLQ-PHASE-2 (Remove): whole branch; DLQ completions arrive on
+                // the Ack/Nack control handlers, not from a completion future.
+                completion = async {
+                    match dlq.as_mut() {
+                        Some(manager) => manager.next_completion().await,
+                        None => std::future::pending().await,
+                    }
+                }, if dlq.as_ref().is_some_and(DlqManager::has_work) => {
+                    if let Some(completion) = completion {
+                        self.handle_dlq_completion(
+                            completion,
+                            consumer.as_ref(),
+                            &receiver_id,
+                        );
+                    }
+                }
+
+                // 5. Consume Kafka messages. Paused while every DLQ in-flight
+                // slot is busy: buffered input is processed far faster than a
+                // DLQ delivery completes, so without this gate a burst of
+                // failures fills all slots before any completion is ready and
+                // the rest of the burst is dropped as loss even though the DLQ
+                // is healthy. Each job is bounded by `DLQ_OP_TIMEOUT_MS`, so the
+                // pause is bounded too; control messages are still served.
+                result = consumer.recv(), if !dlq.as_ref().is_some_and(DlqManager::is_saturated) => {
                     match result {
                         Ok(data) => {
                             // Extract metadata before processing so we can
@@ -1094,7 +1131,7 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 5. Periodic consumer-lag refresh trigger (opt-in). Fires only
+                // 6. Periodic consumer-lag refresh trigger (opt-in). Fires only
                 // when the timer is armed, no refresh is already in flight, and
                 // the receiver is not draining, so no broker calls are issued
                 // during shutdown.
@@ -1122,30 +1159,6 @@ impl KafkaReceiver {
                             tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
                             cancel,
                         ));
-                    }
-                }
-
-                // 6. Drain completed DLQ deliveries. Each completion advances
-                // the source offset past the dead-lettered message (whether it
-                // was produced or lost) and refills an in-flight slot from the
-                // pending queue. The future borrows only the DLQ manager, so it
-                // never blocks the other branches; work is bounded and runs off
-                // the hot path (background producer thread / spawn_blocking
-                // re-read).
-                // DLQ-PHASE-2 (Remove): whole branch; DLQ completions arrive on
-                // the Ack/Nack control handlers, not from a completion future.
-                completion = async {
-                    match dlq.as_mut() {
-                        Some(manager) => manager.next_completion().await,
-                        None => std::future::pending().await,
-                    }
-                }, if dlq.as_ref().is_some_and(DlqManager::has_work) => {
-                    if let Some(completion) = completion {
-                        self.handle_dlq_completion(
-                            completion,
-                            consumer.as_ref(),
-                            &receiver_id,
-                        );
                     }
                 }
             }

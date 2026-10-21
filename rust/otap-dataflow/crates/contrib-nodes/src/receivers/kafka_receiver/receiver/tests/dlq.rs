@@ -718,6 +718,96 @@ async fn in_flight_full_records_loss_and_does_not_block() {
     .await;
 }
 
+/// Scenario: a backlog of poison records far larger than `DLQ_MAX_IN_FLIGHT`
+/// is already buffered in the consumer, so Kafka input is continuously ready
+/// for the whole drain, while the DLQ producer is healthy.
+/// Guarantees: DLQ completions keep being serviced under sustained input and
+/// a healthy DLQ is never reported as a loss -- every poison record is
+/// produced to the DLQ and `receiver.kafka.dlq.loss` stays 0. Before the fix
+/// the biased receive loop starved the completion branch, so only the first
+/// `DLQ_MAX_IN_FLIGHT` records were produced and the rest were dropped.
+#[tokio::test]
+async fn dlq_makes_progress_under_sustained_input() {
+    use crate::receivers::kafka_receiver::config::DLQ_MAX_IN_FLIGHT;
+    const TOPIC: &str = "dlq-sustained-src";
+    const DLQ: &str = "dlq-sustained-out";
+    const RECORDS: usize = 500;
+    let group = "dlq-sustained-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(TOPIC, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            // Seed the whole backlog before the receiver starts so it is
+            // fetched in bulk and `consumer.recv()` stays ready back-to-back.
+            // Sends run concurrently to keep the seeding phase short.
+            let producer = cluster.producer().build();
+            let payloads: Vec<Vec<u8>> = (0..RECORDS)
+                .map(|i| format!("poison-otap-{i}").into_bytes())
+                .collect();
+            let sends = payloads
+                .iter()
+                .map(|p| producer.send_full(SendRecord::new(TOPIC, p).key(b"bad")));
+            for result in futures::future::join_all(sends).await {
+                result.expect("send poison");
+            }
+
+            let cfg = manual_otap_traces_config_with_dlq(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                DLQ,
+                vec![DlqCapture::Decode],
+            );
+            let receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            // Every poison offset advances on a terminal DLQ outcome (produced
+            // or loss), so the committed offset reaching RECORDS means the
+            // whole backlog was processed.
+            let drained = poll_committed_offset(
+                cluster.bootstrap_servers(),
+                group,
+                TOPIC,
+                RECORDS as i64,
+                Duration::from_secs(60),
+                Duration::from_millis(100),
+            )
+            .await;
+            assert!(
+                drained,
+                "receiver must commit past the whole poison backlog; committed={:?}",
+                probe_committed_offset(cluster.bootstrap_servers(), group, TOPIC)
+            );
+
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
+            let loss = measurement_counter(
+                terminal.metrics(),
+                "receiver.kafka.dlq.loss",
+                &[("signal", "traces"), ("reason", "decode")],
+                "messages",
+            );
+            let produced = measurement_counter(
+                terminal.metrics(),
+                "receiver.kafka.dlq.messages",
+                &[
+                    ("signal", "traces"),
+                    ("reason", "decode"),
+                    ("outcome", "produced"),
+                ],
+                "messages",
+            );
+            assert_eq!(
+                (produced, loss),
+                (RECORDS as u64, 0),
+                "with a healthy DLQ every poison record must be dead-lettered under \
+                 sustained input (more than DLQ_MAX_IN_FLIGHT={DLQ_MAX_IN_FLIGHT}), \
+                 none dropped as loss"
+            );
+        },
+    )
+    .await;
+}
+
 /// Scenario: a decode failure is dead-lettered and produced successfully, but
 /// the source-offset commit is prevented (all offset commits are rejected)
 /// before the receiver stops; a second receiver then joins the same group.

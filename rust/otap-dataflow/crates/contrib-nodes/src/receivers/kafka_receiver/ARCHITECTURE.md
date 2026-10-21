@@ -106,7 +106,7 @@ flowchart LR
     end
 
     subgraph LOOP["Receive loop (single-threaded LocalSet task)"]
-        LP["Async select! loop (biased)<br/>control | lag-join | retry/assignment-resume | recv | lag-trigger"]
+        LP["Async select! loop (biased)<br/>control | lag-join | retry/assignment-resume | dlq-completion | recv | lag-trigger"]
         OT["Offset tracker<br/>per-partition pending offsets + generation"]
         RM["Retry manager<br/>transient-NACK replay FSM"]
         AR["Assignment-resume retry<br/>re-resumes paused partitions after reassignment"]
@@ -148,9 +148,12 @@ Highlights:
   possible. It is split for clarity into cross-thread facts (assigned set with
   per-partition ownership generation, committable snapshot, revoked queue,
   generation allocator) and counters plus the assignment-resume retry schedule.
-- The receive loop is a single `biased` `select!` with five branches: control
-  messages, the lag-worker join, the retry/assignment-resume deadline, the
-  `consumer.recv()` path, and the periodic lag-refresh trigger.
+- The receive loop is a single `biased` `select!` with six branches: control
+  messages, the lag-worker join, the retry/assignment-resume deadline, DLQ
+  completions, the `consumer.recv()` path, and the periodic lag-refresh
+  trigger. DLQ completions sit above `consumer.recv()` so continuously-ready
+  input cannot starve them, and `consumer.recv()` is paused while all DLQ
+  in-flight slots are busy.
 - **Assignment-resume retry**: a partition resume that fails at assign time is
   scheduled with capped exponential backoff and re-resumed by the loop's
   deadline branch until it succeeds or the ownership generation changes.
@@ -385,7 +388,7 @@ flowchart TD
         PROD["producer<br/>background poll thread<br/>bounded delivery future"]
     end
 
-    subgraph DONE["Completion (select! branch 6)"]
+    subgraph DONE["Completion (select! branch 4)"]
         OK["produced"]
         LOSS["failed / timeout / not-found / in-flight full"]
     end
@@ -443,8 +446,12 @@ Highlights:
 - **Non-stall contract.** All DLQ broker I/O runs off the receive loop and is
   timeout-bounded: the producer polls on its own background thread and awaits a
   bounded delivery future; the re-read runs on `spawn_blocking`. The receive loop
-  only polls the manager's completion future (`select!` branch 6). A stalled
-  broker or slow re-read cannot block ingestion. The producer send-await and the
+  only polls the manager's completion future (`select!` branch 4, ahead of
+  `consumer.recv()` so sustained input cannot starve it). While all in-flight
+  slots are busy the loop stops pulling new records until a slot frees, so a
+  burst of failures waits instead of being dropped; each job is bounded by
+  `DLQ_OP_TIMEOUT_MS`, so this pause is bounded and a stalled broker or slow
+  re-read cannot block ingestion indefinitely. The producer send-await and the
   re-read fetch are bounded by a fixed internal timeout (`DLQ_OP_TIMEOUT_MS`), and
   the producer's librdkafka `message.timeout.ms` is pinned to the same value so a
   record that misses the deadline is dropped by the producer queue rather than

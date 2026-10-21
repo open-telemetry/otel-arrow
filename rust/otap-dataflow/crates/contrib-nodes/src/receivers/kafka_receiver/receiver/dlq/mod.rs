@@ -15,10 +15,13 @@
 //! producer polls on its own background thread and each produce awaits a bounded
 //! delivery future; the permanent-nack re-read runs on `spawn_blocking` with a
 //! fetch timeout. Outstanding deliveries are bounded by [`DLQ_MAX_IN_FLIGHT`];
-//! when that bound is reached an incoming failure is immediately reported as a
-//! loss (no queue). On any failure -- produce error, timeout, unrecoverable
-//! bytes, or in-flight full -- the message is counted as `dlq.loss` and the
-//! source offset is advanced, so ingestion never stalls.
+//! while that bound is reached the receive loop stops pulling new records until
+//! a slot frees (each job is timeout-bounded, so the pause is too). A failure
+//! that still arrives at a full manager (e.g. a permanent nack on the control
+//! channel) is immediately reported as a loss (no queue). On any failure --
+//! produce error, timeout, unrecoverable bytes, or in-flight full -- the
+//! message is counted as `dlq.loss` and the source offset is advanced, so
+//! ingestion never stalls indefinitely.
 //!
 //! # Swap seam
 //!
@@ -392,6 +395,14 @@ impl DlqManager {
     // DLQ-PHASE-2 (Remove): the completion-drain branch it guards is removed.
     pub(crate) fn has_work(&self) -> bool {
         !self.in_flight.is_empty()
+    }
+
+    /// Whether every in-flight slot is occupied. The receive loop stops pulling
+    /// new Kafka records while this holds, so a burst of failures waits for a
+    /// free slot (bounded by `DLQ_OP_TIMEOUT_MS` per job) instead of being
+    /// dropped as a loss while the DLQ is healthy.
+    pub(crate) fn is_saturated(&self) -> bool {
+        self.in_flight.len() >= DLQ_MAX_IN_FLIGHT
     }
 
     /// Service a keep-warm poll on the idle re-read consumer so its broker
