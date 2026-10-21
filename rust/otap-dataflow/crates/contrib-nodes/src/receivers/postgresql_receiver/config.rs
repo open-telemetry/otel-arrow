@@ -83,7 +83,9 @@ pub(crate) struct Query {
 pub(crate) enum Watermark {
     Snapshot {},
     Scalar {
-        value: Scalar,
+        column: String,
+        bind: String,
+        initial: ScalarValue,
     },
     Composite {
         timestamp: Timestamp,
@@ -91,22 +93,6 @@ pub(crate) enum Watermark {
     },
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Scalar {
-    pub column: String,
-    pub bind: String,
-    #[serde(rename = "type")]
-    pub kind: ScalarType,
-    pub initial: serde_json::Value,
-}
-
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ScalarType {
-    Int64,
-    Timestamp,
-}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Timestamp {
@@ -249,26 +235,26 @@ impl PostgreSqlReceiverConfig {
         }
         let watermark = match &mut self.watermark {
             Watermark::Snapshot {} => WatermarkConfig::Snapshot {},
-            Watermark::Scalar { value } => {
-                validate_name(&value.column, 63)?;
-                let initial = match value.kind {
-                    ScalarType::Int64 => value
-                        .initial
-                        .as_i64()
-                        .map(ScalarValue::Int64)
-                        .ok_or(Error::Config)?,
-                    ScalarType::Timestamp => {
-                        let text = value.initial.as_str().ok_or(Error::Config)?;
-                        let normalized =
+            Watermark::Scalar {
+                column,
+                bind,
+                initial,
+            } => {
+                validate_name(column, 63)?;
+                match initial {
+                    ScalarValue::Int64(_) => {}
+                    ScalarValue::Timestamp(text) => {
+                        *text =
                             super::value::normalize_cursor_time(text).map_err(|_| Error::Config)?;
-                        value.initial = serde_json::Value::String(normalized.clone());
-                        ScalarValue::Timestamp(normalized)
                     }
-                };
+                    ScalarValue::UInt64(_) | ScalarValue::String(_) => {
+                        return Err(Error::Config);
+                    }
+                }
                 WatermarkConfig::Scalar {
-                    column: value.column.clone(),
-                    bind: value.bind.clone(),
-                    initial,
+                    column: column.clone(),
+                    bind: bind.clone(),
+                    initial: initial.clone(),
                 }
             }
             Watermark::Composite {

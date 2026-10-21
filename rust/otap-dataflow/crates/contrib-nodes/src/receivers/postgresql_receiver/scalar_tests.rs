@@ -26,12 +26,9 @@ fn config(initial: Value, kind: &str) -> Value {
         },
         "watermark": {
             "mode": "scalar",
-            "value": {
-                "column": "audit_id",
-                "bind": "last_value",
-                "type": kind,
-                "initial": initial
-            }
+            "column": "audit_id",
+            "bind": "last_value",
+            "initial": {"type": kind, "value": initial}
         },
         "checkpoint": {"directory": root.join("checkpoint")}
     })
@@ -74,7 +71,7 @@ fn signature(
 }
 
 /// Scenario: The documented integer scalar configuration is parsed and compiled.
-/// Guarantees: The public value block becomes one typed bind and preserves existing query limits.
+/// Guarantees: The shared flat scalar shape becomes one typed bind and preserves existing query limits.
 #[test]
 fn integer_scalar_configuration_uses_existing_postgresql_schema() {
     let validated = validate(&config(json!(0), "int64")).expect("scalar config");
@@ -111,7 +108,7 @@ fn timestamp_scalar_initial_is_normalized() {
         raw["query"]["statement"] = json!(
             "SELECT a.last_updated, a.payload FROM public.audit_logs AS a WHERE a.last_updated > :last_value ORDER BY a.last_updated ASC"
         );
-        raw["watermark"]["value"]["column"] = json!("last_updated");
+        raw["watermark"]["column"] = json!("last_updated");
         let validated = validate(&raw).expect("timestamp scalar");
         let CompiledWatermark::Scalar(watermark) = validated.common.watermark() else {
             panic!("scalar watermark")
@@ -140,14 +137,14 @@ fn scalar_fingerprint_tracks_semantic_identity() {
     let baseline = validate(&raw).expect("scalar").fingerprint;
 
     let mut changed = raw.clone();
-    changed["watermark"]["value"]["initial"] = json!(1);
+    changed["watermark"]["initial"]["value"] = json!(1);
     assert_ne!(
         baseline,
         validate(&changed).expect("changed initial").fingerprint
     );
 
     let mut changed = raw.clone();
-    changed["watermark"]["value"]["bind"] = json!("new_value");
+    changed["watermark"]["bind"] = json!("new_value");
     changed["query"]["statement"] = json!(
         "SELECT a.audit_id, a.payload FROM public.audit_logs AS a WHERE a.audit_id > :new_value ORDER BY a.audit_id ASC"
     );
@@ -157,7 +154,7 @@ fn scalar_fingerprint_tracks_semantic_identity() {
     );
 
     let mut changed = raw.clone();
-    changed["watermark"]["value"]["column"] = json!("sequence_id");
+    changed["watermark"]["column"] = json!("sequence_id");
     changed["query"]["statement"] = json!(
         "SELECT a.sequence_id, a.payload FROM public.audit_logs AS a WHERE a.sequence_id > :last_value ORDER BY a.sequence_id ASC"
     );
@@ -167,9 +164,9 @@ fn scalar_fingerprint_tracks_semantic_identity() {
     );
 
     let mut changed = raw.clone();
-    changed["watermark"]["value"]["type"] = json!("timestamp");
-    changed["watermark"]["value"]["initial"] = json!("2026-01-01T00:00:00Z");
-    changed["watermark"]["value"]["column"] = json!("last_updated");
+    changed["watermark"]["initial"]["type"] = json!("timestamp");
+    changed["watermark"]["initial"]["value"] = json!("2026-01-01T00:00:00Z");
+    changed["watermark"]["column"] = json!("last_updated");
     changed["query"]["statement"] = json!(
         "SELECT a.last_updated, a.payload FROM public.audit_logs AS a WHERE a.last_updated > :last_value ORDER BY a.last_updated ASC"
     );
@@ -208,6 +205,18 @@ fn scalar_configuration_rejects_unsupported_shapes() {
     let mut extra = config(json!(0), "int64");
     extra["watermark"]["timestamp"] = json!({"column": "ts"});
     assert!(validate(&extra).is_err());
+
+    let mut nested = config(json!(0), "int64");
+    nested["watermark"] = json!({
+        "mode": "scalar",
+        "value": {
+            "column": "audit_id",
+            "bind": "last_value",
+            "type": "int64",
+            "initial": 0
+        }
+    });
+    assert!(validate(&nested).is_err());
 }
 
 /// Scenario: Scalar SQL omits, duplicates, or reorders the configured keyset predicate.
@@ -265,7 +274,7 @@ fn timestamp_scalar_uses_native_timestamp_types() {
     raw["query"]["statement"] = json!(
         "SELECT a.last_updated, a.payload FROM public.audit_logs AS a WHERE a.last_updated > :last_value ORDER BY a.last_updated ASC"
     );
-    raw["watermark"]["value"]["column"] = json!("last_updated");
+    raw["watermark"]["column"] = json!("last_updated");
     let validated = validate(&raw).expect("timestamp scalar");
 
     for native in [Type::TIMESTAMP, Type::TIMESTAMPTZ] {

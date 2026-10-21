@@ -882,12 +882,9 @@ fn watermark_modes_have_distinct_source_fingerprints() {
         json!("SELECT e.id, e.ts FROM public.events AS e WHERE e.id > :last_value ORDER BY e.id");
     scalar["watermark"] = json!({
         "mode": "scalar",
-        "value": {
-            "column": "id",
-            "bind": "last_value",
-            "type": "int64",
-            "initial": 0
-        }
+        "column": "id",
+        "bind": "last_value",
+        "initial": {"type": "int64", "value": 0}
     });
 
     let mut snapshot = composite.clone();

@@ -99,7 +99,7 @@ needed. Fetch size is a target; the existing byte-aware fetch sizing can reduce 
 | Mode | Required watermark fields | Collection behavior | OTLP event timestamp |
 | --- | --- | --- | --- |
 | `composite` | `timestamp` and `tie_breaker` | Incremental pages ordered by timestamp and integer tie-breaker; resume from acknowledged progress. | Cursor timestamp, with the existing observation-time fallback for values outside the OTLP time range. |
-| `scalar` | `value.column`, `value.bind`, `value.type`, `value.initial` | Incremental pages ordered by one unique, non-null key; resume from acknowledged progress. | Timestamp key for `type: timestamp`; observation time for `type: int64`. |
+| `scalar` | `column`, `bind`, and typed `initial` | Incremental pages ordered by one unique, non-null key; resume from acknowledged progress. | Timestamp key for `initial.type: timestamp`; observation time for `initial.type: int64`. |
 | `snapshot` | No fields beyond `mode` | Complete result each interval, including unchanged rows; no resumable row position. | Observation time. Selected timestamp columns remain body fields. |
 
 The following are alternative `query` and `watermark` fragments under the
@@ -141,8 +141,8 @@ watermark:
 
 #### Scalar: one typed key
 
-Use a single non-null, unique column with strictly increasing values. The
-`value` block keeps the column, bind, type, and initial value together:
+Use a single non-null, unique column with strictly increasing values. Scalar
+configuration follows the shared Oracle and SQL Server watermark shape:
 
 ```yaml
 query:
@@ -157,20 +157,20 @@ query:
   max_batch_bytes: 10 MiB
 watermark:
   mode: scalar
-  value:
-    column: audit_id
-    bind: last_value
+  column: audit_id
+  bind: last_value
+  initial:
     type: int64
-    initial: 0
+    value: 0
 ```
 
 Supported scalar types are `int64` for PostgreSQL `int2`/`int4`/`int8`
 and `timestamp` for `timestamp`/`timestamptz`. Integer values must fit the native
 column type. Timestamp initial values use the existing UTC normalization and
-precision rules; for example, `type: timestamp` with
-`initial: "2026-01-01T00:00:00.000000Z"`. The selected column, predicate, and
-ordering must all refer to that timestamp key. String and unsigned scalar keys
-are not supported.
+precision rules; for example, `initial.type: timestamp` with
+`initial.value: "2026-01-01T00:00:00.000000Z"`. The selected column, predicate,
+and ordering must all refer to that timestamp key. String and unsigned scalar
+keys are not supported.
 
 Scalar uniqueness must be proven by a valid, immediate, nonpartial unique index
 whose sole key column is the cursor column; included non-key columns are allowed.

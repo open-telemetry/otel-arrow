@@ -539,12 +539,9 @@ async fn live_scalar_and_snapshot_native_execution() {
              WHERE e.event_id > :last_value ORDER BY e.event_id ASC",
             json!({
                 "mode": "scalar",
-                "value": {
-                    "column": "event_id",
-                    "bind": "last_value",
-                    "type": "int64",
-                    "initial": 0
-                }
+                "column": "event_id",
+                "bind": "last_value",
+                "initial": {"type": "int64", "value": 0}
             }),
             2,
         );
