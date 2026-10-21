@@ -16,9 +16,8 @@ ownership, and initializes admission from process memory-pressure state.
 The shared scraper provides scheduling, backpressure, feedback, and persistence;
 it contains no vendor driver and Oracle behavior is unchanged.
 
-This completes activation in Part 3 [#4361][part-3], following preparation in
-Part 1 [#4359][part-1] and adapter integration in Part 2 [#4360][part-2] under
-[RFC #3918][rfc]. It does not establish production readiness.
+The receiver follows the shared database polling architecture described in
+[RFC #3918][rfc]. It remains experimental and is not production-qualified.
 
 ## Getting Started
 
@@ -442,11 +441,10 @@ TOP bounds returned rows, not necessarily database scan or sort work.
 
 ## Published Driver and Native TLS
 
-Tiberius is optional and resolves from crates.io at 0.13.0 in the reviewed
+Tiberius is optional and resolves from crates.io at 0.13.0 in the workspace
 lockfile, with default features disabled and `tds73,native-tls` enabled.
 Both Tiberius and `tiberius-macros` are registry dependencies; no Git pin or
-producer-local patch is required. The provider-neutral Rustls proposal is no
-longer a prerequisite for this receiver.
+producer-local patch is required.
 
 SQL Server explicitly uses platform-native TLS: Schannel on Windows, OpenSSL
 on Linux, and Security Framework on macOS. This scoped choice is independent
@@ -564,8 +562,7 @@ connection cancellation, factory NACK/replay/ACK/restart, explicit TLS policies,
 native TLS without a Rustls provider, certificate rotation state, and a healthy
 session disconnected between completed polls. Run the live suite serially on
 an exclusively owned fixture: the idle-fault test deliberately disconnects its
-reader sessions. Old Windows/Linux Rustls prototype results are not evidence
-for this native-TLS implementation.
+reader sessions.
 
 To exercise replacement/expiry, stop all receiver clients, then run
 `sql-server-fixture.py rotate-certificate --directory <fixture> --certificate
@@ -599,9 +596,6 @@ tests, clean-machine packaging, and broader deployment qualification remain
 readiness work. This does not qualify Windows-hosted SQL Server, other server
 versions, Azure SQL/Managed Instance, or ARM64.
 
-[part-1]: https://github.com/open-telemetry/otel-arrow/issues/4359
-[part-2]: https://github.com/open-telemetry/otel-arrow/issues/4360
-[part-3]: https://github.com/open-telemetry/otel-arrow/issues/4361
 [rfc]: https://github.com/open-telemetry/otel-arrow/issues/3918
 [tiberius-token-stream]: https://docs.rs/crate/tiberius/0.13.0/source/src/tds/stream/token.rs
 [attention-bug]: https://github.com/tiberius-rs/tiberius/issues/459
