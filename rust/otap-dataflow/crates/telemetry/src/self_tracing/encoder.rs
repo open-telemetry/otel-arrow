@@ -820,8 +820,12 @@ mod tests {
     use crate::LogContext;
     use crate::attributes::AttributeSetHandler;
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+    use crate::self_tracing::encoder::DirectFieldVisitor;
     use crate::self_tracing::format_log_record_to_string;
+    use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
@@ -833,6 +837,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime};
     use tracing::Level;
+    use tracing::field::Visit;
 
     static TEST_SCOPE_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
         name: "TestScope",
@@ -1262,12 +1267,13 @@ mod tests {
     #[should_panic(expected = "value callback must write at most one AnyValue variant")]
     fn value_encoder_rejects_multiple_variants() {
         let mut buf = ProtoBuffer::with_capacity(32);
-        let mut write = |writer: &mut ValueEncoder<'_, ProtoBuffer>| {
-            writer.encode_i64(1);
-            writer.encode_bool(true);
+        let mut write = |writer: &mut ValueEncoder<'_, ProtoBuffer>| -> TruncateResult {
+            let _ = writer.encode_i64(1);
+            let _ = writer.encode_bool(true);
+            Ok(Truncation::None)
         };
 
-        let _ = encode_value(&mut buf, LOG_RECORD_BODY, &mut write);
+        let _ = bounded::value_encoder(&mut buf, LOG_RECORD_BODY, &mut write);
     }
 
     /// Scenario: four large string attributes compete for a 256-byte buffer.
@@ -1275,13 +1281,6 @@ mod tests {
     /// and increments `dropped_attributes_count`.
     #[test]
     fn record_str_halves_remaining_budget_across_attributes() {
-        use crate::self_tracing::encoder::DirectFieldVisitor;
-        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
-        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
-        use prost::Message;
-        use tracing::field::Visit;
-
         const INLINE: usize = 256;
         let big = "x".repeat(1000);
 
@@ -1336,7 +1335,7 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.value.as_ref())
                 .map(|v| match v {
-                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    Value::StringValue(s) => s.clone(),
                     _ => panic!("expected string value"),
                 })
                 .unwrap();
@@ -1393,11 +1392,6 @@ mod tests {
     /// Guarantees: its direct encoding is decodable and matches `format!("{:?}")`.
     #[test]
     fn record_debug_writes_fmt_output_without_intermediate_string() {
-        use otel_arrow_dfe_pdata::otlp::common::StackProtoBuffer;
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
-        use prost::Message;
-        use tracing::field::Visit;
-
         #[derive(Debug)]
         #[allow(dead_code)]
         struct Payload {
@@ -1431,9 +1425,7 @@ mod tests {
         let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
         assert_eq!(kv.key, "dbg");
         let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
-                s.clone()
-            }
+            Value::StringValue(s) => s.clone(),
             other => panic!("expected StringValue, got {other:?}"),
         };
         assert_eq!(s, expected_repr);
@@ -1445,18 +1437,13 @@ mod tests {
     /// encoded KeyValue is decodable with the suffix at the end.
     #[test]
     fn record_debug_overflow_truncates_with_suffix() {
-        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
-        use prost::Message;
-        use tracing::field::Visit;
-
         // A Debug impl that writes far more than the buffer can hold.
         struct Huge;
         impl std::fmt::Debug for Huge {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 // 4 KiB of output into a 64-byte buffer.
                 for _ in 0..512 {
-                    f.encode_str("xxxxxxxx")?;
+                    f.write_str("xxxxxxxx")?;
                 }
                 Ok(())
             }
@@ -1493,9 +1480,7 @@ mod tests {
         let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
         assert_eq!(kv.key, "dbg");
         let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
-                s.clone()
-            }
+            Value::StringValue(s) => s.clone(),
             other => panic!("expected StringValue, got {other:?}"),
         };
         let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
@@ -1516,13 +1501,10 @@ mod tests {
     /// pre-call length) and `dropped_count` is incremented.
     #[test]
     fn record_debug_hard_drop_when_budget_too_small() {
-        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use tracing::field::Visit;
-
         struct Tiny;
         impl std::fmt::Debug for Tiny {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.encode_str("x")
+                f.write_str("x")
             }
         }
 
@@ -1553,11 +1535,6 @@ mod tests {
     /// OTLP `dropped_attributes_count`.
     #[test]
     fn record_str_message_overflow_truncates_with_suffix() {
-        use otel_arrow_dfe_pdata::otlp::common::{StackProtoBuffer, TRUNCATION_SUFFIX};
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
-        use prost::Message;
-        use tracing::field::Visit;
-
         let meta = &MESSAGE_TEST_METADATA;
         let fields = meta.fields();
         let message = fields.field("message").unwrap();
@@ -1601,16 +1578,11 @@ mod tests {
     /// OTLP `dropped_attributes_count`.
     #[test]
     fn record_debug_message_overflow_truncates_with_suffix() {
-        use otel_arrow_dfe_pdata::otlp::common::{StackProtoBuffer, TRUNCATION_SUFFIX};
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
-        use prost::Message;
-        use tracing::field::Visit;
-
         struct Huge;
         impl std::fmt::Debug for Huge {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 for _ in 0..512 {
-                    f.encode_str("xxxxxxxx")?;
+                    f.write_str("xxxxxxxx")?;
                 }
                 Ok(())
             }
@@ -1676,12 +1648,6 @@ mod tests {
     /// does not exceed the inline limit.
     #[test]
     fn record_debug_halves_remaining_budget_across_attributes() {
-        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
-        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
-        use prost::Message;
-        use tracing::field::Visit;
-
         const INLINE: usize = 256;
 
         // A Debug impl that writes 1000 bytes.
@@ -1689,7 +1655,7 @@ mod tests {
         impl std::fmt::Debug for Big {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 for _ in 0..125 {
-                    f.encode_str("xxxxxxxx")?;
+                    f.write_str("xxxxxxxx")?;
                 }
                 Ok(())
             }
@@ -1740,7 +1706,7 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.value.as_ref())
                 .map(|v| match v {
-                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    Value::StringValue(s) => s.clone(),
                     _ => panic!("expected string value"),
                 })
                 .unwrap();

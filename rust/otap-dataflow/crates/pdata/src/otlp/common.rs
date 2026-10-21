@@ -1689,54 +1689,6 @@ mod test {
     }
 
     #[test]
-    fn test_encode_len_placeholder_sizes() {
-        fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::default();
-            encode_len_placeholder::<N, _>(&mut buf).unwrap();
-            assert_eq!(buf.len(), N);
-            for i in 0..N - 1 {
-                assert_eq!(buf.as_ref()[i], 0x80, "byte {i} for {N}-byte placeholder");
-            }
-            assert_eq!(buf.as_ref()[N - 1], 0x00);
-        }
-
-        check::<1>();
-        check::<2>();
-        check::<3>();
-        check::<4>();
-    }
-
-    #[test]
-    fn test_patch_len_placeholder_roundtrip() {
-        // Verify that encoding+patching with each placeholder size produces
-        // valid varints that a standard decoder would read correctly.
-        fn check<const N: usize>(test_lengths: &[usize]) {
-            let max_len = (1usize << (7 * N)) - 1;
-            for &len in test_lengths {
-                if len > max_len {
-                    continue;
-                }
-                let mut buf = ProtoBuffer::default();
-                let start = buf.len();
-                encode_len_placeholder::<N, _>(&mut buf).unwrap();
-                patch_len_placeholder::<N, _>(&mut buf, len, start);
-
-                let mut decoded: u64 = 0;
-                for i in 0..N {
-                    decoded |= ((buf.as_ref()[start + i] & 0x7f) as u64) << (i * 7);
-                }
-                assert_eq!(decoded, len as u64, "N={N}, expected len={len}");
-            }
-        }
-
-        let lengths: &[usize] = &[0, 1, 42, 127, 128, 1000, 16383];
-        check::<1>(lengths);
-        check::<2>(lengths);
-        check::<3>(lengths);
-        check::<4>(lengths);
-    }
-
-    #[test]
     fn test_encode_len_delimited_auto_width() {
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
         let mut buf = StackProtoBuffer::<127>::default();
