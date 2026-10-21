@@ -22,8 +22,8 @@ requirements below.
 
 ## Getting Started
 
-See the [PowerShell demo](DEMO.md) for fixture setup, initial catch-up, inserting
-rows, checkpoint inspection, restart/resume, and owned-resource cleanup.
+See the [PowerShell demo](DEMO.md) for a short fixture setup, run, verification,
+and cleanup walkthrough.
 The complete pipeline is [`configs/sql-server-console.yaml`][example].
 Build from `rust/otap-dataflow` with:
 
@@ -41,6 +41,10 @@ Integrated/Entra authentication is not supported. Credentials come from the
 Set `SQL_SERVER_HOST`, `SQL_SERVER_PORT`, `SQL_SERVER_DATABASE`,
 `SQL_SERVER_USERNAME`, `SQL_SERVER_PASSWORD_FILE`, and `SQL_SERVER_CA_FILE`
 for the example. Omit `ca_file` from the YAML when platform trust is sufficient.
+The password and CA file paths default to `/run/sql-server-secrets/password`
+and `/run/sql-server-secrets/ca.pem` so offline configuration validation needs
+no fixture environment. These are paths, not bundled secrets or trust bypasses:
+provide the files or override the paths before starting the receiver.
 Set `SQL_SERVER_STATE_DIR` to persistent local checkpoint storage (default
 `./state/sql_server`). On Windows use this receiver setting directly:
 optional managed `engine.state_dir` provisioning is Linux-only.

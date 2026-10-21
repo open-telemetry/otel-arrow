@@ -14,7 +14,7 @@ groups:
             type: urn:otel:extension:flat_file_user_pass_auth
             config:
               username: '${env:SQL_SERVER_USERNAME:-otel_reader}'
-              password_secret_file: '${env:SQL_SERVER_PASSWORD_FILE}'
+              password_secret_file: '${env:SQL_SERVER_PASSWORD_FILE:-/run/sql-server-secrets/password}'
               password_secret_file_refresh: 1m
         nodes:
           sql-events:
@@ -30,7 +30,7 @@ groups:
                 tls:
                   enabled: true
                   trust_server_certificate: false
-                  ca_file: '${env:SQL_SERVER_CA_FILE}'
+                  ca_file: '${env:SQL_SERVER_CA_FILE:-/run/sql-server-secrets/ca.pem}'
               query:
                 statement: >
                   SELECT ID, EVENT_TS, PAYLOAD, AMOUNT, RAW, AT_TIME
