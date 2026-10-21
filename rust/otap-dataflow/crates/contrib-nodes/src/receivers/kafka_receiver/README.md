@@ -303,7 +303,8 @@ original bytes cannot be recovered, the message is counted as a DLQ loss
 (`receiver.kafka.dlq.loss`) and the offset advances so the pipeline is never
 wedged. Outstanding deliveries are bounded at 5 in flight; while all 5 are busy
 the receiver briefly stops consuming new records until one completes, so a burst
-of failures is dead-lettered rather than dropped.
+of decode / excluded-topic failures is dead-lettered rather than dropped. A
+permanent nack that arrives while all 5 are busy is counted as a DLQ loss.
 
 Because delivery-then-commit is at-least-once, a crash between a DLQ produce and
 the source-offset commit re-delivers and re-dead-letters the message on restart;

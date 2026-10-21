@@ -1256,8 +1256,10 @@ impl KafkaReceiver {
     /// defer the offset advance until the delivery completes; returns `false`
     /// when there is no DLQ handling for this failure (the caller advances now).
     ///
-    /// An immediate loss (no topic resolved or the in-flight bound is reached)
-    /// is recorded here and returns `false` so the caller advances immediately.
+    /// An immediate loss (e.g. no topic resolved) is recorded here and returns
+    /// `false` so the caller advances immediately. The in-flight bound is not
+    /// normally reached here: the receive loop pauses `consumer.recv()` while
+    /// the DLQ is saturated, so this path always has a free slot.
     #[allow(clippy::too_many_arguments)]
     fn try_dlq_inline(
         &mut self,

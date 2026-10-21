@@ -369,6 +369,8 @@ impl DlqManager {
     fn admit(&mut self, job: Job) -> Option<DlqCompletion> {
         if self.in_flight.len() >= DLQ_MAX_IN_FLIGHT {
             // In-flight full: drop the incoming message so ingestion never stalls.
+            // Only reachable from the control-channel permanent-nack path; the
+            // inline path is gated by `is_saturated` in the receive loop.
             return Some(DlqCompletion::loss(job.meta));
         }
         // DLQ-PHASE-2 (Change): instead of handing the job to the producer, build

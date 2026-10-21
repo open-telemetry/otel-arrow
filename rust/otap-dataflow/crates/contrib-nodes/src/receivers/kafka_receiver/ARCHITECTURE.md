@@ -372,7 +372,7 @@ lost) so ingestion is never wedged.
 ```mermaid
 flowchart TD
     subgraph ENTRY["Entry points (receive loop)"]
-        DEC["decode / excluded_topic failure<br/>raw bytes in hand"]
+        DEC["decode / excluded_topic failure<br/>raw bytes in hand<br/>(recv paused while 5 in flight)"]
         PNK["permanent_nack terminal feedback<br/>resolve offset identity (generation guard)"]
     end
 
@@ -401,7 +401,7 @@ flowchart TD
     INLINE --> ADMIT
     RR -->|"bytes recovered"| ADMIT
     ADMIT -->|"slot free"| INFLT
-    ADMIT -->|"5 in flight"| LOSS
+    ADMIT -->|"5 in flight (permanent_nack only)"| LOSS
     INFLT --> HDR --> PROD
     PROD --> OK
     PROD --> LOSS
@@ -413,11 +413,18 @@ The per-job lifecycle. Only the labeled terminal states (`Produced`, `Loss`)
 exist; both advance the source offset. `Recovering` applies only to the
 `permanent_nack` re-read path; inline jobs go straight to `Producing`.
 
+Reaching the in-flight bound has two different outcomes depending on the entry
+point. Inline failures (`decode` / `empty_payload` / `excluded_topic`) come from
+`consumer.recv()`, which is paused while all 5 slots are busy, so they always
+find a free slot and are never dropped for capacity. Permanent nacks arrive on
+the control channel, which is never paused, so a permanent nack that arrives
+while all 5 slots are busy is counted as an immediate `receiver.kafka.dlq.loss`.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Admitted
     Admitted --> InFlight: slot free
-    Admitted --> Loss: 5 in flight (drop incoming)
+    Admitted --> Loss: 5 in flight - permanent_nack only
     InFlight --> Recovering: permanent_nack re-read
     InFlight --> Producing: inline bytes
     Recovering --> Producing: bytes recovered
