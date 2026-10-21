@@ -104,8 +104,11 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-pub mod metrics;
-pub use metrics::*;
+mod metrics;
+
+use metrics::{
+    BufferLossAttributes, BufferLossDelivery, DropAttributes, DropReason, EtwReceiverMetrics,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
@@ -483,7 +486,7 @@ impl EtwReceiver {
 /// `builder` is always reset to a fresh empty builder (its contents are taken
 /// via [`std::mem::take`]) regardless of outcome. Returns `Ok(None)` when the
 /// builder is empty (nothing to flush). On a `build()` failure the
-/// `receiver.etw.dropped.dropped{reason="forward_failed"}` metric is recorded and the error is
+/// `receiver.etw.drops.events{reason="forward_failed"}` metric is recorded and the error is
 /// returned - a build failure indicates an encoding bug rather than a transient
 /// downstream condition, so it is surfaced to the caller.
 fn build_pending_batch(
@@ -502,11 +505,11 @@ fn build_pending_batch(
         Err(error) => {
             metrics
                 .borrow_mut()
-                .dropped
+                .drops
                 .with(DropAttributes {
                     reason: DropReason::ForwardFailed,
                 })
-                .dropped
+                .events
                 .add(item_count);
             return Err(Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
@@ -528,7 +531,7 @@ fn build_pending_batch(
 /// `builder` is always reset to a fresh empty builder regardless of outcome.
 ///
 /// A forward failure is treated as a **per-batch loss event**, not a fatal
-/// error: the `receiver.etw.dropped.dropped{reason="forward_failed"}` metric is incremented, a warning
+/// error: the `receiver.etw.drops.events{reason="forward_failed"}` metric is incremented, a warning
 /// is logged, and `Ok(())` is returned so the receiver stays alive. On the
 /// awaiting path the only reachable send failure is the downstream channel
 /// being closed (backpressure parks rather than failing), which can happen
@@ -547,11 +550,11 @@ async fn flush_batch(
     if let Err(error) = effect_handler.send_message_with_source_node(pdata).await {
         metrics
             .borrow_mut()
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::ForwardFailed,
             })
-            .dropped
+            .events
             .add(item_count);
         let error_msg = error.to_string();
         otel_warn!(
@@ -575,7 +578,7 @@ async fn flush_batch(
 /// shutting-down downstream cannot park the task past the drain deadline.
 ///
 /// Like [`flush_batch`], a forward failure (downstream channel full or closed)
-/// is treated as a per-batch loss event: the `receiver.etw.dropped.dropped{reason="forward_failed"}`
+/// is treated as a per-batch loss event: the `receiver.etw.drops.events{reason="forward_failed"}`
 /// metric is incremented, a warning is logged, and `Ok(())` is returned so the
 /// receiver stays alive. A `build()` failure still propagates.
 fn try_flush_batch(
@@ -590,11 +593,11 @@ fn try_flush_batch(
     if let Err(error) = effect_handler.try_send_message_with_source_node(pdata) {
         metrics
             .borrow_mut()
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::ForwardFailed,
             })
-            .dropped
+            .events
             .add(item_count);
         let error_msg = error.to_string();
         otel_warn!(
@@ -657,39 +660,42 @@ impl EventCountsDelta {
         }
         if self.dropped_slow_worker > 0 {
             metrics
-                .dropped
+                .drops
                 .with(DropAttributes {
                     reason: DropReason::SlowWorker,
                 })
-                .dropped
+                .events
                 .add(self.dropped_slow_worker);
         }
         if self.invalid > 0 {
             metrics.decode.errors.add(self.invalid);
         }
         if self.kernel_events_lost > 0 {
-            metrics.kernel.events_lost.add(self.kernel_events_lost);
+            metrics.session.events_lost.add(self.kernel_events_lost);
         }
         if self.kernel_real_time_buffers_lost > 0 {
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .with(BufferLossAttributes {
-                    path: BufferLossPath::RealTime,
+                    delivery: BufferLossDelivery::RealTime,
                 })
-                .lost
+                .buffers_lost
                 .add(self.kernel_real_time_buffers_lost);
         }
         if self.kernel_log_buffers_lost > 0 {
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .with(BufferLossAttributes {
-                    path: BufferLossPath::Log,
+                    delivery: BufferLossDelivery::LogFile,
                 })
-                .lost
+                .buffers_lost
                 .add(self.kernel_log_buffers_lost);
         }
         if self.kernel_buffers_written > 0 {
-            metrics.buffers.written.add(self.kernel_buffers_written);
+            metrics
+                .session
+                .buffers_written
+                .add(self.kernel_buffers_written);
         }
     }
 }
@@ -1385,11 +1391,11 @@ mod tests {
         assert_eq!(metrics.events.received.get(), 10);
         assert_eq!(
             metrics
-                .dropped
+                .drops
                 .get(DropAttributes {
                     reason: DropReason::SlowWorker,
                 })
-                .dropped
+                .events
                 .get(),
             3
         );
@@ -1440,28 +1446,28 @@ mod tests {
         let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
         assert_eq!(metrics.events.received.get(), 4);
-        assert_eq!(metrics.kernel.events_lost.get(), 2);
+        assert_eq!(metrics.session.events_lost.get(), 2);
         assert_eq!(
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .get(BufferLossAttributes {
-                    path: BufferLossPath::RealTime,
+                    delivery: BufferLossDelivery::RealTime,
                 })
-                .lost
+                .buffers_lost
                 .get(),
             3
         );
         assert_eq!(
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .get(BufferLossAttributes {
-                    path: BufferLossPath::Log,
+                    delivery: BufferLossDelivery::LogFile,
                 })
-                .lost
+                .buffers_lost
                 .get(),
             1
         );
-        assert_eq!(metrics.buffers.written.get(), 9);
+        assert_eq!(metrics.session.buffers_written.get(), 9);
     }
 
     /// Scenario: A second claim on unchanged atomics yields empty deltas.
@@ -1493,11 +1499,11 @@ mod tests {
         assert_eq!(metrics.events.received.get(), 7);
         assert_eq!(
             metrics
-                .dropped
+                .drops
                 .get(DropAttributes {
                     reason: DropReason::SlowWorker,
                 })
-                .dropped
+                .events
                 .get(),
             1
         );
@@ -1546,37 +1552,37 @@ mod tests {
         assert_eq!(metrics.events.received.get(), 0);
         assert_eq!(
             metrics
-                .dropped
+                .drops
                 .get(DropAttributes {
                     reason: DropReason::SlowWorker,
                 })
-                .dropped
+                .events
                 .get(),
             0
         );
         assert_eq!(metrics.decode.errors.get(), 0);
-        assert_eq!(metrics.kernel.events_lost.get(), 0);
+        assert_eq!(metrics.session.events_lost.get(), 0);
         assert_eq!(
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .get(BufferLossAttributes {
-                    path: BufferLossPath::RealTime,
+                    delivery: BufferLossDelivery::RealTime,
                 })
-                .lost
+                .buffers_lost
                 .get(),
             0
         );
         assert_eq!(
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .get(BufferLossAttributes {
-                    path: BufferLossPath::Log,
+                    delivery: BufferLossDelivery::LogFile,
                 })
-                .lost
+                .buffers_lost
                 .get(),
             0
         );
-        assert_eq!(metrics.buffers.written.get(), 0);
+        assert_eq!(metrics.session.buffers_written.get(), 0);
     }
 }
 

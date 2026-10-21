@@ -29,68 +29,37 @@ config:
 
 ## Metrics
 
-These tables list telemetry emitted directly by this receiver.
+The following table lists the telemetry emitted by this receiver. All metric sets include a fixed registration attribute `signal="logs"`.
 
-Native OTLP emits each metric with an **Instrumentation Scope** (the metric set name) and an **Instrument Name** (the individual metric). For convenience and counter algebra notation, the combined dotted notation `<scope>.<instrument>` (such as `receiver.etw.dropped.dropped`) is noted as shorthand. The admin Prometheus endpoint also separates scope and instrument.
-
-### Metric Sets
-
-#### `receiver.etw.events`
-
-| Instrument | Shorthand | Unit | Attributes | Description |
+| Scope | Instrument | Unit | Attributes | Meaning |
 | --- | --- | --- | --- | --- |
-| `received` | `receiver.etw.events.received` | `{event}` | None | Total ETW events produced/received by the session before channel enqueue (ingress denominator). |
-| `forwarded` | `receiver.etw.events.forwarded` | `{event}` | None | Number of ETW events successfully forwarded downstream in batches. |
-
-#### `receiver.etw.dropped`
-
-| Instrument | Shorthand | Unit | Attributes | Description |
-| --- | --- | --- | --- | --- |
-| `dropped` | `receiver.etw.dropped.dropped` | `{event}` | `reason` | Number of dropped ETW events partitioned by drop reason (`slow_worker`, `forward_failed`, `memory_pressure`). |
-
-#### `receiver.etw.decode`
-
-| Instrument | Shorthand | Unit | Attributes | Description |
-| --- | --- | --- | --- | --- |
-| `errors` | `receiver.etw.decode.errors` | `{event}` | None | Number of ETW events that failed TDH decode/parsing. These events are still forwarded with empty decoded fields. |
-
-#### `receiver.etw.kernel`
-
-| Instrument | Shorthand | Unit | Attributes | Description |
-| --- | --- | --- | --- | --- |
-| `events_lost` | `receiver.etw.kernel.events_lost` | `{event}` | None | Number of events lost inside Windows kernel ETW buffers before delivery (buffer overrun). |
-
-#### `receiver.etw.buffers`
-
-| Instrument | Shorthand | Unit | Attributes | Description |
-| --- | --- | --- | --- | --- |
-| `written` | `receiver.etw.buffers.written` | `{buffer}` | None | Total number of kernel ETW buffers written by the session (activity/throughput denominator). |
-
-#### `receiver.etw.buffer_losses`
-
-| Instrument | Shorthand | Unit | Attributes | Description |
-| --- | --- | --- | --- | --- |
-| `lost` | `receiver.etw.buffer_losses.lost` | `{buffer}` | `path` | Number of kernel ETW buffers lost partitioned by delivery path (`real_time`, `log`). |
+| `receiver.etw.events` | `received` | `{event}` | None | Total ETW events produced/received by the session before channel enqueue (ingress denominator). |
+| `receiver.etw.events` | `forwarded` | `{event}` | None | ETW events successfully handed off to the next pipeline stage in batches (not guaranteed delivery to final backend). |
+| `receiver.etw.drops` | `events` | `{event}` | `reason` | Number of events dropped at the receiver boundary. Values: `slow_worker` (internal channel backpressure), `forward_failed` (batch build or forward error), and `memory_pressure` (reserved/not currently recorded; the receiver does not implement memory-pressure shedding). |
+| `receiver.etw.decode` | `errors` | `{event}` | None | Number of ETW events that failed TDH decode/parsing. Decode-failed events remain eligible for forwarding downstream with empty decoded fields (successful forwarding is not guaranteed), so they are counted under `received` and (if handed off) `forwarded`. |
+| `receiver.etw.session` | `events.lost` | `{event}` | None | Number of events lost inside Windows kernel ETW buffers before delivery (buffer overrun). |
+| `receiver.etw.session` | `buffers.written` | `{buffer}` | None | Total number of kernel ETW buffers written by the session (activity/throughput denominator). |
+| `receiver.etw.session` | `buffers.lost` | `{buffer}` | `delivery` | Number of kernel ETW buffers lost, distinguishing real-time consumer delivery (`real_time`) from trace-log-file output (`log_file`). |
 
 ### Counter Algebra
 
-There is a single ingress denominator (expressed here using shorthand notation):
+There is a single ingress denominator (expressed here using `<scope>.<instrument>` notation):
 
 ```text
 receiver.etw.events.received
-    = receiver.etw.events.forwarded                             (events in successfully-sent batches)
-    + receiver.etw.dropped.dropped{reason="forward_failed"}     (events in batches that failed to build/send)
-    + receiver.etw.dropped.dropped{reason="slow_worker"}        (events dropped by internal backpressure)
-    + receiver.etw.dropped.dropped{reason="memory_pressure"}    (events dropped due to memory limits)
+    = receiver.etw.events.forwarded                             (events successfully handed off to next pipeline stage)
+    + receiver.etw.drops.events{reason="forward_failed"}        (events in batches that failed to build/send)
+    + receiver.etw.drops.events{reason="slow_worker"}           (events dropped by internal backpressure)
+    + receiver.etw.drops.events{reason="memory_pressure"}       (reserved; not currently recorded)
     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
 ```
 
-Important operational notes:
+### Operational notes
 
-- **Ingress Denominator**: `receiver.etw.events.received` (scope `receiver.etw.events`, instrument `received`) counts all events produced by the ETW session callback before channel enqueue.
-- **Decode Quality**: `receiver.etw.decode.errors` (scope `receiver.etw.decode`, instrument `errors`) tracks events where TDH decode failed. Note that decode failures are still forwarded downstream with empty decoded fields, so they are counted in both `received` and `forwarded`.
-- **Kernel Loss**: `receiver.etw.kernel.events_lost` (scope `receiver.etw.kernel`, instrument `events_lost`) counts events lost inside Windows kernel buffers before the receiver ever saw them (kernel buffer overrun). These are independent from receiver-level drops and are not included in `received`.
-- **Kernel Buffers**: `receiver.etw.buffers.written` (scope `receiver.etw.buffers`, instrument `written`) tracks total buffers written as an activity/throughput denominator. Buffer losses are reported separately via `receiver.etw.buffer_losses.lost` (scope `receiver.etw.buffer_losses`, instrument `lost`) with `path="real_time"` (consumer draining too slowly) and `path="log"` (disk flush failure).
-- **Derived Rates**:
-  - Slow-worker drop rate = `receiver.etw.dropped.dropped{reason="slow_worker"} / receiver.etw.events.received`
-  - Forward-failure rate = `receiver.etw.dropped.dropped{reason="forward_failed"} / receiver.etw.events.received`
+- `receiver.etw.events.received` is the ingress denominator, counted on the session callback before channel enqueue.
+- `receiver.etw.events.forwarded` tracks handoff to the next pipeline stage (batches sent downstream), not end-to-end backend delivery.
+- `receiver.etw.decode.errors` tracks TDH decoding errors. Decode-failed events are still forwarded downstream with empty decoded fields when possible, so they appear in both `received` and `forwarded`.
+- `receiver.etw.session` groups Windows ETW session properties. `events.lost` tracks kernel buffer overruns before the receiver saw the events. `buffers.lost` separates real-time consumer delivery drops (`real_time`) from trace log file drops (`log_file`).
+- `receiver.etw.drops.events` partitions receiver drops by `reason` (`slow_worker` for channel backpressure, `forward_failed` for batch send failures). `memory_pressure` is reserved for future bounded shedding and is not currently emitted.
+- Slow-worker drop rate = `receiver.etw.drops.events{reason="slow_worker"} / receiver.etw.events.received`
+- Forward-failure rate = `receiver.etw.drops.events{reason="forward_failed"} / receiver.etw.events.received`

@@ -989,26 +989,26 @@ pub(super) struct SessionWideMetrics {
     /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
     pub total: AtomicU64,
     /// Events dropped because a per-core channel was full (internal backpressure).
-    /// Published as `dropped` with `reason="slow_worker"` (`receiver.etw.dropped.dropped`) in the metric set.
+    /// Published as `events` with `reason="slow_worker"` (`receiver.etw.drops.events`) in the metric set.
     pub dropped_slow_worker: AtomicU64,
     /// Events whose TDH decode failed (`receiver.etw.decode.errors`).
     pub decode_failed: AtomicU64,
     /// Kernel-side ETW events lost (buffer overrun) before `one_collect` ever
     /// saw them, from `TraceStats::events_lost`. A background poller converts
     /// the cumulative session counter into per-interval deltas and
-    /// `fetch_add`s them here. Published as `kernel.events_lost` (`receiver.etw.kernel.events_lost`).
+    /// `fetch_add`s them here. Published as `events.lost` (`receiver.etw.session.events.lost`).
     /// Distinct from `dropped_slow_worker`, which is our own downstream loss.
     pub kernel_events_lost: AtomicU64,
     /// Real-time delivery buffers lost (consumer too slow to drain the ETW
     /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
-    /// Published as `buffer_losses.lost` with `path="real_time"` (scope `receiver.etw.buffer_losses`, instrument `lost`).
+    /// Published as `buffers.lost` with `delivery="real_time"` (scope `receiver.etw.session`, instrument `buffers.lost`).
     pub kernel_real_time_buffers_lost: AtomicU64,
     /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`. Published as `buffer_losses.lost` with `path="log"` (scope `receiver.etw.buffer_losses`, instrument `lost`).
+    /// `TraceStats::log_buffers_lost`. Published as `buffers.lost` with `delivery="log_file"` (scope `receiver.etw.session`, instrument `buffers.lost`).
     pub kernel_log_buffers_lost: AtomicU64,
     /// Total ETW buffers written by the session, from
     /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal. Published as `buffers.written` (scope `receiver.etw.buffers`, instrument `written`).
+    /// than a loss signal. Published as `buffers.written` (scope `receiver.etw.session`, instrument `buffers.written`).
     pub kernel_buffers_written: AtomicU64,
 }
 
@@ -1447,7 +1447,7 @@ fn spawn_etw_session(
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             // Bump the shared atomic so the async receiver can
-                            // surface it as `receiver.etw.dropped.dropped{reason="slow_worker"}`
+                            // surface it as `receiver.etw.drops.events{reason="slow_worker"}`
                             // on the next `CollectTelemetry`.
                             let _ = telemetry
                                 .dropped_slow_worker

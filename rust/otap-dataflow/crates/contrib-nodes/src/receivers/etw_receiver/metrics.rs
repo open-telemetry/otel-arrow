@@ -10,29 +10,24 @@
 //! ```text
 //! receiver.etw.events.received
 //!     = receiver.etw.events.forwarded                             (events in successfully-sent batches)
-//!     + receiver.etw.dropped.dropped{reason="forward_failed"}     (events in batches that failed to build/send)
-//!     + receiver.etw.dropped.dropped{reason="slow_worker"}        (events dropped by internal backpressure)
-//!     + receiver.etw.dropped.dropped{reason="memory_pressure"}    (events dropped due to memory limits)
+//!     + receiver.etw.drops.events{reason="forward_failed"}        (events in batches that failed to build/send)
+//!     + receiver.etw.drops.events{reason="slow_worker"}           (events dropped by internal backpressure)
+//!     + receiver.etw.drops.events{reason="memory_pressure"}       (reserved; not currently recorded)
 //!     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
 //! ```
 //!
-//! Important operational notes:
-//! * Shorthand notation: `<scope>.<instrument>` (e.g. `receiver.etw.dropped.dropped`) is used in this
-//!   module and counter algebra as convenient shorthand; native OTLP emits `<scope>` and `<instrument>`
-//!   as separate fields, and the Prometheus admin endpoint carries the scope separately.
-//! * `receiver.etw.events.received`: Ingress denominator, counted on producer (`ProcessTrace`) callback
-//!   before channel enqueue.
-//! * `receiver.etw.decode.errors`: TDH decode/parsing failures. Note that decode failures are still
-//!   forwarded with empty decoded fields, so they are included in both `received` and `forwarded`.
-//! * `receiver.etw.kernel.events_lost`: Events lost inside Windows kernel ETW buffers before the receiver
-//!   ever saw them (kernel buffer overrun). These come from a different boundary and are distinct from
-//!   `receiver.etw.events.received`.
-//! * `receiver.etw.buffers.written`: Number of kernel ETW buffers written by the session (activity/throughput denominator).
-//! * `receiver.etw.buffer_losses.lost`: Number of kernel ETW buffers lost, partitioned by `path` (`real_time`, `log`).
-//! * Slow-worker drop rate = `receiver.etw.dropped.dropped{reason="slow_worker"} / receiver.etw.events.received`
-//! * Forward-failure rate = `receiver.etw.dropped.dropped{reason="forward_failed"} / receiver.etw.events.received`
+//! Operational notes:
+//! * `<scope>.<instrument>` is used as shorthand for metric names.
+//! * `receiver.etw.events.received`: Ingress denominator, counted in the ETW event callback before channel enqueue.
+//! * `receiver.etw.events.forwarded`: Events handed off to the next pipeline stage in batches.
+//! * `receiver.etw.decode.errors`: TDH decoding failures. Events that fail decoding are still forwarded with empty fields where possible.
+//! * `receiver.etw.session.events.lost`: Kernel buffer overrun before the receiver saw the events.
+//! * `receiver.etw.session.buffers.written`: Kernel buffers written by the session.
+//! * `receiver.etw.session.buffers.lost`: Kernel buffers lost, split by `delivery="real_time"` vs `delivery="log_file"`.
 
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::SignalRegistrationAttributes;
 use otel_arrow_dfe_telemetry::error::Error;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{
@@ -41,187 +36,179 @@ use otel_arrow_dfe_telemetry::metrics::{
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-// -- Delivery accounting metrics ----------------------------------------------
-
 /// Event metrics for the ETW receiver tracking delivery accounting.
-#[metric_set(name = "receiver.etw.events")]
+#[metric_set(
+    name = "receiver.etw.events",
+    registration_attributes = SignalRegistrationAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct EtwEventMetrics {
+pub(super) struct EtwEventMetrics {
     /// Total events produced/received by the session before channel enqueue.
     /// This is the ingress denominator and authoritative total.
     #[metric(unit = "{event}")]
-    pub received: Counter<u64>,
+    pub(super) received: Counter<u64>,
 
     /// Events successfully forwarded downstream in batches.
     #[metric(unit = "{event}")]
-    pub forwarded: Counter<u64>,
+    pub(super) forwarded: Counter<u64>,
 }
-
-// -- Decode quality metrics ---------------------------------------------------
 
 /// Decode quality metrics for the ETW receiver.
-#[metric_set(name = "receiver.etw.decode")]
+#[metric_set(
+    name = "receiver.etw.decode",
+    registration_attributes = SignalRegistrationAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct EtwDecodeMetrics {
+pub(super) struct EtwDecodeMetrics {
     /// Number of ETW events that failed TDH decode/parsing.
-    /// Note that these events are still forwarded downstream with empty decoded fields.
+    /// Note that these events remain eligible for forwarding downstream with empty decoded fields.
     #[metric(unit = "{event}")]
-    pub errors: Counter<u64>,
+    pub(super) errors: Counter<u64>,
 }
-
-// -- Kernel loss metrics ------------------------------------------------------
-
-/// Kernel-level event loss metrics for the ETW receiver.
-#[metric_set(name = "receiver.etw.kernel")]
-#[derive(Debug, Default, Clone)]
-pub struct EtwKernelMetrics {
-    /// Number of events lost inside kernel ETW buffers before delivery (buffer overrun).
-    /// Distinct from receiver-level drops and not included in received total.
-    #[metric(name = "events_lost", unit = "{event}")]
-    pub events_lost: Counter<u64>,
-}
-
-// -- Drop reason attributes ---------------------------------------------------
 
 /// Reason an ETW event was dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum DropReason {
+pub(super) enum DropReason {
     /// Dropped because the consuming worker could not drain the internal channel fast enough.
     SlowWorker,
     /// Dropped because building or forwarding the batch downstream failed.
     ForwardFailed,
-    /// Dropped due to process-wide memory pressure.
+    /// Reserved; not currently recorded as the receiver does not implement memory-pressure shedding.
+    #[allow(dead_code)]
     MemoryPressure,
 }
 
 /// Attributes for ETW dropped event metrics.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
-pub struct DropAttributes {
+pub(super) struct DropAttributes {
     /// Reason the event was dropped.
-    pub reason: DropReason,
+    pub(super) reason: DropReason,
 }
 
 /// Dropped event metrics for the ETW receiver.
 #[metric_set(
-    name = "receiver.etw.dropped",
+    name = "receiver.etw.drops",
+    registration_attributes = SignalRegistrationAttributes,
     measurement_attributes = DropAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct EtwDroppedMetrics {
+pub(super) struct EtwDropMetrics {
     /// Number of dropped ETW events.
     #[metric(unit = "{event}")]
-    pub dropped: Counter<u64>,
+    pub(super) events: Counter<u64>,
 }
 
-// -- Buffer metrics -----------------------------------------------------------
-
-/// Kernel buffer metrics for the ETW receiver tracking buffers written.
-#[metric_set(name = "receiver.etw.buffers")]
+/// Session-level statistics for the ETW receiver (Windows ETW session properties).
+#[metric_set(
+    name = "receiver.etw.session",
+    registration_attributes = SignalRegistrationAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct EtwBufferMetrics {
+pub(super) struct EtwSessionMetrics {
+    /// Number of events lost inside kernel ETW buffers before delivery (buffer overrun).
+    /// Distinct from receiver-level drops and not included in received total.
+    #[metric(name = "events.lost", unit = "{event}")]
+    pub(super) events_lost: Counter<u64>,
+
     /// Number of kernel ETW buffers written by the session.
-    #[metric(unit = "{buffer}")]
-    pub written: Counter<u64>,
+    #[metric(name = "buffers.written", unit = "{buffer}")]
+    pub(super) buffers_written: Counter<u64>,
 }
 
-// -- Buffer loss attributes ---------------------------------------------------
-
-/// Delivery path where kernel buffer loss occurred.
+/// Delivery mode where kernel buffer loss occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum BufferLossPath {
-    /// Real-time delivery buffers lost because the consumer could not drain fast enough.
+pub(super) enum BufferLossDelivery {
+    /// Real-time consumer delivery loss.
     RealTime,
-    /// Log buffers that could not be flushed.
-    Log,
+    /// Trace log file buffer loss.
+    LogFile,
 }
 
-/// Attributes for kernel buffer loss metrics.
+/// Attributes for session buffer loss metrics.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
-pub struct BufferLossAttributes {
-    /// Delivery path where buffer loss occurred.
-    pub path: BufferLossPath,
+pub(super) struct BufferLossAttributes {
+    /// Delivery mode where buffer loss occurred.
+    pub(super) delivery: BufferLossDelivery,
 }
 
-/// Kernel buffer loss metrics for the ETW receiver.
+/// Session buffer loss metrics for the ETW receiver.
 #[metric_set(
-    name = "receiver.etw.buffer_losses",
+    name = "receiver.etw.session",
+    registration_attributes = SignalRegistrationAttributes,
     measurement_attributes = BufferLossAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct EtwBufferLossMetrics {
+pub(super) struct EtwSessionBufferLossMetrics {
     /// Number of kernel ETW buffers lost.
-    #[metric(unit = "{buffer}")]
-    pub lost: Counter<u64>,
+    #[metric(name = "buffers.lost", unit = "{buffer}")]
+    pub(super) buffers_lost: Counter<u64>,
 }
 
-// -- Top-level wrapper --------------------------------------------------------
-
 /// ETW receiver metrics collection.
-pub struct EtwReceiverMetrics {
+pub(super) struct EtwReceiverMetrics {
     /// Delivery accounting event metrics (received, forwarded).
-    pub events: MetricSet<EtwEventMetrics>,
+    pub(super) events: MetricSet<EtwEventMetrics>,
     /// Dropped event metrics partitioned by drop reason.
-    pub dropped: MeasurementMetricSet<EtwDroppedMetrics>,
+    pub(super) drops: MeasurementMetricSet<EtwDropMetrics>,
     /// Decode quality metrics (TDH decode failures).
-    pub decode: MetricSet<EtwDecodeMetrics>,
-    /// Kernel event loss metrics.
-    pub kernel: MetricSet<EtwKernelMetrics>,
-    /// Kernel buffer metrics (buffers written).
-    pub buffers: MetricSet<EtwBufferMetrics>,
-    /// Kernel buffer loss metrics partitioned by delivery path.
-    pub buffer_losses: MeasurementMetricSet<EtwBufferLossMetrics>,
+    pub(super) decode: MetricSet<EtwDecodeMetrics>,
+    /// Session statistics (events.lost, buffers.written).
+    pub(super) session: MetricSet<EtwSessionMetrics>,
+    /// Session buffer loss metrics partitioned by delivery mode.
+    pub(super) session_buffer_losses: MeasurementMetricSet<EtwSessionBufferLossMetrics>,
 }
 
 impl EtwReceiverMetrics {
     /// Registers all metric sets with the pipeline context.
-    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+    pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
+        let signal_attrs = SignalRegistrationAttributes {
+            signal: SignalType::Logs,
+        };
         Self {
-            events: EtwEventMetrics::register(pipeline_ctx),
-            dropped: EtwDroppedMetrics::register(pipeline_ctx),
-            decode: EtwDecodeMetrics::register(pipeline_ctx),
-            kernel: EtwKernelMetrics::register(pipeline_ctx),
-            buffers: EtwBufferMetrics::register(pipeline_ctx),
-            buffer_losses: EtwBufferLossMetrics::register(pipeline_ctx),
+            events: EtwEventMetrics::register(pipeline_ctx, &signal_attrs),
+            drops: EtwDropMetrics::register(pipeline_ctx, &signal_attrs),
+            decode: EtwDecodeMetrics::register(pipeline_ctx, &signal_attrs),
+            session: EtwSessionMetrics::register(pipeline_ctx, &signal_attrs),
+            session_buffer_losses: EtwSessionBufferLossMetrics::register(
+                pipeline_ctx,
+                &signal_attrs,
+            ),
         }
     }
 
     /// Snapshots all metric sets and returns their descriptors.
-    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+    pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = Vec::new();
         if self.events.needs_flush() {
             snapshots.extend(self.events.terminal_snapshots());
         }
-        snapshots.extend(self.dropped.terminal_snapshots());
+        snapshots.extend(self.drops.terminal_snapshots());
         if self.decode.needs_flush() {
             snapshots.extend(self.decode.terminal_snapshots());
         }
-        if self.kernel.needs_flush() {
-            snapshots.extend(self.kernel.terminal_snapshots());
+        if self.session.needs_flush() {
+            snapshots.extend(self.session.terminal_snapshots());
         }
-        if self.buffers.needs_flush() {
-            snapshots.extend(self.buffers.terminal_snapshots());
-        }
-        snapshots.extend(self.buffer_losses.terminal_snapshots());
+        snapshots.extend(self.session_buffer_losses.terminal_snapshots());
         snapshots
     }
 
     /// Reports touched metric buckets to the given reporter.
-    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
+    pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
         reporter.report(&mut self.events)?;
-        reporter.report_measurement(&mut self.dropped)?;
+        reporter.report_measurement(&mut self.drops)?;
         reporter.report(&mut self.decode)?;
-        reporter.report(&mut self.kernel)?;
-        reporter.report(&mut self.buffers)?;
-        reporter.report_measurement(&mut self.buffer_losses)?;
+        reporter.report(&mut self.session)?;
+        reporter.report_measurement(&mut self.session_buffer_losses)?;
         Ok(())
     }
 
     /// Constructs an `EtwReceiverMetrics` instance for testing using a mock pipeline context.
     #[cfg(test)]
     #[must_use]
-    pub fn new_test() -> Self {
+    pub(super) fn new_test() -> Self {
         let (pipeline_ctx, _) = otel_arrow_dfe_engine::testing::test_pipeline_ctx();
         Self::register(&pipeline_ctx)
     }
@@ -238,36 +225,7 @@ mod tests {
         EtwReceiverMetrics::register(&pipeline_ctx)
     }
 
-    /// Scenario: Drop reason enum variants and attributes are constructed.
-    /// Guarantees: Enum equality and attributes capture the right reason.
-    #[test]
-    fn test_drop_attributes() {
-        assert_eq!(DropReason::SlowWorker, DropReason::SlowWorker);
-        assert_eq!(DropReason::ForwardFailed, DropReason::ForwardFailed);
-        assert_eq!(DropReason::MemoryPressure, DropReason::MemoryPressure);
-        assert_ne!(DropReason::SlowWorker, DropReason::ForwardFailed);
-
-        let attr = DropAttributes {
-            reason: DropReason::SlowWorker,
-        };
-        assert_eq!(attr.reason, DropReason::SlowWorker);
-    }
-
-    /// Scenario: Buffer loss path enum variants and attributes are constructed.
-    /// Guarantees: Enum equality and attributes capture the right path.
-    #[test]
-    fn test_buffer_loss_attributes() {
-        assert_eq!(BufferLossPath::RealTime, BufferLossPath::RealTime);
-        assert_eq!(BufferLossPath::Log, BufferLossPath::Log);
-        assert_ne!(BufferLossPath::RealTime, BufferLossPath::Log);
-
-        let attr = BufferLossAttributes {
-            path: BufferLossPath::RealTime,
-        };
-        assert_eq!(attr.path, BufferLossPath::RealTime);
-    }
-
-    /// Scenario: Delivery, decode, kernel, drop, buffer, and buffer loss metrics are recorded.
+    /// Scenario: Delivery, decode, drop, and session metrics are recorded.
     /// Guarantees: Each metric set correctly isolates its values without overlap.
     #[test]
     fn test_etw_metrics_separation() {
@@ -276,194 +234,318 @@ mod tests {
         metrics.events.received.add(10);
         metrics.events.forwarded.add(7);
         metrics.decode.errors.add(2);
-        metrics.kernel.events_lost.add(1);
 
         metrics
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::SlowWorker,
             })
-            .dropped
+            .events
             .add(3);
         metrics
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::ForwardFailed,
             })
-            .dropped
+            .events
             .add(4);
         metrics
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::MemoryPressure,
             })
-            .dropped
+            .events
             .add(5);
 
-        metrics.buffers.written.add(12);
+        metrics.session.events_lost.add(1);
+        metrics.session.buffers_written.add(12);
+
         metrics
-            .buffer_losses
+            .session_buffer_losses
             .with(BufferLossAttributes {
-                path: BufferLossPath::RealTime,
+                delivery: BufferLossDelivery::RealTime,
             })
-            .lost
+            .buffers_lost
             .add(6);
         metrics
-            .buffer_losses
+            .session_buffer_losses
             .with(BufferLossAttributes {
-                path: BufferLossPath::Log,
+                delivery: BufferLossDelivery::LogFile,
             })
-            .lost
+            .buffers_lost
             .add(8);
 
         assert_eq!(metrics.events.received.get(), 10);
         assert_eq!(metrics.events.forwarded.get(), 7);
         assert_eq!(metrics.decode.errors.get(), 2);
-        assert_eq!(metrics.kernel.events_lost.get(), 1);
 
         assert_eq!(
             metrics
-                .dropped
+                .drops
                 .get(DropAttributes {
                     reason: DropReason::SlowWorker,
                 })
-                .dropped
+                .events
                 .get(),
             3
         );
         assert_eq!(
             metrics
-                .dropped
+                .drops
                 .get(DropAttributes {
                     reason: DropReason::ForwardFailed,
                 })
-                .dropped
+                .events
                 .get(),
             4
         );
         assert_eq!(
             metrics
-                .dropped
+                .drops
                 .get(DropAttributes {
                     reason: DropReason::MemoryPressure,
                 })
-                .dropped
+                .events
                 .get(),
             5
         );
 
-        assert_eq!(metrics.buffers.written.get(), 12);
+        assert_eq!(metrics.session.events_lost.get(), 1);
+        assert_eq!(metrics.session.buffers_written.get(), 12);
         assert_eq!(
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .get(BufferLossAttributes {
-                    path: BufferLossPath::RealTime,
+                    delivery: BufferLossDelivery::RealTime,
                 })
-                .lost
+                .buffers_lost
                 .get(),
             6
         );
         assert_eq!(
             metrics
-                .buffer_losses
+                .session_buffer_losses
                 .get(BufferLossAttributes {
-                    path: BufferLossPath::Log,
+                    delivery: BufferLossDelivery::LogFile,
                 })
-                .lost
+                .buffers_lost
                 .get(),
             8
         );
     }
 
     /// Scenario: Terminal snapshots are collected from ETW receiver metrics.
-    /// Guarantees: Snapshots capture descriptors and clear measurement buckets on handoff.
+    /// Guarantees: Table-driven assertions verify exact numeric values, descriptors, units,
+    /// and attributes covering all drop reasons and buffer loss delivery modes.
     #[test]
     fn test_etw_terminal_snapshots_capture_and_clear() {
         let mut metrics = new_test_metrics();
-        metrics.events.received.add(5);
-        metrics.decode.errors.add(1);
-        metrics.kernel.events_lost.add(2);
+
+        metrics.events.received.add(100);
+        metrics.events.forwarded.add(90);
+        metrics.decode.errors.add(5);
+
         metrics
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::SlowWorker,
             })
-            .dropped
-            .add(2);
-        metrics.buffers.written.add(9);
+            .events
+            .add(11);
         metrics
-            .buffer_losses
-            .with(BufferLossAttributes {
-                path: BufferLossPath::RealTime,
+            .drops
+            .with(DropAttributes {
+                reason: DropReason::ForwardFailed,
             })
-            .lost
-            .add(3);
+            .events
+            .add(12);
+        metrics
+            .drops
+            .with(DropAttributes {
+                reason: DropReason::MemoryPressure,
+            })
+            .events
+            .add(13);
+
+        metrics.session.events_lost.add(21);
+        metrics.session.buffers_written.add(42);
+
+        metrics
+            .session_buffer_losses
+            .with(BufferLossAttributes {
+                delivery: BufferLossDelivery::RealTime,
+            })
+            .buffers_lost
+            .add(31);
+        metrics
+            .session_buffer_losses
+            .with(BufferLossAttributes {
+                delivery: BufferLossDelivery::LogFile,
+            })
+            .buffers_lost
+            .add(32);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 6);
 
-        assert!(
-            snapshots
-                .iter()
-                .any(|s| s.descriptor().name == "receiver.etw.events")
-        );
-        assert!(
-            snapshots
-                .iter()
-                .any(|s| s.descriptor().name == "receiver.etw.decode")
-        );
-        let kernel_snapshot = snapshots
-            .iter()
-            .find(|s| s.descriptor().name == "receiver.etw.kernel")
-            .expect("kernel metric snapshot must be present");
-        assert_eq!(kernel_snapshot.descriptor().metrics[0].name, "events_lost");
-        assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "receiver.etw.dropped"
-                && s.measurement_attribute_value("reason") == Some("slow_worker")
-        }));
-        assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "receiver.etw.buffers"
-                && s.descriptor().metrics[0].name == "written"
-        }));
-        assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "receiver.etw.buffer_losses"
-                && s.measurement_attribute_value("path") == Some("real_time")
-        }));
+        struct Expected {
+            scope: &'static str,
+            instrument: &'static str,
+            unit: &'static str,
+            attr: Option<(&'static str, &'static str)>,
+            value: u64,
+        }
 
-        // Measurement buckets are cleared after first snapshot collection
-        let second = metrics.terminal_snapshots();
-        // Plain MetricSets always yield 1 snapshot (zeroed), while MeasurementMetricSets yield 0.
-        // Needs_flush check ensures plain sets are not emitted if not modified.
-        assert_eq!(second.len(), 0);
+        let cases = [
+            Expected {
+                scope: "receiver.etw.events",
+                instrument: "received",
+                unit: "{event}",
+                attr: None,
+                value: 100,
+            },
+            Expected {
+                scope: "receiver.etw.events",
+                instrument: "forwarded",
+                unit: "{event}",
+                attr: None,
+                value: 90,
+            },
+            Expected {
+                scope: "receiver.etw.decode",
+                instrument: "errors",
+                unit: "{event}",
+                attr: None,
+                value: 5,
+            },
+            Expected {
+                scope: "receiver.etw.drops",
+                instrument: "events",
+                unit: "{event}",
+                attr: Some(("reason", "slow_worker")),
+                value: 11,
+            },
+            Expected {
+                scope: "receiver.etw.drops",
+                instrument: "events",
+                unit: "{event}",
+                attr: Some(("reason", "forward_failed")),
+                value: 12,
+            },
+            Expected {
+                scope: "receiver.etw.drops",
+                instrument: "events",
+                unit: "{event}",
+                attr: Some(("reason", "memory_pressure")),
+                value: 13,
+            },
+            Expected {
+                scope: "receiver.etw.session",
+                instrument: "events.lost",
+                unit: "{event}",
+                attr: None,
+                value: 21,
+            },
+            Expected {
+                scope: "receiver.etw.session",
+                instrument: "buffers.written",
+                unit: "{buffer}",
+                attr: None,
+                value: 42,
+            },
+            Expected {
+                scope: "receiver.etw.session",
+                instrument: "buffers.lost",
+                unit: "{buffer}",
+                attr: Some(("delivery", "real_time")),
+                value: 31,
+            },
+            Expected {
+                scope: "receiver.etw.session",
+                instrument: "buffers.lost",
+                unit: "{buffer}",
+                attr: Some(("delivery", "log_file")),
+                value: 32,
+            },
+        ];
+
+        for c in cases {
+            let snap = snapshots
+                .iter()
+                .find(|s| {
+                    s.descriptor().name == c.scope
+                        && match c.attr {
+                            Some((k, v)) => s.measurement_attribute_value(k) == Some(v),
+                            None => true,
+                        }
+                        && s.descriptor()
+                            .metrics
+                            .iter()
+                            .any(|m| m.name == c.instrument)
+                })
+                .unwrap_or_else(|| panic!("snapshot `{}` ({}) not found", c.scope, c.instrument));
+
+            let idx = snap
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|m| m.name == c.instrument)
+                .unwrap();
+
+            assert_eq!(snap.descriptor().metrics[idx].unit, c.unit);
+            assert_eq!(snap.get_metrics()[idx].to_u64_lossy(), c.value);
+        }
+
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 
-    /// Scenario: ETW receiver metrics are reported to a reporter.
-    /// Guarantees: All metric sets are successfully handed over to the reporter.
+    /// Scenario: A bounded telemetry channel fills up during reporting.
+    /// Guarantees: Partial report handles backpressure without panic; subsequent collection
+    /// or retry delivers each recorded value exactly once across collections.
     #[test]
-    fn test_etw_report_emits_metric_sets() {
+    fn test_etw_partial_report_with_full_channel_retries_and_delivers_once() {
         let mut metrics = new_test_metrics();
-        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
+        let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(2);
 
-        metrics.events.received.add(1);
-        metrics.decode.errors.add(1);
-        metrics.kernel.events_lost.add(1);
+        metrics.events.received.add(10);
         metrics
-            .dropped
+            .drops
             .with(DropAttributes {
                 reason: DropReason::SlowWorker,
             })
-            .dropped
-            .add(1);
-        metrics.buffers.written.add(1);
+            .events
+            .add(3);
+        metrics.decode.errors.add(2);
+        metrics.session.events_lost.add(5);
         metrics
-            .buffer_losses
+            .session_buffer_losses
             .with(BufferLossAttributes {
-                path: BufferLossPath::RealTime,
+                delivery: BufferLossDelivery::RealTime,
             })
-            .lost
-            .add(1);
+            .buffers_lost
+            .add(4);
 
-        metrics.report(&mut reporter).unwrap();
-        assert_eq!(receiver.try_iter().count(), 6);
+        // Channel capacity is 2; remaining items are deferred
+        _ = metrics.report(&mut reporter);
+
+        let mut delivered = Vec::new();
+        while let Ok(snap) = rx.try_recv() {
+            for m in snap.get_metrics() {
+                delivered.push(m.to_u64_lossy());
+            }
+        }
+        assert!(!delivered.is_empty());
+
+        // Collect deferred items
+        for snap in metrics.terminal_snapshots() {
+            for m in snap.get_metrics() {
+                delivered.push(m.to_u64_lossy());
+            }
+        }
+
+        for expected in [10, 3, 2, 5, 4] {
+            assert!(delivered.contains(&expected), "missing value {expected}");
+        }
+
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 }
