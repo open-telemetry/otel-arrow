@@ -1019,3 +1019,59 @@ fn windows_unrepresentable_directory_traversal() {
         assert!(!policy.includes(&directory.join("one.log")));
     }
 }
+
+/// Scenario: Unix recursive exclusions use escaped separators or literal backslashes before separators.
+/// Guarantees: Valid patterns compile and subtree pruning preserves literal backslashes in directory names.
+#[cfg(unix)]
+#[test]
+fn escaped_recursive_exclusion_separators() {
+    for (pattern, root) in [
+        (r"/logs/private\/**", "/logs/private"),
+        (r"/logs/private\\/**", r"/logs/private\"),
+        (r"/logs/private\\\/**", r"/logs/private\"),
+    ] {
+        let policy =
+            PathPolicy::compile(&["/logs/**".into()], &[pattern.into()], Path::new("/work"))
+                .unwrap();
+        let root = Path::new(root);
+        assert!(policy.excludes_subtree(root), "{pattern}");
+        assert!(policy.excludes(&root.join("sub/one.log")), "{pattern}");
+        assert!(
+            !policy.excludes_subtree(Path::new("/logs/private-other")),
+            "{pattern}"
+        );
+    }
+}
+
+/// Scenario: Long literal and wildcard alternatives fit the pattern size and configured traversal limits.
+/// Guarantees: Generated directory rules accept 300 and 1024 components without excessive nesting or lost matches.
+#[test]
+fn deep_separator_alternative() {
+    for depth in [300, 1024] {
+        let deep = vec!["a"; depth].join("/");
+        for component in ["a", "a*"] {
+            let alternative = vec![component; depth].join("/");
+            let pattern = format!("logs/{{{alternative},b}}/*.log");
+            assert!(pattern.len() < 4096);
+            let mut config = parsed("max_recursion_depth: 1024");
+            config.include = vec![pattern];
+            let base = test_path("/work");
+            let compiled = config.compile("g", "p", "n", &base).unwrap();
+            let policy = compiled.paths();
+            let root = base.join("logs");
+            let file = root.join(&deep).join("one.log");
+            assert!(policy.includes(&file));
+            for ancestor in file
+                .parent()
+                .unwrap()
+                .ancestors()
+                .take_while(|p| p.starts_with(&root))
+            {
+                assert!(policy.may_descend(ancestor), "{ancestor:?}");
+            }
+            assert!(policy.includes(&root.join("b/one.log")));
+            assert!(!policy.may_descend(&root.join("unrelated")));
+            assert!(!policy.may_descend(&root.join("a/not-a")));
+        }
+    }
+}

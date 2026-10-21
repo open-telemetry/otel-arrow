@@ -155,6 +155,15 @@ impl PathPolicy {
                             None
                         }
                     }) {
+                        // An odd trailing backslash escapes the removed Unix
+                        // separator. Keep paired escapes for literal backslashes.
+                        let parent = if !cfg!(windows)
+                            && parent.bytes().rev().take_while(|b| *b == b'\\').count() % 2 == 1
+                        {
+                            &parent[..parent.len() - 1]
+                        } else {
+                            parent
+                        };
                         excluded_subtrees.push(glob.regex().to_owned());
                         // globset 0.4 treats the final slash as required. The
                         // directory itself still has every descendant excluded.
@@ -626,25 +635,41 @@ fn directory_prefix_rule(
     field: &str,
     names: &mut HashMap<String, usize>,
 ) -> Result<DirectoryRule, ConfigError> {
-    use regex_syntax::hir::{Class, Hir, HirKind, Repetition};
+    use regex_syntax::hir::{Class, Hir, HirKind, Look, Repetition};
+    // D(AB) = D(A) | A D(B), where D selects prefixes before a slash.
+    // Split concatenations in half so generated nesting grows logarithmically.
+    fn concat_prefixes(parts: &[Hir]) -> Hir {
+        match parts.len() {
+            0 => Hir::fail(),
+            1 => prefixes(&parts[0]),
+            n => {
+                let (left, right) = parts.split_at(n / 2);
+                Hir::alternation(vec![
+                    concat_prefixes(left),
+                    Hir::concat(vec![Hir::concat(left.to_vec()), concat_prefixes(right)]),
+                ])
+            }
+        }
+    }
     fn prefixes(hir: &Hir) -> Hir {
         match hir.kind() {
             HirKind::Literal(literal) => {
-                // Share the logical suffix structure instead of materializing
-                // every full prefix of a separator-heavy literal.
-                let mut parts = literal.0.rsplit(|byte| *byte == b'/');
-                let _ = parts.next(); // The final component does not precede a slash.
-                let mut tail = Hir::fail();
+                let Some(last_slash) = literal.0.iter().rposition(|byte| *byte == b'/') else {
+                    return Hir::fail();
+                };
+                let mut parts = literal.0[..last_slash].split(|byte| *byte == b'/');
+                let mut sequence = vec![Hir::literal(parts.next().unwrap_or_default())];
+                // Prefixes end at the input boundary. Each subsequent component
+                // either consumes its slash/name or asserts end-of-input. Once
+                // an end branch is taken, no later component can consume bytes.
+                // This avoids a nested optional group for every directory.
                 for part in parts {
-                    tail = Hir::concat(vec![
-                        Hir::literal(part),
-                        Hir::alternation(vec![
-                            Hir::empty(),
-                            Hir::concat(vec![Hir::literal(*b"/"), tail]),
-                        ]),
-                    ]);
+                    sequence.push(Hir::alternation(vec![
+                        Hir::look(Look::End),
+                        Hir::concat(vec![Hir::literal(*b"/"), Hir::literal(part)]),
+                    ]));
                 }
-                tail
+                Hir::concat(sequence)
             }
             HirKind::Class(class) => {
                 let slash = match class {
@@ -661,16 +686,7 @@ fn directory_prefix_rule(
             }
             HirKind::Capture(capture) => prefixes(&capture.sub),
             HirKind::Alternation(parts) => Hir::alternation(parts.iter().map(prefixes).collect()),
-            HirKind::Concat(parts) => {
-                let mut tail = Hir::fail();
-                for part in parts.iter().rev() {
-                    tail = Hir::alternation(vec![
-                        prefixes(part),
-                        Hir::concat(vec![part.clone(), tail]),
-                    ]);
-                }
-                tail
-            }
+            HirKind::Concat(parts) => concat_prefixes(parts),
             HirKind::Repetition(rep) => {
                 if rep.max == Some(0) {
                     return Hir::fail();
