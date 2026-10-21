@@ -518,6 +518,7 @@ mod tests {
     /// Guarantees: the client preserves the server's minimum retry delay.
     #[tokio::test]
     async fn retry_after_seconds_are_parsed() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "17"))
@@ -540,6 +541,7 @@ mod tests {
     /// Guarantees: the client retains only the bounded diagnostic prefix and marks truncation.
     #[tokio::test]
     async fn error_response_body_is_bounded() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(500).set_body_bytes(vec![
@@ -624,6 +626,7 @@ mod tests {
     /// Guarantees: 429/503 preserve `Retry-After`, and a truncated 408 remains retryable.
     #[tokio::test]
     async fn truncated_retryable_response_preserves_retry_policy() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         for status_line in ["429 Too Many Requests", "503 Service Unavailable"] {
             let error = truncated_error_response(status_line, Some(60)).await;
             assert!(error.is_retryable(), "{status_line}");
