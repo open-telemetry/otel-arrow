@@ -11,7 +11,9 @@ by the component and log events emitted via `otel_*` log macros.
 The shared metrics describe the complete receiver-local lifecycle of each
 classified external message. Component metrics retain protocol-specific
 diagnostics. Content parsing is deferred to the syslog codec; receiver success
-means a framed message was admitted to an encoded batch.
+means the message was appended to the receiver's encoded batch. Sealing and
+admitting that batch as pdata happen later; a failure there does not rewrite the
+message-level receiver outcome.
 
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
@@ -33,7 +35,7 @@ means a framed message was admitted to an encoded batch.
 | `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed successfully for an incoming connection. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timeout expired with connection tasks still active during shutdown. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef_receiver.batch.seal_failed` | `warn` | Failed to seal or admit an encoded syslog batch; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.batch.seal_failed` | `warn` | Failed to seal an encoded batch or admit it as pdata; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tcp.read_error` | `warn` | A TCP read failed and the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tcp.framing_error` | `warn` | An invalid, incomplete, or oversized TCP frame caused the connection to close. Bounded numeric fields identify invalid prefix bytes, incomplete lengths, or size-policy mismatches without logging payload content. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 

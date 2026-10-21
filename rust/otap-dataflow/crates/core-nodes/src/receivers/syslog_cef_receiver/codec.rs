@@ -7,16 +7,18 @@
 //!
 //! ```text
 //! "SLG1" | item_count:u32 | repeated {
-//!     observed_time_unix_nano:i64 | run_item_count:u32 | repeated {
-//!         message_length:u32 | received_local_year:i32 | message_bytes
+//!     observed_time_unix_nano:i64 | run_item_count:u32 | received_local_year:i32 |
+//!     repeated { message_length:u32 | message_bytes
 //!     }
 //! }
 //! ```
 //!
 //! Observed timestamps are captured when a receiver batch is sealed. Each
-//! message also retains the local year at receipt, so deferred RFC 3164 decoding
-//! does not infer a different year after New Year. Native batching copies these
-//! frames and coalesces adjacent observed-time runs without parsing syslog.
+//! run also retains the local year at receipt, so deferred RFC 3164 decoding
+//! does not infer a different year after New Year. The builder starts a new run
+//! when the receipt year changes. Native batching copies frames and coalesces
+//! adjacent runs only when both observed timestamp and receipt year match,
+//! without parsing syslog contents.
 
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
@@ -31,7 +33,7 @@ use otel_arrow_dfe_pdata_codec::{
     PdataBatcher, PdataDecoder, PdataEncoding, RegistryError, ResolvedCodec, register_pdata_codec,
 };
 
-use super::arrow_records_encoder::ArrowRecordsBuilder;
+use super::arrow_records_encoder::ReceivedArrowRecordsBuilder;
 use super::parser;
 
 /// Stable identity of the versioned syslog/CEF batch representation.
@@ -39,8 +41,8 @@ pub const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch"
 
 const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
-const RUN_HEADER_LEN: usize = 12;
-const FRAME_HEADER_LEN: usize = 8;
+const RUN_HEADER_LEN: usize = 16;
+const FRAME_HEADER_LEN: usize = 4;
 const MAX_NATIVE_LOGS: usize = 65_535;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
 
@@ -73,15 +75,12 @@ fn operation_error(
     CodecError::operation(&SYSLOG_CEF_ENCODING, operation, source)
 }
 
-fn predicted_batch_capacity(max_items: usize, message_len: usize) -> usize {
-    BATCH_HEADER_LEN
-        .saturating_add(RUN_HEADER_LEN)
-        .saturating_add(
-            FRAME_HEADER_LEN
-                .saturating_add(message_len)
-                .saturating_mul(max_items.max(1)),
-        )
-        .min(MAX_PREDICTED_BATCH_CAPACITY)
+fn predicted_frame_capacity(max_items: usize, message_len: usize) -> usize {
+    // reserve() takes additional bytes; the first run header is already present.
+    FRAME_HEADER_LEN
+        .saturating_add(message_len)
+        .saturating_mul(max_items.max(1))
+        .min(MAX_PREDICTED_BATCH_CAPACITY - BATCH_HEADER_LEN - RUN_HEADER_LEN)
 }
 
 /// Accumulates framed syslog messages without parsing them.
@@ -89,6 +88,12 @@ pub(crate) struct SyslogBatchBuilder {
     bytes: BytesMut,
     item_count: u32,
     max_items_hint: usize,
+    run_year: Option<i32>,
+    run_count: u32,
+    run_count_offset: usize,
+    // The first run is always at BATCH_HEADER_LEN. Only a receipt-year change
+    // needs another offset, so the ordinary single-year batch allocates no list.
+    additional_run_offsets: Vec<usize>,
 }
 
 /// A batch sealed by the syslog codec, retaining the count established while framing.
@@ -132,12 +137,14 @@ impl SyslogBatchBuilder {
         let mut bytes = BytesMut::with_capacity(BATCH_HEADER_LEN + RUN_HEADER_LEN);
         bytes.extend_from_slice(MAGIC);
         bytes.put_u32(0);
-        bytes.put_i64(0);
-        bytes.put_u32(0);
         Self {
             bytes,
             item_count: 0,
             max_items_hint: max_items_hint.max(1),
+            run_year: None,
+            run_count: 0,
+            run_count_offset: 0,
+            additional_run_offsets: Vec::new(),
         }
     }
 
@@ -168,17 +175,31 @@ impl SyslogBatchBuilder {
     ) -> Result<(), SyslogFramingError> {
         let message_len = u32::try_from(message.len())
             .map_err(|_| framing_error("syslog message length exceeds u32"))?;
-        if self.is_empty() {
-            let predicted_capacity = predicted_batch_capacity(self.max_items_hint, message.len());
-            self.bytes
-                .reserve(predicted_capacity.saturating_sub(self.bytes.len()));
-        }
-        self.item_count = self
+        let item_count = self
             .item_count
             .checked_add(1)
             .ok_or_else(|| framing_error("syslog batch item count exceeds u32"))?;
+        if self.run_year != Some(received_local_year) {
+            if !self.is_empty() {
+                self.bytes[self.run_count_offset..self.run_count_offset + 4]
+                    .copy_from_slice(&self.run_count.to_be_bytes());
+                self.additional_run_offsets.push(self.bytes.len());
+            }
+            self.bytes.put_i64(0);
+            self.run_count_offset = self.bytes.len();
+            self.bytes.put_u32(0);
+            self.bytes.put_i32(received_local_year);
+            self.run_count = 0;
+            self.run_year = Some(received_local_year);
+        }
+        if self.is_empty() {
+            self.bytes
+                .reserve(predicted_frame_capacity(self.max_items_hint, message.len()));
+        }
+        self.item_count = item_count;
+        // A run is no larger than the checked total item count above.
+        self.run_count += 1;
         self.bytes.put_u32(message_len);
-        self.bytes.put_i32(received_local_year);
         self.bytes.extend_from_slice(message);
         Ok(())
     }
@@ -200,16 +221,17 @@ impl SyslogBatchBuilder {
         self.bytes.capacity()
     }
 
-    /// Seals a non-empty batch with one timestamp run for the flush.
+    /// Seals a non-empty batch, assigning the flush timestamp to every year run.
     pub(crate) fn finish(mut self, observed_time: i64) -> Result<SyslogBatch, SyslogFramingError> {
         if self.is_empty() {
             return Err(framing_error("cannot seal an empty syslog batch"));
         }
         self.bytes[4..BATCH_HEADER_LEN].copy_from_slice(&self.item_count.to_be_bytes());
-        self.bytes[BATCH_HEADER_LEN..BATCH_HEADER_LEN + 8]
-            .copy_from_slice(&observed_time.to_be_bytes());
-        self.bytes[BATCH_HEADER_LEN + 8..BATCH_HEADER_LEN + RUN_HEADER_LEN]
-            .copy_from_slice(&self.item_count.to_be_bytes());
+        self.bytes[self.run_count_offset..self.run_count_offset + 4]
+            .copy_from_slice(&self.run_count.to_be_bytes());
+        for offset in std::iter::once(BATCH_HEADER_LEN).chain(self.additional_run_offsets) {
+            self.bytes[offset..offset + 8].copy_from_slice(&observed_time.to_be_bytes());
+        }
         let item_count = self.item_count as usize;
         Ok(SyslogBatch {
             bytes: self.bytes.freeze(),
@@ -232,6 +254,7 @@ struct FrameIter<'a> {
     remaining: usize,
     run_remaining: usize,
     observed_time: i64,
+    received_local_year: i32,
     finished: bool,
 }
 
@@ -248,8 +271,8 @@ impl<'a> Iterator for FrameIter<'a> {
                 .then(|| Err(framing_error("trailing bytes after syslog batch frames")));
         }
         if self.run_remaining == 0 {
-            let run_end = match self.cursor.checked_add(RUN_HEADER_LEN) {
-                Some(run_end) if run_end <= self.bytes.len() => run_end,
+            let run_header_end = match self.cursor.checked_add(RUN_HEADER_LEN) {
+                Some(end) if end <= self.bytes.len() => end,
                 Some(_) => {
                     self.finished = true;
                     return Some(Err(framing_error("truncated syslog timestamp run")));
@@ -260,8 +283,10 @@ impl<'a> Iterator for FrameIter<'a> {
                 }
             };
             self.observed_time = read_i64(&self.bytes[self.cursor..self.cursor + 8]);
-            self.run_remaining = read_u32(&self.bytes[self.cursor + 8..run_end]) as usize;
-            self.cursor = run_end;
+            self.run_remaining = read_u32(&self.bytes[self.cursor + 8..self.cursor + 12]) as usize;
+            let year = &self.bytes[self.cursor + 12..run_header_end];
+            self.received_local_year = i32::from_be_bytes([year[0], year[1], year[2], year[3]]);
+            self.cursor = run_header_end;
             if self.run_remaining == 0 || self.run_remaining > self.remaining {
                 self.finished = true;
                 return Some(Err(framing_error(
@@ -281,10 +306,7 @@ impl<'a> Iterator for FrameIter<'a> {
                 return Some(Err(framing_error("syslog frame header overflow")));
             }
         };
-        let message_len = read_u32(&self.bytes[start..start + 4]) as usize;
-        let year_bytes = &self.bytes[start + 4..header_end];
-        let received_local_year =
-            i32::from_be_bytes([year_bytes[0], year_bytes[1], year_bytes[2], year_bytes[3]]);
+        let message_len = read_u32(&self.bytes[start..header_end]) as usize;
         let message_start = header_end;
         let end = match message_start.checked_add(message_len) {
             Some(end) if end <= self.bytes.len() => end,
@@ -302,7 +324,7 @@ impl<'a> Iterator for FrameIter<'a> {
         self.run_remaining -= 1;
         Some(Ok(Frame {
             observed_time: self.observed_time,
-            received_local_year,
+            received_local_year: self.received_local_year,
             message: &self.bytes[message_start..end],
             encoded: &self.bytes[start..end],
         }))
@@ -336,6 +358,7 @@ fn validated_frames(bytes: &[u8]) -> Result<(usize, FrameIter<'_>), SyslogFramin
             remaining: count,
             run_remaining: 0,
             observed_time: 0,
+            received_local_year: 0,
             finished: false,
         },
     ))
@@ -381,17 +404,13 @@ impl PdataDecoder for SyslogDecoder {
                 framing_error("syslog batch exceeds native log ID capacity"),
             ));
         }
-        let mut builder = ArrowRecordsBuilder::new();
+        let mut builder = ReceivedArrowRecordsBuilder::default();
         for frame in frames {
             let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
             let parsed = parser::parse(frame.message)
                 .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
                 .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            builder.append_syslog_with_receive_context(
-                parsed,
-                frame.observed_time,
-                frame.received_local_year,
-            );
+            builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
         }
         builder
             .build()
@@ -457,8 +476,11 @@ impl PdataBatcher for SyslogBatcher {
                     if exceeds_split_budget(&input, max_items, fragments, split_fanout, settings)
                         .map_err(|error| operation_error(CodecOperation::Batch, error))?
                     {
-                        // Even a zero-copy fallback must validate every frame;
-                        // a plausible header alone does not certify the input.
+                        // This codec validates framing even on whole-input fallback.
+                        // PdataBatcher assumes valid inputs but does not require
+                        // exhaustive validation; this is our current codec policy,
+                        // not syslog-content parsing. Keep counters and decoding
+                        // consistent until a measured structural fast path replaces it.
                         for frame in frames {
                             let _ = frame
                                 .map_err(|error| operation_error(CodecOperation::Batch, error))?;
@@ -541,16 +563,17 @@ fn exceeds_split_budget(
     };
     let (_, frames) = validated_frames(input)?;
     let mut output_bytes = 0_u64;
-    let mut previous_time = None;
+    let mut previous_context = None;
     for (index, frame) in frames.enumerate() {
         let frame = frame?;
         if index % max_items == 0 {
             output_bytes += BATCH_HEADER_LEN as u64;
-            previous_time = None;
+            previous_context = None;
         }
-        if previous_time != Some(frame.observed_time) {
+        let context = (frame.observed_time, frame.received_local_year);
+        if previous_context != Some(context) {
             output_bytes += RUN_HEADER_LEN as u64;
-            previous_time = Some(frame.observed_time);
+            previous_context = Some(context);
         }
         output_bytes += frame.encoded.len() as u64;
     }
@@ -562,7 +585,7 @@ struct RawBatchWriter {
     count: u32,
     run_count_offset: usize,
     run_count: u32,
-    observed_time: Option<i64>,
+    run_context: Option<(i64, i32)>,
 }
 
 impl RawBatchWriter {
@@ -575,7 +598,7 @@ impl RawBatchWriter {
             count: 0,
             run_count_offset: 0,
             run_count: 0,
-            observed_time: None,
+            run_context: None,
         }
     }
 
@@ -588,12 +611,14 @@ impl RawBatchWriter {
     }
 
     fn append(&mut self, frame: Frame<'_>) -> Result<(), SyslogFramingError> {
-        if self.observed_time != Some(frame.observed_time) {
+        let context = (frame.observed_time, frame.received_local_year);
+        if self.run_context != Some(context) {
             self.bytes.put_i64(frame.observed_time);
             self.run_count_offset = self.bytes.len();
             self.bytes.put_u32(0);
+            self.bytes.put_i32(frame.received_local_year);
             self.run_count = 0;
-            self.observed_time = Some(frame.observed_time);
+            self.run_context = Some(context);
         }
         self.count = self
             .count
@@ -803,6 +828,39 @@ mod tests {
         );
     }
 
+    /// Scenario: Receipt years change in both directions within a receiver batch.
+    /// Guarantees: Equal consecutive years share a run without an offset-list allocation; every year transition and observed timestamp survives sealing.
+    #[test]
+    fn framing_groups_consecutive_receipt_years() {
+        let mut builder = SyslogBatchBuilder::new();
+        for _ in 0..2 {
+            builder.append_with_year(b"x", 2024).unwrap();
+        }
+        assert_eq!(builder.additional_run_offsets.capacity(), 0);
+        builder.append_with_year(b"x", 2025).unwrap();
+        builder.append_with_year(b"x", 2024).unwrap();
+        let batch = builder.finish(42).unwrap();
+        assert_eq!(
+            batch.bytes.len(),
+            BATCH_HEADER_LEN + 3 * RUN_HEADER_LEN + 4 * (FRAME_HEADER_LEN + 1)
+        );
+        let (count, frames) = validated_frames(&batch.bytes).unwrap();
+        let frames = frames.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(count, 4);
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.received_local_year)
+                .collect::<Vec<_>>(),
+            [2024, 2024, 2025, 2024]
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.observed_time == 42 && frame.message == b"x")
+        );
+    }
+
     /// Scenario: The codec builder seals messages and the receiver admits its opaque result.
     /// Guarantees: The established count and buffer survive admission; framing and timestamps
     /// remain valid, an empty builder fails, and the next nonempty batch still succeeds.
@@ -846,10 +904,12 @@ mod tests {
         }
 
         assert_eq!(builder.capacity(), predicted_capacity);
-        assert!(predicted_capacity >= BATCH_HEADER_LEN + (FRAME_HEADER_LEN + 72) * 100);
+        assert!(
+            predicted_capacity >= BATCH_HEADER_LEN + RUN_HEADER_LEN + (FRAME_HEADER_LEN + 72) * 100
+        );
         assert_eq!(
-            predicted_batch_capacity(usize::MAX, usize::MAX),
-            MAX_PREDICTED_BATCH_CAPACITY
+            predicted_frame_capacity(usize::MAX, usize::MAX),
+            MAX_PREDICTED_BATCH_CAPACITY - BATCH_HEADER_LEN - RUN_HEADER_LEN
         );
     }
 
@@ -858,7 +918,7 @@ mod tests {
     #[test]
     fn malformed_framing_is_rejected() {
         let complete = batch(&[b"message"], 7);
-        // Includes truncation within the per-message receipt year.
+        // Includes truncation within the run receipt year and frame headers.
         for end in 0..complete.len() {
             assert!(validated_item_count(&complete[..end]).is_err());
             assert!(
@@ -967,7 +1027,7 @@ mod tests {
 
     /// Scenario: A receiver batch spans New Year and is merged and split with another batch.
     /// Guarantees: Every independently decoded output retains per-message years, order,
-    /// observed timestamps, and input ownership ranges even within a shared timestamp run.
+    /// observed timestamps, and input ownership ranges even when observed timestamps match.
     #[test]
     fn native_batching_preserves_years_across_receiver_rollover() {
         let old = b"<34>Dec 31 23:59:58 host tag: message";
@@ -979,10 +1039,19 @@ mod tests {
         first.append_with_year(new, 2021).unwrap();
         let mut second = SyslogBatchBuilder::new();
         second.append_with_year(new, 2021).unwrap();
-        let inputs = vec![
-            first.finish(observed).unwrap().bytes,
-            second.finish(observed).unwrap().bytes,
-        ];
+        let first = first.finish(observed).unwrap().bytes;
+        assert_eq!(
+            first.len(),
+            BATCH_HEADER_LEN
+                + 2 * RUN_HEADER_LEN
+                + 3 * FRAME_HEADER_LEN
+                + old.len()
+                + 2 * new.len()
+        );
+        assert_eq!(read_u32(&first[16..20]), 1);
+        let second_run = BATCH_HEADER_LEN + RUN_HEADER_LEN + FRAME_HEADER_LEN + old.len();
+        assert_eq!(read_u32(&first[second_run + 8..second_run + 12]), 2);
+        let inputs = vec![first, second.finish(observed).unwrap().bytes];
         let settings = BatchSettings {
             min_size: Some(2),
             max_size: NonZeroU64::new(2),
@@ -1071,7 +1140,7 @@ mod tests {
         assert_eq!(*input_range, 0..=1);
         assert_eq!(validated_item_count(bytes).unwrap(), 3);
         assert_eq!(
-            read_u32(&bytes[BATCH_HEADER_LEN + 8..BATCH_HEADER_LEN + RUN_HEADER_LEN]),
+            read_u32(&bytes[BATCH_HEADER_LEN + 8..BATCH_HEADER_LEN + 12]),
             3
         );
         assert_eq!(
@@ -1180,7 +1249,7 @@ mod tests {
         };
         for (fragments, overhead, flush) in [
             (Some(3), None, None),
-            (None, Some(59), None),
+            (None, Some(71), None),
             (None, None, Some(2)),
             (Some(1), Some(1), Some(1)),
         ] {
@@ -1207,9 +1276,9 @@ mod tests {
                 4
             );
         }
-        // Four single-item outputs duplicate three 20-byte wrappers. The flush
+        // Four single-item outputs duplicate three 24-byte wrappers. The flush
         // allowance counts the three additional outputs, excluding the whole-input floor.
-        for (fragments, overhead, flush) in [(4, 60, 3), (u64::MAX, u64::MAX, u64::MAX)] {
+        for (fragments, overhead, flush) in [(4, 72, 3), (u64::MAX, u64::MAX, u64::MAX)] {
             let settings = BatchSettings {
                 max_split_fragments: NonZeroU64::new(fragments),
                 max_split_overhead_bytes: NonZeroU64::new(overhead),
@@ -1228,7 +1297,7 @@ mod tests {
                     .map(|(bytes, _)| bytes.len())
                     .sum::<usize>()
                     - input.len(),
-                60
+                72
             );
             for (bytes, range) in result.batches {
                 assert_eq!(range, 0..=0);
@@ -1434,7 +1503,6 @@ mod tests {
         oversized[4..8].copy_from_slice(&((MAX_NATIVE_LOGS + 1) as u32).to_be_bytes());
         oversized[16..20].copy_from_slice(&((MAX_NATIVE_LOGS + 1) as u32).to_be_bytes());
         oversized.extend_from_slice(&1_u32.to_be_bytes());
-        oversized.extend_from_slice(&2024_i32.to_be_bytes());
         oversized.push(b'x');
         let oversized = Bytes::from(oversized);
         assert!(
