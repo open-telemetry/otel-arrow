@@ -147,12 +147,10 @@ fn execute_eval_as_id_mask(
     pool: &mut IdBitmapPool,
 ) -> Result<ScopedIdMask> {
     let (mask, scope) = match eval {
-        LeafEval::BatchPredicate(predicate) => {
-            let mask = if predicate.evaluate(otap_batch) {
-                IdMask::All
-            } else {
-                IdMask::None
-            };
+        LeafEval::BatchEval(eval) => {
+            let eval_result = eval.evaluate(otap_batch);
+            let mask = scalar_value_to_id_mask(&eval_result)?;
+
             (mask, None)
         }
         LeafEval::DatafusionExpr { .. } => {
@@ -211,6 +209,21 @@ fn execute_join_and_eval_as_id_mask(
     Ok(ScopedIdMask { scope, mask })
 }
 
+fn scalar_value_to_id_mask(scalar: &ScalarValue) -> Result<IdMask> {
+    match scalar {
+        ScalarValue::Boolean(Some(true)) => Ok(IdMask::All),
+        ScalarValue::Boolean(Some(false)) | ScalarValue::Boolean(None) | ScalarValue::Null => {
+            Ok(IdMask::None)
+        }
+        other => Err(Error::ExecutionError {
+            cause: format!(
+                "expected boolean result for IdMask conversion, found {:?}",
+                other.data_type()
+            ),
+        }),
+    }
+}
+
 /// Convert a `ScopedValue` containing a boolean result into an `IdMask`.
 fn scoped_value_to_id_mask(
     sv: ScopedValue,
@@ -219,31 +232,18 @@ fn scoped_value_to_id_mask(
 ) -> Result<IdMask> {
     // handle scalar results
     if let ColumnarValue::Scalar(scalar) = &sv.values {
-        return match scalar {
-            ScalarValue::Boolean(Some(true)) => {
-                // For attribute-scoped scalars, "all true" means "all rows that matched
-                // the key filter pass", not ALL rows in the batch. We need to build an
-                // IdMask from the parent_ids of the matching rows.
-                if matches!(sv.scope, DataScope::Attribute(_, _, _))
-                    && let Some(parent_ids) = &sv.parent_ids
-                {
-                    let mut bitmap = pool.acquire();
-                    bitmap.try_populate_from_id_column(parent_ids)?;
+        // For attribute-scoped scalars, "all true" means "all rows that matched
+        // the key filter pass", not ALL rows in the batch. We need to build an
+        // IdMask from the parent_ids of the matching rows.
+        if matches!(sv.scope, DataScope::Attribute(_, _, _))
+            && let Some(parent_ids) = &sv.parent_ids
+        {
+            let mut bitmap = pool.acquire();
+            bitmap.try_populate_from_id_column(parent_ids)?;
 
-                    return Ok(IdMask::Some(bitmap));
-                }
-                Ok(IdMask::All)
-            }
-            ScalarValue::Boolean(Some(false)) | ScalarValue::Boolean(None) | ScalarValue::Null => {
-                Ok(IdMask::None)
-            }
-            other => Err(Error::ExecutionError {
-                cause: format!(
-                    "expected boolean result for IdMask conversion, found {:?}",
-                    other.data_type()
-                ),
-            }),
-        };
+            return Ok(IdMask::Some(bitmap));
+        }
+        return scalar_value_to_id_mask(scalar);
     }
 
     // handle array results

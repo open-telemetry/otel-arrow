@@ -474,12 +474,12 @@ pub(crate) enum LeafEval {
         missing_data_passes: bool,
     },
 
-    /// A batch-level predicate that evaluates a property of the entire `OtapArrowRecords`
-    /// batch rather than individual rows. The result is uniform across all rows (either all
-    /// pass or all fail).
+    /// A batch-level evaluation resolving some property of the entire `OtapArrowRecords`
+    /// batch rather than individual rows. The result is uniform across all rows and 
+    /// should produce a scalar.
     ///
     /// Examples: signal type check ("is this batch Logs / Metrics / Traces?").
-    BatchPredicate(Box<dyn BatchPredicate>),
+    BatchEval(Box<dyn BatchEval>),
 }
 
 impl LeafEval {
@@ -537,15 +537,12 @@ impl LeafEval {
     }
 }
 
-/// A predicate that evaluates a property of the entire `OtapArrowRecords` batch.
+/// An evaluation of a property of the entire `OtapArrowRecords` batch.
 ///
-/// Results are uniform across all rows: either all pass or all fail.
-pub(crate) trait BatchPredicate: std::fmt::Debug {
-    /// Evaluate the predicate against the entire batch.
-    ///
-    /// Returns true if the batch satisfies the predicate (all rows pass),
-    /// false otherwise (all rows fail).
-    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> bool;
+/// Results are uniform across all rows.
+pub(crate) trait BatchEval: std::fmt::Debug {
+    /// Evaluate against the entire batch.
+    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> ScalarValue;
 }
 
 /// Checks whether the batch contains a specific signal type.
@@ -560,9 +557,9 @@ impl SignalTypePredicate {
     }
 }
 
-impl BatchPredicate for SignalTypePredicate {
-    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> bool {
-        otap_batch.signal_type() == self.signal_type
+impl BatchEval for SignalTypePredicate {
+    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> ScalarValue {
+        ScalarValue::Boolean(Some(otap_batch.signal_type() == self.signal_type))
     }
 }
 
@@ -630,7 +627,7 @@ mod test {
     fn signal_type_eval(signal_type: SignalType) -> ScopedExpr {
         ScopedExpr::Eval {
             scope: DataScope::Record(RecordScope::Signal),
-            eval: LeafEval::BatchPredicate(Box::new(SignalTypePredicate::new(signal_type))),
+            eval: LeafEval::BatchEval(Box::new(SignalTypePredicate::new(signal_type))),
         }
     }
 

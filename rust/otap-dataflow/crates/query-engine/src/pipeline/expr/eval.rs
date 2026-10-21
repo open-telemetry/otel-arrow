@@ -320,10 +320,10 @@ pub(super) fn eval_datafusion_expr_value(
             Ok(Some(result))
         }
 
-        LeafEval::BatchPredicate(predicate) => {
-            let result = predicate.evaluate(otap_batch);
+        LeafEval::BatchEval(eval) => {
+            let result = eval.evaluate(otap_batch);
             Ok(Some(ScopedValue {
-                values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(result))),
+                values: ColumnarValue::Scalar(result),
                 scope: DataScope::StaticScalar,
                 ids: None,
                 parent_ids: None,
