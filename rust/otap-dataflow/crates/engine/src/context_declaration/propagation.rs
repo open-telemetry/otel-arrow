@@ -1125,6 +1125,81 @@ default:
         assert_eq!(propagated[0].value, b"acme");
     }
 
+    /// Scenario: capture stores the same mixed-case name seen on the wire, while a qualified
+    /// composite source references that header using different capitalization.
+    /// Guarantees: case-insensitive lookup does not replace the captured spelling on export.
+    #[test]
+    fn qualified_preserve_retains_captured_stored_name_spelling() {
+        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+            r#"
+entries:
+  tenant:
+    - type: transport_header
+      name: x-workspace
+      store_as: workspace_id
+"#,
+        )
+        .expect("valid context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let declaration = ContextEntryDeclaration {
+            scope: context_policy::ContextScope::Engine,
+            name,
+            definition,
+        };
+        let propagation: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [tenant:workspace_id]
+  name: preserve
+"#,
+        )
+        .expect("valid propagation policy");
+        let prepared = PreparedHeaderPropagationPolicy::compile(
+            propagation,
+            std::slice::from_ref(&declaration),
+        )
+        .expect("qualified propagation policy compiles");
+        let capture = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("X-Workspace")],
+                store_as: Some(context_name("X-Workspace")),
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|name| prepared.propagates_original_name(name));
+        let mut headers = TransportHeaders::new();
+
+        assert_eq!(
+            capture.capture_from_pairs(
+                [("X-Workspace", b"acme".as_slice())].into_iter(),
+                &mut headers,
+            ),
+            None
+        );
+        let captured = headers.get(0).expect("captured workspace");
+        assert_eq!(captured.name.as_str(), "X-Workspace");
+        assert_eq!(captured.value.original_name, None);
+
+        let plan = ContextMaterializationPlan::compile(&[declaration])
+            .expect("materialization plan compiles");
+        let policy = prepared.bind(&plan).expect("prepared policy binds");
+        let mut materialized = MaterializedContext::default();
+        materialized.set_transport_headers(headers.clone());
+        materialized
+            .materialize_with_stored_transport(&plan, &TestValueSource { headers: &headers });
+        let propagated = policy
+            .propagate_materialized(&headers, Some(&materialized))
+            .collect::<Vec<_>>();
+
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "X-Workspace");
+        assert_eq!(propagated[0].value, b"acme");
+    }
+
     /// Scenario: a qualified selector names a header in a composite with randomness.
     /// Guarantees: unselected randomness does not block compilation or header propagation.
     #[test]
