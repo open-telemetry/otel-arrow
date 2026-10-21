@@ -11,7 +11,8 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
 pub use common::{
-    BoundedBuf, Checkpoint, ProtoBuffer, StackProtoBuffer, TRUNCATION_SUFFIX,
+    BoundedBuf, Checkpoint, MAX_OTLP_SIZE_LIMIT, ProtoBuffer, StackProtoBuffer, TRUNCATION_SUFFIX,
+    TruncateResult, Truncation,
     encode_len_placeholder, patch_len_placeholder,
 };
 pub use otel_arrow_dfe_pdata_otlp_macros::Message; // Required for derived code

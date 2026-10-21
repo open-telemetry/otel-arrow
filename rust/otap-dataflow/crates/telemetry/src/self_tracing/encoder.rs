@@ -11,7 +11,7 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::pipeline::telemetry::{
     AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
 };
-use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, EncodeFailure, EncodeResult, ProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::{BoundedBuf, EncodeFailure, Truncation, TruncateResult, EncodeResult, ProtoBuffer};
 use otel_arrow_dfe_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
@@ -124,8 +124,8 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// Encodes one attribute within the per-attribute budget, counting a hard
     /// failure or a truncation as one dropped attribute. A hard failure rolls
     /// back any partial bytes; `Ok(true)` from `encode` reports truncation.
-    fn write_attribute(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
-        if bounded(self.buf, encode).unwrap_or(true) {
+    fn write_attribute(&mut self, encode: impl FnOnce(&mut B) -> TruncateResult) {
+        if !matches!(bounded(self.buf, encode), Ok(Truncation::None)) {
             self.dropped_count += 1;
         }
     }
@@ -135,7 +135,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     fn record_attribute(
         &mut self,
         field: &tracing::field::Field,
-        encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+        encode: impl FnOnce(&mut B) -> TruncateResult,
     ) {
         if field.name() != "message" {
             self.write_value_attribute(field.name(), encode);
@@ -146,7 +146,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     fn write_value_attribute(
         &mut self,
         key: &str,
-        encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
+        encode: impl FnOnce(&mut B) -> TruncateResult,
     ) {
         self.write_attribute(|buf| {
             write_encoded_key_value(buf, LOG_RECORD_ATTRIBUTES, key, encode)
@@ -154,7 +154,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     }
 
     /// Encodes a body payload, rolling it back if it cannot fit.
-    fn write_body(&mut self, encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
+    fn write_body(&mut self, encode: impl FnOnce(&mut B) -> TruncateResult) {
         let _ = self
             .buf
             .try_encode(|buf| write_encoded_value(buf, LOG_RECORD_BODY, encode).map(drop));
@@ -263,9 +263,8 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 fn encode_debug_string<B: BoundedBuf>(
     buf: &mut B,
     value: &dyn std::fmt::Debug,
-) -> Result<bool, EncodeFailure> {
-    let mut truncated = false;
-    buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
+) -> TruncateResult {
+    buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
         use std::fmt::Write as _;
         let mut adapter = BoundedBufFmt::new(buf);
         // Ignore the fmt result -- truncation is handled internally by the
@@ -273,16 +272,17 @@ fn encode_debug_string<B: BoundedBuf>(
         // silently discards overflow bytes after appending the suffix.
         let _ = write!(adapter, "{:?}", value);
         // Extract state before dropping the adapter (which borrows buf).
-        let was_truncated = adapter.truncated;
+        let truncated = adapter.truncated;
         let content_start = adapter.content_start;
-        truncated = was_truncated;
-        if was_truncated && buf.len() <= content_start {
-            // Nothing useful was written (not even the suffix fit).
-            return Err(EncodeFailure::Dropped);
-        }
-        Ok(())
-    })?;
-    Ok(truncated)
+        if truncated {
+            if buf.len() <= content_start {
+                // Nothing useful was written (not even the suffix fit).
+                return Err(EncodeFailure::Dropped);
+            }
+            return Ok(Truncation::Some)
+        } 
+        Ok(Truncation::None)
+    })
 }
 
 /// Compute the per-attribute budget: at most half of remaining space, but
@@ -300,10 +300,10 @@ fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
 /// means it succeeded but truncated; `Err` means it was rolled back.
 fn bounded<B: BoundedBuf>(
     buf: &mut B,
-    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
-) -> Result<bool, EncodeFailure> {
+    encode: impl FnOnce(&mut B) -> TruncateResult,
+) -> TruncateResult {
     let budget = attr_budget(buf);
-    let mut truncated = false;
+    let mut truncated = Truncation::None;
     buf.with_max_remaining(budget, |buf| {
         buf.try_encode(|buf| {
             truncated = encode(buf)?;
@@ -318,38 +318,32 @@ fn write_tagged<B: BoundedBuf>(
     field: u64,
     wire_type: u64,
     encode: impl FnOnce(&mut B) -> EncodeResult,
-) -> Result<bool, EncodeFailure> {
+) -> EncodeResult {
     buf.encode_field_tag(field, wire_type)
         .and_then(|()| encode(buf))
-        .map(|()| false)
 }
 
 fn write_encoded_value<B: BoundedBuf>(
     buf: &mut B,
     field: u64,
-    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
-) -> Result<bool, EncodeFailure> {
-    let mut lost = false;
-    buf.encode_len_delimited_partial(field, |buf| {
-        lost = encode(buf)?;
-        Ok::<_, EncodeFailure>(())
-    })?;
-    Ok(lost)
+    encode: impl FnOnce(&mut B) -> TruncateResult,
+) -> TruncateResult {
+    // @@@but why
+    buf.encode_len_delimited(field, |buf| {
+        encode(buf)
+    })
 }
 
 fn write_encoded_key_value<B: BoundedBuf>(
     buf: &mut B,
     field: u64,
     key: &str,
-    encode: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>,
-) -> Result<bool, EncodeFailure> {
-    let mut lost = false;
-    buf.encode_len_delimited_partial(field, |buf| {
+    encode: impl FnOnce(&mut B) -> TruncateResult,
+) -> TruncateResult {
+    buf.encode_len_delimited(field, |buf| {
         buf.encode_string(KEY_VALUE_KEY, key)?;
-        lost = write_encoded_value(buf, KEY_VALUE_VALUE, encode)?;
-        Ok::<_, EncodeFailure>(())
-    })?;
-    Ok(lost)
+        write_encoded_value(buf, KEY_VALUE_VALUE, encode)
+    })
 }
 
 /// Encodes `f`'s value as a length-delimited `field`. `Ok(true)`
@@ -359,19 +353,15 @@ fn write_value<B: BoundedBuf>(
     buf: &mut B,
     field: u64,
     f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
-) -> Result<bool, EncodeFailure> {
-    let mut lost = false;
+) -> TruncateResult {
     buf.encode_len_delimited(field, |buf| {
         let mut writer = ValueEncoder {
             buf,
-            outcome: Ok(false),
-            #[cfg(debug_assertions)]
-            wrote_value: false,
+            outcome: None,
         };
         f(&mut writer);
-        writer.outcome.map(|writer_lost| lost = writer_lost)
-    })?;
-    Ok(lost)
+        writer.outcome.unwrap_or(Err(EncodeFailure::Invalid))
+    })
 }
 
 /// Encodes a `KeyValue` as a length-delimited `field`; see [`write_value`].
@@ -380,47 +370,31 @@ fn write_key_value<B: BoundedBuf>(
     field: u64,
     key: &str,
     f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
-) -> Result<bool, EncodeFailure> {
-    let mut lost = false;
+) -> TruncateResult {
     buf.encode_len_delimited(field, |buf| {
         buf.encode_string(KEY_VALUE_KEY, key)?;
-        lost = write_value(buf, KEY_VALUE_VALUE, f)?;
-        Ok::<_, EncodeFailure>(())
-    })?;
-    Ok(lost)
+        write_value(buf, KEY_VALUE_VALUE, f)
+    })
 }
 
 /// Writes one AnyValue into a bounded buffer.
 struct ValueEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
-    /// `Ok(true)` once any part of the value was lost; a sticky `Err` once
-    /// part of it could not be written.
-    outcome: Result<bool, EncodeFailure>,
-    #[cfg(debug_assertions)]
-    wrote_value: bool,
+    outcome: Option<TruncateResult>,
 }
 
 impl<B: BoundedBuf> ValueEncoder<'_, B> {
-    fn put(&mut self, result: Result<bool, EncodeFailure>) {
-        #[cfg(debug_assertions)]
-        {
-            debug_assert!(
-                !self.wrote_value,
-                "value callback must write at most one AnyValue variant"
-            );
-            self.wrote_value = true;
-        }
-        self.outcome = self.outcome.and_then(|lost| Ok(lost | result?));
+    fn put(&mut self, outcome: TruncateResult) {
+        debug_assert!(
+            self.outcome.is_none(),
+            "value callback must write at most one AnyValue variant"
+        );
+        self.outcome = Some(outcome);
     }
 
     /// Writes a length-delimited container; `body` reports lost content.
-    fn nested(&mut self, field: u64, body: impl FnOnce(&mut B) -> Result<bool, EncodeFailure>) {
-        let mut lost = false;
-        let result = self.buf.encode_len_delimited(field, |buf| {
-            lost = body(buf)?;
-            Ok::<_, EncodeFailure>(())
-        });
-        self.put(result.map(|()| lost));
+    fn nested(&mut self, field: u64, body: impl FnOnce(&mut B) -> TruncateResult) {
+        self.put(self.buf.encode_len_delimited(field, body));
     }
 
     fn write_str(&mut self, value: &str) {
@@ -434,7 +408,7 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
         let result = write_tagged(self.buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
             buf.encode_varint(value as u64)
         });
-        self.put(result);
+        self.put(result.map(|_| Truncation::None));
     }
 
     fn write_f64(&mut self, value: f64) {
@@ -444,24 +418,24 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
             wire_types::FIXED64,
             |buf| buf.extend_from_slice(&value.to_le_bytes()),
         );
-        self.put(result);
+        self.put(result.map(|_| Truncation::None));
     }
 
     fn write_bool(&mut self, value: bool) {
         let result = write_tagged(self.buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
             buf.encode_varint(u64::from(value))
         });
-        self.put(result);
+        self.put(result.map(|_| Truncation::None));
     }
 
     fn map(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
         self.nested(ANY_VALUE_KVLIST_VALUE, |buf| {
             let mut writer = NestedEncoder {
                 buf,
-                outcome: Ok(false),
+                outcome: None,
             };
             f(&mut writer);
-            writer.outcome
+            writer.outcome.unwrap_or(Err(EncodeFailure::Invalid))
         });
     }
 
@@ -469,10 +443,10 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
         self.nested(ANY_VALUE_ARRAY_VALUE, |buf| {
             let mut writer = NestedEncoder {
                 buf,
-                outcome: Ok(false),
+                outcome: None,
             };
             f(&mut writer);
-            writer.outcome
+            writer.outcome.unwrap_or(Err(EncodeFailure::Invalid))
         });
     }
 }
@@ -480,13 +454,13 @@ impl<B: BoundedBuf> ValueEncoder<'_, B> {
 /// Writes the members of a nested map or array.
 struct NestedEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
-    outcome: Result<bool, EncodeFailure>,
+    outcome: Option<TruncateResult>,
 }
 
 impl<B: BoundedBuf> NestedEncoder<'_, B> {
     fn entry(&mut self, key: &str, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
-        self.outcome = self.outcome.and_then(|lost| {
-            write_key_value(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f).map(|v| lost | v)
+        self.outcome = self.outcome.or_else(|| {
+            write_key_value(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f)
         });
     }
 

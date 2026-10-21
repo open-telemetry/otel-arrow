@@ -126,7 +126,7 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otel_arrow_dfe_expohisto::HistogramView;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::otlp::common::{
+use otel_arrow_dfe_pdata::otlp::{
     BoundedBuf, EncodeFailure, MAX_OTLP_SIZE_LIMIT, ProtoBuffer,
 };
 use otel_arrow_dfe_pdata::proto::consts::field_num::common::{
