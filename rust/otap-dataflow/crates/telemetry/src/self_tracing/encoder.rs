@@ -152,12 +152,11 @@ mod bounded {
     pub fn value_encoder<B: BoundedBuf>(
         buf: &mut B,
         tag: u64,
-        f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
+        value: &mut impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
         buf.encode_len_delimited(tag, |buf| {
-            let mut writer = ValueEncoder::new(buf);
-            f(&mut writer);
-            writer.outcome.unwrap_or(Err(EncodeFailure::Invalid))
+            let mut encoder = ValueEncoder::new(buf);
+            value(&mut encoder)
         })
     }
 
@@ -166,11 +165,11 @@ mod bounded {
         buf: &mut B,
         tag: u64,
         key: &str,
-        f: &mut impl FnMut(&mut ValueEncoder<'_, B>),
+        value: &mut impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
         buf.encode_len_delimited(tag, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
-            value_encoder(buf, KEY_VALUE_VALUE, f)
+            value_encoder(buf, KEY_VALUE_VALUE, value)
         })
     }
 
@@ -386,20 +385,31 @@ fn bounded<B: BoundedBuf>(
 /// Writes one AnyValue into a bounded buffer, used for nested encoding.
 struct ValueEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
-    outcome: Option<TruncateResult>,
+
+    /// ensures exactly one value is written.
+    #[cfg(debug_assertions)]
+    once: bool,
 }
 
 impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
     fn new(buf: &'a mut B) -> Self {
-        Self { buf, outcome: None }
+        Self {
+            buf,
+            #[cfg(debug_assertions)]
+            once: false,
+        }
     }
 
-    fn put(&mut self, outcome: TruncateResult) {
-        debug_assert!(
-            self.outcome.is_none(),
-            "value callback must write at most one AnyValue variant"
-        );
-        self.outcome = Some(outcome);
+    fn once(&mut self, f: impl FnOnce(&mut B) -> TruncateResult) -> TruncateResult {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(
+                !self.once,
+                "value callback must write at most one AnyValue variant"
+            );
+            self.once = true;
+        }
+        f(self.buf)
     }
 
     /// Writes a length-delimited container; `body` reports lost content.
@@ -407,90 +417,96 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         &mut self,
         field: u64,
         body: impl FnOnce(&mut NestedEncoder<'a, B>) -> TruncateResult,
-    ) {
-        let result = self.buf.encode_len_delimited(field, |buf| {
-            let mut writer = NestedEncoder::new(buf);
-            body(&mut writer);
-            writer.outcome.unwrap_or(Err(EncodeFailure::Invalid))
-        });
-        self.put(result);
+    ) -> TruncateResult {
+        self.buf.encode_len_delimited(field, |buf| {
+            let mut encoder = NestedEncoder::new(buf);
+            body(&mut encoder)
+        })
     }
 
-    fn write_str(&mut self, value: &str) {
-        let result = self
-            .buf
-            .encode_string_truncating(ANY_VALUE_STRING_VALUE, value);
-        self.put(result);
+    fn encode_str(&mut self, value: &str) -> TruncateResult {
+        self.once(|buf| buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value))
     }
 
-    fn write_i64(&mut self, value: i64) {
-        let result =
-            bounded::primtiive_field(self.buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
-                buf.encode_varint(value as u64)
-            });
-        self.put(result.map(|_| Truncation::None));
+    fn encode_i64(&mut self, value: i64) -> EncodeResult {
+        bounded::primtiive_field(self.buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
+            buf.encode_varint(value as u64)
+        })
     }
 
-    fn write_f64(&mut self, value: f64) {
-        let result = bounded::primtiive_field(
+    fn encode_f64(&mut self, value: f64) -> EncodeResult {
+        bounded::primtiive_field(
             self.buf,
             ANY_VALUE_DOUBLE_VALUE,
             wire_types::FIXED64,
             |buf| buf.try_extend(&value.to_le_bytes()),
-        );
-        self.put(result.map(|_| Truncation::None));
+        )
     }
 
-    fn write_bool(&mut self, value: bool) {
-        let result =
-            bounded::primtiive_field(self.buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
-                buf.encode_varint(u64::from(value))
-            });
-        self.put(result.map(|_| Truncation::None));
+    fn encode_bool(&mut self, value: bool) -> EncodeResult {
+        bounded::primtiive_field(self.buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
+            buf.encode_varint(u64::from(value))
+        })
     }
 
-    fn map(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
-        self.nested(ANY_VALUE_KVLIST_VALUE, f);
+    fn map(
+        &mut self,
+        f: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
+    ) -> TruncateResult {
+        self.nested(ANY_VALUE_KVLIST_VALUE, f)
     }
 
-    fn array(&mut self, f: impl FnOnce(&mut NestedEncoder<'_, B>)) {
-        self.nested(ANY_VALUE_ARRAY_VALUE, f);
+    fn array(
+        &mut self,
+        f: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
+    ) -> TruncateResult {
+        self.nested(ANY_VALUE_ARRAY_VALUE, f)
     }
 }
 
 /// Writes the members of a nested map or array.
 struct NestedEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
-    outcome: Option<TruncateResult>,
+    outcome: TruncateResult,
 }
 
-impl<B: BoundedBuf> NestedEncoder<'_, B> {
-    fn new(buf: &mut B) -> Self {
-        Self { buf, outcome: None }
+impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
+    fn new(buf: &'a mut B) -> Self {
+        Self {
+            buf,
+            outcome: Ok(Truncation::None),
+        }
     }
 
-    fn until_truncation(
-        outcome: &mut Option<TruncateResult>,
+    fn unless_truncating(
+        outcome: &mut TruncateResult,
         mut f: impl FnMut() -> TruncateResult,
-    ) {
-        if outcome.is_some() {
-            return;
+    ) -> TruncateResult {
+        match *outcome {
+            Ok(Truncation::Some) => Ok(Truncation::Some),
+            Err(err) => Err(err),
+            _ => {
+                *outcome = f();
+                *outcome
+            }
         }
-        let res = f();
-        if matches!(res, Ok(Truncation::None)) {
-            return;
-        }
-        *outcome = Some(res);
     }
 
-    fn entry(&mut self, key: &str, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
-        Self::until_truncation(&mut self.outcome, || {
+    fn entry(
+        &'a mut self,
+        key: &str,
+        mut f: impl FnMut(&'a mut ValueEncoder<'a, B>) -> TruncateResult,
+    ) -> TruncateResult {
+        Self::unless_truncating(&mut self.outcome, move || {
             bounded::key_value_encoder(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f)
         })
     }
 
-    fn element(&mut self, mut f: impl FnMut(&mut ValueEncoder<'_, B>)) {
-        Self::until_truncation(&mut self.outcome, || {
+    fn element(
+        &'a mut self,
+        mut f: impl FnMut(&'a mut ValueEncoder<'a, B>) -> TruncateResult,
+    ) -> TruncateResult {
+        Self::unless_truncating(&mut self.outcome, move || {
             bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, &mut f)
         })
     }
@@ -569,7 +585,7 @@ pub(crate) fn encode_config_resource_field(
     let _: EncodeResult = buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
         for (key, value) in resource_attributes {
             encode_scope_or_resource_attribute(buf, RESOURCE_ATTRIBUTES, key, |w| {
-                write_config_value(w, value)
+                encode_config_value(w, value)
             })?;
         }
         Ok(())
@@ -577,25 +593,32 @@ pub(crate) fn encode_config_resource_field(
     buf.into_bytes()
 }
 
-/// Writes one configured resource value.
-fn write_config_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &ConfigAttributeValue) {
+fn no_trunc(_: ()) -> Truncation {
+    Truncation::None
+}
+
+/// Writes one configured resource or scope attribute value.
+fn encode_config_value<B: BoundedBuf>(
+    w: &mut ValueEncoder<'_, B>,
+    value: &ConfigAttributeValue,
+) -> TruncateResult {
     match value {
-        ConfigAttributeValue::String(v) => w.write_str(v),
-        ConfigAttributeValue::Bool(v) => w.write_bool(*v),
-        ConfigAttributeValue::I64(v) => w.write_i64(*v),
-        ConfigAttributeValue::F64(v) => w.write_f64(*v),
+        ConfigAttributeValue::String(v) => w.encode_str(v),
+        ConfigAttributeValue::Bool(v) => w.encode_bool(*v).map(no_trunc),
+        ConfigAttributeValue::I64(v) => w.encode_i64(*v).map(no_trunc),
+        ConfigAttributeValue::F64(v) => w.encode_f64(*v).map(no_trunc),
         ConfigAttributeValue::Array(values) => w.array(|a| match values {
             ConfigAttributeValueArray::Bool(vs) => {
-                encode_array_elements(a, vs, |w, v| w.write_bool(*v))
+                encode_array_elements(a, vs, |w, v| w.encode_bool(*v).map(no_trunc))
             }
             ConfigAttributeValueArray::I64(vs) => {
-                encode_array_elements(a, vs, |w, v| w.write_i64(*v))
+                encode_array_elements(a, vs, |w, v| w.encode_i64(*v).map(no_trunc))
             }
             ConfigAttributeValueArray::F64(vs) => {
-                encode_array_elements(a, vs, |w, v| w.write_f64(*v))
+                encode_array_elements(a, vs, |w, v| w.encode_f64(*v).map(no_trunc))
             }
             ConfigAttributeValueArray::String(vs) => {
-                encode_array_elements(a, vs, |w, v| w.write_str(v))
+                encode_array_elements(a, vs, |w, v| w.encode_str(v))
             }
         }),
     }
@@ -603,13 +626,16 @@ fn write_config_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &Config
 
 /// Writes a homogeneous slice as array elements.
 fn encode_array_elements<B: BoundedBuf, T>(
-    a: &mut NestedEncoder<'_, B>,
+    buf: &mut NestedEncoder<'_, B>,
     values: &[T],
-    write: impl Fn(&mut ValueEncoder<'_, B>, &T),
-) {
+    f: impl Fn(&mut ValueEncoder<'_, B>, &T) -> TruncateResult,
+) -> TruncateResult {
     for value in values {
-        a.element(|w| write(w, value));
+        if Truncation::Some == buf.element(|w| f(w, value))? {
+            return Ok(Truncation::Some);
+        }
     }
+    Ok(Truncation::None)
 }
 
 /// Encodes a `KeyValue` as `field`, with the value written by `f`.
@@ -619,7 +645,7 @@ fn encode_scope_or_resource_attribute(
     buf: &mut ProtoBuffer,
     field: u64,
     key: &str,
-    mut f: impl FnMut(&mut ValueEncoder<'_, ProtoBuffer>),
+    mut f: impl FnMut(&mut ValueEncoder<'_, ProtoBuffer>) -> TruncateResult,
 ) -> EncodeResult {
     buf.try_encode(|buf| {
         let _ = bounded::key_value_encoder(buf, field, key, &mut f)?;
@@ -699,24 +725,28 @@ fn encode_scope_attributes<'k, 'v>(
     let mut buf = ProtoBuffer::with_capacity(128);
     for (key, value) in attrs {
         encode_scope_or_resource_attribute(&mut buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, |w| {
-            write_attribute_value(w, value)
+            encode_attribute_value(w, value)
         })?;
     }
     Ok(buf.into_bytes())
 }
 
 /// Writes an `AttributeValue`; maps become kvlists.
-fn write_attribute_value<B: BoundedBuf>(w: &mut ValueEncoder<'_, B>, value: &AttributeValue) {
+fn encode_attribute_value<B: BoundedBuf>(
+    buf: &mut ValueEncoder<'_, B>,
+    value: &AttributeValue,
+) -> TruncateResult {
     match value {
-        AttributeValue::String(v) => w.write_str(v),
-        AttributeValue::Boolean(v) => w.write_bool(*v),
-        AttributeValue::Int(v) => w.write_i64(*v),
-        AttributeValue::UInt(v) => w.write_i64(*v as i64),
-        AttributeValue::Double(v) => w.write_f64(*v),
-        AttributeValue::Map(m) => w.map(|mw| {
+        AttributeValue::String(v) => buf.encode_str(v),
+        AttributeValue::Boolean(v) => buf.encode_bool(*v).map(no_trunc),
+        AttributeValue::Int(v) => buf.encode_i64(*v).map(no_trunc),
+        AttributeValue::UInt(v) => buf.encode_i64(*v as i64).map(no_trunc),
+        AttributeValue::Double(v) => buf.encode_f64(*v).map(no_trunc),
+        AttributeValue::Map(m) => buf.map(|buf| {
             for (k, v) in m {
-                mw.entry(k, |w| write_attribute_value(w, v));
+                buf.entry(k, |w| encode_attribute_value(w, v))?;
             }
+            Ok(Truncation::None)
         }),
     }
 }
@@ -1256,11 +1286,11 @@ mod tests {
     fn value_encoder_rejects_multiple_variants() {
         let mut buf = ProtoBuffer::with_capacity(32);
         let mut write = |writer: &mut ValueEncoder<'_, ProtoBuffer>| {
-            writer.write_i64(1);
-            writer.write_bool(true);
+            writer.encode_i64(1);
+            writer.encode_bool(true);
         };
 
-        let _ = write_value(&mut buf, LOG_RECORD_BODY, &mut write);
+        let _ = encode_value(&mut buf, LOG_RECORD_BODY, &mut write);
     }
 
     /// Scenario: four large string attributes compete for a 256-byte buffer.
@@ -1449,7 +1479,7 @@ mod tests {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 // 4 KiB of output into a 64-byte buffer.
                 for _ in 0..512 {
-                    f.write_str("xxxxxxxx")?;
+                    f.encode_str("xxxxxxxx")?;
                 }
                 Ok(())
             }
@@ -1515,7 +1545,7 @@ mod tests {
         struct Tiny;
         impl std::fmt::Debug for Tiny {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("x")
+                f.encode_str("x")
             }
         }
 
@@ -1603,7 +1633,7 @@ mod tests {
         impl std::fmt::Debug for Huge {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 for _ in 0..512 {
-                    f.write_str("xxxxxxxx")?;
+                    f.encode_str("xxxxxxxx")?;
                 }
                 Ok(())
             }
@@ -1682,7 +1712,7 @@ mod tests {
         impl std::fmt::Debug for Big {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 for _ in 0..125 {
-                    f.write_str("xxxxxxxx")?;
+                    f.encode_str("xxxxxxxx")?;
                 }
                 Ok(())
             }

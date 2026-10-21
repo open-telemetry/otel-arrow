@@ -336,7 +336,7 @@ pub type EncodeSuccess = ();
 /// Returned when a encode operation fails. Users explicitly choose
 /// EncodeResult or TruncateResult to indicate whether they handle
 /// truncation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EncodeFailure {
     /// Dropped due to space limit. If a TruncateResult, it means no
     /// valid data could be written in the available space.
@@ -385,12 +385,6 @@ pub type EncodeResult = Result<EncodeSuccess, EncodeFailure>;
 
 /// Result type for encoding methods with truncation.
 pub type TruncateResult = Result<Truncation, EncodeFailure>;
-
-/// Saved buffer position for transactional encoding.
-#[derive(Debug, Clone, Copy)]
-struct Checkpoint {
-    pos: usize,
-}
 
 const fn tag_width_limit(tagw: usize) -> usize {
     1 << (7 * tagw)
@@ -685,11 +679,11 @@ pub trait BoundedBuf {
     where
         Self: Sized,
     {
-        let cp = Checkpoint { pos: self.len() };
+        let cp = self.len();
         match f(self) {
             Ok(t) => Ok(t),
             Err(e) => {
-                self.truncate(cp.pos);
+                self.truncate(cp);
                 Err(e)
             }
         }
