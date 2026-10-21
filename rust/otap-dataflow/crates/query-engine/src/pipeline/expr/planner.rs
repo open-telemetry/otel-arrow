@@ -2536,6 +2536,7 @@ mod test {
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::{AttributesIdentifier, SignalContext};
     use crate::pipeline::{Pipeline, SignalKind};
+    use crate::pipeline::state::ExecutionState;
 
     fn ql() -> QueryLocation {
         QueryLocation::new_fake()
@@ -2624,11 +2625,10 @@ mod test {
         // execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
 
         // should have 3 string values
@@ -2660,11 +2660,10 @@ mod test {
         // execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert!(matches!(
             result.scope,
             DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _, _)
@@ -2693,11 +2692,10 @@ mod test {
 
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(42))) => {}
             other => panic!("expected Int64(42), got {other:?}"),
@@ -2733,11 +2731,10 @@ mod test {
         // execute and verify: severity_numbers are [13, 17, 13], +2 = [15, 19, 15]
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
             ColumnarValue::Array(arr) => {
                 assert_eq!(arr.len(), 3);
@@ -2797,11 +2794,10 @@ mod test {
         // execute and verify: rows 0 and 2 have severity_text="WARN"
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut op = op;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         let bool_arr = as_boolean_array(match &result.values {
             ColumnarValue::Array(arr) => arr,
             other => panic!("expected array, got {other:?}"),
@@ -2848,11 +2844,11 @@ mod test {
         // -> rows 0 and 2 pass (row 1 has severity_text="ERROR")
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -2888,11 +2884,11 @@ mod test {
         // on a logs batch -> IdMask::All
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
         assert_eq!(result.mask, IdMask::All);
     }
 
@@ -2918,11 +2914,10 @@ mod test {
         // execute and verify it produces a boolean result
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         // the value should be a boolean array
         let bool_arr = as_boolean_array(match &result.values {
@@ -2958,11 +2953,11 @@ mod test {
         // execute: NOT(WARN) should match row 1 (ERROR)
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         // not(Some({0, 2})) = matches everything except 0 and 2 = matches 1
         match &result.mask {
@@ -2999,11 +2994,11 @@ mod test {
         // Execute and verify: rows 0 and 2 have x="a", row 1 has x="b"
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3039,11 +3034,11 @@ mod test {
         // Execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3096,11 +3091,11 @@ mod test {
         ));
 
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3146,11 +3141,11 @@ mod test {
 
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3209,11 +3204,11 @@ mod test {
 
         // Still should execute correctly
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         // 10 + 2 = 12 > 5 -> should pass
         match &result.mask {

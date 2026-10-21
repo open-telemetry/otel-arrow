@@ -475,7 +475,7 @@ pub(crate) enum LeafEval {
     },
 
     /// A batch-level evaluation resolving some property of the entire `OtapArrowRecords`
-    /// batch rather than individual rows. The result is uniform across all rows and 
+    /// batch rather than individual rows. The result is uniform across all rows and
     /// should produce a scalar.
     ///
     /// Examples: signal type check ("is this batch Logs / Metrics / Traces?").
@@ -593,6 +593,7 @@ mod test {
     use crate::pipeline::functions::test::always_panic;
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::AttributesIdentifier;
+    use crate::pipeline::state::ExecutionState;
 
     /// Helper: create an `Eval(DatafusionExpr)` node for a root-scoped expression.
     fn root_eval(expr: Expr) -> ScopedExpr {
@@ -691,12 +692,13 @@ mod test {
     fn test_root_field_eval_as_value() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
 
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
         let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx, &mut exec_state))
             .unwrap()
             .unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
@@ -712,14 +714,14 @@ mod test {
     fn test_root_field_eval_as_id_mask() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         // exactly one row (index 1) passes
         match &result.mask {
@@ -738,6 +740,8 @@ mod test {
     fn test_attribute_eval_as_value() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
 
         // attributes["code.namespace"] (returns the AnyValue struct as value column)
         let mut op = attrs_eval(
@@ -746,10 +750,7 @@ mod test {
             col("value"),
         );
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert_eq!(
             result.scope,
             DataScope::Attribute(
@@ -773,24 +774,21 @@ mod test {
     fn test_batch_predicate_logs_true() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         let mut op = signal_type_eval(SignalType::Logs);
 
         // execute_as_value: should return true scalar
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {}
             other => panic!("expected true scalar, got {other:?}"),
         }
 
         // execute_as_id_mask: should return IdMask::All
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
         assert_eq!(result.mask, IdMask::All);
     }
 
@@ -798,23 +796,20 @@ mod test {
     fn test_batch_predicate_wrong_type() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         // checking for Traces on a Logs batch -> false
         let mut op = signal_type_eval(SignalType::Traces);
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(false))) => {}
             other => panic!("expected false scalar, got {other:?}"),
         }
 
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
         assert_eq!(result.mask, IdMask::None);
     }
 
@@ -822,6 +817,8 @@ mod test {
     fn test_join_and_eval_cross_scope() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
 
         // severity_number > attributes["code.line.number"]
         // This requires joining root (severity_number) with attributes (code.line.number value).
@@ -872,10 +869,7 @@ mod test {
             .unwrap(),
         };
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
@@ -888,6 +882,8 @@ mod test {
     fn test_bitmap_and_root_and_attribute() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         // severity_text == "WARN" AND attributes["code.namespace"] == "main"
@@ -909,9 +905,7 @@ mod test {
         let mut op = ScopedExpr::BitmapAnd(Box::new(left), Box::new(right));
 
         // test execute_as_id_mask
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -932,10 +926,7 @@ mod test {
             )),
         );
 
-        let result = op2
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op2.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
@@ -948,6 +939,8 @@ mod test {
     fn test_bitmap_or_with_missing_data() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         // attributes["nonexistent"] == "x" OR severity_text == "WARN"
@@ -965,9 +958,7 @@ mod test {
 
         let mut op = ScopedExpr::BitmapOr(Box::new(left), Box::new(right));
 
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -983,6 +974,8 @@ mod test {
     fn test_bitmap_not() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         // NOT(severity_text == "WARN")
@@ -993,9 +986,7 @@ mod test {
         let inner = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
         let mut op = ScopedExpr::BitmapNot(Box::new(inner));
 
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::NotSome(bitmap) => {
@@ -1012,10 +1003,7 @@ mod test {
         let mut op2 = ScopedExpr::BitmapNot(Box::new(root_eval(
             col(consts::SEVERITY_TEXT).eq(lit("WARN")),
         )));
-        let result = op2
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op2.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
         assert!(!bool_arr.value(0));
@@ -1027,6 +1015,8 @@ mod test {
     fn test_compound_bitmap_and_chain() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         let mut pool = IdBitmapPool::new();
 
         // attributes["code.namespace"] == "main"
@@ -1056,9 +1046,7 @@ mod test {
         let inner_and = ScopedExpr::BitmapAnd(Box::new(attr_namespace), Box::new(attr_line));
         let mut op = ScopedExpr::BitmapAnd(Box::new(inner_and), Box::new(severity));
 
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -1078,6 +1066,8 @@ mod test {
     fn test_join_and_eval_and_short_circuit() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
 
         // Left child: severity_text == "NONEXISTENT" -> all false for all 3 rows
         let left_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("NONEXISTENT")));
@@ -1102,10 +1092,7 @@ mod test {
             .unwrap(),
         };
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         // Short-circuit should produce a scalar false
         match &result.values {
@@ -1122,6 +1109,8 @@ mod test {
     fn test_join_and_eval_or_short_circuit() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
 
         // Left child: severity_number > 0 -> all true for all 3 rows
         let left_child = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(0)));
@@ -1143,10 +1132,7 @@ mod test {
                 .unwrap(),
         };
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         // Short-circuit should produce a scalar true
         match &result.values {
@@ -1163,6 +1149,8 @@ mod test {
     fn test_join_and_eval_no_short_circuit_on_mixed_values() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
 
         // Left child: severity_text == "WARN" -> rows 0,2 true, row 1 false (mixed)
         let left_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
@@ -1186,10 +1174,7 @@ mod test {
             .unwrap(),
         };
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         // Should NOT short-circuit -- should produce a full array result
         let bool_arr = as_bool_arr(&result);
@@ -1208,6 +1193,8 @@ mod test {
     fn test_join_or_eval_no_short_circuit_on_non_root_scoped_left() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
 
         // something scoped to attributes that will pass for all rows having the attribute
         let left_child = attrs_eval(
@@ -1226,10 +1213,7 @@ mod test {
                 .unwrap(),
         };
 
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         // we should be returning a selection vec, not a scalar (which is returned by short-circuit)
         assert!(!matches!(result.values, ColumnarValue::Scalar(_)));
@@ -1246,7 +1230,8 @@ mod test {
         };
 
         let session_ctx = Pipeline::create_session_context();
-        let eval_ctx = EvalContext::new(&session_ctx);
+        let mut exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
         assert!(eval_ctx.data_point_type().is_none());
 
         let err = expr

@@ -36,6 +36,7 @@ use crate::pipeline::expr::planner::ExprPlanner;
 use crate::pipeline::expr::{RecordScope, ScopedExpr};
 use crate::pipeline::planner::{RecordType, SignalContext};
 use crate::pipeline::project::anyval::is_any_value_data_type;
+use crate::pipeline::state::ExecutionState;
 
 /// Produces partitioned record batches by the results of some evaluated expression.
 ///
@@ -103,13 +104,25 @@ impl Partitioner {
         &mut self,
         otap_batch: OtapArrowRecords,
     ) -> Result<impl ExactSizeIterator<Item = Partition> + '_> {
+        let mut exec_state = ExecutionState::default();
+        self.partition_with_state(otap_batch, &mut exec_state)
+    }
+
+    /// Evaluates the partition expression against the batch and returns an iterator of partitions.
+    pub fn partition_with_state(
+        &mut self,
+        otap_batch: OtapArrowRecords,
+        exec_state: &mut ExecutionState,
+    ) -> Result<impl ExactSizeIterator<Item = Partition> + use<'_>> {
+        let eval_ctx = EvalContext::new(&self.session_ctx, exec_state);
+
         // reset state
         self.partitions.clear();
         self.range_coalescer.clear();
 
         partition(
             otap_batch,
-            &self.session_ctx,
+            &eval_ctx,
             &mut self.expr,
             &mut self.partitions,
             &mut self.range_coalescer,
@@ -360,7 +373,7 @@ impl PartitionValue {
 ///
 fn partition(
     otap_batch: OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
     expr: &mut ScopedExpr,
     result_partitions: &mut Vec<Partition>,
     range_coalescer: &mut PartitionRangeCoalescer,
@@ -377,7 +390,7 @@ fn partition(
         return Ok(());
     };
 
-    let eval_result = match expr.execute_as_value(&otap_batch, &EvalContext::new(session_ctx))? {
+    let eval_result = match expr.execute_as_value(&otap_batch, eval_ctx)? {
         Some(result) => {
             // align value to root so we can calculate partitions for the root record batch
             align_value_to_record(result, RecordScope::Signal, root_rb, &otap_batch)?

@@ -53,6 +53,7 @@ use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
 };
 use crate::pipeline::project::{Projection, ProjectionOptions};
+use crate::pipeline::state::ExecutionState;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
 /// Context for evaluating [`ScopedExpr`]
@@ -64,23 +65,29 @@ pub(crate) struct EvalContext<'a> {
 
     /// DataFusion Session context. Used for planning physical expression from logical exprs
     session_context: &'a SessionContext,
+
+    /// TODO
+    exec_state: &'a mut ExecutionState,
 }
 
 impl<'a> EvalContext<'a> {
-    pub fn new(session_ctx: &'a SessionContext) -> Self {
+    pub fn new(session_ctx: &'a SessionContext, exec_state: &'a mut ExecutionState) -> Self {
         Self {
             data_point_type: None,
             session_context: session_ctx,
+            exec_state,
         }
     }
 
     pub fn new_for_metrics_data_points(
         data_point_type: MetricDataPointType,
         session_ctx: &'a SessionContext,
+        exec_state: &'a mut ExecutionState,
     ) -> Self {
         Self {
             data_point_type: Some(data_point_type),
             session_context: session_ctx,
+            exec_state,
         }
     }
 
