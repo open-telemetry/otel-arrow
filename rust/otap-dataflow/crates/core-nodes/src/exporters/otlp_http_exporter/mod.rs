@@ -1736,6 +1736,7 @@ mod test {
         EffectHandler<OtapPdata>,
         Option<Box<dyn HttpClientAuthProvider>>,
     ) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let runtime = Runtime::new().unwrap();
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
