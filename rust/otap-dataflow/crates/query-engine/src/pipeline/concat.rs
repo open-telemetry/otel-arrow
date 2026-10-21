@@ -16,6 +16,7 @@ use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
+use crate::pipeline::expr::types::MetricDataPointType;
 
 pub(crate) fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
     branch_results: &mut Vec<OtapArrowRecords>,
@@ -59,6 +60,62 @@ pub(crate) fn concatenate_traces(
     opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
     concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results, opts)
+}
+
+/// Payload types in a Metrics OTAP batch that are NOT data-point sub-batches.
+///
+/// These are stripped before concatenating data-point branches and restored from the original
+/// OTAP batch afterwards.
+const NON_DATA_POINT_PAYLOAD_TYPES: [ArrowPayloadType; 5] = [
+    ArrowPayloadType::ResourceAttrs,
+    ArrowPayloadType::ScopeAttrs,
+    ArrowPayloadType::UnivariateMetrics,
+    ArrowPayloadType::MultivariateMetrics,
+    ArrowPayloadType::MetricAttrs,
+];
+
+/// Concatenate only the data-point sub-batches from multiple branch results back into
+/// `otap_batch`.
+///
+/// Each branch result in `branch_results` is a metrics OTAP batch that was produced by
+/// filtering the data points from the original `otap_batch` and running branch pipeline stages.
+/// The non-data-point payloads (root metrics, resource/scope attrs, metric attrs) in each branch
+/// result are ignored -- they are preserved from the original `otap_batch`.
+///
+/// The data-point sub-batches (data points, dp attrs, exemplars, exemplar attrs) from all
+/// branches are concatenated using the OTAP concatenation infrastructure (which handles
+/// dictionary coalescing and schema unification) with `preserve_ids` since the IDs are disjoint
+/// pieces of the same original batch.
+///
+/// After concatenation, the resulting data-point sub-batches replace those in `otap_batch`.
+pub(crate) fn concatenate_metric_data_point_batches(
+    branch_results: &mut Vec<OtapArrowRecords>,
+    otap_batch: &mut OtapArrowRecords,
+) -> Result<()> {
+    // Strip non-data-point payloads from each branch result so concatenation only
+    // processes data-point sub-batches. The concatenate infrastructure skips None slots.
+    for branch_result in branch_results.iter_mut() {
+        for payload_type in NON_DATA_POINT_PAYLOAD_TYPES {
+            _ = branch_result.remove(payload_type);
+        }
+    }
+
+    let concatenated = concatenate_metrics(branch_results, ConcatOptions::preserve_ids())?;
+
+    // Move concatenated data-point sub-batches into the original otap_batch,
+    // replacing the old data-point payloads.
+    for dp_type in MetricDataPointType::all() {
+        for payload_type in dp_type.associated_payload_types() {
+            // Remove the old payload from otap_batch regardless
+            _ = otap_batch.remove(payload_type);
+            // Set the concatenated payload if present
+            if let Some(batch) = concatenated.get(payload_type) {
+                otap_batch.set(payload_type, batch.clone())?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn concatenate_attrs_record_batches(

@@ -25,10 +25,15 @@ use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
-    concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
+    concatenate_attrs_record_batches, concatenate_logs, concatenate_metric_data_point_batches,
+    concatenate_metrics, concatenate_traces,
 };
 use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::filter::data_points::{
+    filter_metric_data_points, remove_all_metric_data_points,
+};
 use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
@@ -252,6 +257,9 @@ impl PipelineStage for ConditionalPipelineStage {
                         align_selection_to_root(Some(scoped_value), &otap_batch, &eval_ctx)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
+                        //
+                        // TODO: handle the scalar case separately here to avoid materializing
+                        // a full boolean array when the predicate is a constant true/false.
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
                     }
                 }
@@ -402,6 +410,9 @@ impl PipelineStage for ConditionalPipelineStage {
             }
 
             // evaluate the branch condition directly on the attributes record batch
+            //
+            // TODO: handle the scalar case separately here to avoid materializing
+            // a full boolean array when the predicate is a constant true/false.
             let predicate = branch
                 .condition
                 .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
@@ -462,8 +473,194 @@ impl PipelineStage for ConditionalPipelineStage {
         Ok(final_result)
     }
 
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_ctx: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        // Track which data point rows have been claimed by previous branches, per data point
+        // type. Each entry is a BooleanArray where `true` means the row was already selected.
+        let mut already_selected: Vec<(MetricDataPointType, BooleanArray)> =
+            MetricDataPointType::all()
+                .filter_map(|dp_type| {
+                    otap_batch
+                        .get(dp_type.payload_type())
+                        .filter(|rb| rb.num_rows() > 0)
+                        .map(|rb| {
+                            (
+                                dp_type,
+                                BooleanArray::new(BooleanBuffer::new_unset(rb.num_rows()), None),
+                            )
+                        })
+                })
+                .collect();
+
+        if already_selected.is_empty() {
+            // no data points present in the batch -- nothing to do
+            return Ok(otap_batch);
+        }
+
+        let mut branch_results =
+            Vec::with_capacity(self.branches.len() + usize::from(self.default_branch.is_some()));
+
+        for branch in &mut self.branches {
+            // Check if all data point types have been fully claimed by previous branches
+            let all_claimed = already_selected
+                .iter()
+                .all(|(_, sel)| sel.true_count() == sel.len());
+            if all_claimed {
+                break;
+            }
+
+            let mut branch_otap_batch = otap_batch.clone();
+            let mut any_selected = false;
+
+            for (dp_type, already_selected_vec) in &mut already_selected {
+                let num_dp_rows = otap_batch
+                    .get(dp_type.payload_type())
+                    .map_or(0, |rb| rb.num_rows());
+
+                if num_dp_rows == 0 || already_selected_vec.true_count() == num_dp_rows {
+                    // all rows already claimed or no rows present for this dp type
+                    remove_all_metric_data_points(&mut branch_otap_batch, dp_type);
+                    continue;
+                }
+
+                let eval_ctx = EvalContext::new_for_metrics_data_points(*dp_type, session_ctx);
+                let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
+
+                match predicate_result {
+                    None => {
+                        // expression evaluated to None (e.g. missing field) -- treat as
+                        // all-false: no rows selected for this dp type in this branch
+                        remove_all_metric_data_points(&mut branch_otap_batch, dp_type);
+                    }
+                    Some(scoped_value) => {
+                        // TODO: handle the scalar case separately here to avoid materializing
+                        // a full boolean array when the predicate is a constant true/false.
+                        let predicate_selection_vec =
+                            scoped_value_to_boolean_array(scoped_value.values, num_dp_rows)?;
+                        let branch_selection_vec =
+                            and(&predicate_selection_vec, &not(already_selected_vec)?)?;
+
+                        // update already-selected tracking for this dp type
+                        *already_selected_vec = or(already_selected_vec, &predicate_selection_vec)?;
+
+                        if branch_selection_vec.true_count() == 0 {
+                            remove_all_metric_data_points(&mut branch_otap_batch, dp_type);
+                        } else {
+                            let mut id_bitmap = self.id_bitmap_pool.acquire();
+                            let result = filter_metric_data_points(
+                                &mut branch_otap_batch,
+                                dp_type,
+                                &branch_selection_vec,
+                                &mut id_bitmap,
+                            );
+                            self.id_bitmap_pool.release(id_bitmap);
+                            result?;
+                            any_selected = true;
+                        }
+                    }
+                }
+            }
+
+            if any_selected {
+                // execute the branch's pipeline stages on the filtered batch
+                for stage in &mut branch.pipeline_stages {
+                    branch_otap_batch = stage
+                        .execute_on_metric_data_points(
+                            branch_otap_batch,
+                            session_ctx,
+                            config_options,
+                            task_context.clone(),
+                            exec_state,
+                        )
+                        .await?;
+                }
+                branch_results.push(branch_otap_batch);
+            }
+        }
+
+        // Handle the default branch -- rows not claimed by any conditional branch
+        let has_remaining = already_selected.iter().any(|(dp_type, sel)| {
+            otap_batch
+                .get(dp_type.payload_type())
+                .is_some_and(|rb| sel.true_count() < rb.num_rows())
+        });
+
+        if has_remaining {
+            let mut default_otap_batch = otap_batch.clone();
+            let mut default_has_data = false;
+
+            for (dp_type, already_selected_vec) in &already_selected {
+                let num_dp_rows = otap_batch
+                    .get(dp_type.payload_type())
+                    .map_or(0, |rb| rb.num_rows());
+
+                if num_dp_rows == 0 {
+                    continue;
+                }
+
+                if already_selected_vec.true_count() == num_dp_rows {
+                    // all rows were claimed by conditional branches
+                    remove_all_metric_data_points(&mut default_otap_batch, dp_type);
+                } else if already_selected_vec.true_count() == 0 {
+                    // no rows were claimed -- all rows go to default, no filtering needed
+                    default_has_data = true;
+                } else {
+                    let remaining_selection = not(already_selected_vec)?;
+                    let mut id_bitmap = self.id_bitmap_pool.acquire();
+                    let result = filter_metric_data_points(
+                        &mut default_otap_batch,
+                        dp_type,
+                        &remaining_selection,
+                        &mut id_bitmap,
+                    );
+                    self.id_bitmap_pool.release(id_bitmap);
+                    result?;
+                    default_has_data = true;
+                }
+            }
+
+            if default_has_data {
+                if let Some(default_branch) = self.default_branch.as_mut() {
+                    for stage in default_branch.iter_mut() {
+                        default_otap_batch = stage
+                            .execute_on_metric_data_points(
+                                default_otap_batch,
+                                session_ctx,
+                                config_options,
+                                task_context.clone(),
+                                exec_state,
+                            )
+                            .await?;
+                    }
+                }
+                branch_results.push(default_otap_batch);
+            }
+        }
+
+        if branch_results.is_empty() {
+            // no branches produced any data point results -- return the original batch
+            return Ok(otap_batch);
+        }
+
+        // Concatenate the data-point sub-batches from all branches back into the original
+        // OTAP batch. The root metric batch, resource/scope attrs, and metric attrs are
+        // preserved from the original.
+        concatenate_metric_data_point_batches(&mut branch_results, &mut otap_batch)?;
+
+        Ok(otap_batch)
+    }
+
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
-        matches!(record_type, RecordType::Attributes | RecordType::Signal(_))
+        matches!(
+            record_type,
+            RecordType::Attributes | RecordType::Signal(_) | RecordType::DataPoint(_)
+        )
     }
 
     // Propagate parent splitting required by any nested conditional branch.

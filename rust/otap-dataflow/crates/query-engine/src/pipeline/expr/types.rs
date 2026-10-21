@@ -611,6 +611,19 @@ impl MetricDataPointType {
         }
     }
 
+    /// Returns all [`ArrowPayloadType`]s associated with this data point type: the data point
+    /// batch itself, its attributes, exemplars, and exemplar attributes.
+    pub fn associated_payload_types(&self) -> impl Iterator<Item = ArrowPayloadType> {
+        [
+            Some(self.payload_type()),
+            Some(self.dp_attrs_payload_type()),
+            self.exemplar_payload_type(),
+            self.exemplar_attr_payload_type(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// returns an iterator of all the types of metric data points
     pub fn all() -> impl Iterator<Item = Self> {
         [

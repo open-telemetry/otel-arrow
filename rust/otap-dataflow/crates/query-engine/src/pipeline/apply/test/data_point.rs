@@ -2939,14 +2939,6 @@ async fn test_not_supported_queries_return_error() {
                 where is Log
             }",
         },
-        // conditional operator call (if/else) is not yet supported for metric data points
-        TestCase {
-            query: "metrics | apply data_points {
-                if (flags > 0) {
-                    drop
-                }
-            }",
-        },
         // nested apply pipeline to modify data point attributes is not yet supported
         TestCase {
             query: "metrics | apply data_points {
@@ -3465,4 +3457,335 @@ async fn test_filter_data_points_by_missing_resource_attribute() {
             "{query} with env on first resource: {env_on_first_resource}"
         );
     }
+}
+
+/// Scenario: A conditional branch inside data_points transforms only matching data points.
+/// Guarantees: Only data points whose flags > 5 have flags set to 0; other data points
+/// pass through unchanged.
+#[tokio::test]
+async fn test_conditional_data_point_no_default_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set flags = 0
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                    NumberDataPoint::build().flags(10u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(0u32).finish(),
+                    NumberDataPoint::build().flags(0u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: An if/else inside data_points transforms both branches differently.
+/// Guarantees: Data points matching the condition get one transformation; all others get
+/// a different transformation from the else branch.
+#[tokio::test]
+async fn test_conditional_data_point_with_default_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set flags = 100
+        } else {
+            set flags = 200
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(100u32).finish(),
+                    NumberDataPoint::build().flags(200u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: An if/else if/else inside data_points with three branches.
+/// Guarantees: Each data point is routed to exactly one branch based on exclusive
+/// condition evaluation order.
+#[tokio::test]
+async fn test_conditional_data_point_multiple_branches() {
+    let query = r#"metrics | apply data_points {
+        if (flags == 1) {
+            set flags = 100
+        } else if (flags == 2) {
+            set flags = 200
+        } else {
+            set flags = 300
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(1u32).finish(),
+                    NumberDataPoint::build().flags(2u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(100u32).finish(),
+                    NumberDataPoint::build().flags(200u32).finish(),
+                    NumberDataPoint::build().flags(300u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional branch inside data_points filters within a branch.
+/// Guarantees: Only data points matching the condition AND the nested filter survive;
+/// data points not matching the condition pass through unchanged.
+#[tokio::test]
+async fn test_conditional_data_point_filter_in_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            where flags < 10
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                    NumberDataPoint::build().flags(12u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    // flags=3 does not match the if condition, passes through
+    // flags=7 matches condition and passes the nested filter (7 < 10)
+    // flags=12 matches condition but fails the nested filter (12 >= 10), removed
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(7u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional inside data_points applied to a batch with multiple metric types.
+/// Guarantees: The condition is evaluated independently for each data point type. Data
+/// points from gauge and histogram metrics are both conditionally transformed.
+#[tokio::test]
+async fn test_conditional_data_point_multiple_metric_types() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set flags = 0
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("hist_metric")
+            .data_histogram(Histogram {
+                aggregation_temporality: 0,
+                data_points: vec![
+                    HistogramDataPoint::build().flags(10u32).finish(),
+                    HistogramDataPoint::build().flags(2u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(0u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("hist_metric")
+            .data_histogram(Histogram {
+                aggregation_temporality: 0,
+                data_points: vec![
+                    HistogramDataPoint::build().flags(0u32).finish(),
+                    HistogramDataPoint::build().flags(2u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional inside data_points using a data point attribute in the condition.
+/// Guarantees: The condition correctly evaluates against data point attributes to select
+/// which branch processes each data point.
+#[tokio::test]
+async fn test_conditional_data_point_by_attribute() {
+    let query = r#"metrics | apply data_points {
+        if (attributes["env"] == "prod") {
+            set flags = 100
+        } else {
+            set flags = 200
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(1u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(2u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(100u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(200u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional inside data_points that assigns a new attribute in one branch.
+/// Guarantees: Data points in the matching branch receive the new attribute while data points
+/// in the default branch do not.
+#[tokio::test]
+async fn test_conditional_data_point_assign_attribute_in_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set attributes["selected"] = true
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(7u32)
+                        .attributes(vec![KeyValue::new("selected", AnyValue::new_bool(true))])
+                        .finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
 }
