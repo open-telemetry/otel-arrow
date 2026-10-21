@@ -12,13 +12,13 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::{EncodeResult, ProtoBytesEncoder};
 use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
     SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
 };
+use crate::otlp::{EncodeResult, ProtoBytesEncoder};
 use crate::proto::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
     LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,

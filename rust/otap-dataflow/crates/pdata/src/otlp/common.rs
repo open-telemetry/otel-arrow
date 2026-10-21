@@ -499,8 +499,8 @@ pub trait BoundedBuf {
 
     /// Encodes a varint containing type (3 bits) and tag value.
     #[inline]
-    fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) -> EncodeResult {
-        let key = (field_number << 3) | wire_type;
+    fn encode_field_tag(&mut self, tag: u64, wire_type: u64) -> EncodeResult {
+        let key = (tag << 3) | wire_type;
         self.encode_varint(key)
     }
 
@@ -535,29 +535,29 @@ pub trait BoundedBuf {
 
     /// Encode a string field by tag number.
     #[inline]
-    fn encode_string(&mut self, field_tag: u64, val: &str) -> EncodeResult {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
+    fn encode_string(&mut self, tag: u64, val: &str) -> EncodeResult {
+        self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
         self.try_extend(val.as_bytes())
     }
 
     /// Encode a bytes field by tag number.
     #[inline]
-    fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) -> EncodeResult {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
+    fn encode_bytes(&mut self, tag: u64, val: &[u8]) -> EncodeResult {
+        self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
         self.try_extend(val)
     }
 
     /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
-    fn encode_string_truncating(&mut self, field_tag: u64, val: &str) -> TruncateResult {
+    fn encode_string_truncating(&mut self, tag: u64, val: &str) -> TruncateResult {
         let full_len = val.len();
-        let tag_bytes = varint_len((field_tag << 3) | wire_types::LEN);
+        let tag_bytes = varint_len((tag << 3) | wire_types::LEN);
 
         // Check if the full string fits.
         let full_field_size = tag_bytes + varint_len(full_len as u64) + full_len;
         if self.len() + full_field_size <= self.limit() {
-            return Ok(self.encode_string(field_tag, val)?.into());
+            return Ok(self.encode_string(tag, val)?.into());
         }
 
         let suffix_len = TRUNCATION_SUFFIX.len();
@@ -586,7 +586,7 @@ pub trait BoundedBuf {
         let payload_len = truncated_str.len() + suffix_len;
 
         // Pre-validated: each write fits within the limit.
-        self.encode_field_tag(field_tag, wire_types::LEN)
+        self.encode_field_tag(tag, wire_types::LEN)
             .expect("pre-validated fit");
         self.encode_varint(payload_len as u64)
             .expect("pre-validated fit");
@@ -619,17 +619,17 @@ pub trait BoundedBuf {
     #[inline]
     fn encode_len_delimited<T, E: From<EncodeFailure>>(
         &mut self,
-        field_tag: u64,
+        tag: u64,
         f: impl FnOnce(&mut Self) -> Result<T, E>,
     ) -> Result<T, E>
     where
         Self: Sized,
     {
         match self.placeholder_width() {
-            1 => self.encode_len_delimited_width::<1, _, E, _>(field_tag, f),
-            2 => self.encode_len_delimited_width::<2, _, E, _>(field_tag, f),
-            3 => self.encode_len_delimited_width::<3, _, E, _>(field_tag, f),
-            _ => self.encode_len_delimited_width::<4, _, E, _>(field_tag, f),
+            1 => self.encode_len_delimited_width::<1, _, E, _>(tag, f),
+            2 => self.encode_len_delimited_width::<2, _, E, _>(tag, f),
+            3 => self.encode_len_delimited_width::<3, _, E, _>(tag, f),
+            _ => self.encode_len_delimited_width::<4, _, E, _>(tag, f),
         }
     }
 
@@ -639,7 +639,7 @@ pub trait BoundedBuf {
     #[inline]
     fn encode_len_delimited_width<const B: usize, T, E, F>(
         &mut self,
-        field_tag: u64,
+        tag: u64,
         f: F,
     ) -> Result<T, E>
     where
@@ -647,7 +647,7 @@ pub trait BoundedBuf {
         F: FnOnce(&mut Self) -> Result<T, E>,
         Self: Sized,
     {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
+        self.encode_field_tag(tag, wire_types::LEN)?;
         let len_start_pos = self.len();
         self.try_extend(&make_len_placeholder::<B>())?;
         let ok = f(self)?;
