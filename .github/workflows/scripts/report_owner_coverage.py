@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import sys
 import urllib.error
 from pathlib import Path, PurePosixPath
@@ -67,9 +66,9 @@ def component_metadata(files: list[dict]) -> list[str]:
 
 
 def coverage_description(issue: str, components: list[str]) -> str:
-    description = f"Owner coverage {issue}: {', '.join(components)}"
+    description = f"Snapshot may be stale; owner coverage {issue}: {', '.join(components)}"
     if len(description) > 140:
-        return f"Owner coverage {issue} for {len(components)} component(s)"
+        return f"Snapshot may be stale; owner coverage {issue} for {len(components)} component(s)"
     return description
 
 
@@ -85,6 +84,9 @@ def owner_report(
         f"## Owner coverage for PR #{pull['number']}",
         "",
         "Advisory only: missing owner coverage does not block merging.",
+        "Snapshot only: later reviews are not reflected until the next refresh.",
+        "PR updates refresh coverage; merging or rebasing main and pushing also refreshes it.",
+        "GitHub's native review UI remains authoritative for current approvals.",
         "Owners come from trusted `main`; owner-authorship or owner approval counts.",
         "Owner-authorship does not replace independent approvals required by GitHub.",
         "",
@@ -126,7 +128,7 @@ def owner_report(
     elif missing:
         state, description = "failure", coverage_description("missing", missing)
     elif metadata:
-        state, description = "success", "Owner coverage present for every contrib component"
+        state, description = "success", "Snapshot may be stale; owner coverage present for every contrib component"
     else:
         state, description = "success", "No contrib components affected"
         lines.append("No contrib component directories are affected.")
@@ -136,15 +138,6 @@ def owner_report(
 def pull_number(event_name: str, event: dict) -> int:
     if event_name == "pull_request_target":
         number = event["pull_request"]["number"]
-    elif event_name == "workflow_run":
-        # Only the PR number crosses the bridge; review data is fetched afresh.
-        match = re.fullmatch(
-            r"Owner reviews for PR #([1-9][0-9]*)",
-            event["workflow_run"]["display_title"],
-        )
-        if match is None:
-            raise ValueError("The review notification is missing its PR number")
-        number = match[1]
     elif event_name == "workflow_dispatch":
         number = event["inputs"]["pull_request_number"]
     else:

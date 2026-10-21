@@ -55,9 +55,10 @@ review domains; it does not replace or weaken the existing approval rules.
 
 ### Advisory owner coverage
 
-The non-required `contrib-owner-coverage` status is red while any
-affected contrib node or extension lacks owner coverage. Owners come from
-the nearest metadata on trusted `main`, including inherited crate ownership.
+The non-required `contrib-owner-coverage` status is an advisory snapshot. It is
+red when any affected contrib node or extension lacks owner coverage at the
+time of evaluation. Owners come from the nearest metadata on trusted `main`,
+including inherited crate ownership.
 Each component is covered if the author is an owner or another owner has
 approved. Author ownership covers only their components, not the entire PR,
 and does not replace independent approvals required by GitHub.
@@ -66,6 +67,12 @@ both paths; unavailable ownership is reported as an error rather than covered.
 The status description names missing or unknown components when they fit,
 otherwise shows a count; the linked summary always lists all affected components.
 PRs sharing a head commit share this advisory status; the last report wins.
+
+Snapshots refresh on PR updates or manual dispatch by someone with write access.
+Review-triggered refreshes are disabled for now to avoid Copilot workflow-approval
+prompts; use GitHub's review UI for current approvals. Keeping branches current
+with `main` is good practice: merge or rebase and push new commits to re-evaluate
+coverage. Changes to `main` alone do not refresh it.
 
 Request owner input by default when coverage is red. Approvers and maintainers
 may proceed without it when they can responsibly review the affected area,
