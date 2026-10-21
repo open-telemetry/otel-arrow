@@ -1839,6 +1839,42 @@ async fn test_assign_to_data_point_attributes_no_existing_attrs() {
     .await;
 }
 
+/// Scenario: assign `coalesce` to a data point attribute when its earlier arguments (a data
+/// point attribute and a resource attribute) are absent from the whole batch, for every data
+/// point type, with and without existing data point attributes.
+/// Guarantees: the absent arguments are null for every data point, so each data point gets
+/// the next argument's value: the literal, or the data point attribute that is present.
+#[tokio::test]
+async fn test_assign_to_data_point_attributes_coalesce_absent_args() {
+    for existing_attrs in [Some(vec![KeyValue::new("a", AnyValue::new_int(5))]), None] {
+        run_assign_to_all_data_point_type_test(
+            "metrics | apply data_points {
+                set attributes[\"x\"] = coalesce(attributes[\"missing\"], \"foo\")
+            }",
+            Default::default(),
+            existing_attrs,
+            "x",
+            AnyValue::new_string("foo"),
+        )
+        .await;
+    }
+
+    run_assign_to_all_data_point_type_test(
+        "metrics | apply data_points {
+            set attributes[\"x\"] = coalesce(
+                attributes[\"missing\"],
+                resource.attributes[\"missing\"],
+                attributes[\"a\"]
+            )
+        }",
+        Default::default(),
+        Some(vec![KeyValue::new("a", AnyValue::new_int(5))]),
+        "x",
+        AnyValue::new_int(5),
+    )
+    .await;
+}
+
 /// Scenario: assigning the value of an attribute from an existing attribute
 /// Guarantees: new attribute is created having the same value as the existing attribute
 #[tokio::test]

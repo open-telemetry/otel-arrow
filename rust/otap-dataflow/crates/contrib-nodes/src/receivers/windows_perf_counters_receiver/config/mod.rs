@@ -177,7 +177,8 @@ impl RuntimeConfig {
                     )));
                 }
                 let attributes = Arc::new(if metric_name.is_some() {
-                    normalize_attributes(&counter_field, &mapping.attributes)?
+                    validate_attribute_keys(&counter_field, &mapping.attributes)?;
+                    mapping.attributes.clone()
                 } else {
                     BTreeMap::new()
                 });
@@ -404,8 +405,8 @@ struct CounterMapping {
     #[serde(default, deserialize_with = "present_metric")]
     metric: Option<Option<String>>,
     /// Point attributes, applied only with an explicit `metric`. Defaults to empty.
-    /// Keys are trimmed, must be nonblank, must not start with
-    /// `windows.perf_counter.`, and must not collide after trimming.
+    /// Keys are kept verbatim, must not be empty, and must not start with
+    /// the exact `windows.perf_counter.` prefix. Values are kept verbatim.
     #[serde(default)]
     attributes: BTreeMap<String, String>,
     /// Multiplies the value by 10 to this power. Defaults to 0; -18 to 18.
@@ -580,27 +581,22 @@ fn normalize_instance<'a>(field: &str, value: &'a str) -> Result<(String, &'a st
     Ok((canonical, value))
 }
 
-/// Trims attribute keys, rejecting blank, reserved, or post-trim duplicate keys.
-fn normalize_attributes(
+/// Rejects only literal empty keys and the receiver-owned prefix.
+fn validate_attribute_keys(
     field: &str,
     attributes: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, Error> {
-    let mut normalized = BTreeMap::new();
-    for (key, value) in attributes {
-        let key = key.trim();
-        require_name(&format!("{field} attribute key"), key)?;
+) -> Result<(), Error> {
+    for key in attributes.keys() {
+        if key.is_empty() {
+            return Err(invalid(format!("{field} attribute key must not be empty")));
+        }
         if key.starts_with(RECEIVER_ATTRIBUTE_PREFIX) {
             return Err(invalid(format!(
                 "{field} attribute {key:?} conflicts with receiver-generated attributes"
             )));
         }
-        if normalized.insert(key.to_owned(), value.clone()).is_some() {
-            return Err(invalid(format!(
-                "{field} contains duplicate attribute key {key:?}"
-            )));
-        }
     }
-    Ok(normalized)
+    Ok(())
 }
 
 fn counter_path(object: &str, instance: Option<&str>, counter: &str) -> String {

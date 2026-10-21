@@ -131,39 +131,26 @@ impl<C> CounterHandle<C> {
                     return Err(error);
                 }
             };
-            if self.kind == CounterKind::RawFraction {
-                let base = raw.second_value;
-                if base <= 0 {
-                    return Err(Error::Calculation {
-                        path: self.path.clone(),
-                        message: format!("base denominator must be positive, got {base}"),
-                    });
-                }
-            } else {
-                // The next interval uses its own current MultiCount, so even
-                // a zero-base sample must advance the raw baseline.
-                let previous = self.previous_base.replace(raw.second_value);
-                if self.kind == CounterKind::CalculatedTwoSampleWithMultiBase
-                    && raw.multi_count == 0
-                {
-                    return Err(Error::Calculation {
-                        path: self.path.clone(),
-                        message: "multi-counter base denominator must be positive, got 0"
-                            .to_owned(),
-                    });
-                }
-                let Some(previous) = previous else {
-                    return Ok(SampleValue::NoObservation);
-                };
-                if self.kind == CounterKind::CalculatedTwoSampleWithBase {
-                    match raw.second_value.cmp(&previous) {
-                        std::cmp::Ordering::Less => {
-                            self.reset_readiness();
-                            return Ok(SampleValue::NoObservation);
-                        }
-                        std::cmp::Ordering::Equal => return Ok(SampleValue::NoObservation),
-                        std::cmp::Ordering::Greater => {}
+            // The next interval uses its own current MultiCount, so even
+            // a zero-base sample must advance the raw baseline.
+            let previous = self.previous_base.replace(raw.second_value);
+            if self.kind == CounterKind::CalculatedTwoSampleWithMultiBase && raw.multi_count == 0 {
+                return Err(Error::Calculation {
+                    path: self.path.clone(),
+                    message: "multi-counter base denominator must be positive, got 0".to_owned(),
+                });
+            }
+            let Some(previous) = previous else {
+                return Ok(SampleValue::NoObservation);
+            };
+            if self.kind == CounterKind::CalculatedTwoSampleWithBase {
+                match raw.second_value.cmp(&previous) {
+                    std::cmp::Ordering::Less => {
+                        self.reset_readiness();
+                        return Ok(SampleValue::NoObservation);
                     }
+                    std::cmp::Ordering::Equal => return Ok(SampleValue::NoObservation),
+                    std::cmp::Ordering::Greater => {}
                 }
             }
         }
