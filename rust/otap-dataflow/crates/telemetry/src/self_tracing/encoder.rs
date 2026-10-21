@@ -167,9 +167,11 @@ mod bounded {
         key: &str,
         value: &mut impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        buf.encode_len_delimited(tag, |buf| {
-            buf.encode_string(KEY_VALUE_KEY, key)?;
-            value_encoder(buf, KEY_VALUE_VALUE, value)
+        buf.try_encode(|buf| {
+            buf.encode_len_delimited(tag, |buf| {
+                buf.encode_string(KEY_VALUE_KEY, key)?;
+                value_encoder(buf, KEY_VALUE_VALUE, value)
+            })
         })
     }
 
@@ -244,21 +246,24 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         field: &tracing::field::Field,
         encode: impl FnOnce(&mut B) -> TruncateResult,
     ) {
-        match LogFieldLocation::new(field.name()) {
-            LogFieldLocation::Body => {
-                // May be truncated, but not counted in dropped_attributes.
-                let _ = bounded::record_body(self.buf, encode);
-            }
-            LogFieldLocation::Attribute(name) => {
-                match bounded::record_attribute(self.buf, name, encode) {
-                    Ok(Truncation::None) => {}
-                    _ => {
-                        // Dropped or truncated
-                        self.dropped_count += 1;
+        let budget = self.buf.remaining().div_ceil(2);
+        self.buf.with_max_remaining(budget, |buf| {
+            match LogFieldLocation::new(field.name()) {
+                LogFieldLocation::Body => {
+                    // May be truncated, but not counted in dropped_attributes.
+                    let _ = bounded::record_body(buf, encode);
+                }
+                LogFieldLocation::Attribute(name) => {
+                    match bounded::record_attribute(buf, name, encode) {
+                        Ok(Truncation::None) => {}
+                        _ => {
+                            // Dropped or truncated
+                            self.dropped_count += 1;
+                        }
                     }
                 }
             }
-        }
+        })
     }
 }
 
@@ -354,35 +359,7 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
     }
 }
 
-/// Compute the per-attribute budget: at most half of remaining space, but
-/// at least 1 byte (to ensure a chance of a tag byte being written and
-/// triggering an atomic drop). Intentionally halves for every attribute,
-/// including the last -- this keeps the policy single-pass without requiring
-/// pre-counting the field set, while still preventing one large value from
-/// consuming the entire remaining buffer.
-#[inline]
-fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
-    buf.remaining().div_ceil(2)
-}
-
-/// Runs `encode` transactionally within the per-attribute budget. `Ok(true)`
-/// means it succeeded but truncated; `Err` means it was rolled back.
-fn bounded<B: BoundedBuf>(
-    buf: &mut B,
-    encode: impl FnOnce(&mut B) -> TruncateResult,
-) -> TruncateResult {
-    let budget = attr_budget(buf);
-    let mut truncated = Truncation::None;
-    buf.with_max_remaining(budget, |buf| {
-        buf.try_encode(|buf| {
-            truncated = encode(buf)?;
-            Ok::<_, EncodeFailure>(())
-        })
-    })?;
-    Ok(truncated)
-}
-
-/// Writes one AnyValue into a bounded buffer, used for nested encoding.
+/// Encodes one AnyValue into a bounded buffer, used for nested encoding.
 struct ValueEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
 
@@ -412,7 +389,7 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         f(self.buf)
     }
 
-    /// Writes a length-delimited container; `body` reports lost content.
+    /// Encocdes a length-delimited container; `body` reports lost content.
     fn nested(
         &mut self,
         field: u64,
@@ -464,7 +441,7 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
     }
 }
 
-/// Writes the members of a nested map or array.
+/// Encodes the members of a nested map or array.
 struct NestedEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
     outcome: TruncateResult,
@@ -493,7 +470,7 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
     }
 
     fn entry(
-        &'a mut self,
+        &mut self,
         key: &str,
         mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
@@ -503,7 +480,7 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
     }
 
     fn element(
-        &'a mut self,
+        &mut self,
         mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
         Self::unless_truncating(&mut self.outcome, || {
@@ -597,7 +574,7 @@ fn no_trunc(_: ()) -> Truncation {
     Truncation::None
 }
 
-/// Writes one configured resource or scope attribute value.
+/// Encodes one configured resource or scope attribute value.
 fn encode_config_value<B: BoundedBuf>(
     w: &mut ValueEncoder<'_, B>,
     value: &ConfigAttributeValue,
@@ -624,7 +601,7 @@ fn encode_config_value<B: BoundedBuf>(
     }
 }
 
-/// Writes a homogeneous slice as array elements.
+/// Encodes a homogeneous slice as array elements.
 fn encode_array_elements<B: BoundedBuf, T>(
     buf: &mut NestedEncoder<'_, B>,
     values: &[T],
@@ -647,12 +624,10 @@ fn encode_scope_or_resource_attribute(
     key: &str,
     mut f: impl FnMut(&mut ValueEncoder<'_, ProtoBuffer>) -> TruncateResult,
 ) -> EncodeResult {
-    buf.try_encode(|buf| {
-        let _ = bounded::key_value_encoder(buf, field, key, &mut f)?;
-        // TODO(4453) This function ignores truncation because we are
-        // in the wrong place to handle it.
-        Ok(())
-    })
+    let _ = bounded::key_value_encoder(buf, field, key, &mut f)?;
+    // TODO(4453) This function ignores truncation because we are
+    // in the wrong place to handle it.
+    Ok(())
 }
 
 // Field numbers for ExportLogsServiceRequest and related messages
@@ -731,7 +706,7 @@ fn encode_scope_attributes<'k, 'v>(
     Ok(buf.into_bytes())
 }
 
-/// Writes an `AttributeValue`; maps become kvlists.
+/// Encodes an `AttributeValue`; maps become kvlists.
 fn encode_attribute_value<B: BoundedBuf>(
     buf: &mut ValueEncoder<'_, B>,
     value: &AttributeValue,
@@ -744,7 +719,9 @@ fn encode_attribute_value<B: BoundedBuf>(
         AttributeValue::Double(v) => buf.encode_f64(*v).map(no_trunc),
         AttributeValue::Map(m) => buf.map(|buf| {
             for (k, v) in m {
-                buf.entry(k, |w| encode_attribute_value(w, v))?;
+                if Truncation::Some == buf.entry(k, |w| encode_attribute_value(w, v))? {
+                    return Ok(Truncation::Some);
+                }
             }
             Ok(Truncation::None)
         }),

@@ -671,11 +671,10 @@ pub trait BoundedBuf {
 
     /// Try to encode a complete field atomically.
     ///
-    /// If the closure returns an error (e.g., `EncodeFailure::Dropped` or any other
-    /// error type), the buffer is rolled back to its state before the
-    /// call and the error is returned.
+    /// If the closure returns an error, the buffer is rolled back to
+    /// its state before the call and the error is returned.
     #[inline]
-    fn try_encode(&mut self, f: impl FnOnce(&mut Self) -> EncodeResult) -> EncodeResult
+    fn try_encode<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E>
     where
         Self: Sized,
     {
