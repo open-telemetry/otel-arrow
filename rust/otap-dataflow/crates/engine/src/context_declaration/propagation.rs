@@ -132,9 +132,14 @@ impl PreparedHeaderPropagationPolicy {
         self,
         materialization_plan: &ContextMaterializationPlan,
     ) -> Result<CompiledHeaderPropagationPolicy, String> {
-        let compiled_named = self
-            .prepared_named
+        let Self {
+            default,
+            overrides,
+            prepared_named,
+        } = self;
+        let compiled_named = prepared_named
             .into_iter()
+            .filter(|prepared| !binding_suppressed_by_override(prepared, &overrides))
             .map(|prepared| {
                 let projection = materialization_plan
                     .layout()
@@ -148,8 +153,8 @@ impl PreparedHeaderPropagationPolicy {
             })
             .collect::<Result<_, String>>()?;
         Ok(CompiledHeaderPropagationPolicy {
-            default: self.default,
-            overrides: self.overrides,
+            default,
+            overrides,
             materialization_plan: materialization_plan.clone(),
             compiled_named,
         })
@@ -158,7 +163,9 @@ impl PreparedHeaderPropagationPolicy {
     /// Visits composite names selected by qualified propagation references.
     pub(super) fn visit_composite_names(&self, mut visit: impl FnMut(&ContextEntryName)) {
         for binding in &self.prepared_named {
-            visit(&binding.composite_name);
+            if !binding_suppressed_by_override(binding, &self.overrides) {
+                visit(&binding.composite_name);
+            }
         }
     }
 
@@ -202,13 +209,7 @@ impl PreparedHeaderPropagationPolicy {
         &self,
         name: &ContextEntryName,
     ) -> (PropagationAction, NameStrategy) {
-        if let Some(override_policy) = self.overrides.iter().find(|override_policy| {
-            override_policy
-                .match_rule
-                .stored_names
-                .iter()
-                .any(|stored| name.as_str().eq_ignore_ascii_case(stored.as_str()))
-        }) {
+        if let Some(override_policy) = find_override(&self.overrides, name.as_str()) {
             return (
                 override_policy.action,
                 override_policy.name.unwrap_or(self.default.name),
@@ -325,18 +326,6 @@ impl CompiledHeaderPropagationPolicy {
         let mut propagated = SmallVec::new();
         if let Some(materialized) = materialized {
             for binding in &self.compiled_named {
-                // A primitive override owns the source's propagation outcome independently of
-                // composite presence. Skip its qualified snapshot to avoid duplicate emission
-                // when the override propagates and to honor a drop override consistently.
-                // Resolving the action is insufficient here because this branch needs to
-                // distinguish an explicit override from the same action inherited by default.
-                if binding
-                    .source_name
-                    .as_ref()
-                    .is_some_and(|source_name| self.override_for_name(source_name).is_some())
-                {
-                    continue;
-                }
                 if self.default.action == PropagationAction::Drop {
                     continue;
                 }
@@ -392,19 +381,32 @@ impl CompiledHeaderPropagationPolicy {
         }
     }
 
-    fn override_for_name(&self, name: &ContextEntryName) -> Option<&PropagationOverride> {
-        self.override_for_str(name.as_str())
-    }
-
     fn override_for_str(&self, name: &str) -> Option<&PropagationOverride> {
-        self.overrides.iter().find(|override_policy| {
-            override_policy
-                .match_rule
-                .stored_names
-                .iter()
-                .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
-        })
+        find_override(&self.overrides, name)
     }
+}
+
+fn binding_suppressed_by_override(
+    binding: &PreparedNamedPropagation,
+    overrides: &[PropagationOverride],
+) -> bool {
+    binding
+        .source_name
+        .as_ref()
+        .is_some_and(|source_name| find_override(overrides, source_name.as_str()).is_some())
+}
+
+fn find_override<'a>(
+    overrides: &'a [PropagationOverride],
+    name: &str,
+) -> Option<&'a PropagationOverride> {
+    overrides.iter().find(|override_policy| {
+        override_policy
+            .match_rule
+            .stored_names
+            .iter()
+            .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
+    })
 }
 
 fn resolve_static_action_for_name(
@@ -413,16 +415,9 @@ fn resolve_static_action_for_name(
     name: &ContextEntryName,
 ) -> (PropagationAction, NameStrategy) {
     let name = name.as_str();
-    for override_policy in overrides {
-        if override_policy
-            .match_rule
-            .stored_names
-            .iter()
-            .any(|stored| name.eq_ignore_ascii_case(stored.as_str()))
-        {
-            let name_strategy = override_policy.name.unwrap_or(default.name);
-            return (override_policy.action, name_strategy);
-        }
+    if let Some(override_policy) = find_override(overrides, name) {
+        let name_strategy = override_policy.name.unwrap_or(default.name);
+        return (override_policy.action, name_strategy);
     }
 
     let selected = default.selector.selects_primitive_header(name);
@@ -905,6 +900,40 @@ overrides:
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "workspace");
         assert_eq!(propagated[0].value, b"acme");
+    }
+
+    /// Scenario: a qualified transport member's primitive source has an explicit override.
+    /// Guarantees: preparation omits the composite requirement and binding omits the qualified
+    /// runtime projection because primitive propagation owns the source's configured outcome.
+    #[test]
+    fn primitive_override_suppresses_qualified_binding_during_compilation() {
+        let policy: HeaderPropagationPolicy = serde_yaml::from_str(
+            r#"
+default:
+  selector:
+    type: named
+    named: [product_user:workspace_id]
+overrides:
+  - match:
+      stored_names: [workspace]
+    action: propagate
+"#,
+        )
+        .expect("valid propagation policy");
+        let prepared = PreparedHeaderPropagationPolicy::compile(
+            policy,
+            &[conditional_product_user_declaration()],
+        )
+        .expect("composite selector compiles");
+        let mut selected_composites = Vec::new();
+
+        prepared.visit_composite_names(|name| selected_composites.push(name.clone()));
+        let compiled = prepared
+            .bind(&ContextMaterializationPlan::default())
+            .expect("suppressed binding needs no materialization plan");
+
+        assert!(selected_composites.is_empty());
+        assert!(!compiled.has_materialized_selections());
     }
 
     fn conditional_product_user_declaration() -> ContextEntryDeclaration {
