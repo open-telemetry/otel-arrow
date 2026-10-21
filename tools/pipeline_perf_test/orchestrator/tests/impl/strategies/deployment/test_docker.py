@@ -213,8 +213,8 @@ def test_start_passes_ulimit_soft_hard(
 
 # Scenario: A docker deployment config leaves ulimits unset.
 # Guarantees: The default nofile limit (16384) is still forwarded to
-#   containers.run, so every container gets a raised file-descriptor ceiling
-#   without having to opt in.
+#   containers.run for a Linux Docker daemon, so Linux containers get a raised
+#   file-descriptor ceiling without having to opt in.
 @patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
 @patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
 @patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
@@ -231,6 +231,7 @@ def test_start_applies_default_ulimits_when_unset(
     mock_context,
 ):
     mock_client = MagicMock()
+    mock_client.info.return_value = {"OSType": "linux"}
     mock_docker_client.return_value = mock_client
     config = DockerDeploymentConfig(
         image="my-image:latest",
@@ -244,6 +245,73 @@ def test_start_applies_default_ulimits_when_unset(
     assert ulimits[0]["Name"] == "nofile"
     assert ulimits[0]["Soft"] == 16384
     assert ulimits[0]["Hard"] == 16384
+
+
+# Scenario: A docker deployment targets a Windows Docker daemon with ulimits
+#   left unset.
+# Guarantees: containers.run does not receive the unsupported ulimits argument,
+#   allowing the Windows container to be created.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch("lib.impl.strategies.deployment.docker.set_component_docker_runtime_data")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_omits_default_ulimits_for_windows(
+    mock_sanitize,
+    mock_set_runtime,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_client.info.return_value = {"OSType": "windows"}
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+    )
+
+    DockerDeployment(config=config).start(mock_component, mock_context)
+
+    kwargs = mock_client.containers.run.call_args.kwargs
+    assert "ulimits" not in kwargs
+
+
+# Scenario: A docker deployment explicitly configures ulimits for a Windows
+#   Docker daemon.
+# Guarantees: Deployment rejects the unsupported configuration before trying
+#   to create a container instead of silently ignoring the requested limits.
+@patch("lib.impl.strategies.deployment.docker.get_or_create_docker_client")
+@patch("lib.impl.strategies.deployment.docker.get_component_docker_runtime")
+@patch(
+    "lib.impl.strategies.deployment.docker.sanitize_docker_name",
+    side_effect=lambda x: x,
+)
+def test_start_rejects_configured_ulimits_for_windows(
+    mock_sanitize,
+    mock_get_runtime,
+    mock_docker_client,
+    mock_component,
+    mock_context,
+):
+    mock_client = MagicMock()
+    mock_client.info.return_value = {"OSType": "windows"}
+    mock_docker_client.return_value = mock_client
+    config = DockerDeploymentConfig(
+        image="my-image:latest",
+        network="test-network",
+        ulimits={"nofile": 4096},
+    )
+
+    with pytest.raises(
+        ValueError, match="Docker ulimits are not supported by Windows containers"
+    ):
+        DockerDeployment(config=config).start(mock_component, mock_context)
+
+    mock_client.containers.run.assert_not_called()
 
 
 # Scenario: A docker deployment config sets a ulimit for a key other than the

@@ -125,10 +125,10 @@ fn rejects_empty_object_collections() {
     );
 }
 
-/// Scenario: A metric definition name is empty or an attribute key is whitespace-only.
-/// Guarantees: Empty metric names and blank attribute keys remain configuration errors.
+/// Scenario: A metric definition name or an attribute key is literally empty.
+/// Guarantees: Empty names and keys remain configuration errors with field context.
 #[test]
-fn rejects_blank_required_values() {
+fn rejects_empty_required_values() {
     assert_config_error(
         json!({
             "metrics": {"": {"description": "Value.", "unit": "By", "gauge": {}}},
@@ -145,10 +145,10 @@ fn rejects_blank_required_values() {
             "counters": [{
                 "name": "Available Bytes",
                 "metric": "available",
-                "attributes": {" ": "value"}
+                "attributes": {"": "value"}
             }]
         })),
-        "attribute key must not be empty",
+        "perfcounters[0].counters[0] attribute key must not be empty",
     );
 }
 
@@ -1179,7 +1179,7 @@ fn rejects_duplicate_counter_paths_case_insensitively() {
 }
 
 /// Scenario: Metric names, references, descriptions, units, and attribute keys are padded.
-/// Guarantees: Metric metadata reaches CounterConfig unchanged while attribute keys retain baseline trimming.
+/// Guarantees: Metric metadata, attribute keys, and string values reach CounterConfig unchanged.
 /// The receiver must not rewrite user-supplied metric metadata.
 #[test]
 fn preserves_metric_identities_and_metadata() {
@@ -1205,7 +1205,7 @@ fn preserves_metric_identities_and_metadata() {
     assert_eq!(counter.unit, "\r By \t");
     assert_eq!(
         *counter.attributes,
-        BTreeMap::from([("host".to_owned(), " free ".to_owned())])
+        BTreeMap::from([(" host ".to_owned(), " free ".to_owned())])
     );
 }
 
@@ -1235,23 +1235,6 @@ fn allows_whitespace_distinct_metric_names() {
             assert_eq!(counter.unit, unit);
         }
     }
-}
-
-/// Scenario: Attribute keys collide after trimming.
-/// Guarantees: Validation rejects them instead of silently merging attributes.
-#[test]
-fn rejects_duplicate_attribute_keys() {
-    assert_config_error(
-        gauge_config(json!({
-            "object": "Memory",
-            "counters": [{
-                "name": "Available Bytes",
-                "metric": "available",
-                "attributes": {"state": "a", " state": "b"}
-            }]
-        })),
-        "duplicate attribute key \"state\"",
-    );
 }
 
 /// Scenario: Explicit metric references are empty, padded, whitespace-only or missing their exact definition.
@@ -1298,24 +1281,24 @@ fn resolves_metric_references_exactly() {
 /// Guarantees: Validation preserves ownership of generated performance-counter attributes.
 #[test]
 fn rejects_reserved_attribute_prefix() {
-    assert_config_error(
-        json!({
-            "metrics": {"available": {
-                "description": "Available physical memory.",
-                "unit": "By",
-                "gauge": {}
-            }},
-            "perfcounters": [{
+    for key in [
+        "windows.perf_counter.",
+        "windows.perf_counter.custom",
+        "windows.perf_counter.path ",
+        "windows.perf_counter.\0",
+    ] {
+        assert_config_error(
+            gauge_config(json!({
                 "object": "Memory",
                 "counters": [{
                     "name": "Available Bytes",
                     "metric": "available",
-                    "attributes": {"windows.perf_counter.custom": "value"}
+                    "attributes": {key: "value"}
                 }]
-            }]
-        }),
-        "perfcounters[0].counters[0] attribute \"windows.perf_counter.custom\" conflicts",
-    );
+            })),
+            &format!("perfcounters[0].counters[0] attribute {key:?} conflicts"),
+        );
+    }
 }
 
 /// Scenario: Decimal scaling is configured at its lower and upper bounds.

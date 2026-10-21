@@ -7,6 +7,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::BorrowedFd;
+use std::os::unix::fs::MetadataExt;
 
 use nix::dir::Dir;
 use nix::errno::Errno;
@@ -196,6 +197,18 @@ impl Namespace {
     pub fn verify(&self, name: &str, file: &File) -> Result<(), StoreError> {
         self.verify_ancestry()?;
         verify_entry(&self.directory, name, file)
+    }
+
+    pub fn locator(&self) -> Result<crate::Locator, StoreError> {
+        self.verify_ancestry()?;
+        let metadata = self
+            .directory
+            .metadata()
+            .map_err(|error| io("query namespace identity", error))?;
+        Ok(crate::Locator::PosixDevIno {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
     }
 
     pub fn inventory(&self) -> Result<Inventory, StoreError> {

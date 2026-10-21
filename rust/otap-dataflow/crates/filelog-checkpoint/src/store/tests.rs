@@ -1551,3 +1551,31 @@ fn root_capability_rejects_path_only_handles() {
     ));
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
 }
+
+/// Scenario: Discovery requests the store's namespace identity, then its directory is renamed.
+/// Guarantees: The getter identifies only the opened namespace, exposes no handle, and rejects stale ancestry.
+#[test]
+fn namespace_locator_is_narrow_and_revalidated() {
+    use std::os::unix::fs::MetadataExt;
+    let (dir, root) = root();
+    let store = store(&root);
+    let path = namespace(dir.path());
+    let metadata = fs::metadata(&path).unwrap();
+    assert_eq!(
+        store.namespace_locator().unwrap(),
+        Locator::PosixDevIno {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }
+    );
+    let root_metadata = fs::metadata(dir.path()).unwrap();
+    assert_ne!(
+        store.namespace_locator().unwrap(),
+        Locator::PosixDevIno {
+            dev: root_metadata.dev(),
+            ino: root_metadata.ino(),
+        }
+    );
+    fs::rename(&path, path.with_extension("moved")).unwrap();
+    assert!(store.namespace_locator().is_err());
+}
