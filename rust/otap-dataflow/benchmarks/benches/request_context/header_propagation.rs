@@ -4,6 +4,8 @@
 //! Benchmarks transport-header propagation selector costs.
 //! `header_propagation_small` consumes propagated values for 0-5 captured headers,
 //! with at most one condition on an existing member (no extra condition headers).
+//! `header_propagation` compares exporter-only conditional propagation with
+//! receiver materialization plus propagation for header-only composites.
 //!
 //! Run with:
 //!
@@ -80,6 +82,37 @@ pub(super) fn benchmarks(c: &mut Criterion) {
                                     .count(),
                             )
                         });
+                    },
+                );
+                let _ = group.bench_with_input(
+                    BenchmarkId::new(
+                        format!("conditional_end_to_end_{case}_{condition_count}_conditions"),
+                        format!("{header_count}_headers"),
+                    ),
+                    &headers,
+                    |b, headers| {
+                        b.iter_batched(
+                            || {
+                                let mut context = MaterializedContext::default();
+                                context.set_transport_headers(headers.clone());
+                                context
+                            },
+                            |mut context| {
+                                context.materialize_with_stored_transport(
+                                    black_box(conditional.materialization_plan()),
+                                    &EmptySource,
+                                );
+                                let mut propagated = 0;
+                                for header in conditional
+                                    .propagate_materialized_only(Some(black_box(&context)))
+                                {
+                                    let _ = black_box(header);
+                                    propagated += 1;
+                                }
+                                black_box(propagated)
+                            },
+                            BatchSize::SmallInput,
+                        );
                     },
                 );
             }
