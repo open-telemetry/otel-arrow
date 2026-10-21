@@ -72,10 +72,16 @@ pub struct ResourceEstimates {
 /// Validated settings and immutable compiled programs. This is not startup readiness.
 #[derive(Debug)]
 pub struct CompiledConfig {
+    inputs: ValidatedInputs,
+    paths: PathPolicy,
+}
+
+/// Validated settings and primitive inputs retained after transferring the path policy.
+#[derive(Debug)]
+pub struct ValidatedInputs {
     config: Config,
     checkpoint_id: String,
     namespace_component: String,
-    paths: PathPolicy,
     line: LineConfig,
     grouping: Option<GroupingMode>,
     boundary: Option<BoundaryPattern>,
@@ -83,13 +89,26 @@ pub struct CompiledConfig {
     resources: ResourceEstimates,
 }
 impl CompiledConfig {
-    /// Transfer the compiled policy and its scratch into the discovery worker.
-    /// Extract other required startup inputs before consuming this result.
+    /// Borrow the validated inputs without transferring either owned part.
     #[must_use]
-    pub fn into_paths(self) -> PathPolicy {
-        self.paths
+    pub fn inputs(&self) -> &ValidatedInputs {
+        &self.inputs
     }
 
+    /// Lexical policy; filesystem exclusion proofs remain discovery-owned.
+    #[must_use]
+    pub fn paths(&self) -> &PathPolicy {
+        &self.paths
+    }
+
+    /// Move validated inputs and worker-owned matching scratch to their respective owners.
+    #[must_use]
+    pub fn into_parts(self) -> (ValidatedInputs, PathPolicy) {
+        (self.inputs, self.paths)
+    }
+}
+
+impl ValidatedInputs {
     /// Validated parsed values, borrowed to prevent mutation after compilation.
     #[must_use]
     pub fn settings(&self) -> &Config {
@@ -104,11 +123,6 @@ impl CompiledConfig {
     #[must_use]
     pub fn namespace_component(&self) -> &str {
         &self.namespace_component
-    }
-    /// Lexical policy; filesystem exclusion proofs remain discovery-owned.
-    #[must_use]
-    pub fn paths(&self) -> &PathPolicy {
-        &self.paths
     }
     /// Validated line-framer inputs.
     #[must_use]
@@ -160,7 +174,6 @@ impl Config {
         base: &Path,
     ) -> Result<CompiledConfig, ConfigError> {
         self.validate_scalars()?;
-        let paths = PathPolicy::compile(&self.include, &self.exclude, base)?;
         let checkpoint_id = match &self.checkpoint.id {
             Some(id) => id.clone(),
             None => derive_id([group, pipeline, node])?,
@@ -262,19 +275,22 @@ impl Config {
         let _ = profile
             .digest()
             .map_err(|e| ConfigError::new("framing", e.to_string()))?;
+        let paths = PathPolicy::compile(&self.include, &self.exclude, base)?;
         let resources = self.resources(line, grouping, &paths, boundary.as_ref())?;
         #[cfg(target_os = "linux")]
         let _ = store_config(&self, &profile, resources.snapshot_bytes)?;
         Ok(CompiledConfig {
-            config: self,
-            checkpoint_id,
-            namespace_component,
             paths,
-            line,
-            grouping,
-            boundary,
-            profile,
-            resources,
+            inputs: ValidatedInputs {
+                config: self,
+                checkpoint_id,
+                namespace_component,
+                line,
+                grouping,
+                boundary,
+                profile,
+                resources,
+            },
         })
     }
 

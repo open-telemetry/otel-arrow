@@ -30,10 +30,10 @@ fn compiled(extra: &str) -> Result<CompiledConfig, ConfigError> {
 fn defaults() {
     let c = compiled("").unwrap();
     assert_eq!(
-        c.checkpoint_id(),
+        c.inputs().checkpoint_id(),
         "auto-f646ab9be8acd63559b3cee62718d6802d11c0ec67131c27cb91eebc3a2ddc47"
     );
-    let s = c.settings();
+    let s = c.inputs().settings();
     assert!(s.recursive);
     assert!(!s.follow_symlinks);
     assert_eq!(s.max_recursion_depth, 64);
@@ -75,10 +75,13 @@ fn defaults() {
     assert_eq!(s.on_retry_exhaustion, RetryExhaustion::Pause);
     assert_eq!(s.drain_timeout, Duration::from_secs(10));
     assert_eq!(s.worker_shutdown_timeout, Duration::from_secs(5));
-    assert!(c.boundary().is_none());
-    assert!(c.grouping().is_none());
+    assert!(c.inputs().boundary().is_none());
+    assert!(c.inputs().grouping().is_none());
     #[cfg(target_os = "linux")]
-    assert_eq!(c.store_config().unwrap().replay.max_tracked_files, 10000);
+    assert_eq!(
+        c.inputs().store_config().unwrap().replay.max_tracked_files,
+        10000
+    );
 }
 
 /// Scenario: Configuration supplies unknown fields, enum variants, null sizes or malformed values.
@@ -283,16 +286,16 @@ fn multiline_validation() {
     }
     let text = compiled("framing: {multiline: {line_start_pattern: '^BEGIN'}}").unwrap();
     assert_eq!(
-        text.grouping(),
+        text.inputs().grouping(),
         Some(super::super::multiline::GroupingMode::Start)
     );
     assert_eq!(
-        text.boundary().unwrap().mode(),
+        text.inputs().boundary().unwrap().mode(),
         super::super::multiline_pattern::PatternMode::Text
     );
     let raw =
         compiled("encoding: raw\nframing: {multiline: {line_end_pattern: '\\xFF$'}}").unwrap();
-    let mut matcher = raw.boundary().unwrap().matcher();
+    let mut matcher = raw.inputs().boundary().unwrap().matcher();
     assert!(
         matcher
             .is_match(super::super::multiline_pattern::PatternInput::Raw(&[255]))
@@ -310,16 +313,16 @@ fn checkpoint_selection() {
     let b = parsed("")
         .compile("a", "bc", "d", test_path("/work").as_path())
         .unwrap();
-    assert_ne!(a.checkpoint_id(), b.checkpoint_id());
+    assert_ne!(a.inputs().checkpoint_id(), b.inputs().checkpoint_id());
     let same = parsed("limits: {max_open_files: 1}")
         .compile("ab", "c", "d", test_path("/elsewhere").as_path())
         .unwrap();
-    assert_eq!(a.checkpoint_id(), same.checkpoint_id());
+    assert_eq!(a.inputs().checkpoint_id(), same.inputs().checkpoint_id());
     let explicit = parsed("checkpoint: {id: AppLogs}")
         .compile("new", "key", "names", test_path("/work").as_path())
         .unwrap();
-    assert_eq!(explicit.checkpoint_id(), "AppLogs");
-    assert_eq!(explicit.namespace_component(), "4170704c6f6773");
+    assert_eq!(explicit.inputs().checkpoint_id(), "AppLogs");
+    assert_eq!(explicit.inputs().namespace_component(), "4170704c6f6773");
     for id in ["", "a/b", "a b", "\u{e9}"] {
         let mut config = parsed("");
         config.checkpoint.id = Some(id.into());
@@ -335,6 +338,7 @@ fn checkpoint_selection() {
         config
             .compile("g", "p", "n", test_path("/work").as_path())
             .unwrap()
+            .inputs()
             .namespace_component()
             .len(),
         254
@@ -427,7 +431,7 @@ fn pattern_limits() {
 /// Guarantees: Framing bounds are not added together and metadata is included in batch sizing.
 #[test]
 fn record_admission() {
-    let base = compiled("").unwrap().resources().record_bytes;
+    let base = compiled("").unwrap().inputs().resources().record_bytes;
     let _ = compiled(&format!("batch: {{max_bytes: {base}}}")).unwrap();
     assert!(compiled(&format!("batch: {{max_bytes: {}}}", base - 1)).is_err());
     assert!(
@@ -456,10 +460,13 @@ fn engine_node_schema() {
         .compile("g", "p", "n", test_path("/work").as_path())
         .unwrap();
     assert_eq!(
-        compiled.settings().reader.eof_reprobe_interval,
+        compiled.inputs().settings().reader.eof_reprobe_interval,
         Duration::from_millis(20)
     );
-    assert_eq!(compiled.settings().batch.max_bytes, 8 * 1024 * 1024);
+    assert_eq!(
+        compiled.inputs().settings().batch.max_bytes,
+        8 * 1024 * 1024
+    );
 }
 
 /// Scenario: An exclusion uses a recursive subtree, while the base has glob metacharacters.
@@ -528,13 +535,13 @@ fn compatibility_profile() {
     let original = compiled("").unwrap();
     let metadata = compiled("include_file_metadata: native").unwrap();
     assert_eq!(
-        original.profile().digest().unwrap(),
-        metadata.profile().digest().unwrap()
+        original.inputs().profile().digest().unwrap(),
+        metadata.inputs().profile().digest().unwrap()
     );
     let changed = compiled("framing: {max_record_bytes: 2MiB}").unwrap();
     assert_ne!(
-        original.profile().digest().unwrap(),
-        changed.profile().digest().unwrap()
+        original.inputs().profile().digest().unwrap(),
+        changed.inputs().profile().digest().unwrap()
     );
 }
 
@@ -621,7 +628,7 @@ fn unsupported_components() {
 #[test]
 fn resource_composition() {
     let c = compiled("framing: {multiline: {line_start_pattern: '^START'}}").unwrap();
-    let m = c.resources();
+    let m = c.inputs().resources();
     assert!(m.path_matcher_bytes > 0);
     assert!(m.multiline_program_bytes > 0);
     assert!(m.multiline_scratch_bytes > 0);
@@ -631,16 +638,16 @@ fn resource_composition() {
     );
     assert_eq!(
         m.partial_state_floor_bytes,
-        m.framer_payload_bytes + c.settings().limits.max_read_bytes_per_turn
+        m.framer_payload_bytes + c.inputs().settings().limits.max_read_bytes_per_turn
     );
     assert_eq!(
         m.batch_and_carry_over_bytes,
-        c.settings().batch.max_bytes + m.record_bytes
+        c.inputs().settings().batch.max_bytes + m.record_bytes
     );
     let newline = compiled("").unwrap();
-    let old_floor = newline.resources().framer_payload_bytes;
+    let old_floor = newline.inputs().resources().framer_payload_bytes;
     let error = compiled(&format!("limits: {{max_partial_state_bytes: {old_floor}}}")).unwrap_err();
-    let exact_floor = newline.resources().partial_state_floor_bytes;
+    let exact_floor = newline.inputs().resources().partial_state_floor_bytes;
     let _ = compiled(&format!(
         "limits: {{max_partial_state_bytes: {exact_floor}}}"
     ))
@@ -669,7 +676,7 @@ fn exact_pattern_limits() {
 #[test]
 fn default_profile_vector() {
     assert_eq!(
-        hex::encode(compiled("").unwrap().profile().digest().unwrap()),
+        hex::encode(compiled("").unwrap().inputs().profile().digest().unwrap()),
         "6dd95711093f4fcffe680091011b1227aabfe8029010413aee7336c59304e393"
     );
 }
@@ -709,7 +716,10 @@ fn exact_identity_ceiling() {
         "limits: {max_tracked_files: 2588, max_pending_candidates: 43045, max_open_files: 512}",
     )
     .unwrap();
-    assert_eq!(c.resources().identity_reconciliation_bytes, 1 << 30);
+    assert_eq!(
+        c.inputs().resources().identity_reconciliation_bytes,
+        1 << 30
+    );
     let e = compiled(
         "limits: {max_tracked_files: 2588, max_pending_candidates: 43046, max_open_files: 512}",
     )
@@ -833,18 +843,64 @@ fn indexed_exclusions_preserve_root_identity() {
     assert!(!p.excludes_mapped(1, Path::new("one.log")));
 }
 
-/// Scenario: A validated policy is transferred into a blocking discovery worker.
-/// Guarantees: Consuming the configuration moves its explicit scratch without requiring Sync or recompilation.
+/// Scenario: Discovery takes ownership of the path policy while startup retains validated inputs.
+/// Guarantees: Settings, framing, resources, and store configuration remain usable after the policy moves to a worker.
 #[test]
-fn policy_moves_to_worker() {
-    let config = compiled("").unwrap();
+fn configuration_parts_have_independent_owners() {
+    let config = compiled("framing: {multiline: {line_start_pattern: '^START'}}").unwrap();
     let path = test_path("/var/log/app.log");
-    let policy = config.into_paths();
+    let (inputs, policy) = config.into_parts();
+    let worker = std::thread::spawn(move || policy.includes(&path));
+    assert_eq!(inputs.settings().limits.max_tracked_files, 10000);
+    assert_eq!(inputs.line().encoding, Encoding::Utf8);
+    assert_eq!(
+        inputs.grouping(),
+        Some(super::super::multiline::GroupingMode::Start)
+    );
+    assert!(!inputs.checkpoint_id().is_empty());
+    assert!(!inputs.namespace_component().is_empty());
+    assert!(inputs.resources().matching_bytes > 0);
+    assert!(inputs.profile().digest().is_ok());
     assert!(
-        std::thread::spawn(move || policy.includes(&path))
-            .join()
+        inputs
+            .boundary()
+            .unwrap()
+            .matcher()
+            .is_match(super::super::multiline_pattern::PatternInput::Text(
+                "START record"
+            ))
             .unwrap()
     );
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        inputs.store_config().unwrap().replay.max_tracked_files,
+        10000
+    );
+    assert!(worker.join().unwrap());
+}
+
+/// Scenario: A configuration has a cheap semantic error as well as invalid glob syntax.
+/// Guarantees: Checkpoint, framing, and multiline conflicts are rejected before compiling path matchers.
+#[test]
+fn cheap_validation_precedes_path_compilation() {
+    for (settings, field) in [
+        ("checkpoint: {id: 'bad/id'}", "checkpoint.id"),
+        (
+            "framing: {max_line_bytes: 1}",
+            "framing.max_line_bytes/max_record_bytes",
+        ),
+        (
+            "framing: {multiline: {line_start_pattern: '^a', line_end_pattern: '$'}}",
+            "framing.multiline",
+        ),
+    ] {
+        let mut config = parsed(settings);
+        config.include = vec!["[".into()];
+        let error = config
+            .compile("g", "p", "n", test_path("/work").as_path())
+            .unwrap_err();
+        assert_eq!(error.setting, field);
+    }
 }
 
 /// Scenario: Accepted files use classes, alternatives, escapes, and recursive directories.

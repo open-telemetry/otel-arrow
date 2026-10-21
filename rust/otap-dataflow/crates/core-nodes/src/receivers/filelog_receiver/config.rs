@@ -12,7 +12,7 @@ use std::time::Duration;
 
 mod compile;
 mod paths;
-pub use compile::{CompiledConfig, ConfigError, ResourceEstimates};
+pub use compile::{CompiledConfig, ConfigError, ResourceEstimates, ValidatedInputs};
 pub use paths::PathPolicy;
 #[cfg(test)]
 mod tests;

@@ -224,7 +224,7 @@ pub(super) fn compile_glob_regex(
         hirs.push(hir);
     }
     let program_bytes = memory::glob_program_bound(&hirs)?;
-    let compiled = build(
+    let program = build_with_payload_limit(
         &Hir::alternation(hirs),
         PatternMode::Raw,
         PatternLimits {
@@ -232,10 +232,8 @@ pub(super) fn compile_glob_regex(
             ..PatternLimits::default()
         },
         true,
+        program_bytes,
     )?;
-    let program = Arc::try_unwrap(compiled.program).map_err(|_| {
-        PatternError::Compile("newly compiled glob program unexpectedly shared".into())
-    })?;
     Ok((program.regex, program.memory))
 }
 
@@ -343,7 +341,10 @@ fn build(
     limits: PatternLimits,
     prefilter: bool,
 ) -> Result<BoundaryPattern, PatternError> {
-    build_with_payload_limit(hir, mode, limits, prefilter, limits.program_bytes)
+    let program = build_with_payload_limit(hir, mode, limits, prefilter, limits.program_bytes)?;
+    Ok(BoundaryPattern {
+        program: Arc::new(program),
+    })
 }
 
 fn build_with_payload_limit(
@@ -352,7 +353,7 @@ fn build_with_payload_limit(
     limits: PatternLimits,
     prefilter: bool,
     payload_limit: usize,
-) -> Result<BoundaryPattern, PatternError> {
+) -> Result<Program, PatternError> {
     // Validate the forward program once, before meta can attempt a reverse program.
     // This also supplies exact state/epsilon counts for scratch sizing. Drop it
     // before meta construction so the sizing copy is never retained by workers.
@@ -449,13 +450,11 @@ fn build_with_payload_limit(
         3
     };
     let memory = scratch.estimate(payload, initial, growing_caches, limits.lazy_cache_bytes, 1)?;
-    Ok(BoundaryPattern {
-        program: Arc::new(Program {
-            mode,
-            regex,
-            policy,
-            memory,
-        }),
+    Ok(Program {
+        mode,
+        regex,
+        policy,
+        memory,
     })
 }
 

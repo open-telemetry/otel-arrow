@@ -45,12 +45,13 @@ fn path_policy_retained_memory() {
         // Parsed source strings predate the profiler. The additional retained
         // configuration allocations here are the selected ID and hex component.
         let bound = compiled.paths().retained_bytes().expect("memory sum") as usize
-            + 2 * (compiled.checkpoint_id().len() + compiled.namespace_component().len());
+            + 2 * (compiled.inputs().checkpoint_id().len()
+                + compiled.inputs().namespace_component().len());
         // Test metadata before search growth without the lazy-cache allowance.
         let cold_bound = compiled.paths().program_bytes().expect("program sum") as usize
             - size_of::<PathPolicy>() // The profiler measures heap, not the policy's inline storage.
             + compiled.paths().observed_scratch_bytes().expect("initial scratch") as usize
-            + 2 * (compiled.checkpoint_id().len() + compiled.namespace_component().len());
+            + 2 * (compiled.inputs().checkpoint_id().len() + compiled.inputs().namespace_component().len());
         let cold_live = dhat::HeapStats::get().curr_bytes;
         dhat::assert!(
             cold_live <= cold_bound,
@@ -77,4 +78,44 @@ fn path_policy_retained_memory() {
         drop(compiled);
         drop(profiler);
     }
+    #[cfg(unix)]
+    warmed_unix_matching_reuses_allocations();
+}
+
+/// Scenario: A fixed working set exercises all Unix path-policy query methods after cache warmup.
+/// Guarantees: Repeated queries reuse owned scratch without transient path-copy or search allocations.
+#[cfg(unix)]
+fn warmed_unix_matching_reuses_allocations() {
+    use std::path::Path;
+    let config = Config {
+        include: vec![
+            "logs/{app,worker}/**/*.log".into(),
+            "logs/{a/b,c}/*.txt".into(),
+        ],
+        exclude: vec!["logs/private/**".into(), "secret/*.log".into()],
+        ..Config::default()
+    }
+    .compile("g", "p", "n", Path::new("/work"))
+    .expect("configuration");
+    let policy = config.paths();
+    let profiler = allocation::profiler("filelog_path_memory", "warmed_queries");
+    let query = || {
+        assert!(policy.includes(Path::new("/work/logs/app/sub/event.log")));
+        assert!(policy.may_descend(Path::new("/work/logs/app/sub")));
+        assert!(policy.may_descend(Path::new("/work/logs/a/b")));
+        assert!(policy.excludes(Path::new("/work/logs/private/sub/event.log")));
+        assert!(policy.excludes_subtree(Path::new("/work/logs/private")));
+        assert!(policy.excludes_mapped(1, Path::new("hidden.log")));
+    };
+    for _ in 0..4 {
+        query();
+    }
+    let before = dhat::HeapStats::get();
+    for _ in 0..128 {
+        query();
+    }
+    let after = dhat::HeapStats::get();
+    dhat::assert_eq!(after.total_blocks, before.total_blocks);
+    dhat::assert_eq!(after.total_bytes, before.total_bytes);
+    drop(profiler);
 }

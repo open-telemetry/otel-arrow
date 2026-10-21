@@ -527,6 +527,9 @@ fn aggregate_program_fallback() {
         limit,
     )
     .expect("forward-only payload fits");
+    let program = BoundaryPattern {
+        program: Arc::new(program),
+    };
     assert_eq!(
         program.execution_policy(),
         ExecutionPolicy::NoLazyDfa {

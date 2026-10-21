@@ -66,8 +66,11 @@ lazy-DFA cache per pattern. Pattern IDs keep canonical-root mappings distinct.
 The path policy owns explicit worker-local scratch, with no pooled search cache
 or cross-worker lock. It is movable to a worker but is not shared concurrently.
 Unix matching borrows native path bytes and does not allocate joined paths.
-`CompiledConfig::into_paths()` transfers ownership to the discovery worker
-after other startup inputs have been extracted. `retained_bytes()` reports
+`CompiledConfig::inputs()` borrows the validated settings and primitive inputs.
+`CompiledConfig::into_parts()` moves those inputs and the path policy into
+separate owners. Startup can still read settings, create boundary matchers and
+obtain store inputs after transferring the policy to discovery.
+`retained_bytes()` reports
 program, metadata, root-storage and bounded scratch allowances. The regex
 metadata allowance is source-audited for the locked engine
 and checked against cold allocations separately from the growing scratch

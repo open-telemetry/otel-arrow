@@ -9,6 +9,7 @@ use globset::{Glob, GlobBuilder};
 mod glob_program;
 use glob_program::{GlobProgram, IndexedGlobProgram};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
 };
@@ -27,11 +28,10 @@ pub struct PathPolicy {
     directory_rules: Vec<DirectoryRule>,
 }
 
-#[derive(Debug, Default)]
-struct DirectoryRule {
-    components: Vec<usize>,
-    recursive: bool,
-    prefix_pattern: Option<usize>,
+#[derive(Debug)]
+enum DirectoryRule {
+    Components { ids: Vec<usize>, recursive: bool },
+    Prefix(usize),
 }
 
 impl PathPolicy {
@@ -76,9 +76,9 @@ impl PathPolicy {
                 "aggregate pattern text exceeds 1 MiB",
             ));
         }
-        let mut include_set = Vec::new();
-        let mut include_depths = Vec::new();
-        let mut exclude_set = Vec::new();
+        let mut include_set = Vec::with_capacity(include.len());
+        let mut include_depths = Vec::with_capacity(include.len());
+        let mut exclude_set = Vec::with_capacity(exclude.len());
         let mut excluded_subtrees = Vec::new();
         let mut include_roots = Vec::with_capacity(include.len());
         let mut exclude_roots = Vec::with_capacity(exclude.len());
@@ -92,7 +92,7 @@ impl PathPolicy {
             for (index, pattern) in patterns.iter().enumerate() {
                 let field = format!("{setting}[{index}]");
                 let absolute = if Path::new(pattern).is_absolute() {
-                    pattern.clone()
+                    Cow::Borrowed(pattern.as_str())
                 } else {
                     if !base.is_absolute() {
                         return Err(ConfigError::new(
@@ -113,13 +113,13 @@ impl PathPolicy {
                         ));
                     }
                     let base = base.to_str().ok_or_else(|| ConfigError::new(&field, "relative patterns require a UTF-8 base; absolute patterns preserve native candidate bytes"))?;
-                    format!(
+                    Cow::Owned(format!(
                         "{}/{}",
                         escape_base(
                             base.trim_end_matches(|c| c == '/' || (cfg!(windows) && c == '\\'))
                         ),
                         pattern
-                    )
+                    ))
                 };
                 let glob = build(&absolute, &field)?;
                 validate_path_syntax(pattern, &field)?;
@@ -213,7 +213,9 @@ impl PathPolicy {
         add(self.include_depths.capacity() * size_of::<Option<usize>>())?;
         add(self.directory_rules.capacity() * size_of::<DirectoryRule>())?;
         for rule in &self.directory_rules {
-            add(rule.components.capacity() * size_of::<usize>())?;
+            if let DirectoryRule::Components { ids, .. } = rule {
+                add(ids.capacity() * size_of::<usize>())?;
+            }
         }
         for root in self.include_roots.iter().chain(&self.exclude_roots) {
             add(root.capacity())?;
@@ -324,23 +326,29 @@ impl PathPolicy {
                 if depth.is_some_and(|max| suffix.components().count() > max) {
                     return false;
                 }
-                if let Some(pattern) = rule.prefix_pattern {
-                    return self
+                match rule {
+                    DirectoryRule::Prefix(pattern) => self
                         .directory_components
                         .as_ref()
-                        .is_some_and(|program| program.matches_pattern(pattern, suffix, true));
-                }
-                for (index, component) in suffix.components().enumerate() {
-                    let Some(pattern) = rule.components.get(index) else {
-                        return rule.recursive;
-                    };
-                    if !self.directory_components.as_ref().is_some_and(|program| {
-                        program.matches_pattern(*pattern, Path::new(component.as_os_str()), true)
-                    }) {
-                        return false;
+                        .is_some_and(|program| program.matches_pattern(*pattern, suffix, true)),
+                    DirectoryRule::Components { ids, recursive } => {
+                        for (index, component) in suffix.components().enumerate() {
+                            let Some(pattern) = ids.get(index) else {
+                                return *recursive;
+                            };
+                            if !self.directory_components.as_ref().is_some_and(|program| {
+                                program.matches_pattern(
+                                    *pattern,
+                                    Path::new(component.as_os_str()),
+                                    true,
+                                )
+                            }) {
+                                return false;
+                            }
+                        }
+                        true
                     }
                 }
-                true
             })
     }
     /// Apply to both lexical and verified target paths before reading content.
@@ -388,7 +396,7 @@ fn build(pattern: &str, setting: &str) -> Result<Glob, ConfigError> {
 // are literal root bytes; the suffix retains its original glob syntax.
 fn prefix(pattern: &str) -> (PathBuf, &str) {
     let mut literal = String::new();
-    let mut root = String::new();
+    let mut root_len = 0;
     let mut suffix = 0;
     let mut chars = pattern.char_indices();
     while let Some((i, ch)) = chars.next() {
@@ -398,7 +406,7 @@ fn prefix(pattern: &str) -> (PathBuf, &str) {
             }
         } else if ch == '/' || (cfg!(windows) && ch == '\\') {
             literal.push(ch);
-            root.clone_from(&literal);
+            root_len = literal.len();
             suffix = i + ch.len_utf8();
         } else if matches!(ch, '*' | '?' | '[' | '{') {
             break;
@@ -406,7 +414,10 @@ fn prefix(pattern: &str) -> (PathBuf, &str) {
             literal.push(ch);
         }
     }
-    (PathBuf::from(root), &pattern[suffix..])
+    literal.truncate(root_len);
+    // Do not retain the discarded basename's capacity in a long-lived root.
+    literal.shrink_to_fit();
+    (PathBuf::from(literal), &pattern[suffix..])
 }
 
 fn escape_base(base: &str) -> String {
@@ -540,10 +551,11 @@ fn directory_rule(
     let Some(parts) = split_components(suffix) else {
         return directory_prefix_rule(suffix, field, names);
     };
-    let mut rule = DirectoryRule::default();
+    let mut ids = Vec::new();
+    let mut recursive = false;
     for (index, part) in parts.iter().enumerate() {
         if *part == "**" {
-            rule.recursive = true;
+            recursive = true;
             break;
         }
         let glob = build(part, field)?;
@@ -560,9 +572,9 @@ fn directory_rule(
             let _ = names.insert(glob.regex().to_owned(), id);
             id
         };
-        rule.components.push(id);
+        ids.push(id);
     }
-    Ok(rule)
+    Ok(DirectoryRule::Components { ids, recursive })
 }
 
 // Split only unambiguous component boundaries. Alternatives/classes containing
@@ -687,8 +699,5 @@ fn directory_prefix_rule(
     let pattern = format!("(?-u)^(?:{})$", prefixes(&hir));
     let next = names.len();
     let id = *names.entry(pattern).or_insert(next);
-    Ok(DirectoryRule {
-        prefix_pattern: Some(id),
-        ..DirectoryRule::default()
-    })
+    Ok(DirectoryRule::Prefix(id))
 }
