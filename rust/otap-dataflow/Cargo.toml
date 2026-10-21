@@ -19,7 +19,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.88.0"
+rust-version = "1.98.1"
 
 [package]
 name = "otel-arrow-dfe"
@@ -50,7 +50,6 @@ otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
-cfg-if.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -108,7 +107,6 @@ bitflags = "2.10"
 bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
-cfg-if = "1.0.4"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
@@ -201,7 +199,7 @@ ryu = "1"
 rustix = { version = "1.1.5", features = ["fs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
 rustls-pki-types = { version = "1.11", features = ["std"] }
-rustls-webpki = { version = "0.103.15", default-features = false, features = ["std"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-native-certs = "0.8.2"
 rustls-openssl = "0.4"
@@ -262,11 +260,12 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["fast-rng", "v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+x509-parser = { version = "0.18.1", default-features = false }
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
