@@ -38,6 +38,25 @@ pub struct LineConfig {
 }
 
 impl LineConfig {
+    /// Conservative newline payload peak, including overlapping buffer growth.
+    /// Excludes inline reader state and the owned source-turn remainder.
+    pub fn payload_peak_bytes(&self) -> Result<usize, LineError> {
+        self.validate()?;
+        let copies = if self.encoding != Encoding::Raw
+            && self.on_decode_error == OnDecodeError::PreserveRaw
+        {
+            2
+        } else {
+            1
+        };
+        self.max_line_bytes
+            .min(self.max_record_bytes)
+            .checked_add(self.max_record_bytes)
+            .and_then(|n| n.checked_mul(4 * copies))
+            .and_then(|n| n.checked_add(16 * copies + 16))
+            .ok_or(LineError::InvalidBounds)
+    }
+
     /// Validate encoding-specific minimum bounds and allocation arithmetic.
     pub fn validate(&self) -> Result<(), LineError> {
         let minimum = match (self.encoding, self.on_decode_error) {

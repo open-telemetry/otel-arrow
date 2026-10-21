@@ -666,3 +666,24 @@ fn confirmed_engine_paths_agree() {
         }
     }
 }
+
+/// Scenario: A glob set contains many short patterns rather than large regex programs.
+/// Guarantees: Its program allowance follows syntax size instead of granting 10 MiB per pattern.
+#[test]
+fn short_glob_set_program_budget() {
+    let hirs: Vec<_> = (0..1024)
+        .map(|i| {
+            regex_syntax::ParserBuilder::new()
+                .unicode(false)
+                .build()
+                .parse(&format!("^file{i}$"))
+                .unwrap()
+        })
+        .collect();
+    let bound = memory::glob_program_bound(&hirs).unwrap();
+    assert!(bound < MAX_PROGRAM_BYTES);
+    let patterns: Vec<_> = (0..1024).map(|i| format!("^file{i}$")).collect();
+    let refs: Vec<_> = patterns.iter().map(String::as_str).collect();
+    let (_, estimate) = compile_indexed_globs(&refs).unwrap();
+    assert!(estimate.program_payload_bytes <= bound);
+}

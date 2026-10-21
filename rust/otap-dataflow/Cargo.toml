@@ -211,6 +211,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 semver = "1"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
+serde_path_to_error = "0.1.20"
 serde_json = { version = "1.0.149" }
 serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
@@ -269,6 +270,7 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
+globset = "0.4.20"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=9.0.5"
 byte-unit = { version = "5.2.0", features = ["serde"] }

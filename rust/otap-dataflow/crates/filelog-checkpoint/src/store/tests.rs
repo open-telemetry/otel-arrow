@@ -602,7 +602,7 @@ fn checked_resource_admission() {
     config.replay.max_snapshot_bytes = u64::MAX;
     assert!(matches!(
         CheckpointStore::open(&root, ID, config),
-        Err(StoreError::InvalidLimits {
+        Err(StoreError::Admission {
             max_snapshot_bytes: u64::MAX,
             ..
         })
@@ -1227,7 +1227,7 @@ fn interacting_wal_bound_preserves_combined_limits() {
     for limits in [file_limit, snapshot_limit, replay_limit] {
         assert!(matches!(
             limits.validate(),
-            Err(StoreError::InvalidLimits { .. })
+            Err(StoreError::Admission { .. })
         ));
     }
     let too_small = StoreConfig {
@@ -1550,4 +1550,16 @@ fn root_capability_rejects_path_only_handles() {
         Err(StoreError::InvalidConfig(_))
     ));
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+/// Scenario: Namespace encoding rejects a caller-supplied invalid checkpoint ID.
+/// Guarantees: Invalid configuration remains distinguishable from transaction-encoding failure.
+#[test]
+fn invalid_namespace_error_category() {
+    for id in ["", "a/b", "white space"] {
+        assert!(matches!(
+            filesystem::namespace_component(id),
+            Err(StoreError::InvalidConfig(_))
+        ));
+    }
 }

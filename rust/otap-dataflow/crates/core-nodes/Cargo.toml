@@ -42,6 +42,9 @@ otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true
 otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
 futures.workspace = true
 futures-timer.workspace = true
+globset.workspace = true
+sha2.workspace = true
+otel-arrow-dfe-filelog-checkpoint.workspace = true
 hex.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
@@ -55,6 +58,7 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 slotmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
@@ -239,3 +243,7 @@ harness = false
 name = "filelog_grouping"
 harness = false
 path = "benches/filelog_grouping/main.rs"
+
+[[test]]
+name = "filelog_path_memory"
+harness = false
