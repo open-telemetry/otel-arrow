@@ -215,6 +215,7 @@ impl<
                 latest_context_bindings: context_bindings,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
+                launching_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
                 deferred_runtime_recoveries: HashMap::new(),
                 pipeline_operation_reservations: HashMap::new(),
@@ -321,9 +322,13 @@ impl<
         pipeline_key: &DeployedPipelineKey,
         exit: &RuntimeInstanceExit,
     ) -> bool {
-        if let Some(instance) = state.runtime_instances.get_mut(pipeline_key) {
-            instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
+        let Some(instance) = state.runtime_instances.get_mut(pipeline_key) else {
+            return false;
+        };
+        if !matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active) {
+            return false;
         }
+        instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
         state.active_instances = state.active_instances.saturating_sub(1);
         let logical_pipeline_key = PipelineKey::new(
             pipeline_key.pipeline_group_id.clone(),

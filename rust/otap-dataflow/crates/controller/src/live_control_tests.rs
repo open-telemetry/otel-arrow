@@ -5613,6 +5613,17 @@ fn reconfigure_accepts_supported_context_runtime_requirements() {
 /// Guarantees: recovery reuses that generation's binding snapshot.
 #[test]
 fn runtime_recovery_reuses_context_bindings_snapshot() {
+    assert_runtime_recovery_reuses_context_bindings_snapshot(false);
+}
+
+/// Scenario: a reserved pipeline fails before registration after the latest context bindings change.
+/// Guarantees: recovery uses the failed launch's binding snapshot, not the controller's latest snapshot.
+#[test]
+fn launch_failure_before_registration_reuses_context_bindings_snapshot() {
+    assert_runtime_recovery_reuses_context_bindings_snapshot(true);
+}
+
+fn assert_runtime_recovery_reuses_context_bindings_snapshot(exit_before_registration: bool) {
     let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -5649,14 +5660,49 @@ fn runtime_recovery_reuses_context_bindings_snapshot() {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Arc::clone(&state.latest_context_bindings)
     };
-    let _runtime_control =
-        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 0);
+    let mut reserved_launch = None;
+    let _runtime_control = if exit_before_registration {
+        runtime
+            .reserve_instance_launch(
+                &launched.pipeline_key,
+                Arc::clone(&launched.context_bindings),
+                Arc::clone(&launched.startup_ready),
+            )
+            .expect("launch should reserve its context snapshot");
+        reserved_launch = Some(launched);
+        None
+    } else {
+        Some(register_runtime_instance(
+            &runtime,
+            "g1",
+            "p1",
+            0,
+            0,
+            RuntimeInstanceLifecycle::Active,
+        ))
+    };
     report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let latest_bindings = runtime
+        .pipeline_factory
+        .compile_initial_context(&empty_engine_config().resolve())
+        .expect("new context snapshot should compile")
+        .bindings;
+    assert!(!Arc::ptr_eq(&expected_bindings, &latest_bindings));
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_context_bindings = latest_bindings;
 
     runtime.note_instance_exit(
         deployed_key("g1", "p1", 0, 0),
         RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
     );
+    if let Some(launched) = reserved_launch {
+        runtime.register_launched_instance(launched);
+    }
 
     let recovered_bindings = wait_for_context_bindings_test_capture()
         .upgrade()
@@ -5676,6 +5722,10 @@ fn runtime_recovery_reuses_context_bindings_snapshot() {
             "context binding recovery test cleanup",
         )
         .expect("recovered runtime should accept shutdown");
+    assert!(
+        runtime.wait_until_all_instances_exit_for(Duration::from_secs(5)),
+        "recovered runtime should finish cleanup"
+    );
 }
 
 /// Scenario: a control-plane caller deletes a pipeline that cannot be found.
@@ -8244,6 +8294,359 @@ fn exited_runtime_instances_without_active_operation_are_pruned_immediately() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(!state.runtime_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: a pipeline thread is reserved before spawning but OS-thread creation fails.
+/// Guarantees: launch liveness is visible immediately and repeated rollback releases it only once.
+#[test]
+fn launch_reservation_counts_liveness_and_rolls_back_once() {
+    let runtime = test_runtime(&empty_engine_config());
+    let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+    runtime
+        .reserve_instance_launch(
+            &launched.pipeline_key,
+            Arc::clone(&launched.context_bindings),
+            Arc::clone(&launched.startup_ready),
+        )
+        .expect("launch reservation should succeed");
+    assert!(!runtime.all_instances_exited());
+    assert!(!runtime.wait_until_all_instances_exit_for(Duration::ZERO));
+
+    runtime.abort_instance_launch(&launched.pipeline_key);
+    runtime.abort_instance_launch(&launched.pipeline_key);
+    assert!(runtime.all_instances_exited());
+    assert!(runtime.wait_until_all_instances_exit_for(Duration::ZERO));
+    assert!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .launching_instances
+            .is_empty()
+    );
+}
+
+/// Scenario: a deployed key is reserved twice, both before and after publishing its control sender.
+/// Guarantees: duplicate launches are rejected without double-counting or replacing the live instance.
+#[test]
+fn launch_reservation_rejects_pending_and_active_duplicates() {
+    let runtime = test_runtime(&empty_engine_config());
+    let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+    let key = launched.pipeline_key.clone();
+    let bindings = Arc::clone(&launched.context_bindings);
+    let startup_ready = Arc::clone(&launched.startup_ready);
+    runtime
+        .reserve_instance_launch(&key, Arc::clone(&bindings), Arc::clone(&startup_ready))
+        .expect("first launch should reserve");
+    for registered in [false, true] {
+        let error = runtime
+            .reserve_instance_launch(&key, Arc::clone(&bindings), Arc::clone(&startup_ready))
+            .expect_err("duplicate launch should fail");
+        assert!(error.to_string().contains("already launching or active"));
+        assert_eq!(
+            runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active_instances,
+            1
+        );
+        if !registered {
+            let (sender, _calls) = recording_admin_sender(None);
+            runtime.register_launched_instance(LaunchedPipelineThread {
+                pipeline_key: key.clone(),
+                control_sender: sender,
+                context_bindings: Arc::clone(&bindings),
+                startup_ready: Arc::clone(&startup_ready),
+                _marker: std::marker::PhantomData,
+            });
+        }
+    }
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: context bindings change after reservation and readiness is published before registration.
+/// Guarantees: registration retains the reserved snapshot and the runtime's shared readiness marker.
+#[test]
+fn launch_registration_retains_context_and_startup_readiness() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+    let key = launched.pipeline_key.clone();
+    let bindings = Arc::clone(&launched.context_bindings);
+    let startup_ready = Arc::clone(&launched.startup_ready);
+    runtime
+        .reserve_instance_launch(&key, Arc::clone(&bindings), Arc::clone(&startup_ready))
+        .expect("launch should reserve");
+    let latest_bindings = runtime
+        .pipeline_factory
+        .compile_initial_context(&config.resolve())
+        .expect("new snapshot should compile")
+        .bindings;
+    assert!(!Arc::ptr_eq(&bindings, &latest_bindings));
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest_context_bindings = latest_bindings;
+    startup_ready.store(true, Ordering::Release);
+    runtime
+        .wait_for_pipeline_ready(&key, Instant::now())
+        .expect("readiness published before registration must remain visible");
+
+    runtime.register_launched_instance(launched);
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let instance = state
+            .runtime_instances
+            .get(&key)
+            .expect("registered runtime");
+        assert!(Arc::ptr_eq(&bindings, &instance.context_bindings));
+        assert!(Arc::ptr_eq(&startup_ready, &instance.startup_ready));
+        assert!(instance.startup_ready.load(Ordering::Acquire));
+        assert_eq!(state.active_instances, 1);
+        assert!(state.launching_instances.is_empty());
+    }
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: a stopped or failed runtime key is reused for a reserved launch that activates or aborts.
+/// Guarantees: exit queries and exit waits ignore the old result while launching; rollback restores it.
+#[test]
+fn launch_reservation_hides_previous_exit_until_registration_or_abort() {
+    for failed in [false, true] {
+        for abort in [false, true] {
+            let runtime = test_runtime(&empty_engine_config());
+            let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+            let key = launched.pipeline_key.clone();
+            let previous_exit = if failed {
+                RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("previous failure".into()))
+            } else {
+                RuntimeInstanceExit::Success
+            };
+            let _control = register_runtime_instance(
+                &runtime,
+                "g1",
+                "p1",
+                0,
+                7,
+                RuntimeInstanceLifecycle::Exited(previous_exit),
+            );
+            runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .runtime_instances
+                .get(&key)
+                .expect("previous runtime")
+                .startup_ready
+                .store(true, Ordering::Release);
+            runtime
+                .reserve_instance_launch(
+                    &key,
+                    Arc::clone(&launched.context_bindings),
+                    Arc::clone(&launched.startup_ready),
+                )
+                .expect("relaunch should reserve");
+            assert!(runtime.instance_exit(&key).is_none());
+            let error = runtime
+                .wait_for_instance_exit(&key, Instant::now())
+                .expect_err("the prior exit must not finish the new launch's wait");
+            assert!(error.contains("timed out waiting"));
+            let error = runtime
+                .wait_for_pipeline_ready(&key, Instant::now())
+                .expect_err("the prior readiness must not finish the new launch's wait");
+            assert!(error.contains("timed out waiting for admitted+ready"));
+            if abort {
+                runtime.abort_instance_launch(&key);
+                match runtime
+                    .instance_exit(&key)
+                    .expect("prior exit is preserved")
+                {
+                    RuntimeInstanceExit::Success => assert!(!failed),
+                    RuntimeInstanceExit::Error(error) => {
+                        assert!(failed);
+                        assert_eq!(error.message, "previous failure");
+                    }
+                }
+            } else {
+                runtime.register_launched_instance(launched);
+                assert!(runtime.instance_exit(&key).is_none());
+                runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+            }
+            assert!(runtime.all_instances_exited());
+        }
+    }
+}
+
+/// Scenario: a reserved thread reports success or failure, then a duplicate exit, before registration.
+/// Guarantees: the first exit releases liveness once and late registration cannot resurrect the thread.
+#[test]
+fn launch_exit_before_registration_completes_once_without_resurrection() {
+    for failed in [false, true] {
+        let runtime = test_runtime(&empty_engine_config());
+        let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+        let key = launched.pipeline_key.clone();
+        runtime
+            .reserve_instance_launch(
+                &key,
+                Arc::clone(&launched.context_bindings),
+                Arc::clone(&launched.startup_ready),
+            )
+            .expect("launch should reserve");
+        let exit = if failed {
+            RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("first failure".into()))
+        } else {
+            RuntimeInstanceExit::Success
+        };
+        runtime.note_instance_exit(key.clone(), exit);
+        runtime.note_instance_exit(
+            key.clone(),
+            RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("duplicate failure".into())),
+        );
+        assert!(runtime.all_instances_exited());
+        match runtime
+            .instance_exit(&key)
+            .expect("reserved exit is retained")
+        {
+            RuntimeInstanceExit::Success => assert!(!failed),
+            RuntimeInstanceExit::Error(error) => {
+                assert!(failed);
+                assert_eq!(error.message, "first failure");
+            }
+        }
+        runtime.register_launched_instance(launched);
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.active_instances, 0);
+        assert!(state.launching_instances.is_empty());
+        assert!(!state.runtime_instances.contains_key(&key));
+        assert_eq!(
+            state.first_error.as_deref(),
+            failed.then_some("first failure")
+        );
+    }
+}
+
+/// Scenario: an already-exited instance reports a duplicate exit while another instance remains active.
+/// Guarantees: the original exit is retained and the unrelated instance keeps its liveness count.
+#[test]
+fn launch_duplicate_exit_does_not_consume_another_instances_liveness() {
+    let runtime = test_runtime(&empty_engine_config());
+    let old_key = deployed_key("g1", "p1", 0, 7);
+    let _old_control = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        7,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("original failure".into()),
+        )),
+    );
+    let _active_control =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 8, RuntimeInstanceLifecycle::Active);
+    runtime.note_instance_exit(old_key.clone(), RuntimeInstanceExit::Success);
+    assert!(!runtime.all_instances_exited());
+    match runtime.instance_exit(&old_key).expect("original exit") {
+        RuntimeInstanceExit::Error(error) => assert_eq!(error.message, "original failure"),
+        RuntimeInstanceExit::Success => panic!("duplicate exit replaced the original error"),
+    }
+    runtime.note_instance_exit(deployed_key("g1", "p1", 0, 8), RuntimeInstanceExit::Success);
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: global shutdown starts while a producer is reserved but has no published control sender.
+/// Guarantees: shutdown tracks the pending launch, registration inherits shutdown, and new launches fail.
+#[test]
+fn launch_registration_during_global_shutdown_inherits_shutdown() {
+    let runtime = test_runtime(&empty_engine_config());
+    let mut launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+    let key = launched.pipeline_key.clone();
+    let (sender, notifications) = deadline_notifying_admin_sender();
+    launched.control_sender = sender;
+    runtime
+        .reserve_instance_launch(
+            &key,
+            Arc::clone(&launched.context_bindings),
+            Arc::clone(&launched.startup_ready),
+        )
+        .expect("launch should reserve");
+    runtime
+        .request_shutdown_all(5)
+        .expect("shutdown should start");
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_coordinators,
+        1,
+        "the pending producer must participate in shutdown coordination"
+    );
+    assert!(
+        runtime
+            .reserve_instance_launch(
+                &deployed_key("g1", "p1", 0, 8),
+                Arc::clone(&launched.context_bindings),
+                Arc::clone(&launched.startup_ready),
+            )
+            .is_err()
+    );
+    runtime.register_launched_instance(launched);
+    let (reason, deadline) = notifications
+        .recv_timeout(Duration::from_secs(5))
+        .expect("late registration should receive shutdown");
+    assert!(reason.contains("global shutdown"));
+    assert_eq!(
+        Some(deadline),
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_deadline
+    );
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: a reserved producer exists alongside the system observability pipeline before registration.
+/// Guarantees: the controller does not classify observability as the only live instance until that producer exits.
+#[test]
+fn launch_reservation_participates_in_producer_liveness() {
+    let runtime = test_runtime(&empty_engine_config());
+    let observability = launched_runtime_instance(
+        &runtime,
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        0,
+        0,
+    );
+    let observability_key = observability.pipeline_key.clone();
+    runtime.register_launched_instance(observability);
+    assert!(runtime.only_observability_active());
+    let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+    runtime
+        .reserve_instance_launch(
+            &launched.pipeline_key,
+            Arc::clone(&launched.context_bindings),
+            Arc::clone(&launched.startup_ready),
+        )
+        .expect("producer launch should reserve");
+    assert!(!runtime.only_observability_active());
+    runtime.note_instance_exit(launched.pipeline_key.clone(), RuntimeInstanceExit::Success);
+    assert!(runtime.only_observability_active());
+    runtime.register_launched_instance(launched);
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.all_instances_exited());
 }
 
 /// Scenario: a runtime thread reports exit before the controller finishes

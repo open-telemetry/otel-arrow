@@ -551,6 +551,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineDeployment>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    /// Launch reservations retained until registration, including exits before registration.
+    pub(super) launching_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     /// Runtime failures held while an explicit operation owns their lifecycle.
@@ -559,9 +561,8 @@ pub(super) struct ControllerRuntimeState {
     /// Planning-stage lifecycle reservations keyed by logical pipeline.
     pub(super) pipeline_operation_reservations:
         HashMap<PipelineKey, PipelineOperationReservationState>,
-    // A pipeline thread can finish before register_launched_instance() publishes it as Active.
-    // We park that exit here and reconcile it during registration instead of leaving stale
-    // liveness behind.
+    // Synthetic tests can report exits without creating a launch reservation.
+    // Reconcile those exits when the test registers the instance.
     pub(super) pending_instance_exits: HashMap<DeployedPipelineKey, RuntimeInstanceExit>,
     /// Rollout snapshots retained for active and recent terminal lookups.
     pub(super) rollouts: HashMap<String, RolloutRecord>,
@@ -577,7 +578,7 @@ pub(super) struct ControllerRuntimeState {
     pub(super) terminal_shutdowns: HashMap<PipelineKey, VecDeque<String>>,
     /// Next deployment generation to assign for each logical pipeline.
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
-    /// Count of runtime instances still considered active by the controller.
+    /// Count of runtime instances still launching or active.
     pub(super) active_instances: usize,
     /// Whether at least one engine-wide shutdown request has been accepted.
     pub(super) global_shutdown_requested: bool,
@@ -614,6 +615,16 @@ pub(super) struct ControllerRuntimeState {
 }
 
 impl ControllerRuntimeState {
+    /// Looks up the current launch before any terminal record retained for a reused key.
+    pub(super) fn runtime_instance(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+    ) -> Option<&RuntimeInstanceRecord> {
+        self.launching_instances
+            .get(deployed_key)
+            .or_else(|| self.runtime_instances.get(deployed_key))
+    }
+
     /// Returns whether an explicit operation currently owns this pipeline.
     pub(super) fn recovery_preempted(&self, pipeline_key: &PipelineKey) -> bool {
         self.global_shutdown_requested
