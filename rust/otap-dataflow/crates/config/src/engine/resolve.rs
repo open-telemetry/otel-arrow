@@ -359,7 +359,19 @@ mod tests {
     }
 
     fn codec_declaration(validation: &str) -> serde_json::Value {
-        serde_json::json!({ "defaults": { "decode": { "validation": validation } } })
+        serde_json::json!({ "bindings": { "otlp-bytes": { "decode": { "validation": validation } } } })
+    }
+
+    fn codec_validation(
+        config: &crate::codecs::ResolvedCodecsConfig,
+    ) -> crate::codecs::DecodeValidation {
+        config
+            .effective_bindings()
+            .unwrap()
+            .get("otlp-bytes")
+            .and_then(|binding| binding.decode.as_ref())
+            .map(|decode| decode.validation)
+            .unwrap_or_default()
     }
 
     fn resolve_codec_test_spec(
@@ -370,27 +382,26 @@ mod tests {
         (regular.remove(0), observability.unwrap())
     }
 
-    /// Scenario: Codec defaults are declared at top-level, group, pipeline, and observability scope.
+    /// Scenario: Codec bindings are declared at top-level, group, pipeline, and observability scope.
     /// Guarantees: The nearest explicit value wins; empty sections inherit, and observability bypasses groups.
     #[test]
     fn codec_config_inherits_across_pipeline_scopes() {
         use crate::codecs::DecodeValidation::{BestEffort, Strict};
         let mut spec = codec_test_spec();
         let (pipeline, observability) = resolve_codec_test_spec(&spec);
-        assert_eq!(pipeline.codecs.decode_validation, BestEffort);
-        assert_eq!(observability.codecs.decode_validation, BestEffort);
+        assert_eq!(codec_validation(&pipeline.codecs), BestEffort);
+        assert_eq!(codec_validation(&observability.codecs), BestEffort);
 
         spec["codecs"] = codec_declaration("strict");
-        spec["groups"]["g"]["pipelines"]["p"]["codecs"] =
-            serde_json::json!({"defaults": {"decode": {}}});
+        spec["groups"]["g"]["pipelines"]["p"]["codecs"] = serde_json::json!({});
         let (pipeline, observability) = resolve_codec_test_spec(&spec);
-        assert_eq!(pipeline.codecs.decode_validation, Strict);
-        assert_eq!(observability.codecs.decode_validation, Strict);
+        assert_eq!(codec_validation(&pipeline.codecs), Strict);
+        assert_eq!(codec_validation(&observability.codecs), Strict);
 
         spec["groups"]["g"]["codecs"] = codec_declaration("best_effort");
         let (pipeline, observability) = resolve_codec_test_spec(&spec);
-        assert_eq!(pipeline.codecs.decode_validation, BestEffort);
-        assert_eq!(observability.codecs.decode_validation, Strict);
+        assert_eq!(codec_validation(&pipeline.codecs), BestEffort);
+        assert_eq!(codec_validation(&observability.codecs), Strict);
 
         spec["groups"]["g"]["pipelines"]["p"]["codecs"] = codec_declaration("strict");
         spec["engine"] = serde_json::json!({ "observability": { "pipeline":
@@ -398,28 +409,8 @@ mod tests {
         } });
         spec["engine"]["observability"]["pipeline"]["codecs"] = codec_declaration("best_effort");
         let (pipeline, observability) = resolve_codec_test_spec(&spec);
-        assert_eq!(pipeline.codecs.decode_validation, Strict);
-        assert_eq!(observability.codecs.decode_validation, BestEffort);
-        assert_eq!(
-            pipeline
-                .pipeline
-                .codecs()
-                .unwrap()
-                .defaults
-                .decode
-                .validation,
-            Some(Strict)
-        );
-        assert_eq!(
-            observability
-                .pipeline
-                .codecs()
-                .unwrap()
-                .defaults
-                .decode
-                .validation,
-            Some(BestEffort)
-        );
+        assert_eq!(codec_validation(&pipeline.codecs), Strict);
+        assert_eq!(codec_validation(&observability.codecs), BestEffort);
     }
 
     /// Scenario: Only codec validation changes, then the same effective value moves between scopes.
@@ -473,8 +464,8 @@ mod tests {
         let config = crate::engine::OtelDataflowSpec::from_yaml(example).unwrap();
         let (_, regular, observability) = config.resolve().into_parts();
         assert_eq!(regular.len(), 1);
-        assert_eq!(regular[0].codecs.decode_validation, BestEffort);
-        assert_eq!(observability.unwrap().codecs.decode_validation, Strict);
+        assert_eq!(codec_validation(&regular[0].codecs), BestEffort);
+        assert_eq!(codec_validation(&observability.unwrap().codecs), Strict);
     }
 
     #[test]

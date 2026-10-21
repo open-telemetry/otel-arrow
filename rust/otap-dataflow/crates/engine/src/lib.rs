@@ -814,7 +814,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
     /// Builds a runtime pipeline from the given pipeline configuration.
     /// `codecs_config` must be the effective snapshot from configuration resolution,
-    /// including inherited defaults; this method does not resolve parent scopes.
+    /// including inherited bindings; this method does not resolve parent scopes.
     ///
     /// Main phases:
     /// 1) Create runtime nodes and register telemetry.
@@ -842,6 +842,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     where
         PData: Unwindable,
     {
+        // Resolve implementation selection before node factories build capability plans.
+        // Mutable instances remain lazy and are owned by this runtime's services.
+        let runtime_services = runtime_services::PipelineRuntimeServices::new(codecs_config)?;
+        pipeline_ctx.set_codec_registry(Arc::new(runtime_services.codecs().registry().clone()));
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
@@ -1319,7 +1323,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             extension_wrappers,
             nodes,
             telemetry_policy,
-            runtime_services::decode_policy_from_config(codecs_config),
+            runtime_services,
         );
         let wirings = edges
             .into_iter()

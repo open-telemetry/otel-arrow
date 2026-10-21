@@ -12,7 +12,7 @@ runtime. A payload carries only its encoding identity, signal, bytes, and cached
 metadata; it never owns a codec instance.
 
 Operators: see the [codec user guide](../../docs/codecs.md) for available
-encodings, `codecs.defaults.decode.validation`, inheritance, and pass-through
+encodings, optional codec bindings and named configurations, inheritance, and pass-through
 limitations. This README describes the developer extension contract.
 
 ## Architecture overview
@@ -60,8 +60,10 @@ Native OTAP is the common processing representation, not a registered byte codec
   batching capabilities. A codec may be decode-only or encode-only. A decoder
   must provide an item counter so requested flow metrics remain available.
   Native item batching also requires a counter, including for encode-only codecs.
-- `CodecRegistry` validates the complete link-time registry once. Duplicate or
-  invalid identities fail pipeline runtime construction deterministically.
+- `CodecRegistry` distinguishes encoding identities from implementation IDs.
+  Duplicate implementation IDs and conflicting distribution defaults fail
+  deterministically. Pipeline bindings select implementations without changing
+  byte compatibility.
 - `CodecService` creates mutable implementations lazily and reuses them within
   one pipeline runtime. Payload admission and matching-format forwarding do not
   instantiate a codec.
@@ -158,46 +160,100 @@ without materializing it. `OtapPdata::into_delivery()` transfers an already-used
 input into delivery ownership without cloning, retaining or discarding its
 payload according to `RETURN_DATA`.
 
-## Configuration and decoder lifecycle
+## Configuration and implementation lifecycle
 
-The configuration crate parses `codecs.defaults.decode.validation` without
-depending on concrete codec implementations. It resolves declarations once
-into a `ResolvedCodecsConfig` for each regular or observability pipeline. The
-engine maps that snapshot to the existing `DecodePolicy` in
-`PipelineRuntimeServices`; codec factories and traits are unchanged.
+The optional `codecs` section contains `bindings` and reusable `configurations`.
+The configuration crate resolves scope inheritance without depending on concrete
+codecs. `PipelineRuntimeServices` supplies the resulting `ResolvedCodecsConfig`
+to `CodecServiceBuilder::with_configuration`. `build()` validates bindings and
+prepares immutable factories; it returns an error for invalid settings.
+Node construction receives the selected immutable registry through
+`PipelineContext`, so batching plans use the bound implementation's capabilities.
+Only effect handlers access mutable instances. No YAML parsing or
+configuration-name resolution happens per message.
 
 ```mermaid
 flowchart LR
-    scopes["Top-level / group / pipeline codec settings"] --> resolved["ResolvedCodecsConfig"]
-    resolved --> policy["Immutable DecodePolicy"]
-    policy --> service["PipelineRuntimeServices / CodecService"]
-    service -->|"First decode only"| factory["DecoderFactory(policy)"]
-    factory --> decoder["Reusable decoder instance"]
+    linked["Linked registrations + distribution defaults"] --> registry["Validated registry"]
+    scopes["Optional bindings + named configurations"] --> resolved["ResolvedCodecsConfig"]
+    registry --> prepared["Startup validation + prepared factories"]
+    resolved --> prepared
+    prepared --> service["Pipeline-local CodecService"]
+    service -->|"First use"| instances["Lazy decoder / encoder / batcher"]
 ```
 
-Decoder authors must honor `Strict`: malformed nested content must produce a
-`CodecError` before any records are returned. `BestEffort` permits a relaxed
-implementation, but does not require one; using the strict implementation for
-both modes is valid. Select the implementation in the factory, not per field
-or record. The built-in OTLP codec selects borrowed-view or Prost decoding;
-the syslog codec uses the same parser for both settings.
+Use `.with_implementation("vendor.codec")` to give registered code a stable ID
+separate from its encoding. Omission uses the encoding name for simple unique
+extensions. `.with_default_for_encoding()` declares a distribution default when
+several implementations support compatible bytes. Multiple defaults are rejected;
+without a default an explicit binding is required. Registration order has no
+precedence. Alternatives must preserve the encoding's item-count contract and
+byte semantics; changing incompatible representation semantics needs a new
+encoding identity. Operation/signal support is checked against the selected
+implementation.
 
-The runtime retains original bytes for recovery. Decoders must remain usable
-after errors and must not retain input bytes or depend on an earlier batch.
-Configuration changes redeploy the pipeline rather than mutating live decoder
-state. Effective settings participate in both runtime equality and resize
-classification; changing declaration scope alone does not redeploy it.
+### Preparing implementation-specific options
 
-Admission, matching-format forwarding, and directly borrowed views do not
-instantiate a decoder. Counters and native batchers retain their own validation
-contracts; they do not receive `DecodePolicy`. Output encoding settings still
-come from an `EncodingPlan`, and transport compression remains node-owned.
-The YAML section does not register codecs or configure individual encodings.
+A registration may supply `.with_preparer(prepare)`:
 
-For a new codec, run the conformance harness with strict policy and malformed
-nested input. If it implements a relaxed path, test both policies, repeated
-failure recovery, and unchanged forwarding separately. Benchmark the two
-decoders separately; do not hide strict validation cost in a combined result.
+```rust,ignore
+fn prepare(
+    config: &otel_arrow_dfe_config::codecs::CodecConfiguration,
+) -> Result<std::sync::Arc<dyn PreparedCodecFactory>, CodecError> {
+    // Deserialize config.options into this implementation's typed settings.
+    // Reject unknown fields and invalid combinations without logging values.
+    // Own immutable resources here; create mutable instances only on first use.
+    todo!()
+}
+```
+
+`PreparedCodecFactory` can override decoder, encoder, and batcher creation. Its
+default methods delegate to the registered native factories. Common decode
+policy and per-output `EncodePolicy` are passed to these methods. The preparation
+hook must not create mutable instances, decode telemetry, or retain telemetry.
+The built-in preparation rejects all custom options. Unused named definitions
+are validated, but never create mutable codec state.
+
+`allows_encoded_forwarding()` defaults to false for custom prepared factories:
+output options may require rewriting already-compatible bytes. Opt in only when
+forwarding satisfies every output setting. Size limits still apply. The built-in
+factory permits forwarding. Borrowed-view and format matching compare encoding
+identity, not configuration names or implementation pointers.
+
+Decoder authors must honor `Strict`; `BestEffort` permits, but does not require,
+a relaxed parser. Select strategies when creating instances rather than branching
+per field. The runtime keeps the exact original bytes for recovery; repeated
+failures must not poison codec state. Changing selected configuration redeploys
+the pipeline rather than mutating live instances. Instances are never shared
+between pipelines, even for the same named configuration.
+
+Admission, matching forwarding, and borrowed encoded views do not invoke a
+decoder. Counters and native batchers have their own validation contracts and
+must preserve encoding-wide counts independently of configuration. Native OTAP
+movement remains direct. Transport settings and batch thresholds stay node-owned.
+
+### Future WASM implementations
+
+Prepared factories can own immutable compiled resources, keeping configuration
+and mutable state out of payloads. This is a preparation boundary, not a WASM
+loader or guest ABI. WASM support will need versioned interfaces, bounded input,
+output and execution, host-capability restrictions, trap recovery, and a decision
+about guest-backed counting. The current counter is still a native stateless
+function. Ordinary codec operations run synchronously under the runtime lock;
+owned incremental decode jobs release it before yielding. Prepared factories
+can create either kind of decoder. Future asynchronous calls must also release
+service access before suspension.
+
+Registrations currently remain linked/static. Runtime-loaded metadata will need
+registry-owned lifetimes rather than leaked static references. Module discovery,
+loading, and resource policy must be explicit and separate from bindings; no
+module paths or WASM fields are accepted by the built-in configurations today.
+No zero-copy guest/host conversion or asynchronous execution is implied.
+
+For new codecs, run the conformance harness with strict malformed input and test
+both modes where relevant. Also cover invalid options, lazy instance creation,
+independent pipeline state, configured output forwarding/rewrite behavior, and
+recovery after failures. Benchmark strict and best-effort conversion separately.
 
 ## Implement a codec
 
@@ -318,8 +374,9 @@ syntax. A procedural attribute macro would require another crate and generated
 code without improving this contract.
 
 Registration and duplicate-name policy belong to the registry, not the macro.
-Registration order is not a precedence mechanism, and the default registry
-rejects duplicate identities independently of link order.
+Registration order is not a precedence mechanism. Implementation IDs are unique;
+encoding defaults and explicit bindings determine selection independently of link
+order.
 
 A stateless item counter is required for every registration with a decoder or
 native item batching. Return `None` when malformed bytes cannot be counted; zero

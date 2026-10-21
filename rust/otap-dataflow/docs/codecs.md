@@ -22,7 +22,7 @@ is the common processing representation, not a registered byte encoding.
 | Encoding | Signals | Decode to OTAP | Encode from OTAP | Native batching |
 | --- | --- | --- | --- | --- |
 | `otlp-bytes` | Logs, metrics, traces | Yes | Yes | Encoded bytes |
-| `syslog-cef-batch-v1` | Logs | Yes | No | Framed message items |
+| `syslog-batch` | Logs | Yes | No | Framed message items |
 
 The syslog/CEF receiver creates independently decodable framed batches. This
 internal representation is not raw syslog TCP/UDP framing. A syslog batch can
@@ -30,59 +30,87 @@ remain encoded through transparent nodes and native batching; an OTLP exporter
 decodes it to OTAP before encoding OTLP. There is no syslog-batch exporter in
 this series, and no Parquet codec or encoded Parquet pass-through.
 
-## Configure decoding
+## Optional configuration
 
-Use a `codecs` section alongside `policies`, not inside it:
+No `codecs` section is required. The engine discovers linked implementations,
+uses their default settings, and creates mutable instances only when needed.
+An override is not an allowlist: other registered encodings remain available.
+There is no global `defaults` section and no node-level codec configuration.
+
+A **binding** selects one configuration per encoding per pipeline. An
+**implementation** identifies registered code, independently of the bytes it
+supports. Built-in IDs are `otel.otlp` and `otel.syslog_cef`. The latter is
+available only when the syslog receiver is linked.
+
+Configure just OTLP, leaving other encodings unchanged:
 
 ```yaml
 codecs:
-  defaults:
-    decode:
-      validation: best_effort
+  bindings:
+    otlp-bytes:
+      decode:
+        validation: strict
 ```
 
-`validation` accepts these values:
+An inline binding may also specify `implementation` and implementation-owned
+`options`. Omitting the implementation uses the distribution default for that
+encoding. Built-in implementations currently accept no custom `options`.
+A distribution with multiple implementations for an encoding must declare a
+unique default or the user must select one explicitly. Link order never selects
+an implementation. Duplicate implementation IDs and conflicting defaults fail.
 
-| Value | Behavior when decoding |
-| --- | --- |
-| `best_effort` (default) | Allows a faster parser that may miss malformed nested content and omit that content from the output. |
-| `strict` | Requires validation of the complete encoded batch before returning OTAP records. |
+### Named configurations
 
-For OTLP, best effort uses borrowed protobuf views and checks outer framing.
-Strict mode currently uses Prost to decode the complete nested protobuf message
-before Arrow conversion, which adds CPU and allocation costs. Both modes can
-reject malformed input. Strict validation describes format validity, not a
-promise to reject every semantically questionable telemetry value.
+Names let pipelines reuse settings without sharing mutable state:
 
-A codec may use its strict decoder for both modes. The syslog codec validates
-its framing and uses the same syslog/CEF parser in both modes.
+```yaml
+codecs:
+  configurations:
+    checked_otlp:
+      implementation: otel.otlp
+      decode:
+        validation: strict
+  bindings:
+    otlp-bytes:
+      configuration: checked_otlp
+```
+
+Named definitions require an implementation ID. Declaring a name does not select
+it, although its settings are validated during startup. A binding accepts either
+a reference or inline settings, never both. Native instances remain lazy;
+preparation can own immutable implementation resources. Different pipelines
+using the same name have independent mutable codec state. Multiple selected
+configurations for one encoding within a pipeline are not supported.
 
 ### Scope and inheritance
 
-The nearest explicit validation setting wins:
+Bindings and named definitions inherit by key, from pipeline, group, then root.
+A nearer entry replaces the entire entry; codec-specific options do not
+recursively merge. Missing fields in a replacement use implementation defaults.
+The observability pipeline inherits from `engine.observability.pipeline.codecs`
+and root, without group inheritance.
 
-- Regular pipelines: pipeline, then group, then top-level `codecs`.
-- Observability pipeline: `engine.observability.pipeline.codecs`, then
-  top-level `codecs`.
-- If no scope specifies validation, the value is `best_effort`.
+`codecs: {}` inherits everything. By contrast, `bindings: {otlp-bytes: {}}`
+explicitly replaces that binding with the distribution default and its default
+settings. Unspecified encoding bindings are unchanged.
 
-For example, this configuration uses strict decoding globally and best effort
-for one pipeline:
+This complete example uses strict OTLP decoding by default, and resets it for
+one pipeline:
 
 ```yaml
 version: otel_dataflow/v1
 codecs:
-  defaults:
-    decode:
-      validation: strict
+  bindings:
+    otlp-bytes:
+      decode:
+        validation: strict
 groups:
   ingest:
     pipelines:
       logs:
         codecs:
-          defaults:
-            decode:
-              validation: best_effort
+          bindings:
+            otlp-bytes: {}
         nodes:
           input:
             type: urn:otel:receiver:otlp
@@ -98,15 +126,26 @@ groups:
             to: output
 ```
 
-Empty sections such as `codecs: {}` or `defaults: { decode: {} }` inherit their
-parent; they do not reset it. Set `validation: best_effort` explicitly to
-override inherited strict decoding. Defaults are not an enforced minimum.
+Unknown names, implementations, encodings, options, unsupported decode settings,
+and encoding/implementation mismatches fail startup. No
+`policies.pdata.decode_validation` or `codecs.defaults` alias is provided.
+Changes to selected settings redeploy the pipeline. Moving equivalent settings
+between scopes or between inline and named forms does not; changing an unused
+named definition does not change the runtime selection.
 
-Codec declarations are not supported at node scope. Unknown settings, modes,
-and unsupported per-encoding overrides are rejected. No
-`policies.pdata.decode_validation` alias is provided. Changing an effective
-codec setting redeploys the affected pipeline; moving the same effective
-setting between scopes does not.
+### Decode validation
+
+| Value | Behavior when decoding |
+| --- | --- |
+| `best_effort` (built-in default) | Allows a faster parser that may miss malformed nested content and omit that content from the output. |
+| `strict` | Requires validation of the complete encoded batch before returning OTAP records. |
+
+For OTLP, best effort uses borrowed protobuf views and checks outer framing.
+Strict mode uses Prost to decode the complete nested protobuf message before
+Arrow conversion, adding CPU and allocation costs. Both modes can reject
+malformed input. Strict validation concerns format validity, not every
+semantically questionable telemetry value. The syslog codec validates framing
+and uses the same syslog/CEF parser in both modes.
 
 ### When validation happens
 
@@ -125,6 +164,14 @@ remain responsible for handling malformed borrowed content and decode errors.
 Recoverable materialization preserves the original input so nodes can issue
 permanent Nacks where their delivery contract supports them.
 
+## Future hosted codecs
+
+This configuration selects registered implementations, not module files. WASM
+loading, a guest interface, execution budgets and async offloading are not
+implemented. The startup preparation interface can later own immutable compiled
+components and create isolated pipeline-local guest instances. Future module
+loading must be explicit; the engine does not scan directories or download code.
+
 ## What belongs elsewhere
 
 Exporters select the output encoding. Receivers and exporters own transport
@@ -135,5 +182,8 @@ encoding identities.
 
 Codec state remains lazy and local to each pipeline runtime. Configuration is
 resolved before processing; it does not add a configuration lookup per record.
-Codec execution is currently synchronous. Async effect-handler methods and
-owned output for asynchronous transport do not imply codec offloading.
+Ordinary codec operations execute synchronously. Larger syslog inputs use
+owned incremental decode jobs and yield between bounded work segments.
+Configured factories support either path without holding codec-service access
+across suspension. Encoding and Arrow finalization can still run synchronously;
+async effect-handler methods do not imply codec offloading.

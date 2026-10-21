@@ -108,7 +108,7 @@ Required root fields:
 Optional root fields:
 
 - `policies`: top-level policy defaults.
-- `codecs`: codec defaults inherited by pipelines.
+- `codecs`: optional codec bindings and named configurations inherited by pipelines.
 - `topics`: global topic declarations.
 - `engine`: engine-wide settings.
 
@@ -149,14 +149,14 @@ groups:
 ## Codec Defaults
 
 Codecs convert encoded telemetry to and from native OTAP records on demand.
-Use `codecs.defaults.decode.validation: strict` to require complete format
-validation when decoding; the default is `best_effort`. The `codecs` section
-can appear at top-level, group, pipeline, or observability-pipeline scope,
-alongside `policies`.
+Use `codecs.bindings.otlp-bytes.decode.validation: strict` to validate complete
+OTLP batches when decoding. Without codec declarations, all registered encodings
+use their distribution defaults. Bindings can select inline settings or reusable
+named configurations. The section can appear at root, group, pipeline, or
+observability-pipeline scope, alongside `policies`.
 
-Matching-format forwarding and directly borrowed encoded views are not
-validated by this setting. See [PData codecs](codecs.md) for available
-encodings, inheritance, examples, and strict-mode costs.
+Matching forwarding and borrowed encoded views do not run a decoder. See
+[PData codecs](codecs.md) for names, inheritance, validation costs, and examples.
 
 ## Receivers, Processors, and Exporters
 

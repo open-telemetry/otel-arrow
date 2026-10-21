@@ -8022,6 +8022,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
  "serde",
+ "serde_yaml",
  "thiserror 2.0.21",
 ]
 

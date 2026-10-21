@@ -6,7 +6,7 @@
 //! This layer owns conversion, sizing, and in-line merge/split operations.
 //! Scheduling, bounded request tracking, and Ack/Nack routing belong to the node.
 
-use std::num::NonZeroU64;
+use std::{future::Future, num::NonZeroU64};
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
@@ -253,7 +253,12 @@ impl PdataFormat {
         service: &CodecService,
         encoding: Option<&EncodingPlan>,
     ) -> Result<(), CodecError> {
-        if payload.format() == self {
+        if payload.format() == self
+            && match encoding {
+                Some(plan) => service.allows_encoded_forwarding(plan, payload.signal_type())?,
+                None => true,
+            }
+        {
             return Ok(());
         }
         match self.codec() {
@@ -304,7 +309,12 @@ impl PdataFormat {
         encoding: Option<&EncodingPlan>,
         yield_to_runtime: impl FnMut() -> Y,
     ) -> Result<(), CodecError> {
-        if payload.format() == self {
+        if payload.format() == self
+            && match encoding {
+                Some(plan) => service.allows_encoded_forwarding(plan, payload.signal_type())?,
+                None => true,
+            }
+        {
             return Ok(());
         }
         match self.codec() {
@@ -650,6 +660,7 @@ mod tests {
             .unwrap()
             .with_decode_policy(DecodePolicy::new(DecodeValidation::Strict))
             .build()
+            .unwrap()
     }
 
     /// Scenario: Repeated OTLP byte batching processes multiple logs, metrics, and traces requests.
@@ -765,7 +776,8 @@ mod tests {
         let service = CodecServiceBuilder::from_registry(Arc::new(
             CodecRegistry::validate(&REGISTRATIONS).unwrap(),
         ))
-        .build();
+        .build()
+        .unwrap();
         let codec = service.registry().resolve(METADATA.encoding()).unwrap();
         let plan = BatchPlan::new(
             PdataFormat::encoded(codec),

@@ -3,10 +3,10 @@
 
 //! Pipeline-local lifecycle and access for mutable codec implementations.
 //!
-//! [`CodecServiceBuilder`] combines an immutable validated registry and decode
-//! policy with fresh runtime state. Cloned [`CodecService`] handles share that
+//! [`CodecServiceBuilder`] resolves optional per-encoding bindings against a
+//! validated registry and prepares immutable factories with fresh runtime state. Cloned [`CodecService`] handles share that
 //! pipeline, while decoder, encoder, and batcher instances are created lazily
-//! and reused. The decode policy is applied once at decoder creation; payload
+//! and reused. Each selected decode policy is applied at decoder creation; payload
 //! admission and matching-format forwarding therefore require neither codec
 //! construction nor mutable runtime access.
 //!
@@ -30,6 +30,9 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use bytes::Bytes;
+use otel_arrow_dfe_config::codecs::{
+    CodecConfiguration, DecodeValidation as ConfigValidation, ResolvedCodecsConfig,
+};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
@@ -38,32 +41,35 @@ use crate::{
     PdataDecoder, PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
 
-struct DecoderInstance {
+struct PreparedCodec {
+    slot: usize,
     codec: ResolvedCodec,
-    decoder: Box<dyn PdataDecoder>,
+    policy: DecodePolicy,
+    factory: Arc<dyn crate::PreparedCodecFactory>,
+    forwarding: bool,
 }
 
 struct EncoderInstance {
-    plan: EncodingPlan,
+    policy: crate::EncodePolicy,
     encoder: Box<dyn PdataEncoder>,
 }
 
-struct BatcherInstance {
-    codec: ResolvedCodec,
-    batcher: Box<dyn PdataBatcher>,
+#[derive(Default)]
+struct CodecInstances {
+    decoder: Option<Box<dyn PdataDecoder>>,
+    encoders: Vec<EncoderInstance>,
+    batcher: Option<Box<dyn PdataBatcher>>,
 }
 
-#[derive(Default)]
 struct CodecRuntime {
-    decoders: Vec<DecoderInstance>,
-    encoders: Vec<EncoderInstance>,
-    batchers: Vec<BatcherInstance>,
+    instances: Vec<CodecInstances>,
 }
 
 /// Builds a pipeline-local codec service from a validated registry.
 pub struct CodecServiceBuilder {
     registry: Arc<CodecRegistry>,
     decode_policy: DecodePolicy,
+    configuration: ResolvedCodecsConfig,
 }
 
 impl CodecServiceBuilder {
@@ -72,6 +78,7 @@ impl CodecServiceBuilder {
         Ok(Self {
             registry: CodecRegistry::global()?,
             decode_policy: DecodePolicy::default(),
+            configuration: ResolvedCodecsConfig::default(),
         })
     }
 
@@ -81,24 +88,105 @@ impl CodecServiceBuilder {
         Self {
             registry,
             decode_policy: DecodePolicy::default(),
+            configuration: ResolvedCodecsConfig::default(),
         }
     }
 
-    /// Selects the policy supplied to every decoder created by this service.
+    /// Sets a programmatic baseline for decoders; explicit encoding bindings take precedence.
     #[must_use]
     pub const fn with_decode_policy(mut self, decode_policy: DecodePolicy) -> Self {
         self.decode_policy = decode_policy;
         self
     }
 
-    /// Creates fresh lazy mutable state for one pipeline runtime.
+    /// Supplies scope-resolved bindings. Build validates names, capabilities and options.
     #[must_use]
-    pub fn build(self) -> CodecService {
-        CodecService {
-            registry: self.registry,
-            decode_policy: self.decode_policy,
-            runtime: Arc::new(Mutex::new(CodecRuntime::default())),
+    pub fn with_configuration(mut self, configuration: ResolvedCodecsConfig) -> Self {
+        self.configuration = configuration;
+        self
+    }
+
+    /// Validates all configuration and prepares factories without creating mutable instances.
+    pub fn build(self) -> Result<CodecService, CodecError> {
+        let mut registry = (*self.registry).clone();
+        // Even unused definitions must not hide typos. Preparing immutable resources
+        // does not activate a decoder; selected named factories are reused below.
+        let mut named = std::collections::BTreeMap::new();
+        for (name, config) in &self.configuration.configurations {
+            let id = config.implementation.as_deref().ok_or_else(|| {
+                CodecError::configuration(format!(
+                    "codecs.configurations.{name}: implementation is required"
+                ))
+            })?;
+            let codec = registry.implementation(id)?;
+            let prepared = prepare(codec, config, self.decode_policy).map_err(|error| {
+                CodecError::configuration(format!("codecs.configurations.{name}: {error}"))
+            })?;
+            _ = named.insert(name.as_str(), prepared);
         }
+        let bindings = self
+            .configuration
+            .effective_bindings()
+            .map_err(CodecError::configuration)?;
+        for (encoding, config) in &bindings {
+            let encoding = crate::PdataEncoding::from(encoding.clone());
+            let codec = match config.implementation.as_deref() {
+                Some(id) => registry.implementation(id)?,
+                None => registry.resolve(&encoding)?,
+            };
+            if codec.encoding() != &encoding {
+                return Err(CodecError::configuration(format!(
+                    "codecs.bindings.{encoding}: implementation `{}` supports `{}`",
+                    codec.implementation(),
+                    codec.encoding()
+                )));
+            }
+            registry.select(codec);
+        }
+        let mut prepared = Vec::new();
+        for candidate in registry.codecs() {
+            let codec = registry.resolve(candidate.encoding())?;
+            if prepared
+                .iter()
+                .any(|entry: &PreparedCodec| entry.codec.encoding() == codec.encoding())
+            {
+                continue;
+            }
+            let config = bindings
+                .get(codec.encoding().as_str())
+                .cloned()
+                .unwrap_or_default();
+            let mut entry = match self.configuration.bindings.get(codec.encoding().as_str()) {
+                Some(otel_arrow_dfe_config::codecs::CodecBinding::Named(reference)) => {
+                    let source = named
+                        .get(reference.configuration.as_str())
+                        .ok_or_else(|| CodecError::configuration("missing named configuration"))?;
+                    PreparedCodec {
+                        slot: prepared.len(),
+                        codec,
+                        policy: source.policy,
+                        factory: source.factory.clone(),
+                        forwarding: source.forwarding,
+                    }
+                }
+                _ => prepare(codec, &config, self.decode_policy).map_err(|error| {
+                    CodecError::configuration(format!(
+                        "codecs.bindings.{}: {error}",
+                        codec.encoding()
+                    ))
+                })?,
+            };
+            entry.slot = prepared.len();
+            prepared.push(entry);
+        }
+        let instances = (0..prepared.len())
+            .map(|_| CodecInstances::default())
+            .collect();
+        Ok(CodecService {
+            registry: Arc::new(registry),
+            prepared: prepared.into(),
+            runtime: Arc::new(Mutex::new(CodecRuntime { instances })),
+        })
     }
 }
 
@@ -110,14 +198,14 @@ impl CodecServiceBuilder {
 #[derive(Clone)]
 pub struct CodecService {
     registry: Arc<CodecRegistry>,
-    decode_policy: DecodePolicy,
+    prepared: Arc<[PreparedCodec]>,
     runtime: Arc<Mutex<CodecRuntime>>,
 }
 
 impl CodecService {
     /// Creates a service after validating the process registry.
-    pub fn new() -> Result<Self, RegistryError> {
-        Ok(CodecServiceBuilder::from_global_registry()?.build())
+    pub fn new() -> Result<Self, CodecError> {
+        CodecServiceBuilder::from_global_registry()?.build()
     }
 
     /// Validated immutable registry used by this pipeline.
@@ -126,10 +214,32 @@ impl CodecService {
         &self.registry
     }
 
-    /// Decode policy resolved for this pipeline-local service.
-    #[must_use]
-    pub const fn decode_policy(&self) -> DecodePolicy {
-        self.decode_policy
+    fn prepared(&self, codec: ResolvedCodec) -> Result<&PreparedCodec, CodecError> {
+        self.prepared
+            .iter()
+            .find(|entry| entry.codec == codec || entry.codec.encoding() == codec.encoding())
+            .ok_or_else(|| {
+                RegistryError::NotFound {
+                    encoding: codec.encoding().clone(),
+                }
+                .into()
+            })
+    }
+
+    /// Effective decode policy for one encoding, independent of the admission implementation.
+    pub fn decode_policy_for(&self, codec: ResolvedCodec) -> Result<DecodePolicy, CodecError> {
+        Ok(self.prepared(codec)?.policy)
+    }
+
+    /// Checks whether compatible bytes satisfy the selected implementation's output settings.
+    pub(crate) fn allows_encoded_forwarding(
+        &self,
+        plan: &EncodingPlan,
+        signal: otel_arrow_dfe_config::SignalType,
+    ) -> Result<bool, CodecError> {
+        let prepared = self.prepared(plan.codec())?;
+        prepared.codec.require_encoder(signal)?;
+        Ok(prepared.forwarding)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, CodecRuntime>, CodecError> {
@@ -152,10 +262,12 @@ impl CodecService {
         signal: otel_arrow_dfe_config::SignalType,
         bytes: &Bytes,
     ) -> Result<OtapArrowRecords, CodecError> {
+        let prepared = self.prepared(codec)?;
+        let codec = prepared.codec;
         codec.require_decoder(signal)?;
         let mut runtime = self.lock()?;
         let records = runtime
-            .decoder(codec, self.decode_policy)?
+            .decoder(prepared)?
             .decode(signal, bytes)
             .map_err(|error| {
                 error.with_operation_context(codec.encoding(), CodecOperation::Decode)
@@ -182,13 +294,14 @@ impl CodecService {
         encoded: &EncodedPdata,
         mut yield_to_runtime: impl FnMut() -> Y,
     ) -> Result<OtapArrowRecords, CodecError> {
-        let codec = encoded.codec();
+        let prepared = self.prepared(encoded.codec())?;
+        let codec = prepared.codec;
         let signal = encoded.signal_type();
         codec.require_decoder(signal)?;
         let task = {
             let mut runtime = self.lock()?;
             runtime
-                .decoder(codec, self.decode_policy)?
+                .decoder(prepared)?
                 .start_decode(signal, encoded.bytes())
                 .map_err(|error| {
                     error.with_operation_context(codec.encoding(), CodecOperation::Decode)
@@ -237,7 +350,7 @@ impl CodecService {
         bytes: &'a Bytes,
         accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
-        codec.require_decoder(signal)?;
+        self.prepared(codec)?.codec.require_decoder(signal)?;
         if accepted_encodings.accepts(codec) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
                 codec.encoding(),
@@ -256,10 +369,11 @@ impl CodecService {
         plan: &EncodingPlan,
         consume: impl FnOnce(EncodeOutput<'_>) -> R,
     ) -> Result<R, CodecError> {
-        let codec = plan.codec();
+        let prepared = self.prepared(plan.codec())?;
+        let codec = prepared.codec;
         codec.require_encoder(records.signal_type())?;
         let mut runtime = self.lock()?;
-        let encoder = runtime.encoder(*plan).map_err(|error| {
+        let encoder = runtime.encoder(*plan, prepared).map_err(|error| {
             error.with_operation_context(codec.encoding(), CodecOperation::Encode)
         })?;
         let output = encoder.prepare_encode(records).map_err(|error| {
@@ -285,9 +399,11 @@ impl CodecService {
         settings: &BatchSettings,
         inputs: Vec<Bytes>,
     ) -> Result<CodecBatches, CodecError> {
+        let prepared = self.prepared(codec)?;
+        let codec = prepared.codec;
         codec.require_batcher(signal)?;
         let mut runtime = self.lock()?;
-        let batcher = runtime.batcher(codec).map_err(|error| {
+        let batcher = runtime.batcher(prepared).map_err(|error| {
             error.with_operation_context(codec.encoding(), CodecOperation::Batch)
         })?;
         batcher
@@ -305,70 +421,94 @@ impl CodecService {
     #[cfg(any(test, feature = "testing"))]
     pub fn test_instance_count(&self) -> Result<usize, CodecError> {
         let runtime = self.lock()?;
-        Ok(runtime.decoders.len() + runtime.encoders.len() + runtime.batchers.len())
+        Ok(runtime
+            .instances
+            .iter()
+            .map(|entry| {
+                usize::from(entry.decoder.is_some())
+                    + entry.encoders.len()
+                    + usize::from(entry.batcher.is_some())
+            })
+            .sum())
     }
 }
 
+fn prepare(
+    codec: ResolvedCodec,
+    config: &CodecConfiguration,
+    fallback: DecodePolicy,
+) -> Result<PreparedCodec, CodecError> {
+    let policy = if let Some(decode) = &config.decode {
+        if !codec.can_decode() {
+            return Err(CodecError::configuration(
+                "decode settings require a decoder",
+            ));
+        }
+        DecodePolicy::new(match decode.validation {
+            ConfigValidation::BestEffort => crate::DecodeValidation::BestEffort,
+            ConfigValidation::Strict => crate::DecodeValidation::Strict,
+        })
+    } else {
+        fallback
+    };
+    let factory = codec.prepare(config)?;
+    let forwarding = factory.allows_encoded_forwarding();
+    Ok(PreparedCodec {
+        slot: 0,
+        codec,
+        policy,
+        factory,
+        forwarding,
+    })
+}
+
 impl CodecRuntime {
-    fn decoder(
+    fn decoder(&mut self, prepared: &PreparedCodec) -> Result<&mut dyn PdataDecoder, CodecError> {
+        let entry = &mut self.instances[prepared.slot];
+        if entry.decoder.is_none() {
+            entry.decoder = Some(
+                prepared
+                    .factory
+                    .create_decoder(prepared.codec, prepared.policy)?,
+            );
+        }
+        // SAFETY: The branch above either installs the decoder or returns its error.
+        Ok(entry.decoder.as_deref_mut().expect("decoder initialized"))
+    }
+
+    fn encoder(
         &mut self,
-        codec: ResolvedCodec,
-        policy: DecodePolicy,
-    ) -> Result<&mut dyn PdataDecoder, CodecError> {
-        let index = match self
-            .decoders
+        plan: EncodingPlan,
+        prepared: &PreparedCodec,
+    ) -> Result<&mut dyn PdataEncoder, CodecError> {
+        let encoders = &mut self.instances[prepared.slot].encoders;
+        let index = match encoders
             .iter()
-            .position(|instance| instance.codec == codec)
+            .position(|instance| instance.policy == plan.policy())
         {
             Some(index) => index,
             None => {
-                let index = self.decoders.len();
-                self.decoders.push(DecoderInstance {
-                    codec,
-                    decoder: codec.create_decoder(policy)?,
+                let encoder = prepared
+                    .factory
+                    .create_encoder(prepared.codec, plan.policy())?;
+                let index = encoders.len();
+                encoders.push(EncoderInstance {
+                    policy: plan.policy(),
+                    encoder,
                 });
                 index
             }
         };
-        Ok(self.decoders[index].decoder.as_mut())
+        Ok(encoders[index].encoder.as_mut())
     }
 
-    fn encoder(&mut self, plan: EncodingPlan) -> Result<&mut dyn PdataEncoder, CodecError> {
-        let index = match self
-            .encoders
-            .iter()
-            .position(|instance| instance.plan == plan)
-        {
-            Some(index) => index,
-            None => {
-                let index = self.encoders.len();
-                self.encoders.push(EncoderInstance {
-                    plan,
-                    encoder: plan.codec().create_encoder(plan.policy())?,
-                });
-                index
-            }
-        };
-        Ok(self.encoders[index].encoder.as_mut())
-    }
-
-    fn batcher(&mut self, codec: ResolvedCodec) -> Result<&mut dyn PdataBatcher, CodecError> {
-        let index = match self
-            .batchers
-            .iter()
-            .position(|instance| instance.codec == codec)
-        {
-            Some(index) => index,
-            None => {
-                let index = self.batchers.len();
-                self.batchers.push(BatcherInstance {
-                    codec,
-                    batcher: codec.create_batcher()?,
-                });
-                index
-            }
-        };
-        Ok(self.batchers[index].batcher.as_mut())
+    fn batcher(&mut self, prepared: &PreparedCodec) -> Result<&mut dyn PdataBatcher, CodecError> {
+        let entry = &mut self.instances[prepared.slot];
+        if entry.batcher.is_none() {
+            entry.batcher = Some(prepared.factory.create_batcher(prepared.codec)?);
+        }
+        // SAFETY: The branch above either installs the batcher or returns its error.
+        Ok(entry.batcher.as_deref_mut().expect("batcher initialized"))
     }
 }
 
@@ -417,7 +557,9 @@ mod tests {
 
     fn service_for(registrations: &'static [CodecRegistration]) -> CodecService {
         let registry = CodecRegistry::validate(registrations).expect("valid test registry");
-        CodecServiceBuilder::from_registry(Arc::new(registry)).build()
+        CodecServiceBuilder::from_registry(Arc::new(registry))
+            .build()
+            .unwrap()
     }
 
     fn records(signal: SignalType) -> OtapArrowRecords {

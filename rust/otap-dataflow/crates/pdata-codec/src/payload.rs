@@ -3,7 +3,7 @@
 
 //! Inline runtime storage and representation-independent pdata capabilities.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 
 use bytes::{Bytes, BytesMut};
 use otel_arrow_dfe_config::SignalType;
@@ -53,12 +53,22 @@ impl PayloadStorage {
 }
 
 /// Logical pdata representation identity, independent of private storage details.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub enum PdataFormat {
     /// Native mutable OTAP records.
     Otap,
     /// Independently encoded bytes understood by a registered codec.
     Encoded(ResolvedCodec),
+}
+
+impl PartialEq for PdataFormat {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Otap, Self::Otap) => true,
+            (Self::Encoded(left), Self::Encoded(right)) => left.encoding() == right.encoding(),
+            _ => false,
+        }
+    }
 }
 
 impl PdataFormat {
@@ -451,7 +461,14 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &self.storage {
-            PayloadStorage::Encoded(encoded) if encoded.codec() != plan.codec() => {
+            PayloadStorage::Encoded(encoded)
+                if encoded.encoding() == plan.codec().encoding()
+                    && codecs.allows_encoded_forwarding(plan, encoded.signal_type())? =>
+            {
+                plan.validate_encoded_size(encoded.bytes().len())?;
+                Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
+            }
+            PayloadStorage::Encoded(encoded) => {
                 let mut records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
                 codecs.with_encoded_output(&mut records, plan, consume)
             }
@@ -496,7 +513,10 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
-            PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
+            PayloadStorage::Encoded(encoded)
+                if encoded.encoding() == plan.codec().encoding()
+                    && codecs.allows_encoded_forwarding(plan, encoded.signal_type())? =>
+            {
                 plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
             }
@@ -578,7 +598,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords
         match value.storage {
             PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::Encoded(encoded) => {
-                let service = CodecService::new().map_err(CodecError::from)?;
+                let service = CodecService::new()?;
                 Ok(service.decode(&encoded)?)
             }
         }
@@ -598,7 +618,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
                 Self::new_from_bytes(encoded.signal_type(), encoded.into_bytes()),
             ),
             PayloadStorage::Encoded(encoded) => {
-                let service = CodecService::new().map_err(CodecError::from)?;
+                let service = CodecService::new()?;
                 let records = service.decode(&encoded)?;
                 Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
                     OtapArrowRecords,
@@ -824,7 +844,8 @@ mod tests {
             let service = CodecServiceBuilder::from_global_registry()
                 .unwrap()
                 .with_decode_policy(DecodePolicy::new(validation))
-                .build();
+                .build()
+                .unwrap();
             let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
             for input in &inputs {
                 let bytes = input.bytes();

@@ -129,7 +129,7 @@ impl<
 
         let channel_capacity_policy = deployment.resolved.policies.channel_capacity.clone();
         let telemetry_policy = deployment.resolved.policies.telemetry.clone();
-        let codecs_config = deployment.resolved.codecs;
+        let codecs_config = deployment.resolved.codecs.clone();
         let rate_limiter_policies = deployment.resolved.policies.rate_limiters.clone();
         let rate_limiter_scope = deployment.resolved.policies.rate_limiter_scope.clone();
         let pipeline_config = deployment.resolved.pipeline.clone();

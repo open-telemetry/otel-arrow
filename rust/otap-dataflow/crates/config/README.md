@@ -29,7 +29,8 @@ Main public model types:
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies and codecs
-- `codecs::CodecsConfig`: inherited codec defaults, resolved independently of policies
+- `codecs::CodecsConfig`: optional bindings and named configurations, resolved
+  independently of policies
 - `policy::Policies`: channel-capacity/health/telemetry/resources/transport
   header policy families
 - `topic::TopicSpec`: named inter-pipeline topic specification

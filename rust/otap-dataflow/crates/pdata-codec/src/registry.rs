@@ -15,8 +15,9 @@
 //! when the registration has no decoder or defaults to byte sizing.
 //!
 //! [`CodecRegistry`] validates the complete linked set before a pipeline uses
-//! it. Encoding names identify byte-compatible representations, and duplicate
-//! or invalid names are rejected independently of linker order. Once validated,
+//! it. Encoding names identify byte-compatible representations; implementation IDs
+//! identify registered code. Duplicate implementation IDs and conflicting defaults
+//! are rejected independently of linker order. Explicit bindings select replacements. Once validated,
 //! [`ResolvedCodec`] is a cheap handle used for admission, capability checks,
 //! stateless item counting, and lazy factory access.
 
@@ -142,6 +143,9 @@ impl CodecMetadata {
 /// Link-time codec registration containing only immutable factories.
 #[derive(Debug)]
 pub struct CodecRegistration {
+    implementation: Option<&'static str>,
+    default_for_encoding: bool,
+    prepare: crate::CodecPreparer,
     /// Representation identity and supported signals.
     metadata: &'static CodecMetadata,
     /// Decoder factory, absent for encode-only formats.
@@ -162,12 +166,38 @@ impl CodecRegistration {
     #[must_use]
     pub const fn new(metadata: &'static CodecMetadata) -> Self {
         Self {
+            implementation: None,
+            default_for_encoding: false,
+            prepare: crate::configuration::prepare_native,
             metadata,
             decoder: None,
             encoder: None,
             batcher: None,
             count_items: None,
         }
+    }
+
+    /// Gives this implementation a stable ID independent of its byte encoding.
+    /// Omission uses the encoding name, suitable for a unique simple extension.
+    #[must_use]
+    pub const fn with_implementation(mut self, implementation: &'static str) -> Self {
+        self.implementation = Some(implementation);
+        self
+    }
+
+    /// Declares the distribution default when several implementations share an encoding.
+    /// More than one default for an encoding is rejected, regardless of link order.
+    #[must_use]
+    pub const fn with_default_for_encoding(mut self) -> Self {
+        self.default_for_encoding = true;
+        self
+    }
+
+    /// Adds startup option validation and preparation of immutable factory resources.
+    #[must_use]
+    pub const fn with_preparer(mut self, prepare: crate::CodecPreparer) -> Self {
+        self.prepare = prepare;
+        self
     }
 
     /// Adds a factory for pipeline-local decoder state.
@@ -230,6 +260,21 @@ impl Hash for ResolvedCodec {
 }
 
 impl ResolvedCodec {
+    /// Implementation ID, distinct from the compatible byte encoding.
+    #[must_use]
+    pub fn implementation(self) -> &'static str {
+        self.0
+            .implementation
+            .unwrap_or(self.0.metadata.encoding.as_str())
+    }
+
+    pub(crate) fn prepare(
+        self,
+        config: &otel_arrow_dfe_config::codecs::CodecConfiguration,
+    ) -> Result<Arc<dyn crate::PreparedCodecFactory>, CodecError> {
+        (self.0.prepare)(config)
+    }
+
     /// Immutable metadata and canonical encoding name.
     #[must_use]
     pub const fn metadata(self) -> &'static CodecMetadata {
@@ -381,9 +426,10 @@ impl ResolvedCodec {
 }
 
 /// Validated immutable view of all codec extensions linked into a binary.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CodecRegistry {
     codecs: Box<[ResolvedCodec]>,
+    selected: Vec<ResolvedCodec>,
 }
 
 static GLOBAL_REGISTRY: LazyLock<Result<Arc<CodecRegistry>, RegistryError>> =
@@ -402,29 +448,96 @@ impl CodecRegistry {
     pub fn validate(factories: &'static [CodecRegistration]) -> Result<Self, RegistryError> {
         for (index, registration) in factories.iter().enumerate() {
             validate_registration(registration)?;
-            if factories[..index]
-                .iter()
-                .any(|other| other.metadata.encoding == registration.metadata.encoding)
+            let codec = ResolvedCodec(registration);
+            let id = codec.implementation();
+            if id.is_empty()
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-:".contains(&b))
             {
-                return Err(RegistryError::Duplicate {
-                    encoding: registration.metadata.encoding.clone(),
+                return Err(RegistryError::InvalidImplementation {
+                    implementation: id.into(),
+                    reason: "use lowercase ASCII identifiers",
                 });
             }
+            for other in &factories[..index] {
+                if ResolvedCodec(other).implementation() == id {
+                    return Err(RegistryError::InvalidImplementation {
+                        implementation: id.into(),
+                        reason: "duplicate implementation ID",
+                    });
+                }
+                if other.metadata.encoding == registration.metadata.encoding
+                    && other.default_for_encoding
+                    && registration.default_for_encoding
+                {
+                    return Err(RegistryError::DuplicateDefault {
+                        encoding: registration.metadata.encoding.clone(),
+                    });
+                }
+            }
         }
+        let mut codecs: Vec<_> = factories.iter().map(ResolvedCodec).collect();
+        codecs.sort_by_key(|codec| codec.implementation());
         Ok(Self {
-            codecs: factories.iter().map(ResolvedCodec).collect(),
+            codecs: codecs.into(),
+            selected: Vec::new(),
         })
     }
 
-    /// Resolves a unique registered identity.
+    /// Resolves the selected implementation or a unique distribution default.
     pub fn resolve(&self, encoding: &PdataEncoding) -> Result<ResolvedCodec, RegistryError> {
+        if let Some(codec) = self
+            .selected
+            .iter()
+            .find(|codec| codec.encoding() == encoding)
+        {
+            return Ok(*codec);
+        }
+        let mut matches = self
+            .codecs
+            .iter()
+            .copied()
+            .filter(|codec| codec.encoding() == encoding);
+        let first = matches.next().ok_or_else(|| RegistryError::NotFound {
+            encoding: encoding.clone(),
+        })?;
+        let mut selected = first.0.default_for_encoding.then_some(first);
+        let mut multiple = false;
+        for codec in matches {
+            multiple = true;
+            if codec.0.default_for_encoding {
+                selected = Some(codec);
+            }
+        }
+        selected
+            .or_else(|| (!multiple).then_some(first))
+            .ok_or_else(|| RegistryError::AmbiguousImplementation {
+                encoding: encoding.clone(),
+            })
+    }
+
+    /// Resolves a linked implementation independently of default encoding selection.
+    pub fn implementation(&self, id: &str) -> Result<ResolvedCodec, RegistryError> {
         self.codecs
             .iter()
             .copied()
-            .find(|codec| codec.encoding() == encoding)
-            .ok_or_else(|| RegistryError::NotFound {
-                encoding: encoding.clone(),
+            .find(|codec| codec.implementation() == id)
+            .ok_or_else(|| RegistryError::ImplementationNotFound {
+                implementation: id.into(),
             })
+    }
+
+    pub(crate) fn select(&mut self, codec: ResolvedCodec) {
+        if let Some(selected) = self
+            .selected
+            .iter_mut()
+            .find(|selected| selected.encoding() == codec.encoding())
+        {
+            *selected = codec;
+        } else {
+            self.selected.push(codec);
+        }
     }
 
     /// Resolves and validates decoder support.
@@ -449,7 +562,7 @@ impl CodecRegistry {
         Ok(codec)
     }
 
-    /// Iterates all validated codec identities without creating mutable state.
+    /// Iterates all registered implementations without creating mutable state.
     #[must_use]
     pub fn codecs(&self) -> impl ExactSizeIterator<Item = ResolvedCodec> + '_ {
         self.codecs.iter().copied()
@@ -661,5 +774,104 @@ mod tests {
                 Err(RegistryError::InvalidBatching { .. })
             ));
         }
+    }
+    /// Scenario: Two implementations share an encoding and registration order changes.
+    /// Guarantees: Explicit/default selection is deterministic, while ambiguous or duplicate defaults fail safely.
+    #[test]
+    fn implementation_selection_is_independent_of_registration_order() {
+        static FORWARD: [CodecRegistration; 2] = [
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("default")
+                .with_default_for_encoding()
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("alternate")
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        static REVERSE: [CodecRegistration; 2] = [
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("alternate")
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("default")
+                .with_default_for_encoding()
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        static AMBIGUOUS: [CodecRegistration; 2] = [
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("a")
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("b")
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        for registrations in [&FORWARD, &REVERSE] {
+            let mut registry = CodecRegistry::validate(registrations).unwrap();
+            assert_eq!(
+                registry
+                    .resolve(EMPTY_METADATA.encoding())
+                    .unwrap()
+                    .implementation(),
+                "default"
+            );
+            registry.select(registry.implementation("alternate").unwrap());
+            assert_eq!(
+                registry
+                    .resolve(EMPTY_METADATA.encoding())
+                    .unwrap()
+                    .implementation(),
+                "alternate"
+            );
+        }
+        let registry = CodecRegistry::validate(&AMBIGUOUS).unwrap();
+        assert!(matches!(
+            registry.resolve(EMPTY_METADATA.encoding()),
+            Err(RegistryError::AmbiguousImplementation { .. })
+        ));
+        assert!(
+            crate::CodecServiceBuilder::from_registry(Arc::new(registry))
+                .build()
+                .is_err()
+        );
+        let config: otel_arrow_dfe_config::codecs::CodecsConfig =
+            serde_yaml::from_str("bindings: {empty-v1: {implementation: b}}").unwrap();
+        let explicit = crate::CodecServiceBuilder::from_registry(Arc::new(
+            CodecRegistry::validate(&AMBIGUOUS).unwrap(),
+        ))
+        .with_configuration(otel_arrow_dfe_config::codecs::CodecsConfig::resolve([
+            &config,
+        ]))
+        .build()
+        .unwrap();
+        assert_eq!(
+            explicit
+                .registry()
+                .resolve(EMPTY_METADATA.encoding())
+                .unwrap()
+                .implementation(),
+            "b"
+        );
+        static DUPLICATE: [CodecRegistration; 2] = [
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("a")
+                .with_default_for_encoding()
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_implementation("b")
+                .with_default_for_encoding()
+                .with_decoder(|_| Box::new(TestDecoder))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        assert!(matches!(
+            CodecRegistry::validate(&DUPLICATE),
+            Err(RegistryError::DuplicateDefault { .. })
+        ));
     }
 }

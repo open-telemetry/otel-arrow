@@ -51,7 +51,7 @@ pub struct OtelDataflowSpec {
     #[serde(default)]
     pub policies: Policies,
 
-    /// Codec defaults inherited by regular and observability pipelines.
+    /// Codec bindings and named configurations inherited by pipelines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codecs: Option<CodecsConfig>,
 
@@ -426,7 +426,7 @@ pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_te
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
-    /// Codec settings overriding the top-level defaults for observability.
+    /// Codec bindings and definitions overriding the root scope for observability.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codecs: Option<CodecsConfig>,
     /// Optional policy set for this observability pipeline.

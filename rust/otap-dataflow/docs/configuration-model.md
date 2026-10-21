@@ -161,7 +161,7 @@ At startup, the engine runtime accepts a single root configuration file format
 
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
-- `codecs`: optional codec defaults inherited by pipelines
+- `codecs`: optional codec bindings and named configurations inherited by pipelines
 - `topics`: optional top-level topic declarations
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
@@ -252,7 +252,7 @@ A **pipeline group** is a logical container for related pipelines.
 
 - It scopes a set of pipelines under one group id.
 - It can define group-level `policies` applied to pipelines in that group.
-- It can define `codecs` defaults inherited by pipelines in that group.
+- It can define codec bindings and named configurations inherited by that group.
 - It can define group-local `topics` that override top-level topics with the
   same local name for pipelines in that group.
 - It is the intermediate level between root defaults and
@@ -505,20 +505,22 @@ engine:
 
 ## Codec Configuration
 
-`codecs.defaults.decode.validation` selects `best_effort` (default) or `strict`
-for conversion from encoded telemetry into native OTAP. Codec configuration is
-a sibling of `policies`; it does not register implementations or choose a
-node's output encoding.
+The optional `codecs` section defines `bindings` keyed by encoding and reusable
+named `configurations`. Omitted bindings use discovered distribution defaults;
+this is not an allowlist. A binding contains inline settings or a configuration
+reference, never both. Exactly one configuration applies per encoding per pipeline.
 
-Resolution uses the nearest explicit value: pipeline, then group, then
-top-level `codecs`. The observability pipeline uses its own `codecs` declaration
-and top-level defaults, without group inheritance. Empty nested sections
-inherit. Node-level codec declarations and per-encoding overrides are rejected.
+Map entries inherit from pipeline, group, then root, with whole-entry replacement
+rather than deep option merging. Observability inherits its own declaration and
+root only. Empty sections inherit; an empty binding resets that encoding to its
+distribution default. Named definitions require an implementation ID. Missing
+names, incompatible implementations, and invalid options fail startup.
 
-Strict decoding validates complete encoded batches, but does not validate
-pass-through traffic or directly borrowed encoded views. Effective changes
-redeploy the pipeline. See the [codec guide](codecs.md) for costs, examples,
-supported encodings, and the distinction between decoding and transport.
+`codecs.bindings.otlp-bytes.decode.validation` selects `best_effort` or `strict`
+for OTLP decoding; built-in defaults remain best effort. Strict decoding does not
+validate pass-through or borrowed encoded views. Selected settings participate
+in redeployment equality, independent of their scope or reference names. See the
+[codec guide](codecs.md) for examples and extension boundaries.
 
 ## Policy Hierarchy
 

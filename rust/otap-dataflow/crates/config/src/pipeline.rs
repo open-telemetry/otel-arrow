@@ -43,7 +43,7 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     policies: Option<Policies>,
 
-    /// Codec settings overriding inherited group and top-level defaults.
+    /// Codec bindings and definitions overriding group and root declarations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     codecs: Option<CodecsConfig>,
 

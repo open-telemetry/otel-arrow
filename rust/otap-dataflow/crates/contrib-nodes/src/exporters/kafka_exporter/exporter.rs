@@ -1691,7 +1691,7 @@ pub mod test_support {
         use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
             ResourceSpans, ScopeSpans, Span,
         };
-        use otel_arrow_dfe_pdata_codec::{DecodePolicy, DecodeValidation, OtapPayload};
+        use otel_arrow_dfe_pdata_codec::OtapPayload;
 
         // Construct once per test pipeline so sends share codec state and a startup plan.
         fn test_runtime(
@@ -1743,9 +1743,15 @@ pub mod test_support {
                     );
                     let mut exporter = KafkaExporter::new(pipeline_context(), config).unwrap();
                     let reporter = RecordingReporter::new();
-                    let services =
-                        PipelineRuntimeServices::new(DecodePolicy::new(DecodeValidation::Strict))
-                            .unwrap();
+                    let services = PipelineRuntimeServices::new(
+                        otel_arrow_dfe_config::codecs::CodecsConfig::resolve([
+                            &serde_yaml::from_str::<otel_arrow_dfe_config::codecs::CodecsConfig>(
+                                "bindings: {otlp-bytes: {decode: {validation: strict}}}",
+                            )
+                            .unwrap(),
+                        ]),
+                    )
+                    .unwrap();
                     let (effect_handler, encoding_plan) = test_runtime(services);
                     let codecs = effect_handler.codec_service();
                     let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
