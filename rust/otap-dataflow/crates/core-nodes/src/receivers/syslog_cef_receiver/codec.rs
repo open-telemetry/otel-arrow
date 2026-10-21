@@ -8,19 +8,21 @@
 //! ```text
 //! "SLG1" | item_count:u32 | repeated {
 //!     observed_time_unix_nano:i64 | run_item_count:u32 | repeated {
-//!         message_length:u32 | message_bytes
+//!         message_length:u32 | received_local_year:i32 | message_bytes
 //!     }
 //! }
 //! ```
 //!
-//! Timestamps are captured when a receiver batch is sealed. Native batching
-//! copies message frames and coalesces adjacent timestamp runs without parsing
-//! their syslog contents.
+//! Observed timestamps are captured when a receiver batch is sealed. Each
+//! message also retains the local year at receipt, so deferred RFC 3164 decoding
+//! does not infer a different year after New Year. Native batching copies these
+//! frames and coalesces adjacent observed-time runs without parsing syslog.
 
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use chrono::{Datelike, Local};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::{
@@ -38,7 +40,7 @@ pub const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch"
 const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
 const RUN_HEADER_LEN: usize = 12;
-const FRAME_HEADER_LEN: usize = 4;
+const FRAME_HEADER_LEN: usize = 8;
 const MAX_NATIVE_LOGS: usize = 65_535;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
 
@@ -151,8 +153,19 @@ impl SyslogBatchBuilder {
         self.item_count == 0
     }
 
-    /// Copies one socket-backed message into the independent batch buffer.
+    /// Copies a socket-backed message and captures its local receipt year.
     pub(crate) fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
+        self.append_with_year(message, Local::now().year())
+    }
+
+    // Keep the clock at the admission boundary; decoding must never infer the
+    // year from its own clock or the later batch-seal timestamp. A per-message
+    // year also handles receiver batches spanning midnight on New Year.
+    fn append_with_year(
+        &mut self,
+        message: &[u8],
+        received_local_year: i32,
+    ) -> Result<(), SyslogFramingError> {
         let message_len = u32::try_from(message.len())
             .map_err(|_| framing_error("syslog message length exceeds u32"))?;
         if self.is_empty() {
@@ -165,6 +178,7 @@ impl SyslogBatchBuilder {
             .checked_add(1)
             .ok_or_else(|| framing_error("syslog batch item count exceeds u32"))?;
         self.bytes.put_u32(message_len);
+        self.bytes.put_i32(received_local_year);
         self.bytes.extend_from_slice(message);
         Ok(())
     }
@@ -207,6 +221,7 @@ impl SyslogBatchBuilder {
 #[derive(Clone, Copy)]
 struct Frame<'a> {
     observed_time: i64,
+    received_local_year: i32,
     message: &'a [u8],
     encoded: &'a [u8],
 }
@@ -266,7 +281,10 @@ impl<'a> Iterator for FrameIter<'a> {
                 return Some(Err(framing_error("syslog frame header overflow")));
             }
         };
-        let message_len = read_u32(&self.bytes[start..header_end]) as usize;
+        let message_len = read_u32(&self.bytes[start..start + 4]) as usize;
+        let year_bytes = &self.bytes[start + 4..header_end];
+        let received_local_year =
+            i32::from_be_bytes([year_bytes[0], year_bytes[1], year_bytes[2], year_bytes[3]]);
         let message_start = header_end;
         let end = match message_start.checked_add(message_len) {
             Some(end) if end <= self.bytes.len() => end,
@@ -284,6 +302,7 @@ impl<'a> Iterator for FrameIter<'a> {
         self.run_remaining -= 1;
         Some(Ok(Frame {
             observed_time: self.observed_time,
+            received_local_year,
             message: &self.bytes[message_start..end],
             encoded: &self.bytes[start..end],
         }))
@@ -368,7 +387,11 @@ impl PdataDecoder for SyslogDecoder {
             let parsed = parser::parse(frame.message)
                 .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
                 .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            builder.append_syslog_with_observed_time(parsed, frame.observed_time);
+            builder.append_syslog_with_receive_context(
+                parsed,
+                frame.observed_time,
+                frame.received_local_year,
+            );
         }
         builder
             .build()
@@ -624,6 +647,7 @@ pub mod bench_support {
 #[cfg(test)]
 mod tests {
     use arrow::array::TimestampNanosecondArray;
+    use chrono::TimeZone;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_dfe_pdata_codec::{
         CodecServiceBuilder, DecodePolicy, DecodeValidation, OtapPayload,
@@ -747,9 +771,16 @@ mod tests {
     /// Guarantees: Stateless counting and decoding reject the batch without panicking.
     #[test]
     fn malformed_framing_is_rejected() {
-        let mut truncated = batch(&[b"message"], 7).to_vec();
-        let _ = truncated.pop();
-        assert!(validated_item_count(&truncated).is_err());
+        let complete = batch(&[b"message"], 7);
+        // Includes truncation within the per-message receipt year.
+        for end in 0..complete.len() {
+            assert!(validated_item_count(&complete[..end]).is_err());
+            assert!(
+                SyslogDecoder
+                    .decode(SignalType::Logs, &complete.slice(..end))
+                    .is_err()
+            );
+        }
 
         let mut trailing = batch(&[b"message"], 7).to_vec();
         trailing.push(0);
@@ -785,6 +816,133 @@ mod tests {
 
         assert_eq!(logs.num_rows(), 3);
         assert!((0..3).all(|index| observed_times.value(index) == 123));
+    }
+
+    fn local_timestamp(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> i64 {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap()
+    }
+
+    /// Scenario: Plain and CEF-wrapped RFC 3164 messages are decoded after their receipt year.
+    /// Guarantees: Canonical and mixed-case timestamps use the stored year; RFC 5424, raw CEF,
+    /// and observed timestamps remain unchanged regardless of the decoding clock.
+    #[test]
+    fn delayed_decode_preserves_receipt_year() {
+        let messages: &[&[u8]] = &[
+            b"<34>Dec 31 23:59:58 host tag: message",
+            b"<34>Dec 31 23:59:58 host CEF:0|Security|product|1.0|100|test|10|",
+            b"<34>dEc 31 23:59:58 host tag: message",
+            b"<34>dEc 31 23:59:58 host CEF:0|Security|product|1.0|100|test|10|",
+            b"<34>1 2024-01-01T00:00:00Z host app - - - message",
+            b"CEF:0|Security|product|1.0|100|test|10|",
+        ];
+        // Distinct years make the regression independent of today's year.
+        for year in [2020, 2021] {
+            let observed = local_timestamp(year + 1, 1, 1, 0, 0, 5);
+            let mut builder = SyslogBatchBuilder::new();
+            for message in messages {
+                builder.append_with_year(message, year).unwrap();
+            }
+            let batch = builder.finish(observed).unwrap();
+            let records = SyslogDecoder
+                .decode(SignalType::Logs, &batch.bytes)
+                .unwrap();
+            let logs = records.get(ArrowPayloadType::Logs).unwrap();
+            let times = logs
+                .column_by_name("time_unix_nano")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap();
+            let observed_times = logs
+                .column_by_name("observed_time_unix_nano")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap();
+            let expected = local_timestamp(year, 12, 31, 23, 59, 58);
+            assert_eq!(&times.values()[..4], &[expected; 4]);
+            assert_eq!(times.value(4), 1_704_067_200_000_000_000);
+            assert_eq!(times.value(5), 0);
+            assert!(observed_times.values().iter().all(|time| *time == observed));
+        }
+    }
+
+    /// Scenario: A receiver batch spans New Year and is merged and split with another batch.
+    /// Guarantees: Every independently decoded output retains per-message years, order,
+    /// observed timestamps, and input ownership ranges even within a shared timestamp run.
+    #[test]
+    fn native_batching_preserves_years_across_receiver_rollover() {
+        let old = b"<34>Dec 31 23:59:58 host tag: message";
+        let new = b"<34>Jan 01 00:00:01 host CEF:0|Security|product|1.0|100|test|10|";
+        let observed = local_timestamp(2021, 1, 1, 0, 0, 5);
+        let mut first = SyslogBatchBuilder::new();
+        first.append_with_year(old, 2020).unwrap();
+        first.append_with_year(new, 2021).unwrap();
+        first.append_with_year(new, 2021).unwrap();
+        let mut second = SyslogBatchBuilder::new();
+        second.append_with_year(new, 2021).unwrap();
+        let inputs = vec![
+            first.finish(observed).unwrap().bytes,
+            second.finish(observed).unwrap().bytes,
+        ];
+        let settings = BatchSettings {
+            min_size: Some(2),
+            max_size: NonZeroU64::new(2),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        let output = SyslogBatcher
+            .batch(SignalType::Logs, &settings, inputs)
+            .unwrap();
+        assert_eq!(
+            output
+                .batches
+                .iter()
+                .map(|(_, range)| range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..=0, 0..=1]
+        );
+        let mut years = Vec::new();
+        let mut times = Vec::new();
+        for (bytes, _) in output.batches {
+            let (_, frames) = validated_frames(&bytes).unwrap();
+            for frame in frames {
+                let frame = frame.unwrap();
+                years.push(frame.received_local_year);
+                assert_eq!(frame.observed_time, observed);
+            }
+            let records = SyslogDecoder.decode(SignalType::Logs, &bytes).unwrap();
+            let logs = records.get(ArrowPayloadType::Logs).unwrap();
+            let values = logs
+                .column_by_name("time_unix_nano")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap();
+            times.extend_from_slice(values.values());
+        }
+        assert_eq!(years, vec![2020, 2021, 2021, 2021]);
+        let new_time = local_timestamp(2021, 1, 1, 0, 0, 1);
+        assert_eq!(
+            times,
+            vec![
+                local_timestamp(2020, 12, 31, 23, 59, 58),
+                new_time,
+                new_time,
+                new_time
+            ]
+        );
     }
 
     /// Scenario: Flow metrics inspect an admitted syslog batch before codec creation.

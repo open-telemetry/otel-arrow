@@ -136,7 +136,11 @@ The receiver validates transport framing and rejects zero-length messages, then
 forwards non-empty messages in the `syslog-batch` encoded pdata format.
 Format detection and parsing remain lazy until a downstream component requests
 native OTAP records. This keeps transparent forwarding and codec-native
-batching on the original message bytes.
+batching on the original message bytes. Each message retains the local year at
+receipt for RFC 3164 timestamp inference, including CEF wrapped in RFC 3164.
+Delayed decoding and batching across New Year do not change that year; local
+timezone and DST resolution still use the event date. Observed timestamps remain
+those recorded when the receiver seals each batch.
 
 ### Automatic Format Detection
 

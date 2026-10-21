@@ -100,12 +100,6 @@ fn bench_timestamp_extraction(c: &mut Criterion) {
         b.iter(|| black_box(bench_support::timestamp(black_box(&rfc3164_parsed))))
     });
 
-    let cef_rfc3164_parsed =
-        bench_support::parse(CEF_WITH_RFC3164_MSG).expect("parse CEF with RFC3164");
-    let _ = group.bench_function("cef_with_rfc3164", |b| {
-        b.iter(|| black_box(bench_support::timestamp(black_box(&cef_rfc3164_parsed))))
-    });
-
     let rfc5424_parsed = bench_support::parse(RFC5424_MSG).expect("parse RFC5424");
     let _ = group.bench_function("rfc5424", |b| {
         b.iter(|| black_box(bench_support::timestamp(black_box(&rfc5424_parsed))))
@@ -166,19 +160,6 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
             }
             let arrow_records = builder.build().expect("Failed to build Arrow records");
             black_box(arrow_records)
-        });
-    });
-
-    // The wrapped CEF path uses the same RFC3164 timestamp conversion.
-    let _ = group.bench_function("cef_with_rfc3164_arrow_batch_100_msgs", |b| {
-        b.iter(|| {
-            let mut builder = ArrowRecordsBuilder::new();
-            for _ in 0..100 {
-                let parsed = bench_support::parse(black_box(CEF_WITH_RFC3164_MSG))
-                    .expect("Failed to parse CEF with RFC3164 message");
-                builder.append_syslog(parsed);
-            }
-            black_box(builder.build().expect("Failed to build Arrow records"))
         });
     });
 
@@ -254,28 +235,12 @@ fn bench_receiver_pdata_paths(c: &mut Criterion) {
     group.finish();
 }
 
-/// Exercise the codec decoder at receiver and downstream batching sizes.
-fn bench_rfc3164_codec_materialization(c: &mut Criterion) {
-    let mut group = c.benchmark_group("rfc3164_codec_materialization");
-    for count in [100, 8192] {
-        let messages = vec![RFC3164_MSG; count];
-        let mut codec = SyslogCodecBench::new();
-        let framed = codec.frame(&messages);
-        _ = group.throughput(Throughput::Elements(count as u64));
-        let _ = group.bench_function(format!("{count}_msgs"), |b| {
-            b.iter(|| black_box(codec.materialize_framed(black_box(&framed))));
-        });
-    }
-    group.finish();
-}
-
 criterion_group!(
     benches,
     bench_parse_auto_detect,
     bench_timestamp_extraction,
     bench_cef_extensions,
     bench_arrow_batch_creation,
-    bench_receiver_pdata_paths,
-    bench_rfc3164_codec_materialization
+    bench_receiver_pdata_paths
 );
 criterion_main!(benches);

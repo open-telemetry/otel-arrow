@@ -45,22 +45,27 @@ impl ArrowRecordsBuilder {
         self.append_syslog_inner(syslog_message, None);
     }
 
-    /// Appends a parsed message with its receiver-observed timestamp.
-    pub(crate) fn append_syslog_with_observed_time(
+    /// Appends a message with its original observed timestamp and local receipt year.
+    pub(crate) fn append_syslog_with_receive_context(
         &mut self,
         syslog_message: ParsedSyslogMessage<'_>,
         observed_time: i64,
+        received_local_year: i32,
     ) {
-        self.append_syslog_inner(syslog_message, Some(observed_time));
+        self.append_syslog_inner(syslog_message, Some((observed_time, received_local_year)));
     }
 
     fn append_syslog_inner(
         &mut self,
         syslog_message: ParsedSyslogMessage<'_>,
-        observed_time: Option<i64>,
+        receive_context: Option<(i64, i32)>,
     ) {
+        let timestamp = match receive_context {
+            Some((_, year)) => syslog_message.timestamp_with_year(year),
+            None => syslog_message.timestamp(),
+        };
         self.logs
-            .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64).unwrap_or(0));
+            .append_time_unix_nano(timestamp.map(|v| v as i64).unwrap_or(0));
 
         let (severity_number, severity_text) =
             syslog_message.severity().unwrap_or((0, "UNSPECIFIED"));
@@ -86,7 +91,8 @@ impl ArrowRecordsBuilder {
         }
 
         self.logs.append_id(Some(self.curr_log_id));
-        self.observed_times.push(observed_time);
+        self.observed_times
+            .push(receive_context.map(|(time, _)| time));
 
         self.curr_log_id += 1;
     }
