@@ -105,25 +105,29 @@ compilation memory and allocator overhead are separate costs. The
 [matching code][matching] and [regex memory model][regex-memory] document the
 implementation assumptions that need review when dependencies change.
 
-## What startup must still do
+## Startup and runtime responsibilities
 
-A compiled configuration is not a ready receiver. Startup must still:
+Configuration validation checks settings and prepares matching rules.
+Receiver startup performs the filesystem and runtime checks:
 
-- Obtain the engine's state-root capability and open the checkpoint namespace
-  under the store's ownership and recovery rules.
-- Resolve and verify roots. Call `validate_root_lengths` with the scanner's
+- Use the engine-provided state-root capability to open and recover checkpoints
+  under the store's ownership rules.
+- Resolve and verify file roots. Call `validate_root_lengths` with the scanner's
   capacity before constructing the scanner.
 - Reject direct inclusion of the checkpoint namespace and prevent reading it
-  through an alias, using verified file identities.
-- Check discovery capability, engine allocation, and downstream completion
+  through aliases, using verified file identities.
+- Verify discovery support, available resources, and downstream completion
   requirements before reporting readiness.
-- Account for remaining memory: reader state, worker buffers, channels, leases,
-  batch storage, and temporary compilation work.
-- Check deadline and counter arithmetic when those values are used.
+- Include reader state, worker buffers, channels, leases, batches, and
+  compilation memory in the receiver's memory budget.
 
-The path policy does not scan directories, follow symlinks, or schedule work.
-Linux is the first execution target. Windows paths and filesystem behavior
-still need separate platform testing.
+During operation, the receiver checks deadline and counter arithmetic when
+those values are used.
+
+The path policy provides matching decisions. Discovery owns directory scanning
+and symlink handling. The runtime owns scheduling.
+
+Each supported platform requires its own path and filesystem qualification.
 
 [settings]: ../../../../../../docs/filelog-receiver-phase1-spec.md#fields-defaults-and-variants
 [checkpoint]: ../../../../../../docs/filelog-checkpoint-format.md
