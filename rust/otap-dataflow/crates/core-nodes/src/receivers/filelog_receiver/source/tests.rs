@@ -268,7 +268,7 @@ fn non_regular_candidates_are_rejected() {
         );
         assert!(matches!(
             SourceFile::open_at(&parent, name, SymlinkPolicy::Follow, None, || false),
-            Err(FileAccessError::NotRegular)
+            Err(FileAccessError::IsDirectory)
         ));
         assert_eq!(descriptors_for(locator), 0);
     }
@@ -916,6 +916,7 @@ fn os_error_accessor_preserves_io_classification() {
         FileAccessError::Cancelled,
         FileAccessError::InvalidName,
         FileAccessError::NotRegular,
+        FileAccessError::IsDirectory,
         FileAccessError::InvalidRange,
         FileAccessError::LocatorChanged { actual },
         FileAccessError::ReopenedMismatch { actual },

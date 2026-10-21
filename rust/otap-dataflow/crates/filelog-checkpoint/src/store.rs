@@ -251,6 +251,15 @@ pub struct CheckpointStore {
 }
 
 impl CheckpointStore {
+    /// Returns the opened checkpoint namespace's locator for discovery exclusion.
+    ///
+    /// This identifies only this namespace, not the entire state root. It exposes
+    /// no directory descriptor and authorizes no source or checkpoint progress.
+    /// A changed namespace ancestry fails closed instead of returning a stale mapping.
+    pub fn namespace_locator(&self) -> Result<crate::Locator, StoreError> {
+        self.namespace.locator()
+    }
+
     /// Opens relative to the engine's already provisioned, trusted state root.
     /// Passing an arbitrary directory does not fulfill engine provisioning.
     /// Lock contention returns immediately; the worker owns bounded retries.
