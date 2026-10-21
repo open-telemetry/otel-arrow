@@ -472,27 +472,41 @@ fn calculated_reads_warm_up_and_do_not_cap_percentages() {
     assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
 }
 
-/// Scenario: An elapsed-time counter is collected as Gauge or cumulative non-monotonic Sum with configured scaling.
-/// Guarantees: The first sample emits PDH's double without a raw read or artificial warm-up, and projection accepts both kinds.
+/// Scenario: Elapsed time and both raw-fraction types are collected as Gauge or cumulative non-monotonic Sum with configured scaling.
+/// Guarantees: Formatted doubles, including zero, emit on the first sample despite unusable raw data, and projection accepts both kinds.
 #[test]
-fn elapsed_time_emits_from_first_sample() {
-    for kind in [MetricKind::Gauge, MetricKind::Sum] {
-        let (state, mut configs) = fake(vec![CounterFixture::new(
-            0x3024_0500, // PERF_ELAPSED_TIME
-            Number::Double(42.5),
-        )]);
-        configs[0].kind = kind;
-        configs[0].scale_power10 = -1;
-        let mut query = open_fake(&state, &configs).unwrap();
-        let sample = query.collect().unwrap();
-        assert!(sample.failures.is_empty());
-        assert_eq!(
-            sample.points[0].value,
-            SampleValue::Value(Number::Double(4.25))
-        );
-        assert!(state.borrow().raws.is_empty());
-        assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
-        assert!(into_otap(&configs, sample).unwrap().is_some());
+fn formatted_single_sample_counters_emit_from_first_sample() {
+    for (native_type, value, expected) in [
+        (0x3024_0500, 42.5, 4.25), // PERF_ELAPSED_TIME
+        (0x2002_0400, 0.0, 0.0),   // PERF_RAW_FRACTION
+        (0x2002_0400, 25.0, 2.5),  // PERF_RAW_FRACTION
+        (0x2002_0500, 0.0, 0.0),   // PERF_LARGE_RAW_FRACTION
+        (0x2002_0500, 25.0, 2.5),  // PERF_LARGE_RAW_FRACTION
+    ] {
+        for kind in [MetricKind::Gauge, MetricKind::Sum] {
+            let (state, mut configs) = fake(vec![CounterFixture::new(
+                native_type,
+                Number::Double(value),
+            )]);
+            {
+                let mut state = state.borrow_mut();
+                state.counters[0].base = 0;
+                state.counters[0].raw_status = PDH_INVALID_ARGUMENT;
+                state.counters[0].raw_cstatus = PDH_CSTATUS_NO_INSTANCE;
+            }
+            configs[0].kind = kind;
+            configs[0].scale_power10 = -1;
+            let mut query = open_fake(&state, &configs).unwrap();
+            let sample = query.collect().unwrap();
+            assert!(sample.failures.is_empty());
+            assert_eq!(
+                sample.points[0].value,
+                SampleValue::Value(Number::Double(expected))
+            );
+            assert!(state.borrow().raws.is_empty());
+            assert_eq!(state.borrow().formats, vec![(0, ValueFormat::Double)]);
+            assert!(into_otap(&configs, sample).unwrap().is_some());
+        }
     }
 }
 
@@ -613,35 +627,6 @@ fn multi_timer_raw_failures_still_reset_readiness() {
             );
         }
     }
-}
-
-/// Scenario: A raw fraction's current denominator is zero, negative, then positive.
-/// Guarantees: Invalid denominators fail locally and a valid fraction needs no two-sample warm-up.
-#[test]
-fn raw_fraction_requires_a_positive_current_base() {
-    let (state, configs) = fake(vec![CounterFixture::new(
-        0x2002_0400, // PERF_RAW_FRACTION
-        Number::Double(25.0),
-    )]);
-    let mut query = open_fake(&state, &configs).unwrap();
-    for base in [0, -1] {
-        state.borrow_mut().counters[0].base = base;
-        let sample = query.collect().unwrap();
-        assert!(sample.points.is_empty());
-        assert_eq!(sample.failures.len(), 1);
-        assert!(
-            sample.failures[0]
-                .error
-                .contains("base denominator must be positive")
-        );
-    }
-    state.borrow_mut().counters[0].base = 100;
-    let sample = query.collect().unwrap();
-    assert_eq!(
-        sample.points[0].value,
-        SampleValue::Value(Number::Double(25.0))
-    );
-    assert!(sample.failures.is_empty());
 }
 
 /// Scenario: An average's base warms up, stays idle, advances, resets, then advances again.
@@ -1329,6 +1314,10 @@ fn live_pdh_calculated_counters() {
     for index in [0, 1, 2, 4] {
         assert_eq!(warming.points[index].value, SampleValue::NoObservation);
     }
+    assert!(matches!(
+        warming.points[3].value,
+        SampleValue::Value(Number::Double(value)) if value.is_finite() && value >= 0.0
+    ));
     std::thread::sleep(std::time::Duration::from_millis(250));
     let sample = query.collect().unwrap();
     assert!(sample.failures.is_empty(), "{:?}", sample.failures);
