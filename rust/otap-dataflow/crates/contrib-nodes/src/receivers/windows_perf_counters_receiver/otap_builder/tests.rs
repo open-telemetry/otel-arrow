@@ -418,7 +418,7 @@ fn projects_optional_metric_metadata_without_empty_records() {
 }
 
 /// Scenario: Omitted or empty references and an explicit reference resolve to an indexed path-named Gauge or Sum.
-/// Guarantees: Configured index spelling selects the definition while grouped points retain canonical paths and explicit attributes only.
+/// Guarantees: Configured index spelling selects the definition and reaches decoded paths, with explicit attributes only.
 #[test]
 fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
     let name = r"\Process(app#001)\Private Bytes";
@@ -487,14 +487,17 @@ fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
                 attributes(&points[0].attributes),
                 BTreeMap::from([
                     ("state", "used"),
-                    ("windows.perf_counter.path", r"\Process(app#1)\Working Set"),
+                    (
+                        "windows.perf_counter.path",
+                        r"\Process(app#001)\Working Set"
+                    ),
                 ])
             );
             assert_eq!(
                 attributes(&points[1].attributes),
                 BTreeMap::from([(
                     "windows.perf_counter.path",
-                    r"\Process(app#1)\Private Bytes"
+                    r"\Process(app#001)\Private Bytes"
                 ),])
             );
             for point in points {
@@ -523,13 +526,14 @@ fn projects_shared_path_definition_with_implicit_and_explicit_mappings() {
     }
 }
 
-/// Scenario: Unreferenced paths differ from definitions by casing or canonical instance-index spelling.
+/// Scenario: Unreferenced paths differ from definitions by casing or numeric instance-index spelling.
 /// Guarantees: Exact lookup falls back to path-named default Gauges and ignores attributes without losing points.
 #[test]
 fn projects_configured_path_names_with_exact_definition_lookup() {
     let mut value = serde_json::json!({
         "metrics": {
             r"\Memory\Available Bytes": {"unit": "By", "sum": {"aggregation": "cumulative"}},
+            r"\Process(app)\Private Bytes": {"description": "Must not match", "sum": {"aggregation": "cumulative"}},
             r"\Process(worker#1)\Private Bytes": {"description": "Must not match", "sum": {"aggregation": "cumulative"}}
         },
         "perfcounters": [
@@ -575,27 +579,24 @@ fn projects_configured_path_names_with_exact_definition_lookup() {
         );
         let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
         assert_eq!(metrics.len(), 3);
-        for (metric, name, path, value) in [
+        for (metric, expected_path, value) in [
             (
                 &metrics[0],
-                r"\memory\available bytes",
                 r"\memory\available bytes",
                 number_data_point::Value::AsInt(42),
             ),
             (
                 &metrics[1],
                 r"\Process(app#00)\Private Bytes",
-                r"\Process(app)\Private Bytes",
                 number_data_point::Value::AsDouble(12.5),
             ),
             (
                 &metrics[2],
                 r"\Process(worker#001)\Private Bytes",
-                r"\Process(worker#1)\Private Bytes",
                 number_data_point::Value::AsInt(-7),
             ),
         ] {
-            assert_eq!(metric.name, name);
+            assert_eq!(metric.name, expected_path);
             assert_eq!(metric.unit, "1");
             assert!(metric.description.is_empty());
             let Some(metric::Data::Gauge(gauge)) = &metric.data else {
@@ -608,7 +609,7 @@ fn projects_configured_path_names_with_exact_definition_lookup() {
             assert_eq!(point.start_time_unix_nano, 0);
             assert_eq!(
                 attributes(&point.attributes),
-                BTreeMap::from([("windows.perf_counter.path", path)])
+                BTreeMap::from([("windows.perf_counter.path", expected_path)])
             );
         }
     }
@@ -672,7 +673,7 @@ fn sum_configuration_preserves_decoded_output() {
         ),
         (
             &sum.data_points[1],
-            r"\Process(worker#1)\Private Bytes",
+            r"\Process(worker#01)\Private Bytes",
             number_data_point::Value::AsDouble(42_000.0),
         ),
     ] {
