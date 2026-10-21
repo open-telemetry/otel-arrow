@@ -5,11 +5,14 @@
 //!
 //! Codec extension crates submit [`CodecRegistration`] values through
 //! [`crate::register_pdata_codec!`]. A registration contains immutable metadata
-//! and factories only; mutable decoder and encoder instances belong to the
-//! pipeline-local runtime described by [`crate::CodecService`]. Registrations
-//! may be one-sided, so a format can support decoding without encoding or the
-//! reverse. Decoder registrations must also provide stateless item counting so
-//! an operator request for item-count telemetry cannot be silently ignored.
+//! and factories only; mutable decoder, encoder, and batcher instances belong
+//! to the pipeline-local runtime described by [`crate::CodecService`].
+//! Registrations may be one-sided, so a format can support decoding without
+//! encoding or the reverse, and native batching remains an optional capability.
+//! Decoder registrations must also provide stateless item counting so an
+//! operator request for item-count telemetry cannot be silently ignored. Native
+//! item batchers also require a counter to measure inputs and outputs, even
+//! when the registration has no decoder or defaults to byte sizing.
 //!
 //! [`CodecRegistry`] validates the complete linked set before a pipeline uses
 //! it. Encoding names identify byte-compatible representations, and duplicate
@@ -24,15 +27,15 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
 use crate::{
-    CodecError, CodecOperation, DecodePolicy, EncodePolicy, EncodedPdata, PdataDecoder,
-    PdataEncoder, PdataEncoding, RegistryError,
+    BatchingSupport, CodecError, CodecOperation, DecodePolicy, EncodePolicy, EncodedPdata,
+    PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding, RegistryError,
 };
 
 /// Stateless item scan that needs no mutable codec instance.
 ///
-/// Decoder registrations must provide this capability. `None` means the bytes
-/// are malformed or otherwise cannot be counted; it is distinct from a valid
-/// empty batch.
+/// Registrations with a decoder or native item batching must provide this
+/// capability. `None` means the bytes are malformed or otherwise cannot be
+/// counted; it is distinct from a valid empty batch.
 pub type ItemCounter = fn(SignalType, &[u8]) -> Option<usize>;
 
 /// Creates independent decoder state for one pipeline runtime.
@@ -45,6 +48,26 @@ pub type DecoderFactory = fn(DecodePolicy) -> Box<dyn PdataDecoder>;
 
 /// Creates encoder state configured once for one output plan.
 pub type EncoderFactory = fn(EncodePolicy) -> Result<Box<dyn PdataEncoder>, CodecError>;
+
+/// Creates independent batching state for one pipeline runtime.
+pub type BatcherFactory = fn() -> Box<dyn PdataBatcher>;
+
+/// Optional native batching implementation and its immutable contract.
+#[derive(Debug)]
+pub struct CodecBatcherRegistration {
+    /// Supported sizing units and default policy.
+    support: &'static BatchingSupport,
+    /// Creates reusable runtime-local batching state.
+    create: BatcherFactory,
+}
+
+impl CodecBatcherRegistration {
+    /// Declares native batching support and its runtime-local state factory.
+    #[must_use]
+    pub const fn new(support: &'static BatchingSupport, create: BatcherFactory) -> Self {
+        Self { support, create }
+    }
+}
 
 /// Immutable metadata for one encoded representation.
 #[derive(Debug)]
@@ -124,7 +147,9 @@ pub struct CodecRegistration {
     decoder: Option<DecoderFactory>,
     /// Encoder factory, absent for decode-only formats.
     encoder: Option<EncoderFactory>,
-    /// Stateless item scan required when a decoder is registered.
+    /// Native batching support, absent when callers must use OTAP fallback.
+    batcher: Option<CodecBatcherRegistration>,
+    /// Stateless item scan required for decoding or native item batching.
     count_items: Option<ItemCounter>,
 }
 
@@ -139,6 +164,7 @@ impl CodecRegistration {
             metadata,
             decoder: None,
             encoder: None,
+            batcher: None,
             count_items: None,
         }
     }
@@ -157,10 +183,21 @@ impl CodecRegistration {
         self
     }
 
+    /// Adds a native batching implementation and its sizing contract.
+    ///
+    /// Supporting [`crate::BatchSizer::Items`] also requires
+    /// [`Self::with_item_counter`], even without a decoder.
+    #[must_use]
+    pub const fn with_batcher(mut self, batcher: CodecBatcherRegistration) -> Self {
+        self.batcher = Some(batcher);
+        self
+    }
+
     /// Adds a stateless item counter that needs no codec instance.
     ///
-    /// Every decoder registration must provide this capability. Registry
-    /// validation rejects a decoder without it.
+    /// Every registration with a decoder or native item batching must provide
+    /// this capability. Registry validation rejects either capability without
+    /// it, even when item sizing is supported but not the default.
     #[must_use]
     pub const fn with_item_counter(mut self, count_items: ItemCounter) -> Self {
         self.count_items = Some(count_items);
@@ -216,6 +253,21 @@ impl ResolvedCodec {
         self.0.encoder.is_some()
     }
 
+    /// Whether a native batcher is registered.
+    #[must_use]
+    pub const fn can_batch(self) -> bool {
+        self.0.batcher.is_some()
+    }
+
+    /// Native batching contract, when registered.
+    #[must_use]
+    pub const fn batching_support(self) -> Option<&'static BatchingSupport> {
+        match &self.0.batcher {
+            Some(batcher) => Some(batcher.support),
+            None => None,
+        }
+    }
+
     /// Validates decoder support for a signal.
     pub fn require_decoder(self, signal: SignalType) -> Result<(), CodecError> {
         self.require(signal, CodecOperation::Decode, self.can_decode())
@@ -224,6 +276,11 @@ impl ResolvedCodec {
     /// Validates encoder support for a signal.
     pub fn require_encoder(self, signal: SignalType) -> Result<(), CodecError> {
         self.require(signal, CodecOperation::Encode, self.can_encode())
+    }
+
+    /// Validates native batching support for a signal.
+    pub fn require_batcher(self, signal: SignalType) -> Result<(), CodecError> {
+        self.require(signal, CodecOperation::Batch, self.can_batch())
     }
 
     fn require(
@@ -280,6 +337,17 @@ impl ResolvedCodec {
             operation: CodecOperation::Encode,
             signal: self.metadata().signals()[0],
         })?(policy)
+    }
+
+    pub(crate) fn create_batcher(self) -> Result<Box<dyn PdataBatcher>, CodecError> {
+        self.0
+            .batcher
+            .as_ref()
+            .map(|registration| (registration.create)())
+            .ok_or_else(|| CodecError::UnsupportedCodecOperation {
+                encoding: self.encoding().clone(),
+                operation: CodecOperation::Batch,
+            })
     }
 }
 
@@ -384,12 +452,45 @@ fn validate_registration(registration: &CodecRegistration) -> Result<(), Registr
             encoding: encoding.clone(),
         });
     }
-    if registration.decoder.is_none() && registration.encoder.is_none() {
+    if registration.decoder.is_none()
+        && registration.encoder.is_none()
+        && registration.batcher.is_none()
+    {
         return Err(RegistryError::EmptyCapabilities {
             encoding: encoding.clone(),
         });
     }
-    if registration.decoder.is_some() && registration.count_items.is_none() {
+    if let Some(batcher) = &registration.batcher {
+        batcher
+            .support
+            .default_settings
+            .validate()
+            .map_err(|error| RegistryError::InvalidBatching {
+                encoding: encoding.clone(),
+                reason: error.to_string(),
+            })?;
+        if batcher.support.sizers.is_empty()
+            || batcher
+                .support
+                .sizers
+                .contains(&crate::BatchSizer::Requests)
+            || !batcher
+                .support
+                .sizers
+                .contains(&batcher.support.default_settings.sizer)
+        {
+            return Err(RegistryError::InvalidBatching {
+                encoding: encoding.clone(),
+                reason: "native batcher must support its default sizing unit and cannot declare request sizing".to_owned(),
+            });
+        }
+    }
+    let needs_item_counter = registration.decoder.is_some()
+        || registration
+            .batcher
+            .as_ref()
+            .is_some_and(|batcher| batcher.support.sizers.contains(&crate::BatchSizer::Items));
+    if needs_item_counter && registration.count_items.is_none() {
         return Err(RegistryError::MissingItemCounter {
             encoding: encoding.clone(),
         });
@@ -439,5 +540,97 @@ mod tests {
             CodecRegistry::validate(&DECODER_WITHOUT_COUNTER_REGISTRATIONS),
             Err(RegistryError::MissingItemCounter { .. })
         ));
+    }
+    /// Scenario: A codec without a decoder advertises native item batching, optionally with an encoder.
+    /// Guarantees: An item counter is required even when bytes is the default unit; adding it
+    /// validates the registration without instantiating encoder or batcher state.
+    #[test]
+    fn native_item_batching_requires_counter_without_decoder() {
+        use crate::{BatchSettings, BatchSizer};
+        static SUPPORT: [BatchingSupport; 2] = [
+            BatchingSupport {
+                sizers: &[BatchSizer::Items],
+                default_settings: BatchSettings::otap(),
+            },
+            BatchingSupport {
+                sizers: &[BatchSizer::Bytes, BatchSizer::Items],
+                default_settings: BatchSettings::otlp(),
+            },
+        ];
+        for support in &SUPPORT {
+            for with_encoder in [false, true] {
+                let mut registration = CodecRegistration::new(&EMPTY_METADATA).with_batcher(
+                    CodecBatcherRegistration::new(support, || {
+                        unreachable!("registration validation must not create batcher state")
+                    }),
+                );
+                if with_encoder {
+                    registration = registration.with_encoder(|_| {
+                        unreachable!("registration validation must not create encoder state")
+                    });
+                }
+                assert_eq!(
+                    validate_registration(&registration),
+                    Err(RegistryError::MissingItemCounter {
+                        encoding: EMPTY_METADATA.encoding.clone(),
+                    }),
+                    "sizers={:?}, with_encoder={with_encoder}",
+                    support.sizers,
+                );
+                let registration = registration.with_item_counter(|_, _| Some(0));
+                assert!(validate_registration(&registration).is_ok());
+            }
+        }
+    }
+
+    /// Scenario: An encode-only codec has no native batcher or only supports byte batching.
+    /// Guarantees: Neither registration requires an item counter or instantiates codec state.
+    #[test]
+    fn output_only_byte_batching_does_not_require_item_counter() {
+        static SUPPORT: BatchingSupport = BatchingSupport {
+            sizers: &[crate::BatchSizer::Bytes],
+            default_settings: crate::BatchSettings::otlp(),
+        };
+        let registration = CodecRegistration::new(&EMPTY_METADATA).with_encoder(|_| {
+            unreachable!("registration validation must not create encoder state")
+        });
+        assert!(validate_registration(&registration).is_ok());
+        let registration = registration
+            .with_batcher(CodecBatcherRegistration::new(&SUPPORT, || {
+                unreachable!("registration validation must not create batcher state")
+            }));
+        assert!(validate_registration(&registration).is_ok());
+    }
+
+    /// Scenario: A native batcher declares empty, unsupported, or inconsistent sizing units.
+    /// Guarantees: Registry construction rejects the declaration before any pipeline starts.
+    #[test]
+    fn rejects_inconsistent_batching_units() {
+        use crate::{BatchSettings, BatchSizer};
+        static SUPPORT: [BatchingSupport; 3] = [
+            BatchingSupport {
+                sizers: &[],
+                default_settings: BatchSettings::otlp(),
+            },
+            BatchingSupport {
+                sizers: &[BatchSizer::Items],
+                default_settings: BatchSettings::otlp(),
+            },
+            BatchingSupport {
+                sizers: &[BatchSizer::Bytes, BatchSizer::Requests],
+                default_settings: BatchSettings::otlp(),
+            },
+        ];
+        for support in &SUPPORT {
+            let registration = CodecRegistration::new(&EMPTY_METADATA).with_batcher(
+                CodecBatcherRegistration::new(support, || {
+                    Box::new(crate::codecs::otlp::OtlpBatcher)
+                }),
+            );
+            assert!(matches!(
+                validate_registration(&registration),
+                Err(RegistryError::InvalidBatching { .. })
+            ));
+        }
     }
 }

@@ -624,7 +624,6 @@ mod tests {
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
-    use otel_arrow_dfe_pdata_codec::PayloadData;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -2262,10 +2261,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otap_batch = match first.into_data() {
-                    PayloadData::OtapRecords(otap_batch) => otap_batch,
-                    _ => panic!("unexpected output payload type"),
-                };
+                let otap_batch = first.otap_ref().expect("expected native OTAP output");
 
                 assert!(
                     otap_batch.get(ArrowPayloadType::LogAttrs).is_none(),

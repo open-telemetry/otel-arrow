@@ -3,7 +3,10 @@
 
 #![allow(unused)]
 
-use std::str::FromStr;
+use std::{
+    cell::{Ref, RefCell},
+    str::FromStr,
+};
 
 use otel_arrow_contrib_data_engine_expressions::Expression;
 
@@ -109,4 +112,50 @@ pub trait ColumnarEngineDiagnosticReceiver<'a> {
         F: FnOnce() -> String;
 
     fn add_diagnostic(&self, diagnostic: ColumnarEngineDiagnostic<'a>);
+}
+
+pub(crate) struct ColumnarEngineDiagnosticReceiverImpl<'a, 'pipeline> {
+    diagnostic_level: ColumnarEngineDiagnosticLevel,
+    diagnostics: &'a RefCell<Vec<ColumnarEngineDiagnostic<'pipeline>>>,
+}
+
+impl<'a, 'pipeline> ColumnarEngineDiagnosticReceiverImpl<'a, 'pipeline> {
+    pub fn new(
+        diagnostic_level: ColumnarEngineDiagnosticLevel,
+        diagnostics: &'a RefCell<Vec<ColumnarEngineDiagnostic<'pipeline>>>,
+    ) -> ColumnarEngineDiagnosticReceiverImpl<'a, 'pipeline> {
+        Self {
+            diagnostic_level,
+            diagnostics,
+        }
+    }
+
+    pub fn get_diagnostics(&self) -> Ref<'_, Vec<ColumnarEngineDiagnostic<'pipeline>>> {
+        self.diagnostics.borrow()
+    }
+}
+
+impl<'a> ColumnarEngineDiagnosticReceiver<'a> for ColumnarEngineDiagnosticReceiverImpl<'_, 'a> {
+    fn is_diagnostic_level_enabled(&self, diagnostic_level: ColumnarEngineDiagnosticLevel) -> bool {
+        diagnostic_level >= self.diagnostic_level
+    }
+
+    fn add_diagnostic_if_enabled<F>(
+        &self,
+        diagnostic_level: ColumnarEngineDiagnosticLevel,
+        expression: &'a dyn Expression,
+        generate_message: F,
+    ) where
+        F: FnOnce() -> String,
+    {
+        if diagnostic_level >= self.diagnostic_level {
+            let diagnostic =
+                ColumnarEngineDiagnostic::new(diagnostic_level, expression, generate_message());
+            self.diagnostics.borrow_mut().push(diagnostic);
+        }
+    }
+
+    fn add_diagnostic(&self, diagnostic: ColumnarEngineDiagnostic<'a>) {
+        self.diagnostics.borrow_mut().push(diagnostic);
+    }
 }

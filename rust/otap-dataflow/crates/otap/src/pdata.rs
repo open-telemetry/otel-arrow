@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
-use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
+use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
 use otel_arrow_dfe_engine::context_declaration::{
@@ -45,8 +45,8 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_pdata_codec::{
-    AcceptedEncodings, CodecError, EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding,
-    PdataPayloadDecodeError, PdataView,
+    AcceptedEncodings, BatchPlan, BatchingOutput, CodecError, EncodePolicy, EncodingPlan,
+    OtapPayload, PdataEncoding, PdataPayloadDecodeError, PdataView,
 };
 
 mod delivery;
@@ -1234,12 +1234,6 @@ impl OtapPdata {
         self.payload.signal_type()
     }
 
-    /// Returns the format of signal represented by this `OtapPdata` instance.
-    #[must_use]
-    pub const fn signal_format(&self) -> SignalFormat {
-        self.payload.signal_format()
-    }
-
     /// True if the payload is empty. By definition, we can skip sending an
     /// empty request.
     #[must_use]
@@ -1699,6 +1693,28 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
         payload: &mut OtapPayload,
         plan: &EncodingPlan,
     ) -> Result<bytes::Bytes, CodecError>;
+
+    /// Prepares one payload for a startup-resolved batching plan.
+    async fn prepare_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
+
+    /// Merges or splits prepared payloads through a batching plan.
+    async fn batch(
+        &self,
+        plan: &BatchPlan,
+        signal: SignalType,
+        inputs: Vec<OtapPayload>,
+    ) -> Result<BatchingOutput, CodecError>;
+
+    /// Converts a flushed working batch to the plan's output representation.
+    async fn finish_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
 }
 
 /// Processor capability for algorithms that always require mutable native OTAP.
@@ -1811,6 +1827,31 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &EncodingPlan,
             ) -> Result<bytes::Bytes, CodecError> {
                 payload.encode_bytes(self.codec_service(), plan)
+            }
+
+            async fn prepare_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.prepare(payload, self.codec_service())
+            }
+
+            async fn batch(
+                &self,
+                plan: &BatchPlan,
+                signal: SignalType,
+                inputs: Vec<OtapPayload>,
+            ) -> Result<BatchingOutput, CodecError> {
+                plan.batch(signal, inputs, self.codec_service())
+            }
+
+            async fn finish_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.finish(payload, self.codec_service())
             }
         }
     };
@@ -2142,8 +2183,8 @@ mod test {
             codec
                 .admit(SignalType::Logs, bytes)
                 .expect("lazy admission"),
-        )
-        .with_item_count(9);
+        );
+        let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9);
         let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
 
         let error = handler
@@ -2183,7 +2224,7 @@ mod test {
     }
 
     fn delivery_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
-        let legacy = create_test_pdata().payload();
+        let adapted = create_test_pdata().payload();
         let codec = handler
             .codec_service()
             .registry()
@@ -2191,14 +2232,14 @@ mod test {
             .unwrap();
         let encoded = codec
             .admit(
-                legacy.signal_type(),
-                legacy.encoded_bytes().unwrap().clone(),
+                adapted.signal_type(),
+                adapted.encoded_bytes().unwrap().clone(),
             )
             .unwrap();
-        [legacy, encoded.into(), create_test_otap_pdata().payload()]
+        [adapted, encoded.into(), create_test_otap_pdata().payload()]
     }
 
-    /// Scenario: legacy, generalized encoded, and native inputs prepare work or delivery ownership.
+    /// Scenario: OTLP adapters, admitted encoded, and native inputs prepare work or delivery ownership.
     /// Guarantees: only RETURN_DATA retains input, context and measurement caches survive,
     /// and encoded snapshots share the original byte buffer without codec creation.
     #[test]
@@ -2358,7 +2399,7 @@ mod test {
         }
     }
 
-    /// Scenario: malformed legacy or generalized OTLP enters an update without RETURN_DATA.
+    /// Scenario: malformed OTLP from an adapter or admission enters an update without RETURN_DATA.
     /// Guarantees: decoding never calls the updater and recovers exact bytes, cached count,
     /// signal and context; the shared decoder remains usable for the next valid batch.
     #[tokio::test]
@@ -2373,18 +2414,20 @@ mod test {
             .unwrap();
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
-            let legacy = match signal {
+            let adapted = match signal {
                 SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes.clone()),
                 SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes.clone()),
                 SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
             };
             for payload in [
-                OtapPayload::from(legacy),
+                OtapPayload::from(adapted),
                 codec.admit(signal, bytes.clone()).unwrap().into(),
             ] {
-                let pdata = OtapPdata::new_default(payload.with_item_count(9))
-                    .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
-                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let pdata = OtapPdata::new_default(
+                    otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9),
+                )
+                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
+                .with_peer_addr("127.0.0.1:1234".parse().unwrap());
                 let context = pdata.context.clone();
                 let format = pdata.payload_ref().format();
                 let error = handler
@@ -2424,10 +2467,12 @@ mod test {
     }
 
     fn create_test_otap_pdata() -> OtapPdata {
-        use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+        use otel_arrow_dfe_pdata_codec::CodecService;
 
         let payload = create_test_pdata().into_parts().1;
-        let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
+        let records = payload
+            .try_into_otap(&CodecService::new().expect("valid codec registry"))
+            .expect("OTAP conversion");
         OtapPdata::new_default(records.into())
     }
 
