@@ -172,12 +172,12 @@ where
             if let Some(value_index_lookup) = value_index_lookup.as_ref() {
                 if let Some(Some(transformed_value_index)) = value_index_lookup.get(&value_index) {
                     unsafe {
-                        key_writer.set_value_index_unchecked(key_index, *transformed_value_index)
+                        key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
                     };
                     continue;
                 }
             } else {
-                unsafe { key_writer.set_value_index_unchecked(key_index, value_index) };
+                unsafe { key_writer.set_value_index_unchecked(key_index, value_index)? };
                 continue;
             }
         }
@@ -194,7 +194,7 @@ where
                         let (index, _) = transformed_values.insert_full(v);
                         (
                             true,
-                            <K as ArrowPrimitiveType>::Native::from_usize(index).unwrap(),
+                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(index)?,
                         )
                     }
                 };
@@ -250,12 +250,12 @@ where
             if let Some(value_index_lookup) = value_index_lookup.as_ref() {
                 if let Some(Some(transformed_value_index)) = value_index_lookup.get(&value_index) {
                     unsafe {
-                        key_writer.set_value_index_unchecked(key_index, *transformed_value_index)
+                        key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
                     };
                     continue;
                 }
             } else {
-                unsafe { key_writer.set_value_index_unchecked(key_index, value_index) };
+                unsafe { key_writer.set_value_index_unchecked(key_index, value_index)? };
                 continue;
             }
         }
@@ -272,7 +272,7 @@ where
                         let (index, _) = transformed_values.insert_full(v);
                         (
                             true,
-                            <K as ArrowPrimitiveType>::Native::from_usize(index).unwrap(),
+                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(index)?,
                         )
                     }
                 };
@@ -325,12 +325,12 @@ where
         if let Some(value_index_lookup) = value_index_lookup.as_ref() {
             if let Some(Some(transformed_value_index)) = value_index_lookup.get(&key_index) {
                 unsafe {
-                    key_writer.set_value_index_unchecked(key_index, *transformed_value_index)
+                    key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
                 };
                 continue;
             }
         } else {
-            unsafe { key_writer.set_value_index_unchecked(key_index, key_index) };
+            unsafe { key_writer.set_value_index_unchecked(key_index, key_index)? };
             continue;
         }
 
@@ -346,7 +346,7 @@ where
                         let (index, _) = transformed_values.insert_full(v);
                         (
                             true,
-                            <K as ArrowPrimitiveType>::Native::from_usize(index).unwrap(),
+                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(index)?,
                         )
                     }
                 };
@@ -828,6 +828,122 @@ mod tests {
                     .expect("transform succeeds");
                 assert!(transformed.is_empty());
                 assert_eq!(transformed.keys().data_type(), data_type);
+            }
+        }
+    }
+
+    /// Scenario: Null replacement adds or reuses a value at the capacity of signed and unsigned integer keys.
+    /// Guarantees: The largest index succeeds, existing values and nulls remain usable at capacity, and overflow returns an error.
+    #[test]
+    fn transform_into_any_checks_null_replacement_key_capacity() {
+        fn check<K: ArrowDictionaryKeyType>(capacity: usize)
+        where
+            DictionaryKeyArray: From<PrimitiveArray<K>>,
+        {
+            for value_count in [capacity - 1, capacity] {
+                let keys = PrimitiveArray::<K>::from_iter([
+                    Some(K::Native::from_usize(value_count - 1).expect("index fits")),
+                    None,
+                    None,
+                ]);
+                let values = (0..value_count)
+                    .map(|index| ValueOrRef::Integer(index as i64))
+                    .collect::<Vec<_>>();
+                let dictionary = Dictionary::new(keys.into(), values.into()).expect("valid");
+                let data_type = dictionary.keys().data_type();
+
+                let unchanged = dictionary
+                    .clone()
+                    .transform_into_any(Clone::clone)
+                    .expect("nulls do not need another value");
+                assert_rows(
+                    &unchanged,
+                    &[
+                        ValueOrRef::Integer((value_count - 1) as i64),
+                        ValueOrRef::Null,
+                        ValueOrRef::Null,
+                    ],
+                );
+                assert_eq!(unchanged.keys().data_type(), data_type);
+
+                let reused = dictionary
+                    .clone()
+                    .transform_into_any(|value| match value {
+                        ValueOrRef::Null => ValueOrRef::Integer(0),
+                        value => value.clone(),
+                    })
+                    .expect("existing replacement fits");
+                assert_rows(
+                    &reused,
+                    &[(value_count - 1) as i64, 0, 0].map(ValueOrRef::Integer),
+                );
+                assert_eq!(reused.values().len(), value_count);
+                assert_eq!(reused.get_value_index(1), Some(0));
+                assert_eq!(reused.get_value_index(2), Some(0));
+
+                let added = dictionary.transform_into_any(|value| match value {
+                    ValueOrRef::Null => ValueOrRef::Integer(-1),
+                    value => value.clone(),
+                });
+                if value_count == capacity {
+                    assert_eq!(
+                        added,
+                        Err(DictionaryValueError::KeyOverflow {
+                            value_index: capacity,
+                            key_data_type: K::DATA_TYPE,
+                        })
+                    );
+                } else {
+                    let added = added.expect("last representable index fits");
+                    assert_rows(
+                        &added,
+                        &[(value_count - 1) as i64, -1, -1].map(ValueOrRef::Integer),
+                    );
+                    assert_eq!(added.keys().data_type(), data_type);
+                    assert_eq!(added.values().len(), capacity);
+                    assert_eq!(added.get_value_index(1), Some(capacity - 1));
+                    assert_eq!(added.get_value_index(2), Some(capacity - 1));
+                }
+            }
+        }
+
+        check::<Int8Type>(128);
+        check::<UInt8Type>(256);
+        check::<Int16Type>(32_768);
+        check::<UInt16Type>(65_536);
+    }
+
+    /// Scenario: Unique-value keys exceed capacity with unchanged indexes, duplicate remapping, or a produced-null replacement.
+    /// Guarantees: Every index-writing path reports the first unrepresentable index instead of panicking or wrapping.
+    #[test]
+    fn transform_into_any_checks_unique_value_key_capacity() {
+        for (data_type, arrow_data_type, capacity) in [
+            (DictionaryKeyType::Int8, DataType::Int8, 128),
+            (DictionaryKeyType::UInt8, DataType::UInt8, 256),
+            (DictionaryKeyType::Int16, DataType::Int16, 32_768),
+            (DictionaryKeyType::UInt16, DataType::UInt16, 65_536),
+        ] {
+            let values = (0..=capacity)
+                .map(|index| ValueOrRef::Integer(index as i64))
+                .collect::<Vec<_>>();
+            let mut duplicates = vec![ValueOrRef::Integer(0)];
+            duplicates.extend(values.iter().cloned());
+            let mut produced_null = values[..capacity].to_vec();
+            produced_null.push(ValueOrRef::Boolean(false));
+
+            for values in [values, duplicates, produced_null] {
+                let dictionary = Dictionary::new_unique_values(data_type.clone(), values.into());
+                assert_eq!(
+                    dictionary.transform_into_any(|value| match value {
+                        ValueOrRef::Boolean(false) => ValueOrRef::Null,
+                        ValueOrRef::Null => ValueOrRef::Integer(-1),
+                        value => value.clone(),
+                    }),
+                    Err(DictionaryValueError::KeyOverflow {
+                        value_index: capacity,
+                        key_data_type: arrow_data_type.clone(),
+                    })
+                );
             }
         }
     }

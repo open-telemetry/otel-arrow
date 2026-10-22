@@ -9,6 +9,8 @@ use arrow::{
     datatypes::*,
 };
 
+use crate::DictionaryValueError;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DictionaryKeyArray {
     KeyArray(DictionaryArrowKeyArray),
@@ -351,22 +353,6 @@ impl<K: ArrowDictionaryKeyType> DictionaryKeyArrayBuilder<K> {
         }
     }
 
-    pub fn new_null(key_length: usize) -> DictionaryKeyArrayBuilder<K> {
-        let key_bit_length = arrow::util::bit_util::ceil(key_length, 8);
-
-        Self {
-            key_length,
-            key_bit_length,
-            key_buffer: MutableBuffer::from_len_zeroed(size_of::<K::Native>() * key_length),
-            null_buffer: Some(MutableBuffer::from_len_zeroed(key_bit_length)),
-            marker: Default::default(),
-        }
-    }
-
-    pub fn get_key_length(&self) -> usize {
-        self.key_length
-    }
-
     pub fn get_writer(&mut self) -> DictionaryKeyArrayWriter<'_, K> {
         DictionaryKeyArrayWriter {
             key_bit_length: self.key_bit_length,
@@ -394,16 +380,30 @@ pub(crate) struct DictionaryKeyArrayWriter<'a, K: ArrowDictionaryKeyType> {
     null_buffer: &'a mut Option<MutableBuffer>,
 }
 
-impl<'a, K: ArrowDictionaryKeyType> DictionaryKeyArrayWriter<'a, K> {
+impl<K: ArrowDictionaryKeyType> DictionaryKeyArrayWriter<'_, K> {
+    pub fn get_typed_value_index(value_index: usize) -> Result<K::Native, DictionaryValueError> {
+        <K as ArrowPrimitiveType>::Native::from_usize(value_index).ok_or(
+            DictionaryValueError::KeyOverflow {
+                value_index,
+                key_data_type: K::DATA_TYPE,
+            },
+        )
+    }
+
+    /// Returns an error if the value index cannot be represented by the key type.
+    ///
     /// # Safety
     ///
     /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
-    pub unsafe fn set_value_index_unchecked(&mut self, key_index: usize, value_index: usize) {
-        unsafe {
-            *self.key_builder.add(key_index) =
-                <K as ArrowPrimitiveType>::Native::from_usize(value_index)
-                    .expect("transformed value index converted to output size")
-        }
+    pub unsafe fn set_value_index_unchecked(
+        &mut self,
+        key_index: usize,
+        value_index: usize,
+    ) -> Result<(), DictionaryValueError> {
+        let value_index = Self::get_typed_value_index(value_index)?;
+
+        unsafe { self.set_value_index_typed_unchecked(key_index, value_index) };
+        Ok(())
     }
 
     /// # Safety
@@ -423,20 +423,6 @@ impl<'a, K: ArrowDictionaryKeyType> DictionaryKeyArrayWriter<'a, K> {
     pub unsafe fn set_null_unchecked(&mut self, key_index: usize) {
         unsafe {
             ensure_null_buffer_and_push_null(self.null_buffer, key_index, self.key_bit_length)
-        }
-    }
-
-    /// # Safety
-    ///
-    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
-    pub unsafe fn set_nonnull_unchecked(&mut self, key_index: usize) {
-        if let Some(nulls) = self.null_buffer {
-            let ptr = nulls.typed_data_mut::<u8>().as_mut_ptr();
-
-            let i = key_index / 8;
-            let b = 1 << (key_index % 8);
-
-            unsafe { *ptr.add(i) |= b };
         }
     }
 }

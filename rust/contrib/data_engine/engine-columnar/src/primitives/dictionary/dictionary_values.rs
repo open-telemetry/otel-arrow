@@ -379,6 +379,13 @@ impl<'a> From<Vec<ValueOrRef<'a>>> for DictionaryValueArray<'a> {
 
 #[derive(Error, Debug, PartialEq)]
 pub enum DictionaryValueError {
+    #[error(
+        "Dictionary value index '{value_index}' cannot be represented by key type '{key_data_type:?}'"
+    )]
+    KeyOverflow {
+        value_index: usize,
+        key_data_type: DataType,
+    },
     #[error("UInt64 value '{original_value}' could not be converted into 'Integer'")]
     IntegerConversionFailure { original_value: u64 },
     #[error(
