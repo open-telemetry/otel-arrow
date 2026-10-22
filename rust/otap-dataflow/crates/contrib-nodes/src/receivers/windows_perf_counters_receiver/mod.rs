@@ -32,7 +32,17 @@ mod otap_builder;
     not(test),
     allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
 )]
+#[cfg_attr(
+    not(test),
+    allow(
+        unused_imports,
+        reason = "PDH client reexports await the receiver runtime"
+    )
+)]
 mod pdh;
+
+#[cfg(test)]
+static TEST_PDH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
 mod test_utils {
