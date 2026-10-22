@@ -480,15 +480,8 @@ impl MaterializedContext {
                     .eq_ignore_ascii_case(field.name.as_str())
             })
             .map(|header| {
-                let original_name = header
-                    .value
-                    .original_name
-                    .or_else(|| {
-                        (header.name.as_str() != field.name.as_str()).then(|| header.wire_name())
-                    })
-                    .map(Box::from);
                 MaterializedContextValue::new(
-                    original_name,
+                    Some(Box::from(header.wire_name())),
                     match header.value.value_kind {
                         ValueKind::Text => ContextValueKind::Text,
                         ValueKind::Binary => ContextValueKind::Binary,
