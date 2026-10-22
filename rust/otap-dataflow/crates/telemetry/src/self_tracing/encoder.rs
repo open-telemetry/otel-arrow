@@ -40,8 +40,6 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
     }
 
     /// Encode a tracing Event as a complete LogRecord message.
-    ///
-    /// Returns the number of bytes written.
     pub fn encode_log_record(&mut self, time: SystemTime, record: &LogRecord) -> EncodeResult {
         // Convert SystemTime to nanoseconds since UNIX epoch
         let timestamp_ns = time
@@ -63,7 +61,6 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 
         // Note we skip encoding severity_text (string)
 
-        // Encode event_name "target::name (file:line)"
         bounded::record_event_name(self.buf, record.callsite())?;
 
         // Pre-encoded body and attributes.
@@ -146,9 +143,7 @@ mod bounded {
         encode(buf)
     }
 
-    /// Encodes `f`'s value as a length-delimited `tag`. `Ok(true)`
-    /// means part of the value was lost; `Err` means it could not be written and
-    /// must be rolled back.
+    /// Encodes any value as a length-delimited `tag`.
     pub fn value_encoder<B: BoundedBuf>(
         buf: &mut B,
         tag: u64,
@@ -160,7 +155,7 @@ mod bounded {
         })
     }
 
-    /// Encodes a `KeyValue` as a length-delimited `tag`; see [`write_value`].
+    /// Encodes a `KeyValue` as a length-delimited `tag`.
     pub fn key_value_encoder<B: BoundedBuf>(
         buf: &mut B,
         tag: u64,
@@ -368,7 +363,7 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 struct ValueEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
 
-    /// ensures exactly one value is written.
+    /// ensures at most one value is written.
     #[cfg(debug_assertions)]
     single: bool,
 }
@@ -1020,8 +1015,7 @@ mod tests {
             .event_name;
 
         // event_name is the bare semconv identifier; the emitting crate
-        // is conveyed via InstrumentationScope.name. See
-        // encode_event_name + encode_export_logs_request.
+        // is conveyed via InstrumentationScope.name.
         assert_eq!(event_name, "test.scope.encoding");
         assert_eq!(scope.name, "otel-arrow-dfe-telemetry");
 

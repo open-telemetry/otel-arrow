@@ -611,8 +611,8 @@ pub trait BoundedBuf {
         }
     }
 
-    /// Encode a length-delimited field atomically, whether truncating
-    /// or not.
+    /// Encode a length-delimited field with variable-width placeholder. Does not
+    /// roll-backup; supports truncation or not.
     #[inline]
     fn encode_len_delimited<T, E: From<EncodeFailure>>(
         &mut self,
@@ -1744,10 +1744,6 @@ mod test {
 
     #[test]
     fn encode_len_delimited_does_not_patch_on_inner_err() {
-        // Regression: encode_len_delimited (non-partial) on inner Err leaves
-        // an unpatched 0-length placeholder followed by partial content bytes.
-        // The bytes are wire-corrupt and MUST be wrapped in try_atomic by
-        // callers (this is the bug that bit encode_body_string).
         let mut buf = StackProtoBuffer::<8>::default();
         let r: EncodeResult = buf.encode_len_delimited(1, |b| {
             // Write enough partial content to force overflow before completion.
@@ -1772,9 +1768,6 @@ mod test {
 
     #[test]
     fn encode_len_delimited_partial_patches_length_on_err() {
-        // Partial mode: even when the inner closure returns Err mid-way, the
-        // length placeholder reflects the bytes actually written, leaving a
-        // valid LEN-prefixed wire field that can be parsed.
         let mut buf = StackProtoBuffer::<128>::default();
         // Pre-write a marker field so we can detect mis-parsing of trailing data.
         buf.encode_string(7, "marker").unwrap();
@@ -1836,9 +1829,6 @@ mod test {
 
     #[test]
     fn encode_string_truncating_round_trips_via_prost() {
-        // Encode a truncating string as if it were the "string_value" of an
-        // AnyValue (field 1 = string) and decode via prost to confirm the
-        // bytes form a valid wire message ending in the truncation suffix.
         let mut buf = StackProtoBuffer::<48>::default();
         let long = "Y".repeat(500);
         let r = buf.encode_string_truncating(1, &long);
