@@ -1996,6 +1996,49 @@ async fn test_assign_metrics_data_point_to_null() {
         .unwrap();
     let dp_rb = result.get(ArrowPayloadType::NumberDataPoints).unwrap();
     assert!(dp_rb.column_by_name(consts::INT_VALUE).is_none());
+
+    // in this case result will evaluate to `ScalarValue::(Null)` as opposed to
+    // actually evaluating to `None` like above, so it goes through a slightly
+    // different code path during assignment but should produce the same result
+    let query = "gauges | apply data_points { 
+        set int_value = coalesce(attributes[\"missing\"], attributes[\"missing2\"]) 
+    }";
+    let result = evaluate_query_on_gauge(query, None, None, Some(5))
+        .await
+        .unwrap();
+    let dp_rb = result.get(ArrowPayloadType::NumberDataPoints).unwrap();
+    assert!(dp_rb.column_by_name(consts::INT_VALUE).is_none());
+}
+
+#[tokio::test]
+async fn test_change_number_data_point_to_int() {
+    let metric = Metric::build()
+        .name("gauge")
+        .data_gauge(Gauge {
+            data_points: vec![
+                NumberDataPoint::build().value_double(5.0).finish(),
+                NumberDataPoint::build().value_double(6.0).finish(),
+            ],
+        })
+        .finish();
+
+    let query = "gauges | apply data_points {
+        set int_value = double_value as Integer |
+        set double_value = null
+    }";
+
+    let result = exec_metrics_query(query, to_metrics_data(vec![metric])).await;
+
+    let expected = Metric::build()
+        .name("gauge")
+        .data_gauge(Gauge {
+            data_points: vec![
+                NumberDataPoint::build().value_int(5).finish(),
+                NumberDataPoint::build().value_int(6).finish(),
+            ],
+        })
+        .finish();
+    assert_metrics_eq(result, to_metrics_data(vec![expected]));
 }
 
 /// Scenario: assign metric data points with a field name which is not valid

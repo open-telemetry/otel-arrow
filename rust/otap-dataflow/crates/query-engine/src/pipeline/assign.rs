@@ -1511,6 +1511,11 @@ impl PipelineStage for AssignPipelineStage {
                 match &self.dest_columns[i] {
                     ColumnAccessor::ColumnName(dest_col_name) => {
                         otap_batch = match eval_result {
+                            Some(eval_result)
+                                if eval_result.values.data_type() == DataType::Null =>
+                            {
+                                self.assign_null_record_column(otap_batch, &eval_ctx, dest_col_name)
+                            }
                             Some(eval_result) => self.assign_to_record(
                                 otap_batch,
                                 eval_result,
