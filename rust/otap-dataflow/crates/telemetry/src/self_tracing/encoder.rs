@@ -247,14 +247,15 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         let budget = self.buf.remaining().div_ceil(2);
 
         // The toplevel call ignores truncation.
-        let _ = self.buf.with_max_remaining(budget, |buf| {
-            buf.try_atomic(|buf| {
-                match LogFieldLocation::new(field.name()) {
-                    LogFieldLocation::Body => {
-                        // May be truncated, but not counted in dropped_attributes.
-                        bounded::record_body(buf, encode)
-                    }
-                    LogFieldLocation::Attribute(name) => {
+        let _ = self.buf.try_atomic(|buf| {
+            match LogFieldLocation::new(field.name()) {
+                LogFieldLocation::Body => {
+                    // May be truncated, but not counted in dropped_attributes.
+                    bounded::record_body(buf, encode)
+                }
+                LogFieldLocation::Attribute(name) => {
+                    // Attributes are given only half the remaining space.
+                    buf.with_max_remaining(budget, |buf| {
                         let result = bounded::record_attribute(buf, name, encode);
                         match result {
                             Ok(Truncation::None) => {}
@@ -264,9 +265,9 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
                             }
                         };
                         result
-                    }
+                    })
                 }
-            })
+            }
         });
     }
 }
