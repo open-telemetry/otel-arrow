@@ -992,7 +992,7 @@ mod tests {
         let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
         let log_event = LogEvent { time, record };
 
-        let resource_bytes = encode_config_resource_field(&HashMap::new());
+        let resource_bytes = encode_config_resource_field(&HashMap::new()).unwrap();
 
         let mut buf = ProtoBuffer::default();
         encode_export_logs_request(
@@ -1225,7 +1225,7 @@ mod tests {
         let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
         let log_event = LogEvent { time, record };
 
-        let resource_bytes = encode_config_resource_field(&HashMap::new());
+        let resource_bytes = encode_config_resource_field(&HashMap::new()).unwrap();
         let mut buf = ProtoBuffer::default();
         encode_export_logs_request(
             &mut buf,

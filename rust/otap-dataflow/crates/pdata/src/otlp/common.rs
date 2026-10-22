@@ -1696,7 +1696,7 @@ mod test {
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
         let mut buf = StackProtoBuffer::<127>::default();
         buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> EncodeResult {
-            Ok(buf.encode_string(1, "hi")?)
+            buf.encode_string(1, "hi")
         })
         .unwrap();
         // tag(1) + placeholder(1) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 6
@@ -1705,7 +1705,7 @@ mod test {
         // A 128-byte inline buffer should use a 2-byte placeholder (128 >= 2^7).
         let mut buf = StackProtoBuffer::<128>::default();
         buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> EncodeResult {
-            Ok(buf.encode_string(1, "hi")?)
+            buf.encode_string(1, "hi")
         })
         .unwrap();
         // tag(1) + placeholder(2) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 7
@@ -1713,7 +1713,7 @@ mod test {
 
         // A default (256MiB limit) buffer should use a 4-byte placeholder.
         let mut buf = ProtoBuffer::default();
-        buf.encode_len_delimited(1, |buf| -> EncodeResult { Ok(buf.encode_string(1, "hi")?) })
+        buf.encode_len_delimited(1, |buf| -> EncodeResult { buf.encode_string(1, "hi") })
             .unwrap();
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
         assert_eq!(buf.len(), 9);

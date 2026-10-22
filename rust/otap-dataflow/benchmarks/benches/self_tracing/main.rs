@@ -473,7 +473,7 @@ fn encode_with_growth_policy(content: &[u8], policy: HeapGrowthPolicy) -> bytes:
         {
             buf.ensure_capacity(MAXIMUM);
         }
-        buf.try_extend(chunk).expect("benchmark input is bounded");
+        buf.try_extend_slice(chunk).expect("benchmark input is bounded");
     }
 
     buf.into_bytes()
