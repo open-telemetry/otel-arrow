@@ -209,6 +209,10 @@ impl PendingMetadata {
     }
 }
 
+fn linear_merge_is_cheap(current: usize, incoming: usize) -> bool {
+    current.saturating_add(incoming).saturating_mul(incoming) <= METADATA_INDEX_WORK_THRESHOLD
+}
+
 fn merge_latest_by_key<T, K: Eq + std::hash::Hash>(
     current: &mut Vec<T>,
     latest: Vec<T>,
@@ -217,12 +221,7 @@ fn merge_latest_by_key<T, K: Eq + std::hash::Hash>(
     if latest.is_empty() {
         return;
     }
-    if current
-        .len()
-        .saturating_add(latest.len())
-        .saturating_mul(latest.len())
-        <= METADATA_INDEX_WORK_THRESHOLD
-    {
+    if linear_merge_is_cheap(current.len(), latest.len()) {
         merge_latest_linearly(current, latest, key);
         return;
     }
@@ -247,12 +246,7 @@ fn merge_older_by_key<T, K: Eq + std::hash::Hash>(
     if older.is_empty() {
         return;
     }
-    if current
-        .len()
-        .saturating_add(older.len())
-        .saturating_mul(older.len())
-        <= METADATA_INDEX_WORK_THRESHOLD
-    {
+    if linear_merge_is_cheap(current.len(), older.len()) {
         merge_older_linearly(current, older, key);
         return;
     }
