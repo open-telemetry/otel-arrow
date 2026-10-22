@@ -589,11 +589,19 @@ fn traversal_depth() {
     assert!(p.may_descend(&base.join("logs/a/b/c")));
 }
 
-/// Scenario: A Unix base contains literal backslashes, and a file glob contains escaped stars.
-/// Guarantees: Escaping preserves the real native path and does not enable recursive traversal.
+/// Scenario: Unix bases contain literal backslashes or repeated separators, and globs contain escaped stars.
+/// Guarantees: Files under returned roots match includes without losing native spelling or enabling recursion.
 #[cfg(unix)]
 #[test]
 fn literal_backslashes_and_stars() {
+    for base in ["/work//", "/work///"] {
+        let policy = PathPolicy::compile(&["logs/*.log".into()], &[], Path::new(base)).unwrap();
+        let candidate = policy.include_roots()[0].join("a.log");
+        assert!(
+            policy.includes(&candidate),
+            "base={base}, candidate={candidate:?}"
+        );
+    }
     let decorated_base = Path::new("/work[x]/./logs");
     let decorated = PathPolicy::compile(&["*.log".into()], &[], decorated_base).unwrap();
     assert!(decorated.includes(&decorated_base.join("a.log")));

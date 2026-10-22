@@ -113,13 +113,14 @@ impl PathPolicy {
                         ));
                     }
                     let base = base.to_str().ok_or_else(|| ConfigError::new(&field, "relative patterns require a UTF-8 base; absolute patterns preserve native candidate bytes"))?;
-                    Cow::Owned(format!(
-                        "{}/{}",
-                        escape_base(
-                            base.trim_end_matches(|c| c == '/' || (cfg!(windows) && c == '\\'))
-                        ),
-                        pattern
-                    ))
+                    // Preserve the base spelling used by base.join(root) below,
+                    // including repeated trailing separators.
+                    let mut absolute = escape_base(base);
+                    if !base.ends_with(|c| c == '/' || (cfg!(windows) && c == '\\')) {
+                        absolute.push('/');
+                    }
+                    absolute.push_str(pattern);
+                    Cow::Owned(absolute)
                 };
                 let glob = build(&absolute, &field)?;
                 validate_path_syntax(pattern, &field)?;
