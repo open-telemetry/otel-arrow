@@ -8,7 +8,7 @@
 //!
 //! [`PartitionerStrategy`]: super::config::PartitionerStrategy
 
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::TransportHeaderSource;
 use std::hash::{Hash, Hasher};
 use xxhash_rust::xxh64::Xxh64;
 
@@ -18,14 +18,15 @@ use xxhash_rust::xxh64::Xxh64;
 /// configured casing of a custom stored name does affect the key.
 /// Returns a 16-character hexadecimal key, or `None` for empty headers.
 #[must_use]
-pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Option<String> {
-    if headers.is_empty() {
-        return None;
-    }
-
+pub fn partition_key_from_transport_headers(
+    headers: &(impl TransportHeaderSource + ?Sized),
+) -> Option<String> {
     // Sort by exact stored name, then value. Ignore original wire-name casing
     // and input order.
-    let mut sorted: Vec<_> = headers.iter().collect();
+    let mut sorted: Vec<_> = headers.transport_headers().collect();
+    if sorted.is_empty() {
+        return None;
+    }
     sorted.sort_unstable_by(|a, b| {
         a.name
             .cmp(&b.name)
@@ -83,7 +84,7 @@ pub fn partition_key_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 
     fn context_name(raw: &str) -> otel_arrow_dfe_config::ContextEntryName {
         raw.try_into().expect("valid test context entry name")

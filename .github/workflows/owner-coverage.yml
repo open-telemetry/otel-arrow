@@ -1,4 +1,4 @@
-name: Component owner coverage
+name: Contrib owner coverage
 
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] - executes only trusted main-branch code
@@ -9,9 +9,6 @@ on:
       - reopened
       - synchronize
       - ready_for_review
-  workflow_run:
-    workflows: [Owner coverage events]
-    types: [completed]
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -22,10 +19,7 @@ on:
 permissions: {}
 
 concurrency:
-  # Match the notification run name so all triggers use the same per-PR lock.
-  group: >-
-    owner-coverage-${{ github.event.workflow_run.display_title ||
-    format('Owner reviews for PR #{0}', github.event.pull_request.number || inputs.pull_request_number) }}
+  group: owner-coverage-${{ github.event.pull_request.number || inputs.pull_request_number }}
   cancel-in-progress: false
 
 jobs:

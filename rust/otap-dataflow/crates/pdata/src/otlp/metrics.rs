@@ -1143,8 +1143,8 @@ mod test {
                     DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
-                Field::new(consts::SUMMARY_COUNT, DataType::UInt64, true),
-                Field::new(consts::SUMMARY_SUM, DataType::Float64, true),
+                Field::new(consts::COUNT, DataType::UInt64, true),
+                Field::new(consts::SUM, DataType::Float64, true),
                 Field::new(
                     consts::SUMMARY_QUANTILE_VALUES,
                     DataType::List(quantiles_field.clone()),
@@ -1212,8 +1212,8 @@ mod test {
                     DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
-                Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, true),
-                Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+                Field::new(consts::COUNT, DataType::UInt64, true),
+                Field::new(consts::SUM, DataType::Float64, true),
                 Field::new(
                     consts::HISTOGRAM_BUCKET_COUNTS,
                     DataType::List(hist_bucket_counts_field.clone()),
@@ -1338,8 +1338,8 @@ mod test {
                     DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     true,
                 ),
-                Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, true),
-                Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+                Field::new(consts::COUNT, DataType::UInt64, true),
+                Field::new(consts::SUM, DataType::Float64, true),
                 Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, true),
                 Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, true),
                 Field::new(

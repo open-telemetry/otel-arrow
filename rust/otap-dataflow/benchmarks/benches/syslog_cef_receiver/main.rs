@@ -31,6 +31,7 @@
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::bench_support::SyslogCodecBench;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::parser::bench_support;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::parser::cef::parse_cef;
 use std::hint::black_box;
@@ -192,11 +193,54 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
 
     group.finish();
 }
+
+fn bench_receiver_pdata_paths(c: &mut Criterion) {
+    const BATCH_SIZE: usize = 100;
+    let messages = vec![RFC5424_MSG; BATCH_SIZE];
+    let mut codec = SyslogCodecBench::new();
+    let framed = codec.frame(&messages);
+    let _ = codec.admit_and_materialize(&messages);
+
+    let mut group = c.benchmark_group("receiver_pdata_path");
+    _ = group.throughput(Throughput::Elements(BATCH_SIZE as u64));
+
+    let _ = group.bench_function("legacy_parse_to_arrow_100_msgs", |b| {
+        b.iter(|| {
+            let mut builder = ArrowRecordsBuilder::new();
+            for message in &messages {
+                let parsed = bench_support::parse(black_box(message))
+                    .expect("Failed to parse RFC5424 message");
+                builder.append_syslog(parsed);
+            }
+            black_box(builder.build().expect("Failed to build Arrow records"))
+        });
+    });
+
+    let _ = group.bench_function("codec_admit_encoded_100_msgs", |b| {
+        b.iter(|| black_box(codec.admit(black_box(&messages))));
+    });
+
+    let _ = group.bench_function("codec_frame_100_msgs", |b| {
+        b.iter(|| black_box(codec.frame(black_box(&messages))));
+    });
+
+    let _ = group.bench_function("codec_materialize_preframed_100_msgs", |b| {
+        b.iter(|| black_box(codec.materialize_framed(black_box(&framed))));
+    });
+
+    let _ = group.bench_function("codec_admit_and_materialize_100_msgs", |b| {
+        b.iter(|| black_box(codec.admit_and_materialize(black_box(&messages))));
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parse_auto_detect,
     bench_timestamp_extraction,
     bench_cef_extensions,
-    bench_arrow_batch_creation
+    bench_arrow_batch_creation,
+    bench_receiver_pdata_paths
 );
 criterion_main!(benches);

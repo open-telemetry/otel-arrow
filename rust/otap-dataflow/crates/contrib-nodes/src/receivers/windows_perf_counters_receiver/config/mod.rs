@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Configuration parsing, validation, and exact-path normalization.
+//! Configuration parsing, validation, and exact native-path identity.
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
@@ -123,6 +123,7 @@ impl RuntimeConfig {
         };
         let expanded_count = expanded_counter_count(&user.perf_counters)?;
         let mut counters = Vec::with_capacity(expanded_count);
+        let mut paths = HashSet::with_capacity(expanded_count);
         for (object_index, object) in user.perf_counters.iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
             let object_name = validate_object(&format!("{object_field}.object"), &object.object)?;
@@ -144,14 +145,14 @@ impl RuntimeConfig {
                     instances
                         .iter()
                         .map(|instance| {
-                            let (normalized, instance) =
-                                normalize_instance(&format!("{object_field}.instances"), instance)?;
-                            if !unique.insert(normalized.to_lowercase()) {
+                            let instance =
+                                validate_instance(&format!("{object_field}.instances"), instance)?;
+                            if !unique.insert(instance_comparison_key(instance)) {
                                 return Err(invalid(format!(
                                     "{object_field}.instances contains duplicate {instance:?}"
                                 )));
                             }
-                            Ok(Some((normalized, instance)))
+                            Ok(Some(instance))
                         })
                         .collect::<Result<Vec<_>, Error>>()?
                 }
@@ -183,23 +184,17 @@ impl RuntimeConfig {
                     BTreeMap::new()
                 });
                 for instance in &instances {
-                    let path = counter_path(
-                        object_name,
-                        instance.as_ref().map(|(normalized, _)| normalized.as_str()),
-                        counter_name,
-                    );
+                    let path = counter_path(object_name, *instance, counter_name);
+                    let comparison_instance = instance.map(instance_comparison_key);
+                    let comparison_path =
+                        counter_path(object_name, comparison_instance.as_deref(), counter_name)
+                            .to_lowercase();
+                    if !paths.insert(comparison_path) {
+                        return Err(invalid(format!("duplicate counter path: {path}")));
+                    }
                     let name = match metric_name {
                         Some(name) => name.to_owned(),
-                        None => {
-                            // Keep configured spelling for the emitted metric name and definition lookup.
-                            let name = counter_path(
-                                object_name,
-                                instance.as_ref().map(|(_, configured)| *configured),
-                                counter_name,
-                            );
-                            validate_path_length("counter path", &name)?;
-                            name
-                        }
+                        None => path.clone(),
                     };
                     let metric = metrics.get(name.as_str()).unwrap_or(&default_metric);
                     counters.push(CounterConfig {
@@ -214,12 +209,8 @@ impl RuntimeConfig {
                 }
             }
         }
-        let mut paths = HashSet::with_capacity(counters.len());
         for counter in &counters {
             validate_counter(counter)?;
-            if !paths.insert(counter.path.to_lowercase()) {
-                return Err(invalid(format!("duplicate counter path: {}", counter.path)));
-            }
         }
         for name in unused_path_metric_definitions(metrics.keys().copied(), &counters) {
             otel_arrow_dfe_telemetry::otel_warn!(
@@ -377,15 +368,15 @@ struct SumConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ObjectConfig {
-    /// Native object name. Surrounding whitespace is trimmed; must be nonblank
+    /// Native object name, kept as written. Must be nonempty
     /// and must not contain `\`, `(`, `)`, `*`, `?` or NUL.
     object: String,
     /// Native instance name or list. Defaults to no instance.
-    /// If set, the list must be nonempty; each name is trimmed, must be nonblank
-    /// and must not contain `\`, `(`, `)`, `*`, `?` or NUL. Numeric suffixes
-    /// omit `#0` and leading index zeroes for native paths, preserving configured
-    /// spelling after trimming for metric lookup. An index must follow a nonempty
-    /// instance name. Duplicate native instances are rejected regardless of case.
+    /// If set, the list must be nonempty; each name is kept as written, must be
+    /// nonempty and must not contain `\`, `(`, `)`, `*`, `?` or NUL. Numeric
+    /// suffixes retain `#0` and leading zeroes. An index must follow a nonempty
+    /// instance name. Duplicate checks ignore case and canonicalize only the
+    /// final numeric suffix: `app`, `app#0` and `app#00` compare equal.
     #[serde(default)]
     instances: Option<OneOrMany>,
     /// Counter mappings. At least one.
@@ -395,7 +386,7 @@ struct ObjectConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CounterMapping {
-    /// Native counter name. Surrounding whitespace is trimmed; must be nonblank
+    /// Native counter name, kept as written. Must be nonempty
     /// and must not contain `\`, `*`, `?` or NUL.
     name: String,
     /// Metric definition name, kept as written. Defaults to the configured counter
@@ -435,7 +426,7 @@ fn invalid(error: impl Into<String>) -> Error {
 }
 
 fn require_name(field: &str, value: &str) -> Result<(), Error> {
-    if value.trim().is_empty() {
+    if value.is_empty() {
         return Err(invalid(format!("{field} must not be empty")));
     }
     Ok(())
@@ -446,6 +437,18 @@ fn instance_index(value: &str) -> Option<(&str, &str)> {
     value
         .rsplit_once('#')
         .filter(|(_, index)| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Comparison only; never use this identity for native paths, metric names or lookup.
+fn instance_comparison_key(value: &str) -> String {
+    let lowercase = value.to_lowercase();
+    match instance_index(&lowercase).filter(|(name, _)| !name.is_empty()) {
+        Some((name, index)) => match index.trim_start_matches('0') {
+            "" => name.to_owned(),
+            index => format!("{name}#{index}"),
+        },
+        None => lowercase,
+    }
 }
 
 /// Accepts OTLP stream names without imposing SDK instrument-name restrictions.
@@ -502,7 +505,6 @@ fn validate_path_segment<'a>(
     value: &'a str,
     reserved: &[char],
 ) -> Result<&'a str, Error> {
-    let value = value.trim();
     require_name(field, value)?;
     if value.contains(reserved) {
         return Err(invalid(format!(
@@ -565,20 +567,6 @@ fn expanded_counter_count(objects: &[ObjectConfig]) -> Result<usize, Error> {
         }
     }
     Ok(total)
-}
-
-/// Canonicalizes PDH's decimal instance index, where the first occurrence omits `#0`.
-/// Returns `(canonical, configured)`.
-fn normalize_instance<'a>(field: &str, value: &'a str) -> Result<(String, &'a str), Error> {
-    let value = validate_instance(field, value)?;
-    let canonical = match instance_index(value) {
-        Some((name, index)) => match index.trim_start_matches('0') {
-            "" => name.to_owned(),
-            index => format!("{name}#{index}"),
-        },
-        None => value.to_owned(),
-    };
-    Ok((canonical, value))
 }
 
 /// Rejects only literal empty keys and the receiver-owned prefix.
