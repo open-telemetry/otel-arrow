@@ -277,7 +277,7 @@ pub(super) fn project_sample(
         }
         let _ = membership.insert((member.counter_index, Arc::clone(&member.path)));
     }
-    let mut ready = Vec::new();
+    let mut point_count = 0usize;
     let mut seen_counters = BTreeSet::new();
     for point in &sample.points {
         let counter = counters.get(point.counter_index).ok_or_else(|| {
@@ -305,17 +305,15 @@ pub(super) fn project_sample(
             )));
         }
         if let SampleValue::Value(value) = point.value {
-            ready.push((counter, point, value));
+            let prepared = prepare_point(counter, point, value)?;
+            let point_id = u32::try_from(point_count).map_err(|_| {
+                ProjectionInvariantError(ArrowError::InvalidArgumentError(
+                    "too many counter values".to_owned(),
+                ))
+            })?;
+            builder.append_point(point_id, prepared)?;
+            point_count += 1;
         }
-    }
-    for (point_count, (counter, point, value)) in ready.into_iter().enumerate() {
-        let prepared = prepare_point(counter, point, value)?;
-        let point_id = u32::try_from(point_count).map_err(|_| {
-            ProjectionInvariantError(ArrowError::InvalidArgumentError(
-                "too many counter values".to_owned(),
-            ))
-        })?;
-        builder.append_point(point_id, prepared)?;
     }
     if builder.metric_ids.is_empty() {
         return Ok(None);
