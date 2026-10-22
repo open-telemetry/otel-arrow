@@ -256,14 +256,8 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.global_shutdown_requested {
-            return Err(Error::PipelineRuntimeError {
-                source: Box::new(io::Error::other(format!(
-                    "pipeline launch admission is closed for {}",
-                    deployed_instance_label(pipeline_key)
-                ))),
-            });
-        }
+        // Launches stay admitted during global shutdown: bootstrap may still be launching when a
+        // failed pipeline requests shutdown, and registration forwards shutdown to late instances.
         if state.launching_instances.contains_key(pipeline_key)
             || state
                 .runtime_instances

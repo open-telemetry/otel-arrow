@@ -8564,7 +8564,7 @@ fn launch_duplicate_exit_does_not_consume_another_instances_liveness() {
 }
 
 /// Scenario: global shutdown starts while a producer is reserved but has no published control sender.
-/// Guarantees: shutdown tracks the pending launch, registration inherits shutdown, and new launches fail.
+/// Guarantees: shutdown tracks the pending launch and registration inherits shutdown.
 #[test]
 fn launch_registration_during_global_shutdown_inherits_shutdown() {
     let runtime = test_runtime(&empty_engine_config());
@@ -8591,15 +8591,6 @@ fn launch_registration_during_global_shutdown_inherits_shutdown() {
         1,
         "the pending producer must participate in shutdown coordination"
     );
-    assert!(
-        runtime
-            .reserve_instance_launch(
-                &deployed_key("g1", "p1", 0, 8),
-                Arc::clone(&launched.context_bindings),
-                Arc::clone(&launched.startup_ready),
-            )
-            .is_err()
-    );
     runtime.register_launched_instance(launched);
     let (reason, deadline) = notifications
         .recv_timeout(Duration::from_secs(5))
@@ -8614,6 +8605,51 @@ fn launch_registration_during_global_shutdown_inherits_shutdown() {
             .global_shutdown_deadline
     );
     runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
+}
+
+/// Scenario: bootstrap launches another producer after a failed pipeline already requested global shutdown.
+/// Guarantees: the late launch is admitted and counted, receives shutdown on registration, and shutdown
+/// completes only after it exits.
+#[test]
+fn launch_reservation_after_global_shutdown_is_admitted_and_shut_down() {
+    let runtime = test_runtime(&empty_engine_config());
+    let mut first = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+    let first_key = first.pipeline_key.clone();
+    let (first_sender, first_notifications) = deadline_notifying_admin_sender();
+    first.control_sender = first_sender;
+    runtime.register_launched_instance(first);
+    runtime
+        .request_shutdown_all(5)
+        .expect("shutdown should start");
+    _ = first_notifications
+        .recv_timeout(Duration::from_secs(5))
+        .expect("registered producer should receive shutdown");
+
+    let mut late = launched_runtime_instance(&runtime, "g1", "p1", 1, 7);
+    let late_key = late.pipeline_key.clone();
+    let (sender, notifications) = deadline_notifying_admin_sender();
+    late.control_sender = sender;
+    runtime
+        .reserve_instance_launch(
+            &late_key,
+            Arc::clone(&late.context_bindings),
+            Arc::clone(&late.startup_ready),
+        )
+        .expect("launch during global shutdown should be admitted");
+    runtime.register_launched_instance(late);
+    let (reason, _) = notifications
+        .recv_timeout(Duration::from_secs(5))
+        .expect("late registration should receive shutdown");
+    assert!(reason.contains("global shutdown"));
+
+    runtime.note_instance_exit(first_key, RuntimeInstanceExit::Success);
+    assert!(
+        !runtime.all_instances_exited(),
+        "the late launch must still count as live"
+    );
+    runtime.note_instance_exit(late_key, RuntimeInstanceExit::Success);
     assert!(runtime.wait_for_global_shutdown_completion());
     assert!(runtime.all_instances_exited());
 }
