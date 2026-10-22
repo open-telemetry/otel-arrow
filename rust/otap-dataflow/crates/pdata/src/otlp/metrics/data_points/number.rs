@@ -6,11 +6,11 @@ use crate::arrays::{
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
+use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
-use crate::otlp::{EncodeResult, ProtoBuffer};
 use crate::proto::consts::field_num::metrics::{
     NUMBER_DP_AS_DOUBLE, NUMBER_DP_AS_INT, NUMBER_DP_ATTRIBUTES, NUMBER_DP_EXEMPLARS,
     NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
@@ -67,7 +67,7 @@ pub(crate) fn proto_encode_number_data_point(
     exemplar_attr_arrays: Option<&Attribute32Arrays<'_>>,
     exemplar_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(attrs) = attr_arrays
         && let Some(id) = number_dp_arrays.id.value_at(index)
     {

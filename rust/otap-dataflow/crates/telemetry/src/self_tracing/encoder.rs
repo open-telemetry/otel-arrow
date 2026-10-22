@@ -465,12 +465,12 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
         outcome: &mut TruncateResult,
         mut f: impl FnMut() -> TruncateResult,
     ) -> TruncateResult {
-        match outcome.clone() {
+        match *outcome {
             Ok(Truncation::Some) => Ok(Truncation::Some),
             Err(err) => Err(err),
             _ => {
                 *outcome = f();
-                outcome.clone()
+                *outcome
             }
         }
     }
@@ -569,7 +569,7 @@ pub const fn level_to_severity_number(level: &Level) -> u8 {
 /// without constructing an intermediate SDK resource.
 pub(crate) fn encode_config_resource_field(
     resource_attributes: &HashMap<String, ConfigAttributeValue>,
-) -> Result<Bytes, EncodeFailure> {
+) -> EncodeResult<Bytes> {
     let mut buf = ProtoBuffer::with_capacity(256);
     buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
         for (key, value) in resource_attributes {
@@ -710,7 +710,7 @@ impl ScopeToBytesMap {
 /// Encode an iterator of scope attributes.
 fn encode_scope_attributes<'k, 'v>(
     attrs: impl IntoIterator<Item = (&'k str, &'v AttributeValue)>,
-) -> Result<Bytes, EncodeFailure> {
+) -> EncodeResult<Bytes> {
     let mut buf = ProtoBuffer::with_capacity(128);
     for (key, value) in attrs {
         encode_scope_or_resource_attribute(&mut buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, |w| {

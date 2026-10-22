@@ -490,9 +490,6 @@ impl LogExportState {
                     EncodeFailure::Dropped => {
                         "internal log batch exceeded the encoder limit".to_owned()
                     }
-                    EncodeFailure::Invalid => {
-                        "internal log batch encountered invalid data".to_owned()
-                    }
                 },
             },
         )?;

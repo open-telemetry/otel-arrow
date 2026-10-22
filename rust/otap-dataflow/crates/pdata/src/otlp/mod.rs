@@ -4,14 +4,14 @@
 //! This module contains traits and utilities for OTLP (OpenTelemetry
 //! Protocol) message types.
 
-use crate::otap::OtapArrowRecords;
 use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
+use crate::{error::Result, otap::OtapArrowRecords};
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
 pub use common::{
-    BoundedBuf, EncodeFailure, EncodeResult, EncodeSuccess, MAX_OTLP_SIZE_LIMIT, ProtoBuffer,
-    StackProtoBuffer, TRUNCATION_SUFFIX, TruncateResult, Truncation,
+    BoundedBuf, EncodeFailure, EncodeResult, MAX_OTLP_SIZE_LIMIT, ProtoBuffer, StackProtoBuffer,
+    TRUNCATION_SUFFIX, TruncateResult, Truncation,
 };
 pub use otel_arrow_dfe_pdata_otlp_macros::Message; // Required for derived code
 pub use otel_arrow_dfe_pdata_otlp_macros::qualified; // Required for derived code
@@ -137,7 +137,7 @@ pub trait ProtoBytesEncoder {
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         proto_buffer: &mut ProtoBuffer,
-    ) -> EncodeResult;
+    ) -> Result<()>;
 }
 
 // Into implementations for OTLP common types to support builder APIs

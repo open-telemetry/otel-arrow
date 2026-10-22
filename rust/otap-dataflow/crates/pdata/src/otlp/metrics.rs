@@ -20,15 +20,14 @@ use crate::otlp::metrics::data_points::summary::{
     SummaryDpArrays, proto_encode_summary_data_point,
 };
 use crate::otlp::metrics::exemplar::ExemplarArrays;
+use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::otlp::{
-    EncodeResult,
     attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value},
     common::{
         BatchSorter, BoundedBuf, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
         proto_encode_instrumentation_scope, proto_encode_resource,
     },
 };
-use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::consts::field_num::metrics::{
     EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY,
     HISTOGRAM_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
@@ -301,7 +300,7 @@ impl ProtoBytesEncoder for MetricsProtoBytesEncoder {
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
 
         let Some(metrics_rb) = otap_batch.root_record_batch() else {
@@ -519,7 +518,7 @@ impl MetricsProtoBytesEncoder {
         &mut self,
         metrics_data_arrays: &MetricsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -578,7 +577,7 @@ impl MetricsProtoBytesEncoder {
         &mut self,
         metrics_data_arrays: &MetricsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()),
@@ -638,7 +637,7 @@ impl MetricsProtoBytesEncoder {
         &mut self,
         metrics_data_arrays: &MetricsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()),
@@ -717,7 +716,7 @@ impl MetricsProtoBytesEncoder {
         metric_type: MetricType,
         metrics_data_arrays: &MetricsDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let root_index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()),

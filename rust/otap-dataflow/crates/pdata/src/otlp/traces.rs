@@ -6,6 +6,7 @@ use arrow::array::Array;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
+use crate::otlp::BoundedBuf;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
@@ -15,7 +16,6 @@ use crate::otlp::traces::span_event::{SpanEventArrays, encode_span_event};
 use crate::otlp::traces::span_link::{SpanLinkArrays, encode_span_link};
 use crate::otlp::traces::spans_arrays::SpansArrays;
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
-use crate::otlp::{BoundedBuf, EncodeResult};
 use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::consts::field_num::traces::{
     RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,
@@ -119,7 +119,7 @@ impl ProtoBytesEncoder for TracesProtoBytesEncoder {
         &mut self,
         otap_batch: &mut OtapArrowRecords,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
 
         let Some(spans_rb) = otap_batch.root_record_batch() else {
@@ -226,7 +226,7 @@ impl TracesProtoBytesEncoder {
         &mut self,
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -286,7 +286,7 @@ impl TracesProtoBytesEncoder {
         &mut self,
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -345,7 +345,7 @@ impl TracesProtoBytesEncoder {
         &mut self,
         traces_data_arrays: &TracesDataArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
@@ -502,7 +502,7 @@ impl TracesProtoBytesEncoder {
         index: usize,
         status_arrays: &SpanStatusArrays<'_>,
         result_buf: &mut ProtoBuffer,
-    ) -> EncodeResult {
+    ) -> Result<()> {
         if let Some(col) = &status_arrays.message
             && let Some(val) = col.str_at(index)
         {

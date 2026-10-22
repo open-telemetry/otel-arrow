@@ -8,7 +8,6 @@ use num_enum::TryFromPrimitive;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array};
 use crate::error::{Error, Result};
 use crate::otlp::{
-    EncodeResult,
     attributes::cbor::proto_encode_cbor_bytes,
     common::{AnyValueArrays, BoundedBuf, ProtoBuffer},
 };
@@ -85,7 +84,7 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     attr_arrays: &AttributeArrays<'_, T>,
     index: usize,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(key) = attr_arrays.attr_key.str_at(index) {
         result_buf.encode_string(KEY_VALUE_KEY, key)?;
     }
@@ -109,7 +108,7 @@ pub(crate) fn encode_any_value(
     index: usize,
     value_type: AttributeValueType,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     match value_type {
         AttributeValueType::Str => {
             let val = attr_arrays

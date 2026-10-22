@@ -11,7 +11,7 @@ use crate::{
     },
     error::{Error, Result},
     otlp::{
-        EncodeResult, ProtoBuffer,
+        ProtoBuffer,
         attributes::{Attribute32Arrays, encode_key_value},
         common::{ChildIndexIter, SortedBatchCursor},
     },
@@ -66,7 +66,7 @@ pub fn encode_span_link(
     attrs_cursor: &mut SortedBatchCursor,
     attrs_arrays: Option<&Attribute32Arrays<'_>>,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(col) = &link_arrays.trace_id
         && let Some(val) = col.slice_at(index)
     {

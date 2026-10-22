@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otlp::{
-    EncodeResult, ProtoBuffer,
+    ProtoBuffer,
     attributes::{Attribute32Arrays, encode_key_value},
     common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
 };
@@ -69,7 +69,7 @@ pub(crate) fn proto_encode_exemplar(
     attr_arrays: Option<&Attribute32Arrays<'_>>,
     attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(attrs) = attr_arrays
         && let Some(id) = exemplar_arrays.id.value_at(index)
     {

@@ -37,10 +37,6 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
 
-    /// Invalid data during encoding.
-    #[error("invalid data encountered during OTLP encoding")]
-    InvalidOtlpEncoding,
-
     /// Internal telemetry buffer is full.
     #[error("internal telemetry buffer full")]
     InternalBufferFull,
@@ -50,7 +46,6 @@ impl From<EncodeFailure> for Error {
     fn from(f: EncodeFailure) -> Self {
         match f {
             EncodeFailure::Dropped => Error::InternalBufferFull,
-            EncodeFailure::Invalid => Error::InvalidOtlpEncoding,
         }
     }
 }

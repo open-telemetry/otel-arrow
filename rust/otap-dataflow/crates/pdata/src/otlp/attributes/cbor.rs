@@ -372,7 +372,6 @@ fn proto_encode_cbor_kv(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::otlp::EncodeFailure;
 
     fn encode(value: &ciborium::Value) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -385,15 +384,13 @@ mod tests {
     }
 
     /// Scenario: A valid CBOR array exceeds the protobuf output budget.
-    /// Guarantees: Conversion to EncodeFailure preserves Dropped rather than reporting Invalid.
+    /// Guarantees: Encoding reports buffer exhaustion rather than a CBOR decoding failure.
     #[test]
     fn cbor_overflow_is_dropped() {
         let input = encode(&ciborium::Value::Array(vec![ciborium::Value::Bool(true)]));
         let mut buf = ProtoBuffer::with_capacity_and_limit(4, 4);
-        let error = proto_encode_cbor_bytes(&input, &mut buf)
-            .map_err(EncodeFailure::from)
-            .unwrap_err();
-        assert!(matches!(error, EncodeFailure::Dropped), "{error:?}");
+        let error = proto_encode_cbor_bytes(&input, &mut buf).unwrap_err();
+        assert!(matches!(error, Error::Dropped), "{error:?}");
     }
 
     #[test]

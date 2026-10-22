@@ -10,7 +10,7 @@ use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::{BoundedBuf, ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::data_points::histogram::ListValueAccessor;
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
-use crate::otlp::{EncodeFailure, EncodeResult, ProtoBuffer};
+use crate::otlp::{EncodeFailure, ProtoBuffer};
 use crate::proto::consts::field_num::metrics::{
     EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES,
     EXP_HISTOGRAM_DP_COUNT, EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS,
@@ -172,7 +172,7 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     exemplar_attr_arrays: Option<&Attribute32Arrays<'_>>,
     exemplar_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(attrs) = attrs
         && let Some(id) = exp_hist_dp_arrays.id.value_at(index)
     {
@@ -291,7 +291,7 @@ fn proto_encode_buckets(
     index: usize,
     buckets_arrays: &PositiveNegativeArrayAccess<'_>,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(val) = buckets_arrays.offset_array.value_at(index) {
         result_buf.encode_field_tag(EXP_HISTOGRAM_BUCKET_OFFSET, wire_types::VARINT)?;
         result_buf.encode_sint32(val)?;

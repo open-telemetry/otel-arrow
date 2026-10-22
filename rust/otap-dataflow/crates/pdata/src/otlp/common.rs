@@ -64,7 +64,7 @@ pub(crate) fn proto_encode_resource(
     resource_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> PDataResult<()> {
     // add attributes
     if let Some(attrs_arrays) = resource_attrs_arrays
         && let Some(res_id) = resource_arrays.id.value_at(index)
@@ -195,7 +195,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> PDataResult<()> {
     if let Some(col) = &scope_arrays.name
         && let Some(val) = col.str_at(index)
     {
@@ -328,23 +328,12 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
 /// Suffix appended to truncated strings.
 pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 
-/// Indicating success. This is an alias so that Result<()> can
-/// map into EncodeSuccess; it enables Iterator.try_for_each
-/// expressions to be used inside encode functions.
-pub type EncodeSuccess = ();
-
-/// Returned when a encode operation fails. Users explicitly choose
-/// EncodeResult or TruncateResult to indicate whether they handle
-/// truncation.
-#[derive(Debug, Clone)]
+/// Returned when a buffer write cannot fit within the size limit.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EncodeFailure {
     /// Dropped due to space limit. If a TruncateResult, it means no
     /// valid data could be written in the available space.
     Dropped,
-    /// Invalid data (e.g., CBOR decode failure) in OTAP/OTLP encoding.
-    /// We do not save this error, on purpose, since there are very few
-    /// cases where it can arise and the cost is not negligible.
-    Invalid,
 }
 
 impl std::error::Error for EncodeFailure {}
@@ -353,16 +342,6 @@ impl fmt::Display for EncodeFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Dropped => write!(f, "dropped"),
-            Self::Invalid => write!(f, "invalid"),
-        }
-    }
-}
-
-impl From<Error> for EncodeFailure {
-    fn from(err: Error) -> Self {
-        match err {
-            Error::InternalBufferFull => Self::Dropped,
-            _ => Self::Invalid,
         }
     }
 }
@@ -376,18 +355,17 @@ pub enum Truncation {
     Some,
 }
 
-// EncodeSuccess equals Truncation::None.
-impl From<EncodeSuccess> for Truncation {
-    fn from(_: EncodeSuccess) -> Self {
+impl From<()> for Truncation {
+    fn from(_: ()) -> Self {
         Truncation::None
     }
 }
 
-/// Result type for encoding methods without truncation.
-pub type EncodeResult = Result<EncodeSuccess, EncodeFailure>;
+/// Result type for encoding methods that can fail only because of a size limit.
+pub type EncodeResult<T = ()> = Result<T, EncodeFailure>;
 
 /// Result type for encoding methods with truncation.
-pub type TruncateResult = Result<Truncation, EncodeFailure>;
+pub type TruncateResult = EncodeResult<Truncation>;
 
 const fn tag_width_limit(tagw: usize) -> usize {
     1 << (7 * tagw)
@@ -1796,8 +1774,8 @@ mod test {
         assert_eq!(buf.len(), 9);
     }
 
-    /// Scenario: atomic encoding writes partial content before failing, then another call succeeds.
-    /// Guarantees: failure restores the original bytes and length while success retains new bytes.
+    /// Scenario: atomic encoding fails after writing, then a length-delimited callback returns a count.
+    /// Guarantees: failure restores the original bytes; success retains bytes and the callback's count.
     #[test]
     fn try_atomic_rolls_back_buffer_on_error() {
         let mut buf = ProtoBuffer::default();
@@ -1816,8 +1794,13 @@ mod test {
         assert_eq!(buf.as_ref(), snapshot.as_slice(), "bytes must be identical");
 
         // try_atomic on Ok preserves all writes.
-        let res: EncodeResult = buf.try_atomic(|b| b.encode_string(3, "ok"));
-        assert!(res.is_ok());
+        let res: EncodeResult<usize> = buf.try_atomic(|b| {
+            b.encode_len_delimited(3, |b| {
+                b.encode_string(1, "ok")?;
+                Ok(b.len() - snapshot_len)
+            })
+        });
+        assert_eq!(res.unwrap(), buf.len() - snapshot_len);
         assert!(buf.len() > snapshot_len);
     }
 

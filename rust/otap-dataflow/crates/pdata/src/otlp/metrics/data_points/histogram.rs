@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otlp::{
-    EncodeResult, ProtoBuffer,
+    ProtoBuffer,
     attributes::{Attribute32Arrays, encode_key_value},
     common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
     metrics::exemplar::{ExemplarArrays, proto_encode_exemplar},
@@ -149,7 +149,7 @@ pub(crate) fn proto_encode_histogram_data_point(
     exemplar_attr_arrays: Option<&Attribute32Arrays<'_>>,
     exemplar_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> EncodeResult {
+) -> Result<()> {
     if let Some(attrs) = attrs
         && let Some(id) = hist_dp_arrays.id.value_at(index)
     {
