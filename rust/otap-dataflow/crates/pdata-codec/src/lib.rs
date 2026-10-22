@@ -23,7 +23,7 @@ pub use batching::{
 pub use decoder::{DecodePolicy, DecodeValidation, PdataDecoder};
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};
-pub use identity::{EncodedPdata, PdataEncoding};
+pub use identity::{EncodedPdata, EncodedPdataBatch, PdataEncoding};
 pub use payload::{OtapPayload, PdataFormat, PdataPayload, PdataPayloadDecodeError};
 pub use plan::{AcceptedEncodings, EncodePolicy, EncodingPlan};
 pub use registry::{
