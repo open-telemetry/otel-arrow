@@ -434,7 +434,7 @@ const fn make_len_placeholder<const N: usize>() -> [u8; N] {
 ///
 /// Write methods return [`EncodeResult`], enabling `?` propagation through
 /// recursive protobuf encoding. Callers are responsible for counting
-/// dropped fields. The [`try_encode`](Self::try_encode) method provides
+/// dropped fields. The [`try_atomic`](Self::try_atomic) method provides
 /// atomic field-level writes: either the entire field is written, or the
 /// buffer is rolled back to its previous state.
 ///
@@ -456,7 +456,7 @@ pub trait BoundedBuf {
     /// without writing any bytes.
     /// TODO(4482): Note that extend_from_slice() is a deprecated alias for
     //// this method.
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult;
+    fn try_extend_slice(&mut self, slice: &[u8]) -> EncodeResult;
 
     /// Truncate the buffer to the given position. Used for rollback.
     /// TODO(4482): Can be an private storage trait.
@@ -488,7 +488,7 @@ pub trait BoundedBuf {
     /// extend_from_slice() is infallible, however a wide impact fix.
     #[inline]
     fn extend_from_slice(&mut self, slice: &[u8]) -> EncodeResult {
-        self.try_extend(slice)
+        self.try_extend_slice(slice)
     }
 
     /// Encodes a varint containing type (3 bits) and tag value.
@@ -502,10 +502,10 @@ pub trait BoundedBuf {
     #[inline]
     fn encode_varint(&mut self, value: u64) -> EncodeResult {
         if value < tag_width_limit(1) as u64 {
-            return self.try_extend(&[value as u8]);
+            return self.try_extend_slice(&[value as u8]);
         }
         if value < tag_width_limit(2) as u64 {
-            return self.try_extend(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
+            return self.try_extend_slice(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
         }
         let mut tmp = [0u8; 10];
         let mut i = 0;
@@ -517,7 +517,7 @@ pub trait BoundedBuf {
         }
         tmp[i] = v as u8;
         i += 1;
-        self.try_extend(&tmp[..i])
+        self.try_extend_slice(&tmp[..i])
     }
 
     /// Encodes the signed varint type (e.g. sint32, sint64) using zig-zag encoding.
@@ -532,7 +532,7 @@ pub trait BoundedBuf {
     fn encode_string(&mut self, tag: u64, val: &str) -> EncodeResult {
         self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
-        self.try_extend(val.as_bytes())
+        self.try_extend_slice(val.as_bytes())
     }
 
     /// Encode a bytes field by tag number.
@@ -540,7 +540,7 @@ pub trait BoundedBuf {
     fn encode_bytes(&mut self, tag: u64, val: &[u8]) -> EncodeResult {
         self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
-        self.try_extend(val)
+        self.try_extend_slice(val)
     }
 
     /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
@@ -584,9 +584,9 @@ pub trait BoundedBuf {
             .expect("pre-validated fit");
         self.encode_varint(payload_len as u64)
             .expect("pre-validated fit");
-        self.try_extend(truncated_str.as_bytes())
+        self.try_extend_slice(truncated_str.as_bytes())
             .expect("pre-validated fit");
-        self.try_extend(TRUNCATION_SUFFIX)
+        self.try_extend_slice(TRUNCATION_SUFFIX)
             .expect("pre-validated fit");
         Ok(Truncation::Some)
     }
@@ -643,7 +643,7 @@ pub trait BoundedBuf {
     {
         self.encode_field_tag(tag, wire_types::LEN)?;
         let len_start_pos = self.len();
-        self.try_extend(&make_len_placeholder::<B>())?;
+        self.try_extend_slice(&make_len_placeholder::<B>())?;
         let ok = f(self)?;
         let len = self.len() - len_start_pos - B;
         patch_len_placeholder::<B, _>(self, len, len_start_pos);
@@ -674,7 +674,7 @@ pub trait BoundedBuf {
     /// If the closure returns an error, the buffer is rolled back to
     /// its state before the call and the error is returned.
     #[inline]
-    fn try_encode<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E>
+    fn try_atomic<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E>
     where
         Self: Sized,
     {
@@ -818,7 +818,7 @@ impl BoundedBuf for ProtoBuffer {
         self.limit = limit;
     }
     #[inline]
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
+    fn try_extend_slice(&mut self, slice: &[u8]) -> EncodeResult {
         if self.buffer.len() + slice.len() <= self.limit {
             self.buffer.extend_from_slice(slice);
             Ok(())
@@ -907,7 +907,7 @@ impl<const N: usize> BoundedBuf for StackProtoBuffer<N> {
         self.limit = limit.min(N);
     }
     #[inline]
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
+    fn try_extend_slice(&mut self, slice: &[u8]) -> EncodeResult {
         let new_pos = self.pos + slice.len();
         if new_pos <= self.limit {
             self.buf[self.pos..new_pos].copy_from_slice(slice);
@@ -1717,13 +1717,13 @@ mod test {
     }
 
     #[test]
-    fn try_encode_rolls_back_buffer_on_error() {
+    fn try_atomic_rolls_back_buffer_on_error() {
         let mut buf = ProtoBuffer::default();
         buf.encode_string(1, "before").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
         let snapshot_len = buf.len();
 
-        let res: EncodeResult = buf.try_encode(|b| {
+        let res: EncodeResult = buf.try_atomic(|b| {
             // Write several bytes successfully, then fail.
             b.encode_string(2, "partial-content")?;
             b.encode_varint(0xDEAD_BEEF)?;
@@ -1733,8 +1733,8 @@ mod test {
         assert_eq!(buf.len(), snapshot_len, "len must be restored");
         assert_eq!(buf.as_ref(), snapshot.as_slice(), "bytes must be identical");
 
-        // try_encode on Ok preserves all writes.
-        let res: EncodeResult = buf.try_encode(|b| b.encode_string(3, "ok"));
+        // try_atomic on Ok preserves all writes.
+        let res: EncodeResult = buf.try_atomic(|b| b.encode_string(3, "ok"));
         assert!(res.is_ok());
         assert!(buf.len() > snapshot_len);
     }
@@ -1743,7 +1743,7 @@ mod test {
     fn encode_len_delimited_does_not_patch_on_inner_err() {
         // Regression: encode_len_delimited (non-partial) on inner Err leaves
         // an unpatched 0-length placeholder followed by partial content bytes.
-        // The bytes are wire-corrupt and MUST be wrapped in try_encode by
+        // The bytes are wire-corrupt and MUST be wrapped in try_atomic by
         // callers (this is the bug that bit encode_body_string).
         let mut buf = StackProtoBuffer::<8>::default();
         let r: EncodeResult = buf.encode_len_delimited(1, |b| {
@@ -1758,13 +1758,13 @@ mod test {
         assert!(buf.len() >= 2, "tag + placeholder were written");
         assert_eq!(buf.as_ref()[1], 0x00, "placeholder remained unpatched");
 
-        // The safe pattern: wrap in try_encode so partial bytes roll back.
+        // The safe pattern: wrap in try_atomic so partial bytes roll back.
         let mut buf = StackProtoBuffer::<8>::default();
-        let r: EncodeResult = buf.try_encode(|b| {
+        let r: EncodeResult = buf.try_atomic(|b| {
             b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
         });
         assert!(matches!(r, Err(EncodeFailure::Dropped)));
-        assert_eq!(buf.len(), 0, "try_encode rolled back partial bytes");
+        assert_eq!(buf.len(), 0, "try_atomic rolled back partial bytes");
     }
 
     #[test]

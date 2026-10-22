@@ -53,7 +53,7 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
         let _ = self
             .buf
             .encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
-        self.buf.try_extend(&timestamp_ns.to_le_bytes())?;
+        self.buf.try_extend_slice(&timestamp_ns.to_le_bytes())?;
 
         // Encode severity_number (varint)
         let severity = level_to_severity_number(record.callsite().level());
@@ -67,7 +67,7 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
         bounded::record_event_name(self.buf, record.callsite())?;
 
         // Pre-encoded body and attributes.
-        self.buf.try_extend(&record.body_attrs_bytes)?;
+        self.buf.try_extend_slice(&record.body_attrs_bytes)?;
 
         // Encode dropped_attributes_count (varint) if any were dropped.
         if record.dropped_attributes_count > 0 {
@@ -101,7 +101,7 @@ mod bounded {
     /// `weaver registry live-check`.
     pub fn record_event_name<B: BoundedBuf>(buf: &mut B, callsite: SavedCallsite) -> EncodeResult {
         buf.encode_len_delimited(LOG_RECORD_EVENT_NAME, |buf| {
-            buf.try_extend(callsite.name().as_bytes())
+            buf.try_extend_slice(callsite.name().as_bytes())
         })
     }
 
@@ -167,11 +167,9 @@ mod bounded {
         key: &str,
         value: &mut impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        buf.try_encode(|buf| {
-            buf.encode_len_delimited(tag, |buf| {
-                buf.encode_string(KEY_VALUE_KEY, key)?;
-                value_encoder(buf, KEY_VALUE_VALUE, value)
-            })
+        buf.encode_len_delimited(tag, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            value_encoder(buf, KEY_VALUE_VALUE, value)
         })
     }
 
@@ -247,23 +245,29 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         encode: impl FnOnce(&mut B) -> TruncateResult,
     ) {
         let budget = self.buf.remaining().div_ceil(2);
-        self.buf.with_max_remaining(budget, |buf| {
-            match LogFieldLocation::new(field.name()) {
-                LogFieldLocation::Body => {
-                    // May be truncated, but not counted in dropped_attributes.
-                    let _ = bounded::record_body(buf, encode);
-                }
-                LogFieldLocation::Attribute(name) => {
-                    match bounded::record_attribute(buf, name, encode) {
-                        Ok(Truncation::None) => {}
-                        _ => {
-                            // Dropped or truncated
-                            self.dropped_count += 1;
-                        }
+
+        // The toplevel call ignores truncation.
+        let _ = self.buf.with_max_remaining(budget, |buf| {
+            buf.try_atomic(|buf| {
+                match LogFieldLocation::new(field.name()) {
+                    LogFieldLocation::Body => {
+                        // May be truncated, but not counted in dropped_attributes.
+                        bounded::record_body(buf, encode)
+                    }
+                    LogFieldLocation::Attribute(name) => {
+                        let result = bounded::record_attribute(buf, name, encode);
+                        match result {
+                            Ok(Truncation::None) => {}
+                            _ => {
+                                // Dropped or truncated
+                                self.dropped_count += 1;
+                            }
+                        };
+                        result
                     }
                 }
-            }
-        })
+            })
+        });
     }
 }
 
@@ -321,7 +325,7 @@ impl<'a, B: BoundedBuf> BoundedBufFmt<'a, B> {
 
         // Try to append the suffix. If even this fails (degenerate budget),
         // leave the buffer at whatever position truncate() set.
-        let _ = self.buf.try_extend(TRUNCATION_SUFFIX);
+        let _ = self.buf.try_extend_slice(TRUNCATION_SUFFIX);
         self.truncated = true;
     }
 }
@@ -334,7 +338,7 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
             // formatter finishes cleanly.
             return Ok(());
         }
-        match self.buf.try_extend(s.as_bytes()) {
+        match self.buf.try_extend_slice(s.as_bytes()) {
             Ok(()) => Ok(()),
             Err(_) => {
                 // The full chunk did not fit. Write as much as we can, then
@@ -349,7 +353,7 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
                     }
                     if end > 0 {
                         // This extend cannot fail -- we checked remaining.
-                        let _ = self.buf.try_extend(&s.as_bytes()[..end]);
+                        let _ = self.buf.try_extend_slice(&s.as_bytes()[..end]);
                     }
                 }
                 self.truncate_with_suffix();
@@ -416,7 +420,7 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
             self.buf,
             ANY_VALUE_DOUBLE_VALUE,
             wire_types::FIXED64,
-            |buf| buf.try_extend(&value.to_le_bytes()),
+            |buf| buf.try_extend_slice(&value.to_le_bytes()),
         )
     }
 
@@ -494,7 +498,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         self.record_toplevel_field(field, |buf| {
             bounded::primtiive_field(buf, ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, |buf| {
-                buf.try_extend(&value.to_le_bytes())
+                buf.try_extend_slice(&value.to_le_bytes())
             })
             .map(|t| t.into())
         });
@@ -740,9 +744,9 @@ fn encode_scope_logs(
             buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
             for entity_key in context {
                 match scope_cache.get_or_encode(*entity_key) {
-                    Ok(b) => buf.try_extend(&b)?,
+                    Ok(b) => buf.try_extend_slice(&b)?,
                     Err(MapError::NotRegistered) => {
-                        buf.try_extend(&encode_scope_attributes(std::iter::once((
+                        buf.try_extend_slice(&encode_scope_attributes(std::iter::once((
                             "unregistered.entity",
                             &AttributeValue::Int(entity_key.data().as_ffi() as i64),
                         )))?)?;
@@ -794,7 +798,7 @@ pub fn encode_export_logs_request(
     });
 
     buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
-        buf.try_extend(resource_bytes)?;
+        buf.try_extend_slice(resource_bytes)?;
 
         for events in events.chunk_by(|a, b| {
             a.record.callsite().target() == b.record.callsite().target()
