@@ -7,7 +7,6 @@ use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
-use crate::otlp::{EncodeResult, BoundedBuf};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
     proto_encode_instrumentation_scope, proto_encode_resource,
@@ -16,6 +15,7 @@ use crate::otlp::traces::span_event::{SpanEventArrays, encode_span_event};
 use crate::otlp::traces::span_link::{SpanLinkArrays, encode_span_link};
 use crate::otlp::traces::spans_arrays::SpansArrays;
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
+use crate::otlp::{BoundedBuf, EncodeResult};
 use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::consts::field_num::traces::{
     RESOURCE_SPANS_RESOURCE, RESOURCE_SPANS_SCHEMA_URL, RESOURCE_SPANS_SCOPE_SPANS,

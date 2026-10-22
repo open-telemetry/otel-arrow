@@ -21,7 +21,7 @@ use crate::otlp::metrics::data_points::summary::{
 };
 use crate::otlp::metrics::exemplar::ExemplarArrays;
 use crate::otlp::{
-    EncodeResult, 
+    EncodeResult,
     attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value},
     common::{
         BatchSorter, BoundedBuf, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,

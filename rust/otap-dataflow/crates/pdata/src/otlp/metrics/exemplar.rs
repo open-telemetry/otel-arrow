@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otlp::{
-    EncodeResult, ProtoBuffer, 
+    EncodeResult, ProtoBuffer,
     attributes::{Attribute32Arrays, encode_key_value},
     common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
 };

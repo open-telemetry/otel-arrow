@@ -10,7 +10,7 @@ use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::Sizer;
-use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, EncodeFailure};
+use otel_arrow_dfe_pdata::otlp::{EncodeFailure, ProtoBuffer};
 use otel_arrow_dfe_pdata_codec::builtins::resolve_otlp;
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;

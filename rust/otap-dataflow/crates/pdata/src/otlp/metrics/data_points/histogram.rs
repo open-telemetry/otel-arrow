@@ -228,7 +228,7 @@ pub(crate) fn proto_encode_histogram_data_point(
         result_buf.encode_varint(8 * num_values as u64)?; // 8 bytes per value
 
         // write values
-        for value in values .iter() .flatten() {
+        for value in values.iter().flatten() {
             result_buf.extend_from_slice(&value.to_le_bytes())?;
         }
     }

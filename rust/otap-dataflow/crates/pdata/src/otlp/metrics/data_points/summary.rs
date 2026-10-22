@@ -6,10 +6,10 @@ use crate::arrays::{
     get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::{ProtoBuffer, EncodeResult};
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
+use crate::otlp::{EncodeResult, ProtoBuffer};
 use crate::proto::consts::field_num::metrics::{
     SUMMARY_DP_ATTRIBUTES, SUMMARY_DP_COUNT, SUMMARY_DP_FLAGS, SUMMARY_DP_QUANTILE_VALUES,
     SUMMARY_DP_START_TIME_UNIX_NANO, SUMMARY_DP_SUM, SUMMARY_DP_TIME_UNIX_NANO,

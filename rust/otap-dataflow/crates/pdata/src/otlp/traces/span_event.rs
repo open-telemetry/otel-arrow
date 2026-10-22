@@ -11,7 +11,7 @@ use crate::{
     },
     error::{Error, Result},
     otlp::{
-        ProtoBuffer, EncodeResult,
+        EncodeResult, ProtoBuffer,
         attributes::{Attribute32Arrays, encode_key_value},
         common::{ChildIndexIter, SortedBatchCursor},
     },
