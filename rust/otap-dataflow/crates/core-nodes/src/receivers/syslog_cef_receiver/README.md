@@ -87,7 +87,8 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `newline`.
 
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
-defaults to `100`, and `batch.max_size` defaults to `100`.
+defaults to `100`, and `batch.max_size` defaults to `100` (values above `256`
+are capped). Receiver batches may flush earlier to respect the hard byte limit.
 
 The receiver supports pressure-aware `messages` rate limiting when the
 engine-level memory limiter is configured. UDP counts one datagram as one
@@ -415,7 +416,9 @@ downstream:
 
 A batch is flushed when either:
 
-- **`batch.max_size`** messages have accumulated (default: 100), or
+- **`batch.max_size`** messages have accumulated (default: 100, capped at 256), or
+- The encoded buffer cannot reserve space for another 16 KiB message within
+  its 256 KiB limit, or
 - **`batch.max_batch_duration_ms`** milliseconds have elapsed since the last flush
   (default: 100 ms), or
 - The connection closes (TCP) or the receiver shuts down
@@ -424,6 +427,31 @@ Both thresholds are optionally configurable via the `batch` section (see
 [Configuration](#configuration)). Lowering these values reduces the window
 of in-memory data that could be lost on a crash, at the expense of more
 frequent (and smaller) downstream sends.
+
+The syslog codec also caps each output and synchronous OTAP conversion at
+**256 messages and 256 KiB of encoded framing**, with **16 KiB per message**.
+Codec-native batching splits on either limit even when a batch processor requests
+larger outputs. Split-budget fallback may retain a whole input only if it fits
+these hard limits; otherwise batching fails recoverably rather than emitting an
+oversized decode. Message bytes, order, receipt years, and ownership are preserved.
+
+These limits mitigate uninterrupted parsing and Arrow finalization work. They do
+not guarantee a wall-clock latency or make codec execution cooperative. A future
+execution change will add scheduling opportunities within decoding and finalization.
+
+The opt-in scheduling-latency test arms a timer on the same runtime thread as
+maximum-sized RFC 3164, raw, and attribute-heavy CEF decodes. It measures parsing
+and Arrow finalization without inserting yields. Run it in release mode on an
+otherwise idle pinned CPU (replace `<cpu>`):
+
+```sh
+cd rust/otap-dataflow
+cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency --no-run
+taskset -c <cpu> cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
+```
+
+The 50 ms assertion is a regression threshold for that controlled test, not a
+latency guarantee for arbitrary inputs, hardware, or a busy pipeline.
 
 This batching strategy balances:
 

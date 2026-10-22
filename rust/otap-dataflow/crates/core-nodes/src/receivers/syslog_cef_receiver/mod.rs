@@ -153,7 +153,7 @@ impl Protocol {
 
 /// Optional batching configuration for the syslog CEF receiver.
 ///
-/// Controls how incoming log records are accumulated into Arrow batches
+/// Controls how incoming log records are accumulated into encoded batches
 /// before being forwarded downstream. Reducing these values can limit
 /// the scope of data loss for in-memory records that have not yet been
 /// sent to the next node.
@@ -164,8 +164,8 @@ struct BatchConfig {
     /// Defaults to 100 ms when not specified. Must be greater than zero.
     #[serde(default)]
     max_batch_duration_ms: Option<NonZeroU64>,
-    /// Maximum number of messages to accumulate before building an Arrow batch.
-    /// Defaults to 100 when not specified. Must be greater than zero.
+    /// Maximum number of messages to accumulate before sealing an encoded batch.
+    /// Defaults to 100. Values above 256 are capped; the hard byte limit may flush sooner.
     #[serde(default)]
     max_size: Option<NonZeroU16>,
 }
@@ -199,6 +199,7 @@ impl Config {
             .and_then(|b| b.max_size)
             .map(|s| s.get())
             .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+            .min(codec::MAX_BATCH_ITEMS as u16)
     }
 }
 
@@ -1044,7 +1045,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 break;
                                                             }
 
-                                                            if batch_builder.len() >= u32::from(max_batch_size) {
+                                                            if batch_builder.should_flush(usize::from(max_batch_size)) {
                                                                 // Seal the encoded batch to send them
                                                                 match seal_syslog_batch(&mut batch_builder, syslog_codec) {
                                                                     Ok(pdata) => {
@@ -1282,7 +1283,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         continue;
                                     }
 
-                                    if batch_builder.len() >= u32::from(max_batch_size) {
+                                    if batch_builder.should_flush(usize::from(max_batch_size)) {
                                         // Seal the encoded batch to send them
                                         match seal_syslog_batch(&mut batch_builder, syslog_codec) {
                                             Ok(pdata) => {
@@ -1786,6 +1787,55 @@ mod tests {
             ),
             "expected Syslog TLS configuration error, got {error}"
         );
+    }
+
+    /// Scenario: TCP and UDP receivers use large configured targets and receive maximum-sized messages.
+    /// Guarantees: Effective targets are capped and byte-triggered flushes preserve every accepted message.
+    #[test]
+    fn receiver_flushes_bounded_batches_without_rejecting_large_messages() {
+        for protocol in [SyslogCefProtocol::Tcp, SyslogCefProtocol::Udp] {
+            let address = "127.0.0.1:0".parse().unwrap();
+            let mut config = match protocol {
+                SyslogCefProtocol::Tcp => Config::new_tcp(address),
+                SyslogCefProtocol::Udp => Config::new_udp(address),
+            };
+            config.batch = Some(BatchConfig {
+                max_batch_duration_ms: None,
+                max_size: NonZeroU16::new(u16::MAX),
+            });
+            assert_eq!(usize::from(config.max_batch_size()), codec::MAX_BATCH_ITEMS);
+            let receiver = SyslogCefReceiver::new(config);
+            let mut builder = SyslogBatchBuilder::with_max_items(usize::MAX);
+            let message = vec![b'x'; MAX_MESSAGE_SIZE];
+            let codec = resolve_syslog().unwrap();
+            let mut counts = Vec::new();
+            for _ in 0..32 {
+                process_syslog_message(
+                    &receiver.metrics,
+                    protocol,
+                    &message,
+                    &receiver.admission_state,
+                    &receiver.rate_limiter,
+                    &mut builder,
+                )
+                .unwrap();
+                if builder.should_flush(usize::from(receiver.config.max_batch_size())) {
+                    let pdata = seal_syslog_batch(&mut builder, codec).unwrap();
+                    counts.push(pdata.payload_ref().known_item_count().unwrap());
+                    assert!(pdata.payload_ref().encoded_bytes().unwrap().len() <= 256 * 1024);
+                }
+            }
+            if !builder.is_empty() {
+                counts.push(
+                    seal_syslog_batch(&mut builder, codec)
+                        .unwrap()
+                        .payload_ref()
+                        .known_item_count()
+                        .unwrap(),
+                );
+            }
+            assert_eq!(counts, [15, 15, 2]);
+        }
     }
 
     /// Scenario: A pending Syslog batch is dropped before downstream handoff.

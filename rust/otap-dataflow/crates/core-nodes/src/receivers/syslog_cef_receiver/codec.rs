@@ -19,6 +19,10 @@
 //! when the receipt year changes. Native batching copies frames and coalesces
 //! adjacent runs only when both observed timestamp and receipt year match,
 //! without parsing syslog contents.
+//!
+//! Synchronous materialization is capped at 256 messages and 256 KiB of framing
+//! (16 KiB per message). Receiver admission and native batching enforce these
+//! same limits until cooperative codec execution is available.
 
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
@@ -34,7 +38,7 @@ use otel_arrow_dfe_pdata_codec::{
 };
 
 use super::arrow_records_encoder::ReceivedArrowRecordsBuilder;
-use super::parser;
+use super::{MAX_MESSAGE_SIZE, parser};
 
 /// Stable identity of the versioned syslog/CEF batch representation.
 pub const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
@@ -43,12 +47,15 @@ const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
 const RUN_HEADER_LEN: usize = 16;
 const FRAME_HEADER_LEN: usize = 4;
-const MAX_NATIVE_LOGS: usize = 65_535;
+// Bound one synchronous parse/build/finalize operation until cooperative codec
+// execution is available. These are hard limits, not configurable batch targets.
+pub(super) const MAX_BATCH_ITEMS: usize = 256;
+const MAX_BATCH_BYTES: usize = 256 * 1024;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
 
 const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
-    min_size: Some(8192),
-    max_size: NonZeroU64::new(MAX_NATIVE_LOGS as u64),
+    min_size: Some(100),
+    max_size: NonZeroU64::new(MAX_BATCH_ITEMS as u64),
     sizer: BatchSizer::Items,
     max_split_fragments: None,
     max_split_overhead_bytes: None,
@@ -140,7 +147,7 @@ impl SyslogBatchBuilder {
         Self {
             bytes,
             item_count: 0,
-            max_items_hint: max_items_hint.max(1),
+            max_items_hint: max_items_hint.clamp(1, MAX_BATCH_ITEMS),
             run_year: None,
             run_count: 0,
             run_count_offset: 0,
@@ -160,6 +167,14 @@ impl SyslogBatchBuilder {
         self.item_count == 0
     }
 
+    /// Flushes before another maximum-sized message or a new year run could exceed
+    /// the hard byte limit. The caller also applies its configured item target.
+    pub(crate) fn should_flush(&self, max_items: usize) -> bool {
+        self.len() as usize >= max_items.min(MAX_BATCH_ITEMS)
+            || self.bytes.len()
+                > MAX_BATCH_BYTES - MAX_MESSAGE_SIZE - FRAME_HEADER_LEN - RUN_HEADER_LEN
+    }
+
     /// Copies a socket-backed message and captures its local receipt year.
     pub(crate) fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
         self.append_with_year(message, Local::now().year())
@@ -173,6 +188,18 @@ impl SyslogBatchBuilder {
         message: &[u8],
         received_local_year: i32,
     ) -> Result<(), SyslogFramingError> {
+        if message.len() > MAX_MESSAGE_SIZE {
+            return Err(framing_error("syslog message exceeds 16 KiB"));
+        }
+        let run_header_len = if self.run_year == Some(received_local_year) {
+            0
+        } else {
+            RUN_HEADER_LEN
+        };
+        validate_decode_limits(
+            self.item_count as usize + 1,
+            self.bytes.len() + run_header_len + FRAME_HEADER_LEN + message.len(),
+        )?;
         let message_len = u32::try_from(message.len())
             .map_err(|_| framing_error("syslog message length exceeds u32"))?;
         let item_count = self
@@ -307,6 +334,10 @@ impl<'a> Iterator for FrameIter<'a> {
             }
         };
         let message_len = read_u32(&self.bytes[start..header_end]) as usize;
+        if message_len > MAX_MESSAGE_SIZE {
+            self.finished = true;
+            return Some(Err(framing_error("syslog message exceeds 16 KiB")));
+        }
         let message_start = header_end;
         let end = match message_start.checked_add(message_len) {
             Some(end) if end <= self.bytes.len() => end,
@@ -380,6 +411,19 @@ const fn read_i64(bytes: &[u8]) -> i64 {
     ])
 }
 
+// Reject oversized materialization before allocating Arrow builders. Batching may
+// split larger framed inputs, but neither configuration nor a budget fallback may
+// emit one that the decoder cannot safely process in a single synchronous call.
+fn validate_decode_limits(count: usize, bytes: usize) -> Result<(), SyslogFramingError> {
+    if count > MAX_BATCH_ITEMS {
+        return Err(framing_error("syslog batch exceeds 256 messages"));
+    }
+    if bytes > MAX_BATCH_BYTES {
+        return Err(framing_error("syslog batch exceeds 256 KiB"));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct SyslogDecoder;
 
@@ -398,12 +442,8 @@ impl PdataDecoder for SyslogDecoder {
         }
         let (count, frames) = validated_frames(bytes)
             .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-        if count > MAX_NATIVE_LOGS {
-            return Err(operation_error(
-                CodecOperation::Decode,
-                framing_error("syslog batch exceeds native log ID capacity"),
-            ));
-        }
+        validate_decode_limits(count, bytes.len())
+            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
         let mut builder = ReceivedArrowRecordsBuilder::default();
         for frame in frames {
             let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
@@ -440,11 +480,11 @@ impl PdataBatcher for SyslogBatcher {
                 "syslog native batching supports items only",
             ));
         }
-        let max_items = settings.max_size.map_or(MAX_NATIVE_LOGS, |size| {
-            // Oversized limits still cap at the native log batch limit on 32-bit targets.
+        let max_items = settings.max_size.map_or(MAX_BATCH_ITEMS, |size| {
+            // Configuration may lower, but never raise, the synchronous work limit.
             usize::try_from(size.get())
-                .unwrap_or(MAX_NATIVE_LOGS)
-                .min(MAX_NATIVE_LOGS)
+                .unwrap_or(MAX_BATCH_ITEMS)
+                .min(MAX_BATCH_ITEMS)
         });
         let limited_splits = settings.max_split_fragments.is_some()
             || settings.max_split_overhead_bytes.is_some()
@@ -461,7 +501,14 @@ impl PdataBatcher for SyslogBatcher {
             // With finite budgets, avoid splitting a whole input merely to fill
             // pending space. Split oversized inputs in isolation so preflight
             // and whole-input fallback cannot partially emit the same input.
-            if limited_splits && count > max_items - output.len() {
+            if limited_splits
+                && (count > max_items - output.len()
+                    || output
+                        .bytes
+                        .len()
+                        .saturating_add(input.len() - BATCH_HEADER_LEN)
+                        > MAX_BATCH_BYTES)
+            {
                 if !output.is_empty() {
                     outputs.push(
                         output
@@ -471,28 +518,20 @@ impl PdataBatcher for SyslogBatcher {
                     );
                     output = RawBatchWriter::new();
                 }
-                if count > max_items {
-                    let fragments = count.div_ceil(max_items) as u64;
-                    if exceeds_split_budget(&input, max_items, fragments, split_fanout, settings)
-                        .map_err(|error| operation_error(CodecOperation::Batch, error))?
-                    {
-                        // This codec validates framing even on whole-input fallback.
-                        // PdataBatcher assumes valid inputs but does not require
-                        // exhaustive validation; this is our current codec policy,
-                        // not syslog-content parsing. Keep counters and decoding
-                        // consistent until a measured structural fast path replaces it.
-                        for frame in frames {
-                            let _ = frame
-                                .map_err(|error| operation_error(CodecOperation::Batch, error))?;
-                        }
-                        if count > MAX_NATIVE_LOGS {
-                            return Err(operation_error(
-                                CodecOperation::Batch,
-                                framing_error(
-                                    "split budget exhausted for syslog input exceeding native log ID capacity",
-                                ),
-                            ));
-                        }
+                if count > max_items || input.len() > MAX_BATCH_BYTES {
+                    let (fragments, output_bytes) = split_layout(&input, max_items)
+                        .map_err(|error| operation_error(CodecOperation::Batch, error))?;
+                    if exceeds_split_budget(
+                        input.len(),
+                        fragments,
+                        output_bytes,
+                        split_fanout,
+                        settings,
+                    ) {
+                        // split_layout has validated every frame. A budget may
+                        // relax the requested size, but never the hard decode caps.
+                        validate_decode_limits(count, input.len())
+                            .map_err(|error| operation_error(CodecOperation::Batch, error))?;
                         outputs.push((input, input_index..=input_index));
                         budget_fallbacks += 1;
                         continue;
@@ -504,7 +543,10 @@ impl PdataBatcher for SyslogBatcher {
             }
             for frame in frames {
                 let frame = frame.map_err(|error| operation_error(CodecOperation::Batch, error))?;
-                if output.len() == max_items {
+                if output.len() == max_items
+                    || appended_len(output.bytes.len(), output.run_context, &frame)
+                        > MAX_BATCH_BYTES
+                {
                     outputs.push(
                         output
                             .finish()
@@ -539,45 +581,58 @@ impl PdataBatcher for SyslogBatcher {
     }
 }
 
-// Preflight without allocating output buffers. The input batch is the split
-// entry; its existing wrappers are the baseline for byte amplification. Finite
-// limits remain u64, including values above a 32-bit target's address space.
+// Preflight both item and byte splits without allocating output buffers. Use
+// the same run coalescing as RawBatchWriter so wrapper amplification is exact.
+fn split_layout(input: &[u8], max_items: usize) -> Result<(u64, u64), SyslogFramingError> {
+    let (_, frames) = validated_frames(input)?;
+    let mut fragments = 1;
+    let mut output_bytes = 0_u64;
+    let mut bytes = BATCH_HEADER_LEN;
+    let mut count = 0;
+    let mut context = None;
+    for frame in frames {
+        let frame = frame?;
+        if count == max_items || appended_len(bytes, context, &frame) > MAX_BATCH_BYTES {
+            fragments += 1;
+            output_bytes += bytes as u64;
+            bytes = BATCH_HEADER_LEN;
+            count = 0;
+            context = None;
+        }
+        bytes = appended_len(bytes, context, &frame);
+        context = Some((frame.observed_time, frame.received_local_year));
+        count += 1;
+    }
+    Ok((fragments, output_bytes + bytes as u64))
+}
+
+fn appended_len(bytes: usize, context: Option<(i64, i32)>, frame: &Frame<'_>) -> usize {
+    let run_header = if context == Some((frame.observed_time, frame.received_local_year)) {
+        0
+    } else {
+        RUN_HEADER_LEN
+    };
+    bytes
+        .saturating_add(run_header)
+        .saturating_add(frame.encoded.len())
+}
+
 fn exceeds_split_budget(
-    input: &[u8],
-    max_items: usize,
+    input_bytes: usize,
     fragments: u64,
+    output_bytes: u64,
     split_fanout: u64,
     settings: &BatchSettings,
-) -> Result<bool, SyslogFramingError> {
-    if settings
+) -> bool {
+    settings
         .max_split_fragments
         .is_some_and(|limit| fragments > limit.get())
         || settings
             .max_split_fragments_per_flush
             .is_some_and(|limit| split_fanout.saturating_add(fragments - 1) > limit.get())
-    {
-        return Ok(true);
-    }
-    let Some(overhead_limit) = settings.max_split_overhead_bytes else {
-        return Ok(false);
-    };
-    let (_, frames) = validated_frames(input)?;
-    let mut output_bytes = 0_u64;
-    let mut previous_context = None;
-    for (index, frame) in frames.enumerate() {
-        let frame = frame?;
-        if index % max_items == 0 {
-            output_bytes += BATCH_HEADER_LEN as u64;
-            previous_context = None;
-        }
-        let context = (frame.observed_time, frame.received_local_year);
-        if previous_context != Some(context) {
-            output_bytes += RUN_HEADER_LEN as u64;
-            previous_context = Some(context);
-        }
-        output_bytes += frame.encoded.len() as u64;
-    }
-    Ok(output_bytes.saturating_sub(input.len() as u64) > overhead_limit.get())
+        || settings
+            .max_split_overhead_bytes
+            .is_some_and(|limit| output_bytes.saturating_sub(input_bytes as u64) > limit.get())
 }
 
 struct RawBatchWriter {
@@ -611,6 +666,10 @@ impl RawBatchWriter {
     }
 
     fn append(&mut self, frame: Frame<'_>) -> Result<(), SyslogFramingError> {
+        validate_decode_limits(
+            self.count as usize + 1,
+            appended_len(self.bytes.len(), self.run_context, &frame),
+        )?;
         let context = (frame.observed_time, frame.received_local_year);
         if self.run_context != Some(context) {
             self.bytes.put_i64(frame.observed_time);
@@ -775,6 +834,298 @@ mod tests {
             .finish(observed_time)
             .expect("seal test batch")
             .bytes
+    }
+
+    // Deliberately bypass admission limits to test hostile framing and splitting
+    // older/larger encoded inputs without weakening the production builder.
+    fn unchecked_batch(messages: &[&[u8]]) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.put_u32(u32::try_from(messages.len()).unwrap());
+        bytes.put_i64(42);
+        bytes.put_u32(u32::try_from(messages.len()).unwrap());
+        bytes.put_i32(2024);
+        for message in messages {
+            bytes.put_u32(u32::try_from(message.len()).unwrap());
+            bytes.extend_from_slice(message);
+        }
+        bytes.freeze()
+    }
+
+    /// Scenario: Admission reaches either hard bound or receives an oversized message.
+    /// Guarantees: Rejected appends leave the batch untouched and exact boundaries decode.
+    #[test]
+    fn builder_enforces_item_byte_and_message_limits_atomically() {
+        let mut builder = SyslogBatchBuilder::with_max_items(usize::MAX);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(b"message", 2024).unwrap();
+        }
+        let before = builder.bytes.clone();
+        assert!(builder.append_with_year(b"extra", 2025).is_err());
+        assert_eq!(builder.bytes, before);
+        assert_eq!(builder.len() as usize, MAX_BATCH_ITEMS);
+        assert!(builder.should_flush(usize::MAX));
+        assert_eq!(
+            SyslogDecoder
+                .decode(SignalType::Logs, &builder.finish(42).unwrap().bytes)
+                .unwrap()
+                .num_items(),
+            MAX_BATCH_ITEMS
+        );
+
+        let message = vec![b'x'; MAX_MESSAGE_SIZE];
+        let mut builder = SyslogBatchBuilder::new();
+        for _ in 0..15 {
+            builder.append_with_year(&message, 2024).unwrap();
+        }
+        assert!(builder.should_flush(usize::MAX));
+        let remaining = MAX_BATCH_BYTES - builder.bytes.len() - FRAME_HEADER_LEN;
+        builder
+            .append_with_year(&message[..remaining], 2024)
+            .unwrap();
+        assert_eq!(builder.bytes.len(), MAX_BATCH_BYTES);
+        let before = builder.bytes.clone();
+        assert!(builder.append_with_year(b"extra", 2025).is_err());
+        assert_eq!(builder.bytes, before);
+        assert_eq!(
+            SyslogDecoder
+                .decode(SignalType::Logs, &builder.finish(42).unwrap().bytes)
+                .unwrap()
+                .num_items(),
+            16
+        );
+
+        let mut builder = SyslogBatchBuilder::new();
+        assert!(builder.append(&vec![b'x'; MAX_MESSAGE_SIZE + 1]).is_err());
+        assert!(builder.is_empty());
+        builder.append(b"valid after error").unwrap();
+    }
+
+    /// Scenario: Encoded input bypasses admission with excessive items, bytes, or message size.
+    /// Guarantees: Decode errors recover the same identity, cached count, and buffer; reuse succeeds.
+    #[test]
+    fn oversized_decoding_recovers_input_and_keeps_decoder_reusable() {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        let codec = resolve_syslog().unwrap();
+        let large = vec![b'x'; MAX_MESSAGE_SIZE];
+        let too_large = vec![b'x'; MAX_MESSAGE_SIZE + 1];
+        for bytes in [
+            unchecked_batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS + 1]),
+            unchecked_batch(&vec![large.as_slice(); 16]),
+            unchecked_batch(&[too_large.as_slice()]),
+        ] {
+            let mut payload: OtapPayload =
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
+            let _ = payload.num_items();
+            let count = payload.known_item_count();
+            let (error, recovered) = payload.try_into_otap(&service).unwrap_err().into_parts();
+            assert!(error.to_string().contains("exceeds"));
+            assert_eq!(recovered.encoding(), Some(&SYSLOG_CEF_ENCODING));
+            assert_eq!(recovered.known_item_count(), count);
+            let original = recovered.encoded_bytes().unwrap();
+            assert_eq!(original, &bytes);
+            assert_eq!(original.as_ptr(), bytes.as_ptr());
+        }
+        let payload: OtapPayload = codec
+            .admit(SignalType::Logs, batch(&[b"valid"], 42))
+            .unwrap()
+            .into();
+        assert_eq!(payload.try_into_otap(&service).unwrap().num_items(), 1);
+    }
+
+    /// Scenario: Oversized user targets merge several admitted batches.
+    /// Guarantees: Hard item and byte caps override targets without losing order or input ranges.
+    #[test]
+    fn native_batching_caps_user_overrides_and_preserves_input_ranges() {
+        let settings = BatchSettings {
+            max_size: NonZeroU64::new(u64::MAX),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        let mut inputs = Vec::new();
+        for (message, observed) in [(b"first".as_slice(), 1), (b"second", 2), (b"third", 3)] {
+            inputs.push(batch(&vec![message; 200], observed));
+        }
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &settings, inputs)
+            .unwrap();
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(_, r)| r.clone())
+                .collect::<Vec<_>>(),
+            [0..=1, 1..=2, 2..=2]
+        );
+        let mut observed = Vec::new();
+        for (bytes, _) in result.batches {
+            let (count, frames) = validated_frames(&bytes).unwrap();
+            assert!(count <= MAX_BATCH_ITEMS && bytes.len() <= MAX_BATCH_BYTES);
+            assert_eq!(
+                SyslogDecoder
+                    .decode(SignalType::Logs, &bytes)
+                    .unwrap()
+                    .num_items(),
+                count
+            );
+            observed.extend(frames.map(|frame| frame.unwrap().observed_time));
+        }
+        assert_eq!(
+            observed,
+            [vec![1; 200], vec![2; 200], vec![3; 200]].concat()
+        );
+
+        let large = vec![b'x'; MAX_MESSAGE_SIZE];
+        let input = batch(&[large.as_slice(); 8], 42);
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &settings, vec![input.clone(), input])
+            .unwrap();
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(_, r)| r.clone())
+                .collect::<Vec<_>>(),
+            [0..=1, 1..=1]
+        );
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(b, _)| validated_item_count(b).unwrap())
+                .collect::<Vec<_>>(),
+            [15, 1]
+        );
+        for (bytes, _) in result.batches {
+            assert!(bytes.len() <= MAX_BATCH_BYTES);
+            assert!(SyslogDecoder.decode(SignalType::Logs, &bytes).is_ok());
+        }
+    }
+
+    /// Scenario: A byte-limited split exhausts each finite amplification budget.
+    /// Guarantees: Fallback cannot bypass hard limits, and exact budgets preserve independently decodable outputs.
+    #[test]
+    fn byte_splits_respect_budgets_without_oversized_fallback() {
+        let message = vec![b'x'; MAX_MESSAGE_SIZE];
+        let input = unchecked_batch(&vec![message.as_slice(); 32]);
+        let settings = BatchSettings {
+            max_size: NonZeroU64::new(u64::MAX),
+            ..SYSLOG_BATCH_SETTINGS
+        };
+        for (fragments, overhead, flush) in [
+            (Some(2), None, None),
+            (None, Some(47), None),
+            (None, None, Some(1)),
+        ] {
+            let restricted = BatchSettings {
+                max_split_fragments: fragments.and_then(NonZeroU64::new),
+                max_split_overhead_bytes: overhead.and_then(NonZeroU64::new),
+                max_split_fragments_per_flush: flush.and_then(NonZeroU64::new),
+                ..settings.clone()
+            };
+            assert!(
+                SyslogBatcher
+                    .batch(SignalType::Logs, &restricted, vec![input.clone()])
+                    .is_err()
+            );
+        }
+        let exact = BatchSettings {
+            max_split_fragments: NonZeroU64::new(3),
+            max_split_overhead_bytes: NonZeroU64::new(48),
+            max_split_fragments_per_flush: NonZeroU64::new(2),
+            ..settings
+        };
+        let result = SyslogBatcher
+            .batch(SignalType::Logs, &exact, vec![input.clone()])
+            .unwrap();
+        assert_eq!(result.budget_fallbacks, 0);
+        assert_eq!(
+            result.batches.iter().map(|(b, _)| b.len()).sum::<usize>() - input.len(),
+            48
+        );
+        assert_eq!(
+            result
+                .batches
+                .iter()
+                .map(|(b, _)| validated_item_count(b).unwrap())
+                .collect::<Vec<_>>(),
+            [15, 15, 2]
+        );
+        for (bytes, range) in result.batches {
+            assert_eq!(range, 0..=0);
+            assert!(bytes.len() <= MAX_BATCH_BYTES);
+            assert!(SyslogDecoder.decode(SignalType::Logs, &bytes).is_ok());
+        }
+    }
+
+    /// Scenario: A timer shares one runtime thread with a maximum-sized synchronous decode.
+    /// Guarantees: The measured parse/build/finalize section and timer lateness stay below 50 ms on an idle CPU.
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "wall-clock check: run in release mode on an otherwise idle pinned CPU"]
+    async fn bounded_decode_scheduling_latency() {
+        use std::time::{Duration, Instant};
+
+        let mut dense_cef = String::from("CEF:0|Vendor|Product|1|1|event|5|");
+        for index in 0..600 {
+            use std::fmt::Write;
+            write!(dense_cef, " field{index}=value{index}").unwrap();
+        }
+        assert!(dense_cef.len() <= MAX_MESSAGE_SIZE);
+        let raw = vec![b'x'; MAX_MESSAGE_SIZE];
+        let small = b"<34>Oct 11 22:14:15 host tag: message";
+        let cases = [
+            (
+                "rfc3164_item_limit",
+                unchecked_batch(&vec![small.as_slice(); MAX_BATCH_ITEMS]),
+            ),
+            ("raw_byte_limit", unchecked_batch(&vec![raw.as_slice(); 15])),
+            (
+                "cef_byte_limit",
+                unchecked_batch(&vec![
+                    dense_cef.as_bytes();
+                    (MAX_BATCH_BYTES - BATCH_HEADER_LEN - RUN_HEADER_LEN)
+                        / (dense_cef.len() + FRAME_HEADER_LEN)
+                ]),
+            ),
+        ];
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        let codec = resolve_syslog().unwrap();
+        for (name, bytes) in cases {
+            let mut max_decode = Duration::ZERO;
+            let mut max_timer_lateness = Duration::ZERO;
+            for _ in 0..24 {
+                let payload: OtapPayload =
+                    codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(1);
+                let timer = async {
+                    tokio::time::sleep_until(deadline).await;
+                    tokio::time::Instant::now().saturating_duration_since(deadline)
+                };
+                let decode = async {
+                    let start = Instant::now();
+                    // No synthetic yield inside the operation: measure the actual
+                    // synchronous codec path, including Arrow finalization.
+                    let records = payload.try_into_otap(&service).unwrap();
+                    let elapsed = start.elapsed();
+                    let _ = std::hint::black_box(&records);
+                    elapsed
+                };
+                // Poll the timer first so it is armed before decoding starts.
+                let (lateness, elapsed) = tokio::join!(biased; timer, decode);
+                max_decode = max_decode.max(elapsed);
+                max_timer_lateness = max_timer_lateness.max(lateness);
+            }
+            eprintln!(
+                "{name}: max_decode={max_decode:?}, max_timer_lateness={max_timer_lateness:?}"
+            );
+            assert!(
+                max_decode < Duration::from_millis(50),
+                "{name}: {max_decode:?}"
+            );
+            assert!(
+                max_timer_lateness < Duration::from_millis(50),
+                "{name}: {max_timer_lateness:?}"
+            );
+        }
     }
 
     /// Scenario: the syslog receiver codec is checked by the shared codec harness.
@@ -1470,10 +1821,10 @@ mod tests {
         }
     }
 
-    /// Scenario: A budget fallback encounters malformed framing or more than 65,535 records.
-    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the native limit.
+    /// Scenario: A budget fallback encounters malformed framing or more than the hard item limit.
+    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the synchronous decode limit.
     #[test]
-    fn native_batching_budget_fallback_validates_framing_and_native_capacity() {
+    fn native_batching_budget_fallback_validates_framing_and_decode_limits() {
         let mut settings = BatchSettings {
             min_size: Some(1),
             max_size: NonZeroU64::new(1),
@@ -1489,7 +1840,7 @@ mod tests {
                 .is_err()
         );
         let mut builder = SyslogBatchBuilder::new();
-        for _ in 0..MAX_NATIVE_LOGS {
+        for _ in 0..MAX_BATCH_ITEMS {
             builder.append_with_year(b"message", 2024).unwrap();
         }
         let maximum = builder.finish(11).unwrap().bytes;
@@ -1500,8 +1851,8 @@ mod tests {
         assert_eq!(result.batches[0].0.as_ptr(), maximum.as_ptr());
         // Create one more valid frame without changing the native decoder limit.
         let mut oversized = maximum.to_vec();
-        oversized[4..8].copy_from_slice(&((MAX_NATIVE_LOGS + 1) as u32).to_be_bytes());
-        oversized[16..20].copy_from_slice(&((MAX_NATIVE_LOGS + 1) as u32).to_be_bytes());
+        oversized[4..8].copy_from_slice(&((MAX_BATCH_ITEMS + 1) as u32).to_be_bytes());
+        oversized[16..20].copy_from_slice(&((MAX_BATCH_ITEMS + 1) as u32).to_be_bytes());
         oversized.extend_from_slice(&1_u32.to_be_bytes());
         oversized.push(b'x');
         let oversized = Bytes::from(oversized);
@@ -1534,7 +1885,7 @@ mod tests {
                 .iter()
                 .map(|(bytes, _)| validated_item_count(bytes).unwrap())
                 .collect::<Vec<_>>(),
-            vec![MAX_NATIVE_LOGS, 1]
+            vec![MAX_BATCH_ITEMS, 1]
         );
         assert!(split.batches.iter().all(|(_, range)| range == &(0..=0)));
     }

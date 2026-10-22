@@ -2,4 +2,4 @@ change_type: enhancement
 component: pipeline
 note: "Syslog receiver preserves original messages in encoded pdata until native processing is required."
 issues: [3452]
-subtext: "Syslog and CEF batches now support lazy OTAP conversion and codec-native item batching without changing receiver configuration or network protocols. RFC 3164 timestamps retain the local receipt year across deferred decoding. Configured split budgets bound output fan-out."
+subtext: "Syslog and CEF batches now support lazy OTAP conversion and codec-native item batching without changing network protocols. RFC 3164 timestamps retain the local receipt year across deferred decoding. Batches are capped at 256 messages and 256 KiB, including downstream merges."
