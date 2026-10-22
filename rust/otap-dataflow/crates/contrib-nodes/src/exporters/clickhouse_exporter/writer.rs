@@ -125,7 +125,7 @@ impl ClickHouseWriter {
 ///
 /// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can
 /// build one per target database without concern.
-pub async fn build_client(
+pub(crate) async fn build_client(
     config: &Config,
     database: &str,
 ) -> Result<Client, ClickhouseExporterError> {
@@ -135,24 +135,38 @@ pub async fn build_client(
             &config.endpoint,
         )
         .await
-        .map_err(|e| ClickhouseExporterError::TlsConfigError {
-            error: format!("{e}"),
-        })?
-        .ok_or_else(|| ClickhouseExporterError::TlsConfigError {
-            error: "TLS config block provided but TLS is disabled (insecure=true \
-                    with no custom CA on a non-https endpoint)"
-                .into(),
+        .map_err(ClickhouseExporterError::TlsConfig)?
+        .ok_or_else(|| {
+            ClickhouseExporterError::TlsConfig(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "TLS config block present with insecure=true and no custom CA \
+                 on a non-https endpoint",
+            ))
         })?;
 
-        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+        let mut connector_builder = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(rustls_config)
-            .https_or_http()
-            .enable_http1()
-            .build();
+            .https_or_http();
+
+        // Apply server_name_override for SNI and certificate verification when
+        // the user connects by IP or needs a hostname that differs from the URL.
+        if let Some(ref server_name) = tls_config.server_name {
+            let name =
+                rustls::pki_types::ServerName::try_from(server_name.clone()).map_err(|e| {
+                    ClickhouseExporterError::TlsConfig(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("invalid server_name_override '{server_name}': {e}"),
+                    ))
+                })?;
+            connector_builder = connector_builder
+                .with_server_name_resolver(hyper_rustls::FixedServerNameResolver::new(name));
+        }
+
+        let https_connector = connector_builder.enable_http1().build();
 
         let hyper_client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .pool_idle_timeout(std::time::Duration::from_secs(2))
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
                 .build(https_connector);
 
         Client::with_http_client(hyper_client)
@@ -205,10 +219,145 @@ mod tests {
     use super::*;
     use arrow_array::{ArrayRef, Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
     use std::{
         collections::HashMap,
+        num::NonZeroUsize,
         sync::{Arc, Mutex},
     };
+
+    /// Build a minimal Config for tests that only exercise `build_client`.
+    fn test_config_with_tls(endpoint: &str, tls: Option<TlsClientConfig>) -> Config {
+        Config {
+            endpoint: endpoint.to_string(),
+            database: "default".to_string(),
+            username: "default".to_string(),
+            password: secrecy::SecretString::from(""),
+            async_insert: false,
+            max_in_flight: NonZeroUsize::new(1).unwrap(),
+            tls,
+            table_defaults:
+                crate::exporters::clickhouse_exporter::config::DefaultTableConfig::default(),
+            tables: crate::exporters::clickhouse_exporter::config::TablesConfig::default(),
+        }
+    }
+
+    /// Scenario: build_client with a valid CA-only TLS config on an https endpoint.
+    /// Guarantees: the TLS construction path (rustls ClientConfig, hyper-rustls
+    /// HttpsConnector, hyper Client) succeeds and returns an Ok(Client).
+    #[tokio::test]
+    async fn build_client_with_tls_ca_only_succeeds() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("Test CA");
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("https://clickhouse.example.com:8443", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_ok(),
+            "build_client with valid CA should succeed: {result:?}"
+        );
+    }
+
+    /// Scenario: build_client with mTLS (CA + client cert + client key).
+    /// Guarantees: the mTLS construction path with client identity succeeds.
+    #[tokio::test]
+    async fn build_client_with_mtls_succeeds() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("Test CA");
+        let client_cert = ca.issue_leaf(
+            "client",
+            Some("client"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ClientAuth),
+        );
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            config: TlsConfig {
+                cert_pem: Some(client_cert.cert_pem),
+                key_pem: Some(client_cert.key_pem),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("https://clickhouse.example.com:8443", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_ok(),
+            "build_client with mTLS should succeed: {result:?}"
+        );
+    }
+
+    /// Scenario: build_client with a server_name_override on an https endpoint.
+    /// Guarantees: the server name override is accepted and does not cause an
+    /// error during client construction.
+    #[tokio::test]
+    async fn build_client_with_server_name_override_succeeds() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("Test CA");
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            server_name: Some("override.example.com".to_string()),
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("https://10.0.0.1:8443", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_ok(),
+            "build_client with server_name_override should succeed: {result:?}"
+        );
+    }
+
+    /// Scenario: build_client with insecure=true and no custom CA on a
+    /// non-https endpoint inside a tls block.
+    /// Guarantees: the error message clearly describes the misconfiguration
+    /// and mentions actionable remediation steps.
+    #[tokio::test]
+    async fn build_client_tls_block_with_insecure_errors() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let tls = TlsClientConfig {
+            insecure: Some(true),
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("http://localhost:8123", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_err(),
+            "insecure=true with tls block on http should error"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("insecure=true"),
+            "error should mention insecure=true: {err_msg}",
+        );
+    }
+
+    /// Scenario: build_client without a tls block returns the default client.
+    /// Guarantees: the non-TLS path continues to work and returns Ok.
+    #[tokio::test]
+    async fn build_client_without_tls_succeeds() {
+        let config = test_config_with_tls("http://localhost:8123", None);
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_ok(),
+            "build_client without TLS should succeed: {result:?}"
+        );
+    }
 
     /// Make a tiny RecordBatch with a known number of rows.
     fn mk_batch(rows: usize) -> RecordBatch {

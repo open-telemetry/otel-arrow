@@ -171,7 +171,7 @@ Available `tls` fields:
 | `cert_pem` | Inline PEM-encoded client certificate (alternative to `cert_file`) |
 | `key_file` | Path to a PEM-encoded client private key for mTLS |
 | `key_pem` | Inline PEM-encoded client private key (alternative to `key_file`) |
-| `insecure` | When `true`, disables TLS even if a `tls` block is present (default `false`) |
+| `insecure` | When `true`, disables TLS for non-`https://` endpoints (default `false`) |
 | `include_system_ca_certs_pool` | Whether to include the system CA trust store (default `true`) |
 | `server_name_override` | Override the TLS server name used for certificate verification |
 
