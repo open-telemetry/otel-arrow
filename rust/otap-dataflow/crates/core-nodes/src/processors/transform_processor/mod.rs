@@ -1398,18 +1398,19 @@ mod test {
     /// Send one traces batch and one metrics batch with signals that have the same "name" values
     /// Used to test that the query selects the right signal type
     async fn send_one_traces_one_metrics_same_names(ctx: &mut TestContext<OtapPdata>) {
-        let spans = vec![
-            Span::build().name("foo").finish(),
-            Span::build().name("bar").finish(),
-        ];
-
         let trace_otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData::new(vec![
             ResourceSpans::new(
                 Resource::default(),
-                vec![ScopeSpans::new(
-                    InstrumentationScope::default(),
-                    spans.clone(),
-                )],
+                vec![
+                    ScopeSpans::new(
+                        InstrumentationScope::build().name("foo").finish(),
+                        vec![Span::build().name("foo").finish()],
+                    ),
+                    ScopeSpans::new(
+                        InstrumentationScope::build().name("bar").finish(),
+                        vec![Span::build().name("bar").finish()],
+                    ),
+                ],
             ),
         ])));
 
@@ -1419,18 +1420,19 @@ mod test {
         .await
         .expect("no process error");
 
-        let metrics = vec![
-            Metric::build().name("foo").finish(),
-            Metric::build().name("bar").finish(),
-        ];
-
         let metrics_otap_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData::new(vec![
             ResourceMetrics::new(
                 Resource::default(),
-                vec![ScopeMetrics::new(
-                    InstrumentationScope::default(),
-                    metrics.clone(),
-                )],
+                vec![
+                    ScopeMetrics::new(
+                        InstrumentationScope::build().name("foo").finish(),
+                        vec![Metric::build().name("foo").finish()],
+                    ),
+                    ScopeMetrics::new(
+                        InstrumentationScope::build().name("bar").finish(),
+                        vec![Metric::build().name("bar").finish()],
+                    ),
+                ],
             ),
         ])));
 
@@ -1545,7 +1547,7 @@ mod test {
     fn test_signal_scope_all() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let query = "signals | where name == \"foo\"";
+        let query = "signals | where instrumentation_scope.name == \"foo\"";
         let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
@@ -2539,8 +2541,10 @@ mod test {
                     ("info_port", &info_ctx),
                 ] {
                     assert_eq!(
-                        context.transport_headers(),
-                        Some(&headers),
+                        context
+                            .transport_headers()
+                            .expect("transport headers retained"),
+                        &headers,
                         "{port} lost the inbound transport headers"
                     );
                     assert_eq!(

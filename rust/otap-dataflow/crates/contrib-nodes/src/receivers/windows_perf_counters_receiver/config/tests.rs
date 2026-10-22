@@ -526,13 +526,13 @@ fn validates_unused_metric_definitions() {
 }
 
 /// Scenario: Definitions are omitted or empty and metric references are omitted or empty.
-/// Guarantees: Path-named Gauges retain configured index spelling and canonical native paths.
+/// Guarantees: Path-named Gauges retain the same configured spelling as native paths.
 #[test]
 fn defaults_path_metrics_without_definitions() {
     for definitions in [None, Some(json!({}))] {
         let mut value = json!({"perfcounters": [{
-            "object": " Process ", "instances": [" app#00 ", "worker#001"],
-            "counters": [{"name": " Private Bytes ", "scale_power10": -3}]
+            "object": "Process", "instances": ["app#00", "worker#001"],
+            "counters": [{"name": "Private Bytes", "scale_power10": -3}]
         }]});
         if let Some(definitions) = definitions {
             value["metrics"] = definitions;
@@ -542,20 +542,12 @@ fn defaults_path_metrics_without_definitions() {
                 value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
             }
             let config = RuntimeConfig::from_json(&value).unwrap();
-            for (counter, name, path) in [
-                (
-                    &config.counters[0],
-                    r"\Process(app#00)\Private Bytes",
-                    r"\Process(app)\Private Bytes",
-                ),
-                (
-                    &config.counters[1],
-                    r"\Process(worker#001)\Private Bytes",
-                    r"\Process(worker#1)\Private Bytes",
-                ),
+            for (counter, expected_path) in [
+                (&config.counters[0], r"\Process(app#00)\Private Bytes"),
+                (&config.counters[1], r"\Process(worker#001)\Private Bytes"),
             ] {
-                assert_eq!(counter.name, name);
-                assert_eq!(counter.path, path);
+                assert_eq!(counter.name, expected_path);
+                assert_eq!(counter.path, expected_path);
                 assert_eq!(counter.kind, MetricKind::Gauge);
                 assert_eq!(counter.unit, "1");
                 assert!(counter.description.is_empty());
@@ -629,7 +621,7 @@ fn matches_path_definitions_only_by_exact_spelling() {
         (r"\Memory", "Available Bytes"),
         ("\\Memory\\Available Bytes ", "Available Bytes "),
     ] {
-        let path = counter_path("Memory", None, counter.trim());
+        let path = counter_path("Memory", None, counter);
         let mut value = json!({"metrics": {name: {"unit": "exact"}}, "perfcounters": [{
             "object": "Memory", "counters": [{"name": counter}]
         }]});
@@ -774,8 +766,8 @@ fn resolves_case_distinct_definitions_exactly() {
     assert_config_error(value, "references undefined metric \"Cpu\"");
 }
 
-/// Scenario: Implicit and explicit mappings configure equivalent native paths with different index spellings.
-/// Guarantees: Path-derived names do not weaken canonical, case-insensitive native duplicate rejection.
+/// Scenario: Implicit and explicit mappings configure numeric-suffix aliases with different casing.
+/// Guarantees: Alias and case-insensitive duplicate rejection applies regardless of metric naming.
 #[test]
 fn rejects_duplicate_paths_with_omitted_metric_references() {
     assert_config_error(
@@ -788,6 +780,26 @@ fn rejects_duplicate_paths_with_omitted_metric_references() {
         }),
         "duplicate counter path",
     );
+}
+
+/// Scenario: Equivalent instance suffixes are configured in separate object entries.
+/// Guarantees: Zero and leading-zero aliases cannot bypass case-insensitive duplicate-path rejection.
+#[test]
+fn rejects_instance_aliases_across_object_entries() {
+    for [first, second] in [
+        ["app", "app#0"],
+        ["app#1", "app#01"],
+        ["App", "app#00"],
+        ["\u{00c4}pp#1", "\u{00e4}pp#001"],
+    ] {
+        assert_config_error(
+            json!({"perfcounters": [
+                {"object": "Process", "instances": first, "counters": [{"name": "Private Bytes"}]},
+                {"object": "process", "instances": second, "counters": [{"name": "private bytes"}]}
+            ]}),
+            "duplicate counter path",
+        );
+    }
 }
 
 /// Scenario: A counter mapping names a metric that is not defined.
@@ -906,53 +918,67 @@ fn rejects_invalid_instances_type() {
     );
 }
 
-/// Scenario: A configured instance uses a wildcard in this exact-path receiver.
-/// Guarantees: Validation rejects wildcard expansion until that behavior is supported.
+/// Scenario: An object, instance or counter component is a literal wildcard in this exact-only receiver.
+/// Guarantees: Preserving spelling never admits object patterns, instance discovery or counter expansion.
 #[test]
-fn rejects_wildcard_instances() {
-    assert_config_error(
-        json!({
-            "metrics": metrics(),
-            "perfcounters": [{
-                "object": "Process",
-                "instances": "*",
-                "counters": [{"name": "Private Bytes", "metric": "private"}]
-            }]
-        }),
-        "contains a reserved performance-counter path character",
-    );
+fn rejects_wildcard_components() {
+    for pattern in ["*", "?"] {
+        for (object, instance, counter, field) in [
+            (pattern, "app", "Value", "perfcounters[0].object"),
+            ("Process", pattern, "Value", "perfcounters[0].instances"),
+            (
+                "Process",
+                "app",
+                pattern,
+                "perfcounters[0].counters[0].name",
+            ),
+        ] {
+            assert_config_error(
+                json!({"perfcounters": [{
+                    "object": object, "instances": instance, "counters": [{"name": counter}]
+                }]}),
+                &format!("{field} contains a reserved"),
+            );
+        }
+    }
 }
 
 /// Scenario: Instance indexes use omitted, zero, or leading-zero spellings.
-/// Guarantees: Equivalent PDH instance indexes normalize to one spelling before duplicate checks.
+/// Guarantees: Each spelling is accepted individually and retained in native paths and exact implicit lookup.
 #[test]
-fn normalizes_instance_indexes_before_duplicate_detection() {
-    for instances in [["app", "app#0"], ["app#1", "app#01"]] {
-        assert_config_error(
-            json!({
-                "metrics": {"available": {
-                    "description": "Available physical memory.",
-                    "unit": "By",
-                    "gauge": {}
-                }},
-                "perfcounters": [{
-                    "object": "Process",
-                    "instances": instances,
-                    "counters": [{"name": "Private Bytes", "metric": "available"}]
-                }]
-            }),
-            "perfcounters[0].instances contains duplicate",
-        );
+fn preserves_instance_indexes_in_paths_and_lookup() {
+    for (instance, unit) in [
+        ("app", "By"),
+        ("app#0", "KiBy"),
+        ("app#00", "MiBy"),
+        ("app#1", "GiBy"),
+        ("app#01", "TiBy"),
+        ("app#001", "PiBy"),
+    ] {
+        let config = RuntimeConfig::from_json(&json!({
+            "metrics": {
+                r"\Process(app)\Private Bytes": {"unit": "By"},
+                r"\Process(app#0)\Private Bytes": {"unit": "KiBy"},
+                r"\Process(app#00)\Private Bytes": {"unit": "MiBy"},
+                r"\Process(app#1)\Private Bytes": {"unit": "GiBy"},
+                r"\Process(app#01)\Private Bytes": {"unit": "TiBy"},
+                r"\Process(app#001)\Private Bytes": {"unit": "PiBy"}
+            },
+            "perfcounters": [{
+                "object": "Process",
+                "instances": instance,
+                "counters": [{"name": "Private Bytes"}]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(config.counters.len(), 1);
+        let counter = &config.counters[0];
+        assert_eq!(counter.path, format!(r"\Process({instance})\Private Bytes"));
+        assert_eq!(counter.name, counter.path);
+        assert_eq!(counter.unit, unit);
     }
 
-    let config = RuntimeConfig::from_json(&gauge_config(json!({
-        "object": "Process",
-        "instances": "app#001",
-        "counters": [{"name": "Private Bytes", "metric": "available"}]
-    })))
-    .unwrap();
-    assert_eq!(config.counters[0].path, r"\Process(app#1)\Private Bytes");
-
+    // Keep the existing exact-only grammar restriction.
     for instance in ["#0", "#1"] {
         assert_config_error(
             gauge_config(json!({
@@ -962,6 +988,58 @@ fn normalizes_instance_indexes_before_duplicate_detection() {
             })),
             "must include an instance name before its index",
         );
+    }
+}
+
+/// Scenario: A single instance list contains case-insensitive numeric-suffix aliases.
+/// Guarantees: Omitted, zero and leading-zero forms cannot create duplicate native observations.
+#[test]
+fn rejects_instance_aliases_in_one_list() {
+    for instances in [
+        ["app", "app#0"],
+        ["app#1", "app#01"],
+        ["App", "app#00"],
+        ["\u{00c4}pp#1", "\u{00e4}pp#001"],
+    ] {
+        assert_config_error(
+            json!({"perfcounters": [{
+                "object": "Process",
+                "instances": instances,
+                "counters": [{"name": "Private Bytes"}]
+            }]}),
+            "perfcounters[0].instances contains duplicate",
+        );
+    }
+}
+
+/// Scenario: `app`, `app#1` and `app#2` coexist with suffix-like literal instance text.
+/// Guarantees: The three indexes stay distinct; `app#2` guards against dropping index digits.
+/// `app#0 ` and ` app#0` retain spaces; `app#01 ` and `app#01x` do not collide with `app#1`.
+/// `app#1x` is nonnumeric, `app#\u{0660}` is not ASCII numeric, and `app#0#0` is not normalized recursively.
+#[test]
+fn preserves_distinct_instance_suffix_text() {
+    let instances = [
+        "app",
+        "app#1",
+        "app#2",
+        "app#0 ",
+        "app#01 ",
+        " app#0",
+        "app#1x",
+        "app#01x",
+        "app#\u{0660}",
+        "app#0#0",
+    ];
+    let config = RuntimeConfig::from_json(&json!({"perfcounters": [{
+        "object": "Process",
+        "instances": instances,
+        "counters": [{"name": "Private Bytes"}]
+    }]}))
+    .unwrap();
+    assert_eq!(config.counters.len(), instances.len());
+    for (counter, instance) in config.counters.iter().zip(instances) {
+        assert_eq!(counter.path, format!(r"\Process({instance})\Private Bytes"));
+        assert_eq!(counter.name, counter.path);
     }
 }
 
@@ -1066,45 +1144,78 @@ fn rejects_each_reserved_object_and_instance_character() {
 }
 
 /// Scenario: Path segments have leading or trailing whitespace.
-/// Guarantees: Segments are trimmed before path construction and duplicate detection.
+/// Guarantees: Padding is retained in paths and remains distinct during duplicate detection.
 #[test]
-fn trims_surrounding_whitespace_in_path_segments() {
+fn preserves_surrounding_whitespace_in_path_segments() {
     let config = RuntimeConfig::from_json(&gauge_config(json!({
         "object": " Process ",
         "instances": [" app "],
         "counters": [{"name": " Private Bytes ", "metric": "available"}]
     })))
     .unwrap();
-    assert_eq!(config.counters[0].path, r"\Process(app)\Private Bytes");
+    assert_eq!(
+        config.counters[0].path,
+        r"\ Process ( app )\ Private Bytes "
+    );
 
-    assert_config_error(
-        gauge_config(json!({
-            "object": "Process",
-            "instances": ["app", "app "],
-            "counters": [{"name": "Private Bytes", "metric": "available"}]
-        })),
-        "perfcounters[0].instances contains duplicate \"app\"",
-    );
-    assert_config_error(
-        json!({
-            "metrics": {"available": {
-                "description": "Available physical memory.",
-                "unit": "By",
-                "gauge": {}
-            }},
-            "perfcounters": [
-                {
-                    "object": "Memory",
-                    "counters": [{"name": "Available Bytes", "metric": "available"}]
-                },
-                {
-                    "object": "Memory ",
-                    "counters": [{"name": "Available Bytes", "metric": "available"}]
-                }
-            ]
-        }),
-        "duplicate counter path: \\Memory\\Available Bytes",
-    );
+    let config = RuntimeConfig::from_json(&gauge_config(json!({
+        "object": "Process",
+        "instances": ["app", "app "],
+        "counters": [{"name": "Private Bytes", "metric": "available"}]
+    })))
+    .unwrap();
+    assert_eq!(config.counters[0].path, r"\Process(app)\Private Bytes");
+    assert_eq!(config.counters[1].path, r"\Process(app )\Private Bytes");
+    let config = RuntimeConfig::from_json(&json!({
+        "metrics": {"available": {
+            "description": "Available physical memory.",
+            "unit": "By",
+            "gauge": {}
+        }},
+        "perfcounters": [
+            {
+                "object": "Memory",
+                "counters": [{"name": "Available Bytes", "metric": "available"}]
+            },
+            {
+                "object": "Memory ",
+                "counters": [{"name": "Available Bytes", "metric": "available"}]
+            }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(config.counters[0].path, r"\Memory\Available Bytes");
+    assert_eq!(config.counters[1].path, r"\Memory \Available Bytes");
+}
+
+/// Scenario: Native components contain only whitespace, non-NUL controls, or literal empty text.
+/// Guarantees: Nonempty spelling is preserved while literal empties remain configuration errors.
+#[test]
+fn preserves_nonempty_native_component_text() {
+    for (object, instance, counter) in [
+        (" ", "\t", "\r\n"),
+        ("Mem\tory", "work\ner", "Private\rBytes"),
+    ] {
+        let config = RuntimeConfig::from_json(&json!({"perfcounters": [{
+            "object": object, "instances": instance, "counters": [{"name": counter}]
+        }]}))
+        .unwrap();
+        let path = format!("\\{object}({instance})\\{counter}");
+        assert_eq!(config.counters[0].path, path);
+        assert_eq!(config.counters[0].name, path);
+    }
+    for (object, instance, counter, field) in [
+        ("", "app", "Value", "perfcounters[0].object"),
+        ("Process", "", "Value", "perfcounters[0].instances"),
+        ("Process", "app", "", "perfcounters[0].counters[0].name"),
+    ] {
+        assert_config_error(
+            json!({"perfcounters": [{
+                "object": object, "instances": instance, "counters": [{"name": counter}]
+            }]}),
+            &format!("{field} must not be empty"),
+        );
+    }
 }
 
 /// Scenario: Counter paths are at and beyond the PDH path limit, including non-BMP text.
@@ -1115,9 +1226,16 @@ fn enforces_counter_path_length_in_utf16_units() {
     let at_limit = "a".repeat(MAX_COUNTER_PATH_LEN - 8);
     let _config = RuntimeConfig::from_json(&gauge_config(json!({
         "object": "Memory",
-        "counters": [{"name": at_limit, "metric": "available"}]
+        "counters": [{"name": &at_limit, "metric": "available"}]
     })))
     .unwrap();
+    assert_config_error(
+        gauge_config(json!({
+            "object": "Memory",
+            "counters": [{"name": format!("{at_limit} "), "metric": "available"}]
+        })),
+        "must contain at most 2047 UTF-16 code units",
+    );
 
     let over_limit = "a".repeat(MAX_COUNTER_PATH_LEN - 7);
     let over_limit_path = format!(r"\Memory\{over_limit}");
