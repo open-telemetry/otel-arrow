@@ -6,15 +6,8 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use otel_arrow_dfe_engine::capability::CapabilityError;
-use otel_arrow_dfe_engine::capability::auth::{
-    SaslCredential, sasl_credential_provider::SaslCredentialStream,
-};
-use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
-use tokio_stream::wrappers::WatchStream;
+use otel_arrow_dfe_engine::capability::auth::SaslCredential;
 
-use super::AzureKeyVaultSaslAuthExtension;
 use super::config::Config;
 use super::error::{Error, FailureKind, Stage};
 use crate::common::azure_key_vault::Source;
@@ -59,16 +52,5 @@ impl BackgroundProviderSource<SaslCredential> for Auth {
 
     fn log_refresh_failure(&self, error: &Error) {
         error.log_failure();
-    }
-}
-
-#[async_trait]
-impl SharedSaslCredentialProvider for AzureKeyVaultSaslAuthExtension {
-    async fn get_credential(&self) -> Result<SaslCredential, CapabilityError> {
-        self.get_value().await
-    }
-
-    fn credential_stream(&self) -> SaslCredentialStream {
-        Box::pin(WatchStream::new(self.subscribe()).filter_map(|value| async move { value }))
     }
 }
