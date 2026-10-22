@@ -354,6 +354,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use chrono::{TimeZone, Utc};
+    use half::f16;
+
     use super::*;
 
     fn primitive_keys(length: usize) -> Vec<DictionaryKeyArray> {
@@ -1010,6 +1013,244 @@ mod tests {
             assert!(nulls.is_null(capacity));
             assert_eq!(transformed.keys().data_type(), data_type);
             assert_eq!(transformed.values().len(), capacity);
+        }
+    }
+
+    /// Scenario: Every Arrow value type transforms nullable values with repeated inputs and merging outputs.
+    /// Guarantees: Callbacks receive exact converted values, duplicates share indexes, and remapped rows preserve values and validity.
+    #[test]
+    fn transform_into_any_supports_all_arrow_value_types() {
+        let mut cases = Vec::new();
+        macro_rules! case {
+            ($array:ty, $first:expr, $second:expr, $expected_first:expr, $expected_second:expr) => {{
+                let first = $expected_first;
+                let second = $expected_second;
+                cases.push((
+                    DictionaryValueArray::from(&<$array>::from(vec![
+                        Some($first),
+                        None,
+                        Some($second),
+                        Some($first),
+                    ])),
+                    vec![first.clone(), ValueOrRef::Null, second, first],
+                ));
+            }};
+        }
+        macro_rules! integer_case {
+            ($array:ty, $first:expr) => {
+                case!(
+                    $array,
+                    $first,
+                    9,
+                    ValueOrRef::Integer($first),
+                    ValueOrRef::Integer(9)
+                );
+            };
+        }
+        integer_case!(Int8Array, -7);
+        integer_case!(Int16Array, -7);
+        integer_case!(Int32Array, -7);
+        integer_case!(Int64Array, -7);
+        integer_case!(UInt8Array, 7);
+        integer_case!(UInt16Array, 7);
+        integer_case!(UInt32Array, 7);
+        integer_case!(UInt64Array, 7);
+        case!(
+            Float16Array,
+            f16::from_f32(-1.5),
+            f16::from_f32(2.25),
+            ValueOrRef::Double(-1.5),
+            ValueOrRef::Double(2.25)
+        );
+        case!(
+            Float32Array,
+            -1.5,
+            2.25,
+            ValueOrRef::Double(-1.5),
+            ValueOrRef::Double(2.25)
+        );
+        case!(
+            Float64Array,
+            -1.5,
+            2.25,
+            ValueOrRef::Double(-1.5),
+            ValueOrRef::Double(2.25)
+        );
+        case!(
+            StringArray,
+            "\u{e9}\u{65e5}",
+            "",
+            ValueOrRef::String(StringValueOrRef::new_ref("\u{e9}\u{65e5}")),
+            ValueOrRef::String(StringValueOrRef::new_ref(""))
+        );
+        case!(
+            LargeStringArray,
+            "\u{e9}\u{65e5}",
+            "",
+            ValueOrRef::String(StringValueOrRef::new_ref("\u{e9}\u{65e5}")),
+            ValueOrRef::String(StringValueOrRef::new_ref(""))
+        );
+        let before_epoch = ValueOrRef::DateTime(
+            Utc.timestamp_opt(-2, 0)
+                .single()
+                .expect("valid timestamp")
+                .into(),
+        );
+        let after_epoch = ValueOrRef::DateTime(
+            Utc.timestamp_opt(3, 0)
+                .single()
+                .expect("valid timestamp")
+                .into(),
+        );
+        case!(
+            TimestampSecondArray,
+            -2,
+            3,
+            before_epoch.clone(),
+            after_epoch.clone()
+        );
+        case!(
+            TimestampMillisecondArray,
+            -2_000,
+            3_000,
+            before_epoch.clone(),
+            after_epoch.clone()
+        );
+        case!(
+            TimestampMicrosecondArray,
+            -2_000_000,
+            3_000_000,
+            before_epoch.clone(),
+            after_epoch.clone()
+        );
+        case!(
+            TimestampNanosecondArray,
+            -2_000_000_000,
+            3_000_000_000,
+            before_epoch,
+            after_epoch
+        );
+        let mut binary = FixedSizeBinaryBuilder::new(3);
+        binary.append_value(b"\0\x80\xff").expect("valid width");
+        binary.append_null();
+        binary.append_value(b"abc").expect("valid width");
+        binary.append_value(b"\0\x80\xff").expect("valid width");
+        let first = ValueOrRef::Array(ArrayValueOrRef::from(
+            (*b"\0\x80\xff").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+        ));
+        let second = ValueOrRef::Array(ArrayValueOrRef::from(
+            (*b"abc").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+        ));
+        cases.push((
+            DictionaryValueArray::from(&binary.finish()),
+            vec![first.clone(), ValueOrRef::Null, second, first],
+        ));
+
+        for (values, expected_inputs) in cases {
+            let dictionary = Dictionary::new(UInt32Array::from(vec![2, 0, 3, 1, 0]).into(), values)
+                .expect("valid keys");
+            for merge in [false, true] {
+                let mut inputs = Vec::new();
+                let transformed = dictionary
+                    .clone()
+                    .transform_into_any(|value| {
+                        inputs.push(value.clone());
+                        if merge {
+                            ValueOrRef::Integer(if matches!(value, ValueOrRef::Null) {
+                                99
+                            } else {
+                                42
+                            })
+                        } else {
+                            value.clone()
+                        }
+                    })
+                    .expect("transform succeeds");
+                assert_eq!(inputs, expected_inputs);
+                assert_eq!(transformed.keys().data_type(), DictionaryKeyType::UInt32);
+                let expected_rows = if merge {
+                    [42, 42, 42, 99, 42].map(ValueOrRef::Integer)
+                } else {
+                    [
+                        expected_inputs[2].clone(),
+                        expected_inputs[0].clone(),
+                        expected_inputs[0].clone(),
+                        ValueOrRef::Null,
+                        expected_inputs[0].clone(),
+                    ]
+                };
+                assert_rows(&transformed, &expected_rows);
+                assert_eq!(transformed.values().len(), 2);
+                let expected_indexes = if merge {
+                    [Some(0), Some(0), Some(0), Some(1), Some(0)]
+                } else {
+                    [Some(1), Some(0), Some(0), None, Some(0)]
+                };
+                for (row, expected) in expected_indexes.into_iter().enumerate() {
+                    assert_eq!(transformed.get_value_index(row), expected);
+                }
+            }
+        }
+    }
+
+    /// Scenario: Timestamp arrays in second, millisecond, and microsecond units fail conversion after a valid value.
+    /// Guarantees: Primitive, unique-value, and scalar transforms return the exact error without calling back for invalid or later values.
+    #[test]
+    fn transform_into_any_propagates_timestamp_conversion_errors() {
+        for invalid in [i64::MIN, i64::MAX] {
+            let input = vec![0, invalid, 1];
+            for (values, time_unit) in [
+                (
+                    DictionaryValueArray::from(&TimestampSecondArray::from(input.clone())),
+                    TimeUnit::Second,
+                ),
+                (
+                    DictionaryValueArray::from(&TimestampMillisecondArray::from(input.clone())),
+                    TimeUnit::Millisecond,
+                ),
+                (
+                    DictionaryValueArray::from(&TimestampMicrosecondArray::from(input.clone())),
+                    TimeUnit::Microsecond,
+                ),
+            ] {
+                for keys in [
+                    DictionaryKeyArray::from(Int8Array::from(vec![0, 1, 2])),
+                    DictionaryKeyArray::UniqueValues {
+                        data_type: DictionaryKeyType::Int8,
+                        length: 3,
+                    },
+                    DictionaryKeyArray::SingleValue {
+                        data_type: DictionaryKeyType::Int8,
+                        length: 3,
+                        value_index: Some(1),
+                    },
+                ] {
+                    let scalar = matches!(keys, DictionaryKeyArray::SingleValue { .. });
+                    let dictionary = Dictionary::new(keys, values.clone()).expect("valid keys");
+                    let mut inputs = Vec::new();
+                    assert_eq!(
+                        dictionary.transform_into_any(|value| {
+                            inputs.push(value.clone());
+                            value.clone()
+                        }),
+                        Err(DictionaryValueError::TimestampConversionFailure {
+                            original_value: invalid,
+                            time_unit,
+                        })
+                    );
+                    let expected_inputs = if scalar {
+                        vec![]
+                    } else {
+                        vec![ValueOrRef::DateTime(
+                            Utc.timestamp_opt(0, 0)
+                                .single()
+                                .expect("valid timestamp")
+                                .into(),
+                        )]
+                    };
+                    assert_eq!(inputs, expected_inputs);
+                }
+            }
         }
     }
 

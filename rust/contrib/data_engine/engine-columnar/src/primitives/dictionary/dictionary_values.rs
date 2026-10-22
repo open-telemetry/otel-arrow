@@ -745,11 +745,15 @@ mod tests {
 
     use super::*;
 
-    fn assert_exact_remaining(mut iter: impl ExactSizeIterator, length: usize) {
-        for remaining in (1..=length).rev() {
+    fn assert_exact_remaining<'a>(
+        mut iter: impl ExactSizeIterator<Item = ValueOrRef<'a>>,
+        expected: &[ValueOrRef<'a>],
+    ) {
+        for (index, value) in expected.iter().enumerate() {
+            let remaining = expected.len() - index;
             assert_eq!(iter.len(), remaining);
             assert_eq!(iter.size_hint(), (remaining, Some(remaining)));
-            assert!(iter.next().is_some());
+            assert_eq!(iter.next(), Some(value.clone()));
         }
         for _ in 0..3 {
             assert_eq!(iter.len(), 0);
@@ -759,25 +763,39 @@ mod tests {
     }
 
     /// Scenario: UTF-8 iterators with both offset widths consume empty, nullable, and sliced arrays.
-    /// Guarantees: Length and both size-hint bounds track the exact remaining count through repeated exhaustion.
+    /// Guarantees: Exact UTF-8 values and nulls are preserved while length and size hints track remaining items through exhaustion.
     #[test]
     fn string_array_iterator_reports_remaining() {
         let input = vec![Some("prefix"), Some("\u{e9}"), None, Some("")];
         let strings = StringArray::from(input.clone());
-        let large_strings = LargeStringArray::from(input);
+        let large_strings = LargeStringArray::from(input.clone());
+        let expected = input
+            .into_iter()
+            .map(|value| {
+                value.map_or(ValueOrRef::Null, |value| {
+                    ValueOrRef::String(StringValueOrRef::new_ref(value))
+                })
+            })
+            .collect::<Vec<_>>();
 
         for offset in [0, 1] {
             for length in 0..=strings.len() - offset {
                 let strings = strings.slice(offset, length);
-                assert_exact_remaining(StringArrayIter::new(&strings), length);
+                assert_exact_remaining(
+                    StringArrayIter::new(&strings),
+                    &expected[offset..offset + length],
+                );
                 let large_strings = large_strings.slice(offset, length);
-                assert_exact_remaining(StringArrayIter::new(&large_strings), length);
+                assert_exact_remaining(
+                    StringArrayIter::new(&large_strings),
+                    &expected[offset..offset + length],
+                );
             }
         }
     }
 
     /// Scenario: Fixed-size binary iterators consume empty, nullable, and sliced arrays.
-    /// Guarantees: Length and both size-hint bounds track the exact remaining count through repeated exhaustion.
+    /// Guarantees: Exact byte sequences and nulls are preserved while length and size hints track remaining items through exhaustion.
     #[test]
     fn fixed_size_binary_array_iterator_reports_remaining() {
         let mut builder = FixedSizeBinaryBuilder::new(3);
@@ -785,11 +803,114 @@ mod tests {
         builder.append_null();
         builder.append_value(b"def").expect("valid width");
         let values = builder.finish();
+        let expected = [
+            ValueOrRef::Array(ArrayValueOrRef::from(
+                (*b"abc").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+            )),
+            ValueOrRef::Null,
+            ValueOrRef::Array(ArrayValueOrRef::from(
+                (*b"def").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+            )),
+        ];
 
         for offset in [0, 1] {
             for length in 0..=values.len() - offset {
                 let values = values.slice(offset, length);
-                assert_exact_remaining(FixedSizeBinaryArrayIter::new(&values), length);
+                assert_exact_remaining(
+                    FixedSizeBinaryArrayIter::new(&values),
+                    &expected[offset..offset + length],
+                );
+            }
+        }
+    }
+
+    /// Scenario: Sliced string and binary iterator outputs outlive their source arrays and iterators.
+    /// Guarantees: Collected values retain readable UTF-8 and byte buffers, including empty strings and nulls.
+    #[test]
+    fn arrow_iterator_outputs_retain_buffers_after_sources_drop() {
+        let (strings, large_strings, binary) = {
+            let input = vec![Some("prefix"), Some("\u{e9}\u{65e5}"), None, Some("")];
+            let strings = StringArray::from(input.clone()).slice(1, 3);
+            let large_strings = LargeStringArray::from(input).slice(1, 3);
+            let mut builder = FixedSizeBinaryBuilder::new(3);
+            builder.append_value(b"abc").expect("valid width");
+            builder.append_value(b"\0\x80\xff").expect("valid width");
+            builder.append_null();
+            let binary = builder.finish().slice(1, 2);
+
+            (
+                StringArrayIter::new(&strings).collect::<Vec<_>>(),
+                StringArrayIter::new(&large_strings).collect::<Vec<_>>(),
+                FixedSizeBinaryArrayIter::new(&binary).collect::<Vec<_>>(),
+            )
+        };
+
+        let expected = vec![
+            ValueOrRef::String(StringValueOrRef::new_ref("\u{e9}\u{65e5}")),
+            ValueOrRef::Null,
+            ValueOrRef::String(StringValueOrRef::new_ref("")),
+        ];
+        assert_eq!(strings, expected);
+        assert_eq!(large_strings, expected);
+        assert_eq!(
+            binary,
+            vec![
+                ValueOrRef::Array(ArrayValueOrRef::from(
+                    (*b"\0\x80\xff").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+                )),
+                ValueOrRef::Null,
+            ]
+        );
+    }
+
+    /// Scenario: Arrow and owned values are empty, unique, or introduce duplicates and nulls before later values.
+    /// Guarantees: Lookup maps are absent when unnecessary and otherwise contain every original index with exact compacted indexes.
+    #[test]
+    fn transform_into_set_builds_complete_lookup_only_when_needed() {
+        let cases = [
+            (vec![], vec![], None),
+            (vec![Some(10), Some(20), Some(30)], vec![10, 20, 30], None),
+            (
+                vec![Some(10), Some(20), Some(10), Some(30), Some(20)],
+                vec![10, 20, 30],
+                Some(vec![Some(0), Some(1), Some(0), Some(2), Some(1)]),
+            ),
+            (
+                vec![Some(10), Some(20), None, Some(30), Some(10), None],
+                vec![10, 20, 30],
+                Some(vec![Some(0), Some(1), None, Some(2), Some(0), None]),
+            ),
+            (
+                vec![None, Some(10), Some(10), Some(20)],
+                vec![10, 20],
+                Some(vec![None, Some(0), Some(0), Some(1)]),
+            ),
+            (vec![None, None], vec![], Some(vec![None, None])),
+        ];
+        for (input, expected_values, expected_lookup) in cases {
+            let expected_values = expected_values
+                .into_iter()
+                .map(|value| ValueOrRef::Integer(i64::from(value)))
+                .collect::<Vec<_>>();
+            let expected_lookup = expected_lookup
+                .map(|indexes| indexes.into_iter().enumerate().collect::<AHashMap<_, _>>());
+            for values in [
+                DictionaryValueArray::from(&Int32Array::from(input.clone())),
+                input
+                    .into_iter()
+                    .map(|value| {
+                        value.map_or(ValueOrRef::Null, |value| {
+                            ValueOrRef::Integer(i64::from(value))
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+            ] {
+                let (values, lookup) = values
+                    .transform_into_set(Clone::clone)
+                    .expect("transform succeeds");
+                assert_eq!(values.into_iter().collect::<Vec<_>>(), expected_values);
+                assert_eq!(lookup, expected_lookup);
             }
         }
     }
