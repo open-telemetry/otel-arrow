@@ -636,6 +636,11 @@ impl<'a, 'b, T: OffsetSizeTrait> StringArrayIter<'a, 'b, T> {
 impl<'a, T: OffsetSizeTrait> Iterator for StringArrayIter<'a, '_, T> {
     type Item = ValueOrRef<'a>;
 
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len();
+        (remaining, Some(remaining))
+    }
+
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.current;
 
@@ -666,7 +671,7 @@ impl<'a, T: OffsetSizeTrait> Iterator for StringArrayIter<'a, '_, T> {
 
 impl<T: OffsetSizeTrait> ExactSizeIterator for StringArrayIter<'_, '_, T> {
     fn len(&self) -> usize {
-        self.length
+        self.length - self.current
     }
 }
 
@@ -688,6 +693,11 @@ impl<'a, 'b> FixedSizeBinaryArrayIter<'a, 'b> {
 
 impl<'a> Iterator for FixedSizeBinaryArrayIter<'a, '_> {
     type Item = ValueOrRef<'a>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len();
+        (remaining, Some(remaining))
+    }
 
     fn next(&mut self) -> Option<Self::Item> {
         let values = self.values;
@@ -719,7 +729,7 @@ impl<'a> Iterator for FixedSizeBinaryArrayIter<'a, '_> {
 
 impl ExactSizeIterator for FixedSizeBinaryArrayIter<'_, '_> {
     fn len(&self) -> usize {
-        self.values.len()
+        self.values.len() - self.current
     }
 }
 
@@ -734,6 +744,55 @@ mod tests {
     use half::f16;
 
     use super::*;
+
+    fn assert_exact_remaining(mut iter: impl ExactSizeIterator, length: usize) {
+        for remaining in (1..=length).rev() {
+            assert_eq!(iter.len(), remaining);
+            assert_eq!(iter.size_hint(), (remaining, Some(remaining)));
+            assert!(iter.next().is_some());
+        }
+        for _ in 0..3 {
+            assert_eq!(iter.len(), 0);
+            assert_eq!(iter.size_hint(), (0, Some(0)));
+            assert!(iter.next().is_none());
+        }
+    }
+
+    /// Scenario: UTF-8 iterators with both offset widths consume empty, nullable, and sliced arrays.
+    /// Guarantees: Length and both size-hint bounds track the exact remaining count through repeated exhaustion.
+    #[test]
+    fn string_array_iterator_reports_remaining() {
+        let input = vec![Some("prefix"), Some("\u{e9}"), None, Some("")];
+        let strings = StringArray::from(input.clone());
+        let large_strings = LargeStringArray::from(input);
+
+        for offset in [0, 1] {
+            for length in 0..=strings.len() - offset {
+                let strings = strings.slice(offset, length);
+                assert_exact_remaining(StringArrayIter::new(&strings), length);
+                let large_strings = large_strings.slice(offset, length);
+                assert_exact_remaining(StringArrayIter::new(&large_strings), length);
+            }
+        }
+    }
+
+    /// Scenario: Fixed-size binary iterators consume empty, nullable, and sliced arrays.
+    /// Guarantees: Length and both size-hint bounds track the exact remaining count through repeated exhaustion.
+    #[test]
+    fn fixed_size_binary_array_iterator_reports_remaining() {
+        let mut builder = FixedSizeBinaryBuilder::new(3);
+        builder.append_value(b"abc").expect("valid width");
+        builder.append_null();
+        builder.append_value(b"def").expect("valid width");
+        let values = builder.finish();
+
+        for offset in [0, 1] {
+            for length in 0..=values.len() - offset {
+                let values = values.slice(offset, length);
+                assert_exact_remaining(FixedSizeBinaryArrayIter::new(&values), length);
+            }
+        }
+    }
 
     /// Scenario: Arrow numeric and string arrays contain ordinary values, nulls, and boundary indexes.
     /// Guarantees: Values are converted to engine primitives while null and out-of-range access returns Null.

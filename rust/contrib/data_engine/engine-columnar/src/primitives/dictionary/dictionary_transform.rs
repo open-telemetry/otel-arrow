@@ -174,8 +174,10 @@ where
                     unsafe {
                         key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
                     };
-                    continue;
+                } else {
+                    unsafe { key_writer.set_null_unchecked(key_index) };
                 }
+                continue;
             } else {
                 unsafe { key_writer.set_value_index_unchecked(key_index, value_index)? };
                 continue;
@@ -252,8 +254,10 @@ where
                     unsafe {
                         key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
                     };
-                    continue;
+                } else {
+                    unsafe { key_writer.set_null_unchecked(key_index) };
                 }
+                continue;
             } else {
                 unsafe { key_writer.set_value_index_unchecked(key_index, value_index)? };
                 continue;
@@ -308,7 +312,7 @@ fn transform_unique_values_into_any_typed<'a, K: ArrowDictionaryKeyType, FTransf
     key_data_type: DictionaryKeyType,
     key_length: usize,
     values: DictionaryValueArray<'a>,
-    mut transform: FTransform,
+    transform: FTransform,
 ) -> Result<Dictionary<'a>, DictionaryValueError>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
@@ -317,9 +321,7 @@ where
     let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
     let mut key_writer = key_builder.get_writer();
 
-    let (mut transformed_values, value_index_lookup) = values.transform_into_set(&mut transform)?;
-
-    let mut null_index = None;
+    let (transformed_values, value_index_lookup) = values.transform_into_set(transform)?;
 
     for key_index in 0..key_length {
         if let Some(value_index_lookup) = value_index_lookup.as_ref() {
@@ -327,40 +329,12 @@ where
                 unsafe {
                     key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
                 };
-                continue;
+            } else {
+                unsafe { key_writer.set_null_unchecked(key_index) };
             }
         } else {
             unsafe { key_writer.set_value_index_unchecked(key_index, key_index)? };
-            continue;
         }
-
-        let (has_value_index, value_index) = match null_index {
-            Some(v) => v,
-            None => {
-                let v = match transform(&ValueOrRef::Null) {
-                    ValueOrRef::Null => (
-                        false,
-                        <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
-                    ),
-                    v => {
-                        let (index, _) = transformed_values.insert_full(v);
-                        (
-                            true,
-                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(index)?,
-                        )
-                    }
-                };
-                null_index = Some(v);
-                v
-            }
-        };
-
-        if has_value_index {
-            unsafe { key_writer.set_value_index_typed_unchecked(key_index, value_index) };
-            continue;
-        }
-
-        unsafe { key_writer.set_null_unchecked(key_index) };
     }
 
     if transformed_values.is_empty() {
@@ -522,9 +496,9 @@ mod tests {
     }
 
     /// Scenario: One transform maps false to Null, true to an integer, and original nulls to a replacement.
-    /// Guarantees: Produced nulls use the null replacement and share its value index with original nulls.
+    /// Guarantees: Produced nulls stay null while only original nulls receive the replacement value.
     #[test]
-    fn transform_into_any_replaces_produced_and_original_nulls() {
+    fn transform_into_any_preserves_produced_nulls_and_replaces_original_nulls() {
         for dictionary in dictionaries() {
             let data_type = dictionary.keys().data_type();
             let transformed = dictionary
@@ -537,11 +511,77 @@ mod tests {
                 .expect("transform succeeds");
 
             assert_eq!(transformed.keys().data_type(), data_type);
-            assert_rows(&transformed, &[99, 20, 99, 99, 99].map(ValueOrRef::Integer));
+            assert_rows(
+                &transformed,
+                &[
+                    ValueOrRef::Null,
+                    ValueOrRef::Integer(20),
+                    ValueOrRef::Null,
+                    ValueOrRef::Integer(99),
+                    ValueOrRef::Integer(99),
+                ],
+            );
             assert_eq!(transformed.values().len(), 2);
-            assert_eq!(transformed.get_value_index(0), Some(1));
-            for index in [2, 3, 4] {
+            for index in [0, 2] {
+                assert_eq!(transformed.get_value_index(index), None);
+            }
+            for index in [3, 4] {
                 assert_eq!(transformed.get_value_index(index), Some(1));
+            }
+        }
+    }
+
+    /// Scenario: Equivalent scalar, primitive, Boolean, and unique-value rows transform false to Null and Null to 99.
+    /// Guarantees: Every representation agrees and produced nulls never cause an extra callback invocation.
+    #[test]
+    fn transform_into_any_matches_scalar_null_semantics() {
+        fn transform(value: &ValueOrRef<'static>) -> ValueOrRef<'static> {
+            match value {
+                ValueOrRef::Boolean(false) => ValueOrRef::Null,
+                ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
+                ValueOrRef::Null => ValueOrRef::Integer(99),
+                other => panic!("unexpected value: {other:?}"),
+            }
+        }
+
+        for keys in primitive_keys(3) {
+            let data_type = keys.data_type();
+            for input in [Some(false), Some(true), None] {
+                let value = input.map_or(ValueOrRef::Null, ValueOrRef::Boolean);
+                let scalar = Dictionary::new_scalar(data_type.clone(), 3, value.clone())
+                    .transform_into_any(transform)
+                    .expect("transform succeeds");
+                assert_rows(&scalar, &vec![transform(&value); 3]);
+
+                for dictionary in [
+                    Dictionary::new(keys.clone(), vec![value.clone(); 2].into()).expect("valid"),
+                    Dictionary::new_boolean(data_type.clone(), BooleanArray::from(vec![input; 3])),
+                    Dictionary::new_unique_values(data_type.clone(), vec![value.clone(); 3].into()),
+                ] {
+                    let expected_null_calls = if input.is_none() {
+                        match dictionary.keys() {
+                            DictionaryKeyArray::BooleanArray { .. } => 1,
+                            _ => dictionary.values().len(),
+                        }
+                    } else {
+                        0
+                    };
+                    let mut null_calls = 0;
+                    let transformed = dictionary
+                        .transform_into_any(|value| {
+                            if matches!(value, ValueOrRef::Null) {
+                                null_calls += 1;
+                            }
+                            transform(value)
+                        })
+                        .expect("transform succeeds");
+                    assert_eq!(transformed.keys().data_type(), data_type);
+                    assert_rows(&transformed, &vec![transform(&value); 3]);
+                    for index in 0..3 {
+                        assert_eq!(transformed.get_value(index), scalar.get_value(index));
+                    }
+                    assert_eq!(null_calls, expected_null_calls);
+                }
             }
         }
     }
@@ -913,8 +953,8 @@ mod tests {
         check::<UInt16Type>(65_536);
     }
 
-    /// Scenario: Unique-value keys exceed capacity with unchanged indexes, duplicate remapping, or a produced-null replacement.
-    /// Guarantees: Every index-writing path reports the first unrepresentable index instead of panicking or wrapping.
+    /// Scenario: Unique-value keys reach capacity with unchanged indexes, duplicates, original nulls, or produced nulls.
+    /// Guarantees: Unrepresentable indexes return errors, but produced nulls do not consume key capacity.
     #[test]
     fn transform_into_any_checks_unique_value_key_capacity() {
         for (data_type, arrow_data_type, capacity) in [
@@ -931,7 +971,10 @@ mod tests {
             let mut produced_null = values[..capacity].to_vec();
             produced_null.push(ValueOrRef::Boolean(false));
 
-            for values in [values, duplicates, produced_null] {
+            let mut original_null = values[..capacity].to_vec();
+            original_null.push(ValueOrRef::Null);
+
+            for values in [values, duplicates, original_null] {
                 let dictionary = Dictionary::new_unique_values(data_type.clone(), values.into());
                 assert_eq!(
                     dictionary.transform_into_any(|value| match value {
@@ -945,6 +988,28 @@ mod tests {
                     })
                 );
             }
+
+            let transformed =
+                Dictionary::new_unique_values(data_type.clone(), produced_null.into())
+                    .transform_into_any(|value| match value {
+                        ValueOrRef::Boolean(false) => ValueOrRef::Null,
+                        ValueOrRef::Null => panic!("produced null must not be transformed"),
+                        value => value.clone(),
+                    })
+                    .expect("produced null does not need another value index");
+            assert_eq!(transformed.len(), capacity + 1);
+            for index in 0..capacity {
+                assert_eq!(
+                    transformed.get_value(index),
+                    Ok(ValueOrRef::Integer(index as i64))
+                );
+            }
+            assert_eq!(transformed.get_value(capacity), Ok(ValueOrRef::Null));
+            let nulls = transformed.nulls().expect("produced null is tracked");
+            assert_eq!(nulls.null_count(), 1);
+            assert!(nulls.is_null(capacity));
+            assert_eq!(transformed.keys().data_type(), data_type);
+            assert_eq!(transformed.values().len(), capacity);
         }
     }
 
