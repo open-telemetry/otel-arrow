@@ -92,7 +92,7 @@ mod bounded {
     /// `otel_warn!` / ...). The tracing target (`callsite.target()`) is **not**
     /// prefixed here; it identifies the static logical software unit and is
     /// conveyed separately through
-    /// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
+    /// `InstrumentationScope.name` by [`super::encode_export_logs_request`] so that
     /// `event.name` on the wire matches the value declared in the
     /// `rust/otap-dataflow/semconv/` registry and validated by
     /// `weaver registry live-check`.
@@ -529,8 +529,11 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        // This is a documented special case, ignore empty "message" strings.
-        if value.is_empty() && let LogFieldLocation::Body = LogFieldLocation::new(field) {
+        // Only bare empty &str messages are omitted. Formatted messages use
+        // record_debug and preserve empty bodies.
+        if value.is_empty()
+            && let LogFieldLocation::Body = LogFieldLocation::new(field)
+        {
             return;
         }
         self.record_toplevel_field(field, |buf| {
@@ -633,10 +636,12 @@ fn encode_scope_or_resource_attribute(
 ) -> EncodeResult {
     // TODO(4453): Revisit resource/scope truncation handling at the owning layer.
     // For now, preserve the existing all-or-nothing attribute policy.
-    buf.try_atomic(|buf| match bounded::key_value_encoder(buf, field, key, &mut f)? {
-        Truncation::None => Ok(()),
-        Truncation::Some => Err(EncodeFailure::Dropped),
-    })
+    buf.try_atomic(
+        |buf| match bounded::key_value_encoder(buf, field, key, &mut f)? {
+            Truncation::None => Ok(()),
+            Truncation::Some => Err(EncodeFailure::Dropped),
+        },
+    )
 }
 
 // Field numbers for ExportLogsServiceRequest and related messages
@@ -1575,6 +1580,32 @@ mod tests {
             decoded.attributes,
             [KeyValue::new("empty", AnyValue::new_string(""))]
         );
+    }
+
+    /// Scenario: formatting produces an empty message and attribute between other attributes.
+    /// Guarantees: the empty string body and all attributes remain present without counted drops.
+    #[test]
+    fn record_debug_preserves_empty_message_and_attribute() {
+        let record = __log_record_impl!(
+            Level::INFO,
+            "test.empty.formatted.message",
+            before = 1i64,
+            message = format_args!("{}", ""),
+            empty = format_args!(""),
+            after = 2i64
+        );
+        let decoded =
+            LogRecord::decode(record.as_view().body_attrs_bytes).expect("valid log record");
+        assert_eq!(decoded.body, Some(AnyValue::new_string("")));
+        assert_eq!(
+            decoded.attributes,
+            [
+                KeyValue::new("before", AnyValue::new_int(1)),
+                KeyValue::new("empty", AnyValue::new_string("")),
+                KeyValue::new("after", AnyValue::new_int(2)),
+            ]
+        );
+        assert_eq!(record.as_view().dropped_attributes_count, 0);
     }
 
     /// Scenario: a bare `&str` `message` body overflows the available buffer.
