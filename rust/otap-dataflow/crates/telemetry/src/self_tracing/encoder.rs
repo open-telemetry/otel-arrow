@@ -450,29 +450,11 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
 /// Encodes the members of a nested map or array.
 struct NestedEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
-    outcome: TruncateResult,
 }
 
 impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
     fn new(buf: &'a mut B) -> Self {
-        Self {
-            buf,
-            outcome: Ok(Truncation::None),
-        }
-    }
-
-    fn unless_truncating(
-        outcome: &mut TruncateResult,
-        mut f: impl FnMut() -> TruncateResult,
-    ) -> TruncateResult {
-        match *outcome {
-            Ok(Truncation::Some) => Ok(Truncation::Some),
-            Err(err) => Err(err),
-            _ => {
-                *outcome = f();
-                *outcome
-            }
-        }
+        Self { buf }
     }
 
     fn entry(
@@ -480,18 +462,14 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
         key: &str,
         mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        Self::unless_truncating(&mut self.outcome, || {
-            bounded::key_value_encoder(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f)
-        })
+        bounded::key_value_encoder(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f)
     }
 
     fn element(
         &mut self,
         mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        Self::unless_truncating(&mut self.outcome, || {
-            bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, &mut f)
-        })
+        bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, &mut f)
     }
 }
 
