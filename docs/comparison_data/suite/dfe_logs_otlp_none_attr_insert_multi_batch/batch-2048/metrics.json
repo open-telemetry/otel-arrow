@@ -3,66 +3,66 @@
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.4270156919956207
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 54.33137681417818
+    "value": 48.77636452944907
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 55.20629213483146
+    "value": 49.373395696913
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 68.46236979166666
+    "value": 80.53138020833333
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 70.8359375
+    "value": 82.65234375
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 400799.6285627516
+    "value": 396443.99146798777
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 401151.47857582
+    "value": 401780.5844086098
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000503
+    "value": 60.000487
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 179090097.00897604
+    "value": 178910817.319534
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 151629333.27505895
+    "value": 151426206.49065572
   },
   {
     "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-2048 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 446.4400770621289
+    "value": 445.2948307168128
   }
 ]

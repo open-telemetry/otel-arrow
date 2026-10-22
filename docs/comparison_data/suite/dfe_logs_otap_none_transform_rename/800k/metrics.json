@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 0.0021186440717428923
+    "value": 0.0
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 41.19206597963131
+    "value": 40.79177854963746
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 42.14025062656642
+    "value": 42.49411764705882
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 76.8375
+    "value": 76.127734375
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 78.11328125
+    "value": 77.76171875
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 801949.8663419721
+    "value": 798505.6032855586
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 800639.9012505106
+    "value": 798485.5690951825
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000658
+    "value": 60.00054
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 93895479.17746104
+    "value": 93746316.821727
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 93892034.53873868
+    "value": 93774068.08166307
   },
   {
     "extra": "DFE OTAP Transform Rename (Logs)/800k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 117.27554301354046
+    "value": 117.4051485087667
   }
 ]

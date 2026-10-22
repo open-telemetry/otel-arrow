@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.7241379022598267
+    "value": 0.8403362035751343
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 3.8755256699422915
+    "value": 3.444324370906757
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 3.978773466833542
+    "value": 3.5627264239028946
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 66.355078125
+    "value": 71.52786458333334
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 66.70703125
+    "value": 71.91796875
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 394955.5931168161
+    "value": 400214.31981297815
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 402467.23328368546
+    "value": 400918.3476442497
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.005474
+    "value": 60.000506
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 78750736.03678256
+    "value": 78013082.28151228
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 78682117.31755567
+    "value": 77938753.31981221
   }
 ]

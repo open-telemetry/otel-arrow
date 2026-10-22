@@ -3,66 +3,66 @@
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.8547009229660034
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 57.01490364746753
+    "value": 51.586780468005514
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 57.298300000000005
+    "value": 52.33643459256947
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 62.979166666666664
+    "value": 69.62213541666667
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 64.3046875
+    "value": 71.15234375
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 399033.18692510127
+    "value": 396887.97448440845
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 401052.0001814251
+    "value": 400853.10894823394
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000525
+    "value": 60.000482
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 163251297.8461863
+    "value": 163231219.6562559
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 151729275.47150508
+    "value": 151727435.9712023
   },
   {
     "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-512 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 407.0576827252721
+    "value": 407.209563833857
   }
 ]

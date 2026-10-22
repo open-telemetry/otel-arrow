@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Baseline (Logs)/200k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.8403362035751343
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 5.016957875003525
+    "value": 4.49073701895851
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 5.142106908408878
+    "value": 4.6098940809968845
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 68.66966145833334
+    "value": 74.31263020833333
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 69.03125
+    "value": 74.7421875
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 200256.2977702774
+    "value": 198433.56543446035
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 201939.1238019604
+    "value": 202143.3733544645
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000476
+    "value": 60.000739
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 23550457.62642237
+    "value": 23541258.87712508
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 23471293.423331104
+    "value": 23455750.52434565
   },
   {
     "extra": "DFE OTAP Baseline (Logs)/200k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 116.6215698227851
+    "value": 116.45822708145259
   }
 ]

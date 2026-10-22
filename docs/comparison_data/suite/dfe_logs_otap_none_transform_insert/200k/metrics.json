@@ -9,60 +9,60 @@
     "extra": "DFE OTAP Transform Insert (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 13.697955564640058
+    "value": 12.535807964884313
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 14.58862842892768
+    "value": 12.660242461921046
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 76.45794270833333
+    "value": 74.34674479166667
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 77.05859375
+    "value": 74.74609375
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 198600.56615972245
+    "value": 198396.55233869184
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 200577.9788178288
+    "value": 200726.34836419066
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.00055
+    "value": 60.000554
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27465851.027756013
+    "value": 27430659.357865993
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 23507869.346646972
+    "value": 23485791.280088793
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/200k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 136.933531734814
+    "value": 136.65699386956808
   }
 ]

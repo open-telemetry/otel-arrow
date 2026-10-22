@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -3.431034564971924
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 76.40250411127757
+    "value": 63.28536474866877
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 77.27215245235864
+    "value": 63.990535491905355
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 72.748828125
+    "value": 79.44765625
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 74.91796875
+    "value": 80.953125
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 393605.0645842289
+    "value": 399166.3242180433
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 403633.8824033643
+    "value": 403840.21079382097
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000513
+    "value": 60.000492
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 17209425.654053856
+    "value": 17152358.814397898
   },
   {
     "extra": "DFE OTAP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 17151500.315300174
+    "value": 17078235.644523468
   }
 ]

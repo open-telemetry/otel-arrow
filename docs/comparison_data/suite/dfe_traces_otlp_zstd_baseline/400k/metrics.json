@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": -1.2875536680221558
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 53.77497512634173
+    "value": 46.84288182799138
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 54.70602620087336
+    "value": 47.84582548650345
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 66.77005208333334
+    "value": 78.19453125
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 69.88671875
+    "value": 80.51953125
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 397305.6809034138
+    "value": 396168.333737979
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 400996.2718391108
+    "value": 402883.0512589617
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000895
+    "value": 60.000502
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27101395.34005063
+    "value": 26973191.051721103
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27087828.48625182
+    "value": 26966237.72706366
   }
 ]

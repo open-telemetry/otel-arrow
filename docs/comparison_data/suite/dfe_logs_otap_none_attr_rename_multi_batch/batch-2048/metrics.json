@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 0.0
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 8.28996863474615
+    "value": 7.7248564470237
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 8.557033343720786
+    "value": 7.8679762277134815
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 64.69479166666666
+    "value": 74.22421875
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 67.05859375
+    "value": 74.87109375
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 397115.90201158385
+    "value": 398970.79734939354
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 401878.2358328769
+    "value": 402905.61427317315
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.00068
+    "value": 60.000604
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 45529975.54711901
+    "value": 45440932.933113046
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 45439826.56225117
+    "value": 45371244.641658075
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Batch (Logs)/batch-2048 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 113.29296161749073
+    "value": 112.7830720728149
   }
 ]

@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 0.8403832316398621
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 18.283680584075903
+    "value": 18.08358209545195
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 18.607536592961694
+    "value": 18.498985597996242
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 68.144140625
+    "value": 78.62760416666667
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 69.6171875
+    "value": 80.42578125
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 602052.4832312244
+    "value": 597726.9053646851
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 601125.5199944625
+    "value": 602643.0114553397
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000541
+    "value": 60.00054
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 483792012.3497716
+    "value": 482854693.9158485
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Traces)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 483528618.9987386
+    "value": 482653485.8245304
   }
 ]

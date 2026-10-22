@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": 0.0
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 4.811477688397079
+    "value": 4.385008449090823
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 4.953611977542108
+    "value": 4.6871174820816455
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 64.74205729166667
+    "value": 76.05729166666667
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 66.140625
+    "value": 78.1484375
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 100140.13508666602
+    "value": 100103.62931307091
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 100295.80576313073
+    "value": 100103.62931307091
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000519
+    "value": 60.000566
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1359241.1351087952
+    "value": 1327880.6070399596
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1284282.2699511955
+    "value": 1250582.2849046388
   }
 ]

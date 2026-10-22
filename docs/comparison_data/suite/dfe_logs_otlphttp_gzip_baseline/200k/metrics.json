@@ -9,60 +9,60 @@
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 26.98469969024771
+    "value": 22.940774133033102
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 27.295770071852548
+    "value": 23.40451914098973
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 62.610286458333334
+    "value": 73.69700520833334
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 63.0625
+    "value": 74.22265625
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 199644.7642881401
+    "value": 199496.4371796032
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 200975.06065301722
+    "value": 200828.47099712206
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000552
+    "value": 60.000512
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5592718.392973126
+    "value": 5562679.649396369
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 75080568.19003892
+    "value": 75140400.15128215
   },
   {
     "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 27.827922403909287
+    "value": 27.69866056230685
   }
 ]

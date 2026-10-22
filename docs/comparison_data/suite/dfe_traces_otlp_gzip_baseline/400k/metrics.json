@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 58.919490814208984
+    "value": 0.025788703933358192
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.7714061638447
+    "value": 100.05911967138866
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 101.24173258003766
+    "value": 100.29317514829847
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 201.58841145833333
+    "value": 194.3765625
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 212.07421875
+    "value": 197.42578125
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 401538.3546884248
+    "value": 197975.80671992822
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 163826.23739292045
+    "value": 197239.0635306345
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000624
+    "value": 60.000768
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 23396061.508299187
+    "value": 28406047.42662482
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 57733993.20731895
+    "value": 57542367.02640412
   }
 ]
