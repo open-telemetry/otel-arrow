@@ -1,9 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Numeric performance-counter values, exact-counter samples, and decimal scaling.
+//! Numeric performance-counter values, concrete observations, and decimal scaling.
 
 use super::config::{MAX_SCALE_POWER10, MIN_SCALE_POWER10};
+use std::sync::Arc;
 
 /// A numeric performance-counter value.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,25 +24,39 @@ pub(super) enum SampleValue {
     NoObservation,
 }
 
-/// One configured counter's result in a sample.
+/// One concrete counter's observation in a sample.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SamplePoint {
     /// Index into the configured counters.
     pub(super) counter_index: usize,
+    /// Concrete native path for this observation.
+    pub(super) path: Arc<str>,
+    /// Positive observation time in nanoseconds since the Unix epoch.
+    pub(super) timestamp_unix_nano: i64,
+    /// Start of the cumulative sequence, when applicable to a Sum point.
+    pub(super) start_time_unix_nano: Option<i64>,
     /// Ready value or expected omission.
     pub(super) value: SampleValue,
+}
+
+/// A counter-local failure; healthy peers remain available for projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SampleFailure {
+    /// Index into the configured counters.
+    pub(super) counter_index: usize,
+    /// Actionable diagnostic for the failed read or calculation.
+    pub(super) error: String,
 }
 
 /// A sample from one collection.
 #[derive(Debug, Clone)]
 pub(super) struct Sample {
-    /// Start of the cumulative sequence, used only by emitted Sum points.
-    /// Collection owns sequence continuity and clock rollback handling.
-    pub(super) start_time_unix_nano: i64,
-    /// Positive observation time in nanoseconds since the Unix epoch.
+    /// Positive collection-envelope time in nanoseconds since the Unix epoch.
     pub(super) timestamp_unix_nano: i64,
-    /// At most one point per configured counter.
+    /// At most one point per configured mapping and concrete path.
     pub(super) points: Vec<SamplePoint>,
+    /// At most one failure per configured counter, separate from expected omissions.
+    pub(super) failures: Vec<SampleFailure>,
 }
 
 /// A bounded reason why a numeric value cannot be scaled.

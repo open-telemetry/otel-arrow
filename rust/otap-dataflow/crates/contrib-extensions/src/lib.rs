@@ -13,6 +13,9 @@ pub mod azure_identity_auth;
 #[cfg(feature = "flat-file-api-key-auth")]
 pub mod flat_file_api_key_auth;
 
+#[cfg(feature = "flat-file-sasl-auth")]
+pub mod flat_file_sasl_auth;
+
 #[cfg(feature = "flat-file-user-pass-auth")]
 pub mod flat_file_user_pass_auth;
 

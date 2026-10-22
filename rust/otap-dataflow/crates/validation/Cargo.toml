@@ -31,6 +31,7 @@ otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
@@ -46,7 +47,9 @@ crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
 bytes = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-contrib-nodes = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-quiver = { workspace = true }
 otel-arrow-dfe-state = { workspace = true }
 parking_lot = { workspace = true }

@@ -92,3 +92,52 @@ def test_render_template_hook_rendering_error(mock_get_template):
         "Template rendering failed" in call[0][0]
         for call in mock_logger.error.call_args_list
     )
+
+
+# Scenario: A template references the framework metadata via the implicit 'ctx'
+#   mapping while no explicit 'ctx' variable is configured.
+# Guarantees: render_template exposes the context's metadata to templates.
+def test_render_template_exposes_ctx_metadata(tmp_path):
+    template_path = tmp_path / "template.j2"
+    output_path = tmp_path / "output.txt"
+    template_path.write_text('name={{ ctx["test.name"] }}')
+
+    config = RenderTemplateConfig(
+        template_path=str(template_path),
+        output_path=str(output_path),
+        variables={},
+    )
+    hook = RenderTemplateHook(config=config)
+
+    mock_ctx = MagicMock()
+    mock_ctx.get_logger.return_value = MagicMock()
+    mock_ctx.get_metadata.return_value = {"test.name": "OTLP-BATCH-OTLP"}
+
+    hook.execute(mock_ctx)
+
+    assert output_path.read_text() == "name=OTLP-BATCH-OTLP"
+
+
+# Scenario: A template is rendered when both an explicit 'ctx' variable and the
+#   framework context metadata are present.
+# Guarantees: Explicitly configured variables take precedence over the
+#   framework-provided 'ctx', so callers can override the injected metadata.
+def test_render_template_explicit_variable_overrides_ctx(tmp_path):
+    template_path = tmp_path / "template.j2"
+    output_path = tmp_path / "output.txt"
+    template_path.write_text('name={{ ctx["test.name"] }}')
+
+    config = RenderTemplateConfig(
+        template_path=str(template_path),
+        output_path=str(output_path),
+        variables={"ctx": {"test.name": "explicit"}},
+    )
+    hook = RenderTemplateHook(config=config)
+
+    mock_ctx = MagicMock()
+    mock_ctx.get_logger.return_value = MagicMock()
+    mock_ctx.get_metadata.return_value = {"test.name": "from-context"}
+
+    hook.execute(mock_ctx)
+
+    assert output_path.read_text() == "name=explicit"

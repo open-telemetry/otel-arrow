@@ -111,6 +111,66 @@ otel_info!(
 );
 ```
 
+### Logging suppression and sampling
+
+The `otel_arrow_dfe_telemetry::Sampler` and `Logger` traits
+support custom logs sampling and delivery. `Sampler::should_sample` decides
+from metadata whether to build the event; `Logger::emit` controls how a
+selected event is delivered. Both have defaults (keep, forward to the active
+subscriber), so a sampling-only policy implements `Sampler` and an empty
+`impl Logger`. After standard `tracing` filters, the macro mutably borrows the
+object supplied as `logger:` once and calls both methods in turn, enabling
+stateful observation of the event before its body and attributes are
+evaluated.
+
+Filtering skips the logger expression and fields; sampling rejection skips
+the fields. Logger expressions, sampling decisions, and field-producing
+expressions can emit their own logs, just as field expressions can in ordinary
+`otel_*` calls. Emission and field encoding still run under tracing's recursion
+guard.
+
+The `logger:` argument is supported by `otel_debug!`, `otel_info!`,
+`otel_warn!`, and `otel_error!`, either inside an `otel_component_scope!` or
+with an explicit `target:`:
+
+```rust
+// Inside otel_component_scope!, the target is supplied by the scope.
+otel_warn!(logger: sampler, "export.failed", error = %error);
+
+// Elsewhere, pass the target explicitly before `logger:`.
+otel_warn!(target: "my.target", logger: sampler, "export.failed", error = %error);
+```
+
+```rust
+struct O11y {
+   /// Export request preparation errors (e.g., parse errors)
+   /// are emitted periodically after the first occurrence.
+   preparation: SignalSuppression,
+}
+
+...
+
+   // Pass the self.o11y.preparation sampler for these failures.
+   otel_warn!(
+       logger: self.o11y.preparation,
+       "otlp.exporter.http.parse_error",
+       ...
+   );
+```
+
+The expression may return a temporary, for example the following
+calls `outcome(&result)` to determine the logger that makes the
+decision:
+
+```rust
+   // Pass the self.o11y.preparation sampler for these failures.
+   otel_warn!(
+       logger: self.o11y.delivery_episodes.outcome(&result),
+       "otlp.exporter.http.parse_error",
+       ...
+   );
+```
+
 ## Internal telemetry collection
 
 The dataflow engine supports multiple ways to configure internal logs and
