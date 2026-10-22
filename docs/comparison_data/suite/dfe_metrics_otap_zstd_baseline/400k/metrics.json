@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -0.5174386501312256
+    "value": -1.694987177848816
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 14.491471908794425
+    "value": 17.21715755290178
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 17.12749063670412
+    "value": 17.644013754298218
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 81.34114583333333
+    "value": 78.5484375
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 85.76171875
+    "value": 80.78515625
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 340707.59571978095
+    "value": 398483.28807626525
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 342470.54860076297
+    "value": 403813.8781301191
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000525
+    "value": 60.000608
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 4338897.219216178
+    "value": 5072760.7949752025
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 4264391.488156038
+    "value": 4996906.230076548
   }
 ]

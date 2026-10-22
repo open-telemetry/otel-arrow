@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 0.0042372881434857845
+    "value": 0.0
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 27.181544473579144
+    "value": 28.52162585268746
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 27.747504667081518
+    "value": 29.03055900621118
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 84.41158854166666
+    "value": 87.27955729166666
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 90.3203125
+    "value": 90.15625
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 400059.14772789204
+    "value": 398077.5082884882
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 400042.19606909005
+    "value": 400835.7016750398
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000499
+    "value": 60.000641
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 17297020.17515796
+    "value": 17292470.34928209
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 17226589.90032553
+    "value": 17207384.292999126
   }
 ]
