@@ -1334,6 +1334,8 @@ mod test {
     use prost::Message;
     use std::sync::Arc;
 
+    /// Scenario: child rows have shuffled parent IDs and parents are visited in ascending order.
+    /// Guarantees: each parent yields only its matching row indices, and exhausted iteration ends.
     #[test]
     fn test_child_index_iter_shuffled_order() {
         let mut cursor = SortedBatchCursor::new();
@@ -1368,6 +1370,9 @@ mod test {
         }
     }
 
+    /// Scenario: parents are visited in non-ascending ID order against a shared child cursor.
+    /// Guarantees: visiting a higher ID does not consume a lower ID's child rows.
+    ///
     /// Regression test: parents may be visited in *non-ascending* id order against a shared
     /// cursor. The root visitation order is `(resource_id, scope_id, id)`, so `id` alone is not
     /// always ascending (e.g. after `extend attributes[...]` fills null root ids with `max + 1`).
@@ -1403,6 +1408,8 @@ mod test {
         }
     }
 
+    /// Scenario: no child rows belong to a parent ID between two populated parent IDs.
+    /// Guarantees: the missing parent yields no rows without consuming the next parent's rows.
     #[test]
     fn test_child_index_iter_with_skipped_values() {
         let mut cursor = SortedBatchCursor::new();
@@ -1431,6 +1438,8 @@ mod test {
         }
     }
 
+    /// Scenario: shuffled child rows include a null parent ID.
+    /// Guarantees: null IDs are skipped and each non-null parent yields all its matching rows.
     #[test]
     fn test_child_index_iter_with_nulls() {
         let mut cursor = SortedBatchCursor::new();
@@ -1459,6 +1468,8 @@ mod test {
         }
     }
 
+    /// Scenario: the same root batch is sorted twice using one batch sorter.
+    /// Guarantees: the second sort reuses the existing ID vector allocation.
     #[test]
     fn test_batch_sorter_reuse_alloc() {
         // test that we're able to reuse the batch sorter's sort vec heap allocation
@@ -1512,51 +1523,71 @@ mod test {
     // Logs Tests
     //
 
+    /// Scenario: logs with populated resource and scope metadata round-trip through OTAP.
+    /// Guarantees: log records and their resource and scope metadata remain semantically equivalent.
     #[test]
     fn test_logs_with_full_resource_and_scope() {
         test_logs_round_trip(logs_with_full_resource_and_scope());
     }
 
+    /// Scenario: logs with no resource metadata round-trip through OTAP.
+    /// Guarantees: log records and scope metadata survive without requiring resource metadata.
     #[test]
     fn test_logs_with_no_resource() {
         test_logs_round_trip(logs_with_no_resource());
     }
 
+    /// Scenario: logs with no scope metadata round-trip through OTAP.
+    /// Guarantees: log records and resource metadata survive without requiring scope metadata.
     #[test]
     fn test_logs_with_no_scope() {
         test_logs_round_trip(log_with_no_scope());
     }
 
+    /// Scenario: logs without record attributes round-trip through OTAP.
+    /// Guarantees: record fields remain semantically equivalent without introducing attributes.
     #[test]
     fn test_logs_with_no_attributes() {
         test_logs_round_trip(logs_with_no_attributes());
     }
 
+    /// Scenario: logs with neither resource nor scope metadata round-trip through OTAP.
+    /// Guarantees: log record contents survive without requiring either metadata envelope.
     #[test]
     fn test_logs_with_no_resource_no_scope() {
         test_logs_round_trip(logs_with_no_resource_no_scope());
     }
 
+    /// Scenario: several logs share a scope with no resource metadata and round-trip through OTAP.
+    /// Guarantees: all records retain their distinct timestamps and severities.
     #[test]
     fn test_logs_multiple_records_no_resource() {
         test_logs_round_trip(logs_multiple_records_no_resource());
     }
 
+    /// Scenario: logs span multiple named scopes with no resource metadata.
+    /// Guarantees: an OTAP round trip preserves each record's contents and scope association.
     #[test]
     fn test_logs_multiple_scopes_no_resource() {
         test_logs_round_trip(logs_multiple_scopes_no_resource());
     }
 
+    /// Scenario: logs span multiple resource envelopes with populated and empty scope metadata.
+    /// Guarantees: an OTAP round trip preserves the semantic contents of every log record.
     #[test]
     fn test_logs_multiple_resources_mixed_content() {
         test_logs_round_trip(logs_multiple_resources_mixed_content());
     }
 
+    /// Scenario: a logs scope contains no records and round-trips through OTAP.
+    /// Guarantees: dropping the empty envelope does not introduce any log records.
     #[test]
     fn test_logs_with_empty_log_records() {
         test_logs_round_trip(logs_with_empty_log_records());
     }
 
+    /// Scenario: a log record has an explicitly empty string body and round-trips through OTAP.
+    /// Guarantees: the record retains an empty string body rather than losing the body value.
     #[test]
     fn test_logs_with_body_empty_string() {
         test_logs_round_trip(logs_with_body_empty_string());
@@ -1566,41 +1597,57 @@ mod test {
     // Traces Tests
     //
 
+    /// Scenario: traces with populated resource and scope metadata round-trip through OTAP.
+    /// Guarantees: spans and their resource and scope metadata remain semantically equivalent.
     #[test]
     fn test_traces_with_full_resource_and_scope() {
         test_traces_round_trip(traces_with_full_resource_and_scope());
     }
 
+    /// Scenario: traces with no resource metadata round-trip through OTAP.
+    /// Guarantees: spans and scope metadata survive without requiring resource metadata.
     #[test]
     fn test_traces_with_no_resource() {
         test_traces_round_trip(traces_with_no_resource());
     }
 
+    /// Scenario: traces with no scope metadata round-trip through OTAP.
+    /// Guarantees: spans and resource metadata survive without requiring scope metadata.
     #[test]
     fn test_traces_with_no_scope() {
         test_traces_round_trip(traces_with_no_scope());
     }
 
+    /// Scenario: traces without span attributes round-trip through OTAP.
+    /// Guarantees: span fields remain semantically equivalent without introducing attributes.
     #[test]
     fn test_traces_with_no_attributes() {
         test_traces_round_trip(traces_with_no_attributes());
     }
 
+    /// Scenario: traces with neither resource nor scope metadata round-trip through OTAP.
+    /// Guarantees: span contents survive without requiring either metadata envelope.
     #[test]
     fn test_traces_with_no_resource_no_scope() {
         test_traces_round_trip(traces_with_no_resource_no_scope());
     }
 
+    /// Scenario: several spans share a scope with no resource metadata and round-trip through OTAP.
+    /// Guarantees: all spans retain their distinct identifiers, names, kinds, and timestamps.
     #[test]
     fn test_traces_multiple_spans_no_resource() {
         test_traces_round_trip(traces_multiple_spans_no_resource());
     }
 
+    /// Scenario: spans belong to multiple named scopes with no resource metadata.
+    /// Guarantees: an OTAP round trip preserves each span's contents and scope association.
     #[test]
     fn test_traces_multiple_scopes_no_resource() {
         test_traces_round_trip(traces_multiple_scopes_no_resource());
     }
 
+    /// Scenario: spans span multiple resource envelopes with populated and empty scope metadata.
+    /// Guarantees: an OTAP round trip preserves the semantic contents of every span.
     #[test]
     fn test_traces_multiple_resources_mixed_content() {
         test_traces_round_trip(traces_multiple_resources_mixed_content());
@@ -1610,31 +1657,43 @@ mod test {
     // Metrics Tests
     //
 
+    /// Scenario: a sum metric with populated resource and scope metadata round-trips through OTAP.
+    /// Guarantees: metric data and resource and scope metadata remain semantically equivalent.
     #[test]
     fn test_metrics_sum_with_full_resource_and_scope() {
         test_metrics_round_trip(metrics_sum_with_full_resource_and_scope());
     }
 
+    /// Scenario: a sum metric with no resource metadata round-trips through OTAP.
+    /// Guarantees: metric data and scope metadata survive without requiring resource metadata.
     #[test]
     fn test_metrics_sum_with_no_resource() {
         test_metrics_round_trip(metrics_sum_with_no_resource());
     }
 
+    /// Scenario: a sum metric with no scope metadata round-trips through OTAP.
+    /// Guarantees: metric data and resource metadata survive without requiring scope metadata.
     #[test]
     fn test_metrics_sum_with_no_scope() {
         test_metrics_round_trip(metrics_sum_with_no_scope());
     }
 
+    /// Scenario: a sum metric with neither resource nor scope metadata round-trips through OTAP.
+    /// Guarantees: metric data survives without requiring either metadata envelope.
     #[test]
     fn test_metrics_sum_with_no_resource_no_scope() {
         test_metrics_round_trip(metrics_sum_with_no_resource_no_scope());
     }
 
+    /// Scenario: a named sum metric contains no data points and round-trips through OTAP.
+    /// Guarantees: the metric and its sum properties survive with an empty data point list.
     #[test]
     fn test_metrics_sum_with_no_data_points() {
         test_metrics_round_trip(metrics_sum_with_no_data_points());
     }
 
+    /// Scenario: multiple sum metrics with different aggregation properties share an empty resource.
+    /// Guarantees: an OTAP round trip preserves each metric's values, temporality, and monotonicity.
     #[test]
     fn test_metrics_multiple_sums_no_resource() {
         test_metrics_round_trip(metrics_multiple_sums_no_resource());
@@ -1651,46 +1710,64 @@ mod test {
         assert_eq!(encoded.num_items(), 0, "Expected an empty batch");
     }
 
+    /// Scenario: logs data contains no resource envelopes.
+    /// Guarantees: OTAP encoding produces a batch with zero items.
     #[test]
     fn test_empty_logs() {
         assert_empty_batch(empty_logs().into());
     }
 
+    /// Scenario: a logs resource contains no scope envelopes.
+    /// Guarantees: the empty resource encodes to an OTAP batch with zero items.
     #[test]
     fn test_logs_with_empty_scope_logs() {
         assert_empty_batch(logs_with_empty_scope_logs().into());
     }
 
+    /// Scenario: traces data contains no resource envelopes.
+    /// Guarantees: OTAP encoding produces a batch with zero items.
     #[test]
     fn test_empty_traces() {
         assert_empty_batch(empty_traces().into());
     }
 
+    /// Scenario: a traces resource contains no scope envelopes.
+    /// Guarantees: the empty resource encodes to an OTAP batch with zero items.
     #[test]
     fn test_traces_with_empty_scope_spans() {
         assert_empty_batch(traces_with_empty_scope_spans().into());
     }
 
+    /// Scenario: a traces scope contains no spans.
+    /// Guarantees: the empty scope encodes to an OTAP batch with zero items.
     #[test]
     fn test_traces_with_empty_spans() {
         assert_empty_batch(traces_with_empty_spans().into());
     }
 
+    /// Scenario: metrics data contains no resource envelopes.
+    /// Guarantees: OTAP encoding produces a batch with zero items.
     #[test]
     fn test_empty_metrics() {
         assert_empty_batch(empty_metrics().into());
     }
 
+    /// Scenario: a metrics resource contains no scope envelopes.
+    /// Guarantees: the empty resource encodes to an OTAP batch with zero items.
     #[test]
     fn test_metrics_with_no_scope_metrics() {
         assert_empty_batch(metrics_with_no_scope_metrics().into());
     }
 
+    /// Scenario: a metrics scope contains no metrics.
+    /// Guarantees: the empty scope encodes to an OTAP batch with zero items.
     #[test]
     fn test_metrics_with_no_metrics() {
         assert_empty_batch(metrics_with_no_metrics().into());
     }
 
+    /// Scenario: the same nested string is encoded with 127-byte, 128-byte, and default buffers.
+    /// Guarantees: length placeholders use one, two, and four bytes respectively.
     #[test]
     fn test_encode_len_delimited_auto_width() {
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
@@ -1719,6 +1796,8 @@ mod test {
         assert_eq!(buf.len(), 9);
     }
 
+    /// Scenario: atomic encoding writes partial content before failing, then another call succeeds.
+    /// Guarantees: failure restores the original bytes and length while success retains new bytes.
     #[test]
     fn try_atomic_rolls_back_buffer_on_error() {
         let mut buf = ProtoBuffer::default();
@@ -1742,6 +1821,8 @@ mod test {
         assert!(buf.len() > snapshot_len);
     }
 
+    /// Scenario: a length-delimited field overflows an eight-byte buffer during its inner encoding.
+    /// Guarantees: failure leaves the length unpatched, while an atomic wrapper rolls back all bytes.
     #[test]
     fn encode_len_delimited_does_not_patch_on_inner_err() {
         let mut buf = StackProtoBuffer::<8>::default();
@@ -1766,6 +1847,8 @@ mod test {
         assert_eq!(buf.len(), 0, "try_atomic rolled back partial bytes");
     }
 
+    /// Scenario: a length-delimited callback writes five bytes and reports successful truncation.
+    /// Guarantees: the length is patched to five and a subsequent field can still be appended.
     #[test]
     fn encode_len_delimited_partial_patches_length_on_err() {
         let mut buf = StackProtoBuffer::<128>::default();
@@ -1798,6 +1881,8 @@ mod test {
         );
     }
 
+    /// Scenario: strings fully fit, require truncation, or cannot fit in a bounded buffer.
+    /// Guarantees: full writes have no suffix, truncation adds `[...]`, and hard failure changes no bytes.
     #[test]
     fn encode_string_truncating_three_outcomes() {
         // (a) Full fit -> Ok(false), no suffix.
@@ -1827,6 +1912,8 @@ mod test {
         );
     }
 
+    /// Scenario: a long string is truncated while encoding an AnyValue into a bounded buffer.
+    /// Guarantees: prost decodes a string containing the original prefix and the `[...]` suffix.
     #[test]
     fn encode_string_truncating_round_trips_via_prost() {
         let mut buf = StackProtoBuffer::<48>::default();
@@ -1847,6 +1934,8 @@ mod test {
         assert!(s.starts_with("YY"));
     }
 
+    /// Scenario: a string of four-byte UTF-8 characters is truncated at every possible byte budget.
+    /// Guarantees: each result is a character-aligned prefix within budget, or the full input if it fits.
     #[test]
     fn truncate_utf8_returns_char_boundary_prefix() {
         // 4-byte UTF-8 characters (U+1F600, 4 bytes each).
@@ -1874,6 +1963,8 @@ mod test {
         assert_eq!(truncate_utf8(&s, 1000), s.as_str());
     }
 
+    /// Scenario: a buffer temporarily restricts its remaining capacity to eight bytes without writing.
+    /// Guarantees: the scoped budget applies and the original limit and remaining capacity are restored.
     #[test]
     fn with_max_remaining_restores_outer_limit() {
         let mut buf = StackProtoBuffer::<64>::default();
@@ -1890,6 +1981,8 @@ mod test {
         assert_eq!(buf.remaining(), outer_remaining);
     }
 
+    /// Scenario: a ten-byte remaining-capacity scope is nested inside a fifty-byte scope.
+    /// Guarantees: each budget applies locally and unwinding restores each enclosing limit in turn.
     #[test]
     fn with_max_remaining_nests_correctly() {
         let mut buf = StackProtoBuffer::<128>::default();
@@ -1907,6 +2000,8 @@ mod test {
         assert_eq!(buf.limit(), outer, "fully restored after both scopes");
     }
 
+    /// Scenario: a bounded buffer receives a scoped remaining-capacity request of usize::MAX.
+    /// Guarantees: the request does not overflow or raise the limit beyond the outer buffer limit.
     #[test]
     fn with_max_remaining_saturates_and_honors_outer() {
         let mut buf = StackProtoBuffer::<32>::default();

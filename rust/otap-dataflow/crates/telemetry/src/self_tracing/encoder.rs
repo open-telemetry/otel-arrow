@@ -203,7 +203,8 @@ pub enum LogFieldLocation<'a> {
 }
 
 impl<'a> LogFieldLocation<'a> {
-    fn new(name: &'a str) -> Self {
+    fn new(field: &tracing::field::Field) -> Self {
+        let name = field.name();
         if name == "message" {
             Self::Body
         } else {
@@ -243,7 +244,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
 
         // The toplevel call ignores truncation.
         let _ = self.buf.try_atomic(|buf| {
-            match LogFieldLocation::new(field.name()) {
+            match LogFieldLocation::new(field) {
                 LogFieldLocation::Body => {
                     // May be truncated, but not counted in dropped_attributes.
                     bounded::record_body(buf, encode)
@@ -528,6 +529,10 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        // This is a documented special case, ignore empty "message" strings.
+        if value.is_empty() && let LogFieldLocation::Body = LogFieldLocation::new(field) {
+            return;
+        }
         self.record_toplevel_field(field, |buf| {
             buf.encode_string_truncating(ANY_VALUE_STRING_VALUE, value)
         })
@@ -1557,6 +1562,21 @@ mod tests {
         );
     }
 
+    /// Scenario: an event has an empty string message and an empty string attribute.
+    /// Guarantees: the message body is omitted while the empty attribute is preserved.
+    #[test]
+    fn record_str_omits_empty_message_but_preserves_empty_attribute() {
+        let record =
+            __log_record_impl!(Level::INFO, "test.empty.message", message = "", empty = "");
+        let decoded =
+            LogRecord::decode(record.as_view().body_attrs_bytes).expect("valid log record");
+        assert!(decoded.body.is_none());
+        assert_eq!(
+            decoded.attributes,
+            [KeyValue::new("empty", AnyValue::new_string(""))]
+        );
+    }
+
     /// Scenario: a bare `&str` `message` body overflows the available buffer.
     /// Guarantees: the decoded body ends with `[...]` without incrementing
     /// OTLP `dropped_attributes_count`.
@@ -1671,8 +1691,8 @@ mod tests {
     /// Scenario: four Debug values compete for a 256-byte buffer with the
     /// halving budget policy.
     /// Guarantees: all four values are truncated (each ends with `[...]`),
-    /// each successive value is shorter than the previous, and the buffer
-    /// does not exceed the inline limit.
+    /// each successive value is no longer than the previous, all four
+    /// increment the dropped count, and the buffer stays within the inline limit.
     #[test]
     fn record_debug_halves_remaining_budget_across_attributes() {
         const INLINE: usize = 256;
