@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792692377894,
+  "lastUpdate": 1792700362917,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -70102,6 +70102,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 118.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ecd1b490a0bed44e45003e27064f2c544615bc84",
+          "message": "feat(syslog): activate lazy decoding and codec-native batching (#4439)\n\n# Change summary\n\n**PR5 of the pluggable PData codec series**, following #4423.\n\nActivates the codec path for the Syslog/CEF receiver. Messages remain\nencoded until a downstream consumer needs OTAP records, allowing\nforwarding and batching without first parsing syslog or constructing\nArrow records.\n\n- Registers a decode-only codec for the `syslog-batch` encoding,\nsupporting RFC 3164, RFC 5424, and CEF messages.\n- Merges and splits independently decodable framed batches without\nparsing message contents, preserving order, observed timestamps, and\ninput-range delivery ownership.\n- Adds codec-owned batch construction so the receiver transfers its\nknown item count without rescanning the bytes or exposing a public\ncount-cache setter.\n- Retains each message's local receipt year so delayed RFC 3164 decoding\nremains correct across New Year.\n\nThe framed representation is internal; this PR does not introduce a\nsyslog exporter or change the network protocol. The RFC 3164 timestamp\nparsing optimization follows separately in PR5.1 (#4479). Codec\nconfiguration and expanded user/developer documentation follow in PR6.\n\n## Related issue\n\n- Advances #3452.\n\n## Validation\n\nCodec registration/conformance, syslog receiver, framing, batching, and\ntimestamp tests passed.\n\n`cargo xtask check` passed.\n\n## User-facing changes\n\nSyslog/CEF parsing and Arrow construction are deferred until needed.\nExisting receiver configuration and TCP/UDP protocols remain unchanged.\nA changelog entry is included.",
+          "timestamp": "2026-10-22T19:04:22Z",
+          "tree_id": "527974b323dfc6bc314d5d3d521c4930c5a3aee3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ecd1b490a0bed44e45003e27064f2c544615bc84"
+        },
+        "date": 1792700345703,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.14,
             "unit": "MB"
           },
           {
