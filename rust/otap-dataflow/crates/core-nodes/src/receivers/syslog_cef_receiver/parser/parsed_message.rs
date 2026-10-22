@@ -54,7 +54,10 @@ fn parse_two_digits(input: &[u8]) -> Option<u32> {
 /// Noncanonical inputs and leap seconds retain the legacy parser as a fallback.
 #[inline]
 fn parse_rfc3164_naive_timestamp(input: &[u8], year: i32) -> Option<NaiveDateTime> {
-    if input.len() != 15
+    // The legacy formatted year has no leading '+'. Chrono requires one for
+    // positive years beyond four digits, so those must retain the fallback.
+    if year > 9999
+        || input.len() != 15
         || input[3] != b' '
         || input[6] != b' '
         || input[9] != b':'
@@ -620,6 +623,35 @@ mod tests {
         }
     }
 
+    /// Scenario: Receipt years include signed, short, four-digit, and oversized values.
+    /// Guarantees: The fast path and fallback preserve the legacy parser's accepted year range.
+    #[test]
+    fn test_rfc3164_timestamp_preserves_legacy_year_range() {
+        for year in [
+            i32::MIN,
+            -10000,
+            -1,
+            0,
+            1,
+            2024,
+            9999,
+            10000,
+            262142,
+            i32::MAX,
+        ] {
+            for timestamp in ["Jan 01 00:00:00", "Feb 29 12:34:56", "Dec 31 23:59:59"] {
+                let expected = NaiveDateTime::parse_from_str(
+                    &format!("{year} {timestamp}"),
+                    "%Y %b %d %H:%M:%S",
+                )
+                .ok();
+                let actual = parse_rfc3164_naive_timestamp(timestamp.as_bytes(), year)
+                    .or_else(|| parse_rfc3164_naive_timestamp_fallback(timestamp.as_bytes(), year));
+                assert_eq!(actual, expected, "year: {year}, timestamp: {timestamp}");
+            }
+        }
+    }
+
     /// Scenario: An RFC 3164 message has timestamp-shaped bytes with an invalid month.
     /// Guarantees: Message parsing still succeeds while timestamp conversion returns `None`.
     #[test]
@@ -638,8 +670,8 @@ mod tests {
         let result = parse(input).unwrap();
         assert!(matches!(result, ParsedSyslogMessage::CefWithRfc3164(_, _)));
 
-        let current_year = Local::now().year();
-        let expected_naive = NaiveDate::from_ymd_opt(current_year, 10, 11)
+        let year = 2024;
+        let expected_naive = NaiveDate::from_ymd_opt(year, 10, 11)
             .unwrap()
             .and_hms_opt(22, 14, 15)
             .unwrap();
@@ -649,7 +681,7 @@ mod tests {
             .unwrap()
             .timestamp_nanos_opt()
             .unwrap() as u64;
-        assert_eq!(result.timestamp(), Some(expected_nanos));
+        assert_eq!(result.timestamp_with_year(year), Some(expected_nanos));
     }
 
     /// Scenario: RFC 3164 and wrapped CEF contain normal, unusual, or malformed timestamps.
@@ -668,7 +700,7 @@ mod tests {
             (b"Jax 01 01:02:03", false),
             (b"J\xffn 01 01:02:03", false),
         ];
-        let year = Local::now().year();
+        let year = 2024;
         for &(timestamp, accepted) in cases {
             let naive = std::str::from_utf8(timestamp).ok().and_then(|text| {
                 NaiveDateTime::parse_from_str(&format!("{year} {text}"), "%Y %b %d %H:%M:%S").ok()
@@ -686,7 +718,11 @@ mod tests {
                 input.extend_from_slice(timestamp);
                 input.extend_from_slice(format!(" host {body}").as_bytes());
                 let parsed = parse(&input).expect("timestamp failure must not reject a message");
-                assert_eq!(parsed.timestamp(), expected, "timestamp: {timestamp:?}");
+                assert_eq!(
+                    parsed.timestamp_with_year(year),
+                    expected,
+                    "timestamp: {timestamp:?}"
+                );
             }
         }
     }

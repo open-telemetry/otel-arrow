@@ -254,10 +254,10 @@ fn bench_receiver_pdata_paths(c: &mut Criterion) {
     group.finish();
 }
 
-/// Exercise the codec decoder at receiver and downstream batching sizes.
+/// Exercise the codec decoder at the default receiver target and hard batch limit.
 fn bench_rfc3164_codec_materialization(c: &mut Criterion) {
     let mut group = c.benchmark_group("rfc3164_codec_materialization");
-    for count in [100, 8192] {
+    for count in [100, 256] {
         let messages = vec![RFC3164_MSG; count];
         let mut codec = SyslogCodecBench::new();
         let framed = codec.frame(&messages);
