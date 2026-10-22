@@ -3,66 +3,66 @@
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 32.21429443359375
+    "value": -1.7749676704406738
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 100.077621267752
+    "value": 100.03753202553558
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.4304845264145
+    "value": 100.44837034720051
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 101.15455729166666
+    "value": 111.98619791666667
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 107.6015625
+    "value": 119.18359375
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 993843.3675983739
+    "value": 665663.441436213
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 670175.7997559824
+    "value": 672829.7287868353
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000523
+    "value": 60.000506
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 304278490.2752655
+    "value": 298243684.9458035
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 377736874.2333869
+    "value": 375561943.86776084
   },
   {
     "extra": "DFE OTLP Transform Insert (Logs)/1000k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 454.027869084584
+    "value": 443.2676978818404
   }
 ]

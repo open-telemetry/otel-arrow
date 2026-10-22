@@ -9,54 +9,54 @@
     "extra": "DFE OTAP Baseline (Traces)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 5.2447481022683915
+    "value": 4.752574488106617
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 5.3824719101123595
+    "value": 4.860392401121146
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 65.81510416666667
+    "value": 77.29401041666667
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 66.33984375
+    "value": 77.90625
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 99872.64375888402
+    "value": 100256.68430006152
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 100530.78242504777
+    "value": 100493.4933980297
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000568
+    "value": 60.000444
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 32533534.53402086
+    "value": 32475930.220015023
   },
   {
     "extra": "DFE OTAP Baseline (Traces)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 32430166.014569458
+    "value": 32369379.403277945
   }
 ]

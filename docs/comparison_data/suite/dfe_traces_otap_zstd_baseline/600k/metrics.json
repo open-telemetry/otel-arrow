@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 0.2816901206970215
+    "value": 1.3437920808792114
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 46.24339232645097
+    "value": 36.94987694352729
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 46.8255969915387
+    "value": 41.59820112429731
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 82.74283854166667
+    "value": 81.694140625
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 88.31640625
+    "value": 87.31640625
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 600567.0401736888
+    "value": 546869.4777274292
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 598816.343078325
+    "value": 539520.689470834
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000526
+    "value": 60.000504
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 25922966.27275271
+    "value": 23436735.208375704
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Traces)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 25852283.768437736
+    "value": 23357316.153381847
   }
 ]

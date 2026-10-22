@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.689265489578247
+    "value": -1.7064075469970703
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 77.4082600492518
+    "value": 66.45575386357427
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 78.59614833281397
+    "value": 67.73081181959564
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 64.025390625
+    "value": 72.69375
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 64.55859375
+    "value": 73.34375
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 298084.6495061748
+    "value": 297532.0224765286
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 301041.9624463741
+    "value": 302609.1312338973
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000593
+    "value": 60.000519
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13197901.439149806
+    "value": 13208645.753527666
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13161407.412826695
+    "value": 13161850.606982844
   }
 ]

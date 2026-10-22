@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -0.8547009229660034
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 68.94933716011873
+    "value": 60.80754136483662
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 69.93504358655044
+    "value": 63.2043216080402
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 74.22721354166667
+    "value": 74.55455729166667
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 76.47265625
+    "value": 79.10546875
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 1002482.7126997133
+    "value": 998128.441502458
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 997200.8571938568
+    "value": 1008048.1895420915
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.005583
+    "value": 60.000508
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 30412168.289871413
+    "value": 29820447.165348124
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Metrics)/1000k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 30395378.991521526
+    "value": 29806865.82595117
   }
 ]

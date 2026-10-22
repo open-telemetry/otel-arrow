@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": -0.8403362035751343
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 5.5269049267203805
+    "value": 5.154107899070815
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 5.659968895800933
+    "value": 5.276364768129474
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 63.940104166666664
+    "value": 74.33033854166666
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 64.41015625
+    "value": 75.02734375
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 198257.1516227012
+    "value": 199802.01131786048
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 200927.92870916348
+    "value": 200791.22787299493
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000502
+    "value": 60.000559
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 23519172.82602444
+    "value": 23518355.66661457
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 23435489.4064849
+    "value": 23426740.643523123
   },
   {
     "extra": "DFE OTAP Attr Rename (Logs)/200k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 117.05278095046539
+    "value": 117.12840205096246
   }
 ]

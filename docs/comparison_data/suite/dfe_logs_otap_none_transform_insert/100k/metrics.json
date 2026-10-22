@@ -9,60 +9,60 @@
     "extra": "DFE OTAP Transform Insert (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 6.910034438650056
+    "value": 6.302325099179387
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 7.274360573923892
+    "value": 6.425544122232616
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 72.26354166666667
+    "value": 74.13997395833333
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 72.61328125
+    "value": 74.43359375
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 99990.43142413863
+    "value": 99957.82213768158
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 99990.43142413863
+    "value": 99957.82213768158
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.00063
+    "value": 60.000558
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 13752579.599573681
+    "value": 13744987.276785
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 11730076.067811254
+    "value": 11721500.688729377
   },
   {
     "extra": "DFE OTAP Transform Insert (Logs)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 137.5389565151299
+    "value": 137.50787064820898
   }
 ]

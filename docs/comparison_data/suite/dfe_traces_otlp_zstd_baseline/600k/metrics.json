@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 1.669490933418274
+    "value": 0.0
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 80.60421323619332
+    "value": 69.0405860678916
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 81.71933563146348
+    "value": 70.13937012784534
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 75.56393229166666
+    "value": 77.60950520833333
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 79.26171875
+    "value": 81.3125
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 605935.6717119002
+    "value": 599157.4323219946
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 598800.4706093308
+    "value": 601226.634808675
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.005597
+    "value": 60.000487
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 40540442.173039794
+    "value": 40395961.20177757
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 40562915.14262601
+    "value": 40422745.719385624
   }
 ]

@@ -3,60 +3,60 @@
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -0.8403362035751343
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 9.535035359570655
+    "value": 8.72842983514414
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 9.910908523259444
+    "value": 8.952715933894606
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 64.74401041666667
+    "value": 79.20091145833334
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 66.875
+    "value": 82.484375
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 200414.66299019722
+    "value": 198741.494748256
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 201069.22245308507
+    "value": 202109.99465924338
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000503
+    "value": 60.000528
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2645588.6487315865
+    "value": 2574555.8692551013
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Metrics)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 2571602.9212913564
+    "value": 2498327.0925920308
   }
 ]

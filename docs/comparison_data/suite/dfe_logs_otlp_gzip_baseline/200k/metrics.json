@@ -3,66 +3,66 @@
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 0.8403362035751343
+    "value": 0.0
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 33.01303355177114
+    "value": 27.88701792934306
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 33.6405
+    "value": 28.387048567870487
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 62.00924479166667
+    "value": 72.48854166666666
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 62.58203125
+    "value": 72.9609375
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 201433.7819619129
+    "value": 199720.39483261266
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 199740.9698165496
+    "value": 199720.44892295514
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000548
+    "value": 60.000577
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5545901.000598831
+    "value": 5512668.984526009
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5498614.17585291
+    "value": 5456652.780302258
   },
   {
     "extra": "DFE OTLP Baseline w/ Gzip (Logs)/200k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 27.76546547106694
+    "value": 27.60192566286788
   }
 ]

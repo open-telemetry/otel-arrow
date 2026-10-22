@@ -3,60 +3,60 @@
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - Dropped Spans %",
     "name": "dropped_spans_percentage",
     "unit": "%",
-    "value": 0.0
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 40.78806515810186
+    "value": 34.71434651394914
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 42.440737269603254
+    "value": 36.06524031007752
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 69.390625
+    "value": 75.551953125
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 72.41015625
+    "value": 78.40234375
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - Span Throughput",
     "name": "spans_produced_rate",
     "unit": "spans/sec",
-    "value": 303121.2445067063
+    "value": 298281.58965078153
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - Span Throughput",
     "name": "spans_received_rate",
     "unit": "spans/sec",
-    "value": 301572.37827550323
+    "value": 303858.0809900291
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000538
+    "value": 60.000561
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 20350830.085308623
+    "value": 20249688.625828985
   },
   {
     "extra": "DFE OTLP Baseline w/ Zstd (Traces)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 20318398.798934683
+    "value": 20224349.107710633
   }
 ]

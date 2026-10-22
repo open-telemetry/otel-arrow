@@ -3,60 +3,60 @@
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 0.8403362035751343
+    "value": 0.0
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 2.060179577783354
+    "value": 1.784620895611917
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 2.166991260923845
+    "value": 1.8920698254364088
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 63.659375
+    "value": 72.81588541666666
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 64.25390625
+    "value": 73.36328125
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 201500.25234943366
+    "value": 199847.6212696536
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 199462.0441056219
+    "value": 199847.6212696536
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000526
+    "value": 60.000578
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 39354090.62575442
+    "value": 39048326.4094231
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Metrics)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 39293055.19650225
+    "value": 38982502.10033376
   }
 ]

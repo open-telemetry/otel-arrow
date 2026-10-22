@@ -9,60 +9,60 @@
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 17.717205175326274
+    "value": 15.75993030515572
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 18.00466770670827
+    "value": 16.089165628891656
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 61.95234375
+    "value": 76.152734375
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 63.37109375
+    "value": 76.640625
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 201780.71141522753
+    "value": 198311.74667083673
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 202126.35919238595
+    "value": 200354.66460435564
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000514
+    "value": 60.000526
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 31210335.134321414
+    "value": 31145413.898603808
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27669738.64571128
+    "value": 27609498.006349105
   },
   {
     "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-2 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 154.41001984612555
+    "value": 155.45140393964513
   }
 ]

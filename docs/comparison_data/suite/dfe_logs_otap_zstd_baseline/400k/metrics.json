@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 0.4219409227371216
+    "value": -1.6949152946472168
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 16.569476051795846
+    "value": 15.548425719554656
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 16.85804604853765
+    "value": 16.383560960399127
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 71.54388020833333
+    "value": 81.03880208333334
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 74.16015625
+    "value": 83.16015625
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 398540.5411750058
+    "value": 396969.9352128245
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 400926.6910811768
+    "value": 403698.23919948254
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000552
+    "value": 60.000558
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 3222713.6062221555
+    "value": 3222797.9834161727
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 3148495.222231612
+    "value": 3148487.807572305
   },
   {
     "extra": "DFE OTAP Baseline w/ Zstd (Logs)/400k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 8.038161783470892
+    "value": 7.983185633424738
   }
 ]

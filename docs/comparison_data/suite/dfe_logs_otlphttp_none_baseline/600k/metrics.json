@@ -3,66 +3,66 @@
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -0.840359628200531
+    "value": -1.6923294067382812
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 9.069475022406863
+    "value": 8.666545966025184
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 9.613878315132606
+    "value": 8.964480398257622
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 74.02721354166667
+    "value": 80.99244791666666
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 82.359375
+    "value": 82.58203125
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 601929.3573453558
+    "value": 597078.6650592972
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 603906.9064393548
+    "value": 604099.4273743642
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000536
+    "value": 60.000579
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 225433974.93767044
+    "value": 225503673.66293973
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 225327460.75985944
+    "value": 225403664.80058518
   },
   {
     "extra": "DFE OTLP/HTTP Baseline (Logs)/600k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 373.2925928382454
+    "value": 373.28900416784154
   }
 ]
