@@ -63,6 +63,7 @@ otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true 
 otel-arrow-contrib-data-engine-recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
 tokio-util = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -199,6 +200,8 @@ windows-event-forwarding = [
     "dep:url",
     "dep:humantime-serde",
     "dep:x509-parser",
+    "dep:rustls",
+    "dep:tokio-rustls",
 ]
 user-events = [
     "dep:base64",
