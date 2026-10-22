@@ -5,13 +5,17 @@ use super::encoder;
 use super::otlp_to_geneva::{self, Config};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// ME reserves headroom below GIG's 20 MiB limit using this same bound.
+pub(super) const MAX_PUBLICATION_BYTES: usize = 20_000_000;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct PublicationPreparation {
-    pub(super) publication: Option<Vec<u8>>,
+    pub(super) publications: Vec<encoder::EncodedPacket>,
     pub(super) rejected_data_points: usize,
     pub(super) cardinality_overflows: usize,
 }
@@ -20,28 +24,45 @@ pub(super) fn prepare_publication(
     data: &OtapPdata,
     config: &Config,
 ) -> Result<PublicationPreparation, PrepareError> {
-    let Some(view) = data.payload_ref().encoded_view().filter(|view| {
-        view.encoding() == &PdataEncoding::OTLP && view.signal_type() == SignalType::Metrics
-    }) else {
-        return Err(PrepareError::UnsupportedPayload);
-    };
     let receive_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| PrepareError::SystemTime)?
         .as_nanos();
     let receive_time = u64::try_from(receive_time).map_err(|_| PrepareError::SystemTime)?;
-    // Only top-level framing is validated; other content is read best-effort (see #4029).
-    let metrics = RawMetricsData::try_new(view.bytes()).map_err(PrepareError::Decode)?;
-    let mapped = otlp_to_geneva::map_metrics(&metrics, config, receive_time)?;
+    prepare_publication_at(data, config, receive_time)
+}
+
+fn prepare_publication_at(
+    data: &OtapPdata,
+    config: &Config,
+    receive_time: u64,
+) -> Result<PublicationPreparation, PrepareError> {
+    if data.signal_type() != SignalType::Metrics {
+        return Err(PrepareError::UnsupportedPayload);
+    }
+    let payload = data.payload_ref();
+    let mapped = if let Some(records) = payload.otap_ref() {
+        let mut records = records.clone();
+        records
+            .decode_transport_optimized_ids()
+            .map_err(PrepareError::Decode)?;
+        let metrics = OtapMetricsView::try_from(&records).map_err(PrepareError::Decode)?;
+        otlp_to_geneva::map_metrics(&metrics, config, receive_time)?
+    } else if let Some(view) = payload
+        .encoded_view()
+        .filter(|view| view.encoding() == &PdataEncoding::OTLP)
+    {
+        // Only top-level framing is validated; other content is read best-effort (see #4029).
+        let metrics = RawMetricsData::try_new(view.bytes()).map_err(PrepareError::Decode)?;
+        otlp_to_geneva::map_metrics(&metrics, config, receive_time)?
+    } else {
+        return Err(PrepareError::UnsupportedPayload);
+    };
     let rejected_data_points = mapped.rejected_data_points;
     let cardinality_overflows = mapped.cardinality_overflows.len();
-    let publication = if mapped.packet.metrics.is_empty() {
-        None
-    } else {
-        Some(encoder::encode(&mapped.packet)?)
-    };
+    let publications = encoder::encode_bounded(&mapped.packet, MAX_PUBLICATION_BYTES)?;
     Ok(PublicationPreparation {
-        publication,
+        publications,
         rejected_data_points,
         cardinality_overflows,
     })
@@ -53,7 +74,7 @@ pub(super) enum PrepareError {
     UnsupportedPayload,
     #[error("system clock cannot be represented as an OTLP timestamp")]
     SystemTime,
-    #[error("invalid OTLP metrics request: {0}")]
+    #[error("invalid metrics request: {0}")]
     Decode(#[source] otel_arrow_dfe_pdata::error::Error),
     #[error(transparent)]
     Mapping(#[from] otlp_to_geneva::MappingError),
@@ -66,6 +87,7 @@ mod tests {
     use super::super::{AuthConfig, ExporterConfig};
     use super::*;
     use bytes::Bytes;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
@@ -73,7 +95,7 @@ mod tests {
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
     use otel_arrow_dfe_pdata_codec::OtapPayload;
 
     fn metrics_pdata(request: ExportMetricsServiceRequest) -> OtapPdata {
@@ -94,12 +116,11 @@ mod tests {
         }
     }
 
-    /// Scenario: Preparation receives native OTAP metrics or OTLP bytes for a non-metrics signal.
+    /// Scenario: Preparation receives OTLP bytes for a non-metrics signal.
     /// Guarantees: Unsupported payloads are rejected before their content is interpreted as OTLP metrics.
     #[test]
     fn rejects_unsupported_payloads() {
         for payload in [
-            OtapPayload::from_otap(OtapArrowRecords::Metrics(Default::default())),
             OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             OtlpProtoBytes::ExportTracesRequest(Bytes::new()).into(),
         ] {
@@ -193,10 +214,9 @@ mod tests {
         let prepared =
             prepare_publication(&data, &mapping_config).expect("publication should prepare");
 
-        let packet = prepared
-            .publication
-            .expect("one publication should be prepared");
-        assert!(!packet.is_empty());
+        assert_eq!(prepared.publications.len(), 1);
+        assert!(!prepared.publications[0].bytes.is_empty());
+        assert_eq!(prepared.publications[0].item_count, 1);
         assert_eq!(prepared.rejected_data_points, 0);
         assert_eq!(prepared.cardinality_overflows, 0);
     }
@@ -248,7 +268,7 @@ mod tests {
         let prepared = prepare_publication(&data, &(&config).into())
             .expect("invalid points should not reject the request");
 
-        assert!(prepared.publication.is_none());
+        assert!(prepared.publications.is_empty());
         assert_eq!(prepared.rejected_data_points, 1);
         assert_eq!(prepared.cardinality_overflows, 0);
     }
@@ -288,10 +308,8 @@ mod tests {
         let prepared = prepare_publication(&data, &mapping_config())
             .expect("well-formed top-level framing should be accepted");
 
-        let packet = prepared
-            .publication
-            .expect("well-formed metrics should be published");
-        assert!(!packet.is_empty());
+        assert_eq!(prepared.publications.len(), 1);
+        assert!(!prepared.publications[0].bytes.is_empty());
         assert_eq!(prepared.rejected_data_points, 0);
     }
 
@@ -307,8 +325,126 @@ mod tests {
             let prepared = prepare_publication(&data, &mapping_config())
                 .expect("well-formed top-level framing should be accepted");
 
-            assert!(prepared.publication.is_none());
+            assert!(prepared.publications.is_empty());
             assert_eq!(prepared.rejected_data_points, 0);
+        }
+    }
+
+    /// Scenario: Preparation receives native OTAP gauge metrics from a pipeline source.
+    /// Guarantees: Native metrics produce a publication with the same mapped point count as OTLP.
+    #[test]
+    fn prepares_native_otap_metrics() {
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 0)])],
+        };
+        let records = otlp_to_otap(&OtlpProtoMessage::Metrics(request.clone().into()));
+        let native = OtapPdata::new_default(OtapPayload::from_otap(records));
+        let encoded = metrics_pdata(request);
+
+        for data in [native, encoded] {
+            let prepared = prepare_publication(&data, &mapping_config())
+                .expect("native and encoded metrics should prepare");
+            assert_eq!(prepared.publications.len(), 1);
+            assert_eq!(prepared.publications[0].item_count, 1);
+            assert_eq!(prepared.rejected_data_points, 0);
+        }
+    }
+
+    /// Scenario: Native OTAP contains three gauges with transport-encoded IDs and distinct point attributes.
+    /// Guarantees: Normalization preserves metric/value/attribute associations, matches OTLP publication bytes, and leaves the original payload unchanged.
+    #[test]
+    fn normalizes_transport_encoded_metrics_before_mapping() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, any_value};
+
+        let mut resource = gauge_resource(Vec::new(), Vec::new());
+        resource.scope_metrics[0].metrics = (0..3)
+            .map(|index| Metric {
+                name: format!("gauge{index}"),
+                data: Some(metric::Data::Gauge(Gauge {
+                    data_points: vec![NumberDataPoint {
+                        attributes: vec![KeyValue {
+                            key: "point".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(any_value::Value::StringValue(format!("value{index}"))),
+                            }),
+                        }],
+                        value: Some(number_data_point::Value::AsInt(index + 10)),
+                        ..gauge_point(Vec::new(), 0)
+                    }],
+                })),
+                ..Default::default()
+            })
+            .collect();
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![resource],
+        };
+        let records = otlp_to_otap(&OtlpProtoMessage::Metrics(request.clone().into()));
+        let mut optimized = records.clone();
+        optimized
+            .encode_transport_optimized()
+            .expect("transport optimization should succeed");
+        assert_ne!(records.root_record_batch(), optimized.root_record_batch());
+        let original_root = optimized.root_record_batch().cloned();
+        let native = OtapPdata::new_default(OtapPayload::from_otap(optimized));
+        let encoded = metrics_pdata(request);
+        let receive_time = 1_700_000_000_000_000_000;
+        let expected = prepare_publication_at(&encoded, &mapping_config(), receive_time)
+            .expect("OTLP metrics should prepare");
+        let actual = prepare_publication_at(&native, &mapping_config(), receive_time)
+            .expect("transport-encoded native metrics should prepare");
+        assert_eq!(actual, expected);
+        assert_eq!(actual.publications[0].item_count, 3);
+        assert_eq!(
+            native
+                .payload_ref()
+                .otap_ref()
+                .expect("native payload")
+                .root_record_batch(),
+            original_root.as_ref(),
+        );
+    }
+
+    /// Scenario: A valid OTLP request contains over 20 MiB of distinct dimension values.
+    /// Guarantees: Preparation preserves every point in independently checksummed packets below the GIG publication limit.
+    #[test]
+    fn splits_large_otlp_request_below_gig_limit() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, any_value};
+
+        let points = (0..21_000)
+            .map(|index| {
+                gauge_point(
+                    vec![KeyValue {
+                        key: "dimension".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue(format!(
+                                "{index:08}{}",
+                                "x".repeat(1_016)
+                            ))),
+                        }),
+                    }],
+                    0,
+                )
+            })
+            .collect();
+        let data = metrics_pdata(ExportMetricsServiceRequest {
+            resource_metrics: vec![gauge_resource(Vec::new(), points)],
+        });
+        let prepared = prepare_publication(&data, &mapping_config())
+            .expect("large request should be split, not rejected");
+        assert!(prepared.publications.len() > 1);
+        assert_eq!(prepared.rejected_data_points, 0);
+        assert_eq!(
+            prepared
+                .publications
+                .iter()
+                .map(|packet| packet.item_count)
+                .sum::<u64>(),
+            21_000,
+        );
+        for packet in prepared.publications {
+            assert!(packet.bytes.len() <= MAX_PUBLICATION_BYTES);
+            let crc = u32::from_le_bytes(packet.bytes[2..6].try_into().expect("CRC field"));
+            assert_eq!(crc, crc32fast::hash(&packet.bytes[6..]));
         }
     }
 }

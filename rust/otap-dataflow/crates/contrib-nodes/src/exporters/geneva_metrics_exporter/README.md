@@ -18,7 +18,7 @@ traces through a different Geneva protocol and client.
 The current implementation contains the protocol model, encoder, compatibility
 fixtures, Geneva-compatible mapping for OTLP and OTAP metrics views,
 authenticated HTTP publication, exporter registration, and runtime
-configuration. The registered exporter accepts OTLP metrics payloads.
+configuration. The registered exporter accepts OTLP and native OTAP metrics.
 
 The exporter requires `auth.type: bearer` and a bound
 `bearer_token_provider`. Providers backed by Azure managed identity are
@@ -32,6 +32,9 @@ managed identity, also enable the `azure_identity_auth` extension, for example
 The exporter publishes to the single monitoring account configured for the
 component instance; it does not route metrics to different accounts per
 request.
+
+Requests are split into packets of at most 20,000,000 bytes and ACKed only after
+all packets succeed. Retrying a failed request can resend successful packets.
 
 ## Testing
 

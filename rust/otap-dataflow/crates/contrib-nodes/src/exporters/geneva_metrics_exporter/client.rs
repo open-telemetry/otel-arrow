@@ -38,7 +38,7 @@ impl PublishError {
         matches!(
             self,
             Self::Response {
-                status: StatusCode::UNAUTHORIZED
+                status: StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
             }
         )
     }
@@ -48,6 +48,7 @@ impl PublishError {
             Self::Request(_) => true,
             Self::Response { status } => {
                 *status == StatusCode::UNAUTHORIZED
+                    || *status == StatusCode::FORBIDDEN
                     || *status == StatusCode::TOO_MANY_REQUESTS
                     || status.is_server_error()
             }
@@ -150,10 +151,10 @@ mod tests {
     }
 
     /// Scenario: The endpoint rejects a packet with a non-retryable client error.
-    /// Guarantees: HTTP 400 and 403 responses are classified as permanent.
+    /// Guarantees: HTTP 400 responses are classified as permanent.
     #[tokio::test]
     async fn classifies_client_error_as_permanent() {
-        for status in [400, 403] {
+        for status in [400] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(status))
@@ -178,10 +179,10 @@ mod tests {
     }
 
     /// Scenario: A bearer credential is rejected, the endpoint is throttled, or the service is unavailable.
-    /// Guarantees: HTTP 401, 429, and 5xx responses are classified as retryable.
+    /// Guarantees: HTTP 401, 403, 429, and 5xx responses are classified as retryable.
     #[tokio::test]
     async fn classifies_transient_responses_as_retryable() {
-        for status in [401, 429, 500, 503] {
+        for status in [401, 403, 429, 500, 503] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(status))
@@ -201,7 +202,7 @@ mod tests {
                 .expect_err("publication should fail");
 
             assert!(error.is_retryable(), "HTTP {status} should be retryable");
-            assert_eq!(error.is_unauthorized(), status == 401);
+            assert_eq!(error.is_unauthorized(), matches!(status, 401 | 403));
         }
     }
 

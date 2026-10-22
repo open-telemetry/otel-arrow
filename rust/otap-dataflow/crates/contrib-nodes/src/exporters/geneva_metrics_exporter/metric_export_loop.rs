@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::client::{MetricsPublisher, PublishError};
+use super::encoder::EncodedPacket;
 use super::otlp_to_geneva::Config;
 use super::publication_preparation::prepare_publication;
 use async_trait::async_trait;
@@ -18,17 +19,15 @@ use otel_arrow_dfe_otap::http_client_auth::{
     HttpClientAuthProvider, HttpClientAuthProviderEvents,
     new_http_client_auth_provider_from_bearer_token_provider,
 };
+use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata_codec::PdataEncoding;
-use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::otel_warn;
 use std::future::poll_fn;
 use std::time::Instant;
 
 const UNSUPPORTED_SIGNAL_MESSAGE: &str = "Geneva metrics exporter accepts metrics only";
-const UNSUPPORTED_FORMAT_MESSAGE: &str = "Geneva metrics exporter accepts OTLP only";
 const SHUTDOWN_AT_CAPACITY_MESSAGE: &str =
-    "Geneva metrics exporter shutdown before publication could start";
+    "Geneva metrics exporter shutdown deadline exhausted before publication could start";
 
 const GENEVA_METRICS_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
     validate_header_name: |_| Ok(()),
@@ -48,20 +47,50 @@ struct InFlightPublication {
     data: OtapPdata,
     auth_generation: u64,
     request: LocalBoxFuture<'static, Result<(), PublishError>>,
+    attempt: ExporterAttempt,
+    remaining: std::vec::IntoIter<EncodedPacket>,
+}
+
+struct CompletedPublication {
+    data: OtapPdata,
+    auth_generation: u64,
+    remaining: std::vec::IntoIter<EncodedPacket>,
+    result: Result<(), PublishError>,
+}
+
+impl InFlightPublication {
+    fn complete(
+        self,
+        result: Result<(), PublishError>,
+        metrics: &mut ExporterMetrics,
+    ) -> CompletedPublication {
+        let result = match result {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_retryable() => Err(self.attempt.failed(error)),
+            Err(error) => Err(self.attempt.refused(error)),
+        };
+        CompletedPublication {
+            data: self.data,
+            auth_generation: self.auth_generation,
+            remaining: self.remaining,
+            result: metrics.record(self.attempt.complete(result)),
+        }
+    }
 }
 
 type CompletionFuture = LocalBoxFuture<'static, Result<(), EngineError>>;
 
 enum PublicationStart {
-    InFlight(InFlightPublication),
+    InFlight(Box<InFlightPublication>),
     Completion(CompletionFuture),
 }
 
-/// Pipeline exporter that converts OTLP metrics to Geneva protocol v6 packets.
+/// Pipeline exporter that converts OTLP or native OTAP metrics to Geneva packets.
 pub struct GenevaMetricsExporter {
     mapping_config: Config,
     publisher: MetricsPublisher,
     auth: Box<dyn HttpClientAuthProvider>,
+    metrics: ExporterMetrics,
 }
 
 impl GenevaMetricsExporter {
@@ -69,10 +98,12 @@ impl GenevaMetricsExporter {
         mapping_config: Config,
         publisher: MetricsPublisher,
         token_provider: Box<dyn LocalBearerTokenProvider>,
+        metrics: ExporterMetrics,
     ) -> Self {
         Self {
             mapping_config,
             publisher,
+            metrics,
             auth: Box::new(new_http_client_auth_provider_from_bearer_token_provider(
                 token_provider,
             )),
@@ -95,37 +126,29 @@ impl GenevaMetricsExporter {
         Box::pin(async move { effect_handler.notify_nack(nack).await })
     }
 
-    fn chain_completion(
-        first: Option<CompletionFuture>,
-        second: CompletionFuture,
-    ) -> CompletionFuture {
-        match first {
-            Some(first) => Box::pin(async move {
-                first.await?;
-                second.await
-            }),
-            None => second,
-        }
+    fn record_refusal(&mut self, attempt: ExporterAttempt) {
+        let result = Err::<(), _>(attempt.refused(()));
+        _ = self.metrics.record(attempt.complete(result));
     }
 
     fn start_publication(
         &mut self,
-        data: OtapPdata,
+        mut data: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> PublicationStart {
         let signal_type = data.signal_type();
+        let mut attempt = self.metrics.attempt(signal_type);
+        attempt.set_item_count_with(|| data.num_items() as u64);
         if signal_type != SignalType::Metrics {
+            self.record_refusal(attempt);
             let nack = NackMsg::new_permanent(UNSUPPORTED_SIGNAL_MESSAGE, data);
-            return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
-        }
-        if data.payload_ref().encoding() != Some(&PdataEncoding::OTLP) {
-            let nack = NackMsg::new_permanent(UNSUPPORTED_FORMAT_MESSAGE, data);
             return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
         }
 
         // ExporterInbox force-drains pdata during shutdown even when normal
         // admission is closed, so re-check auth before doing publication work.
         if !self.auth.is_ready() {
+            self.record_refusal(attempt);
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
             return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
         }
@@ -133,6 +156,7 @@ impl GenevaMetricsExporter {
         let prepared = match prepare_publication(&data, &self.mapping_config) {
             Ok(prepared) => prepared,
             Err(error) => {
+                self.record_refusal(attempt);
                 let nack = NackMsg::new_permanent(error.to_string(), data);
                 return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
             }
@@ -144,43 +168,71 @@ impl GenevaMetricsExporter {
                 cardinality_overflows = prepared.cardinality_overflows,
             );
         }
-        let Some(packet) = prepared.publication else {
+        if prepared.publications.is_empty() {
+            self.metrics
+                .record(attempt.complete::<(), ()>(Ok(())))
+                .expect("successful no-op has no error");
+            return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
+        }
+
+        // Mapping and packet splitting are shared preparation. Each HTTP
+        // submission below owns a separate backend attempt.
+        self.start_next_publication(data, prepared.publications.into_iter(), effect_handler)
+    }
+
+    fn start_next_publication(
+        &mut self,
+        data: OtapPdata,
+        mut remaining: std::vec::IntoIter<EncodedPacket>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> PublicationStart {
+        let Some(packet) = remaining.next() else {
             return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
         };
-
+        let mut attempt = self.metrics.attempt(SignalType::Metrics);
+        attempt.set_item_count_with(|| packet.item_count);
+        attempt.set_payload_size_with(|| packet.bytes.len());
+        if !self.auth.is_ready() {
+            self.record_refusal(attempt);
+            let nack = NackMsg::new(self.auth.not_ready_reason(), data);
+            return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
+        }
         let Some((auth_header_name, auth_header_value, auth_generation)) = self.auth.header()
         else {
+            self.record_refusal(attempt);
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
             return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
         };
 
         let request = self.publisher.publish(
             &self.mapping_config.monitoring_account,
-            packet,
+            packet.bytes,
             auth_header_name,
             auth_header_value,
         );
-        PublicationStart::InFlight(InFlightPublication {
+        PublicationStart::InFlight(Box::new(InFlightPublication {
             data,
             auth_generation,
             request,
-        })
+            attempt,
+            remaining,
+        }))
     }
 
     fn publication_completion(
         &mut self,
-        publication: InFlightPublication,
-        result: Result<(), PublishError>,
+        publication: CompletedPublication,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> CompletionFuture {
-        let InFlightPublication {
+    ) -> PublicationStart {
+        let CompletedPublication {
             data,
             auth_generation,
-            request: _,
+            remaining,
+            result,
         } = publication;
 
         match result {
-            Ok(()) => Self::ack_completion(effect_handler, data),
+            Ok(()) => self.start_next_publication(data, remaining, effect_handler),
             Err(error) => {
                 if error.is_unauthorized() {
                     self.auth.invalidate(auth_generation);
@@ -194,52 +246,91 @@ impl GenevaMetricsExporter {
                 } else {
                     NackMsg::new_permanent(reason, data)
                 };
-                Self::nack_completion(effect_handler, nack)
+                PublicationStart::Completion(Self::nack_completion(effect_handler, nack))
             }
+        }
+    }
+
+    async fn with_auth_refresh<T>(&mut self, work: impl Future<Output = T>) -> T {
+        tokio::pin!(work);
+        loop {
+            tokio::select! {
+                biased;
+                () = poll_fn(|cx| self.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)),
+                    if self.auth.is_active() => {}
+                result = &mut work => return result,
+            }
+        }
+    }
+
+    async fn wait_for_shutdown_auth(&mut self, deadline: tokio::time::Instant) {
+        let wait = async {
+            while !self.auth.is_ready() && self.auth.is_active() {
+                poll_fn(|cx| self.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            }
+        };
+        if tokio::time::timeout_at(deadline, wait).await.is_err() {
+            otel_warn!(
+                "geneva_metrics_exporter.shutdown.deadline_exceeded",
+                message = "authentication refresh unavailable before the shutdown deadline"
+            );
         }
     }
 
     async fn finish_shutdown_work(
         &mut self,
-        in_flight: Option<InFlightPublication>,
-        pending_completion: Option<CompletionFuture>,
+        mut in_flight: Option<Box<InFlightPublication>>,
+        mut pending_completion: Option<CompletionFuture>,
         deadline: Instant,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        let had_in_flight = in_flight.is_some();
-        let had_pending_completion = pending_completion.is_some();
-        let finish = async {
-            match (in_flight, pending_completion) {
-                (Some(publication), Some(completion)) => {
-                    let request = async move {
-                        let mut publication = publication;
-                        let result = publication.request.as_mut().await;
-                        Ok::<_, EngineError>((publication, result))
-                    };
-                    let (_, (publication, result)) = tokio::try_join!(completion, request)?;
-                    self.publication_completion(publication, result, effect_handler)
-                        .await
+        let deadline = tokio::time::Instant::from_std(deadline);
+        loop {
+            if let Some(completion) = pending_completion.take() {
+                match tokio::time::timeout_at(deadline, self.with_auth_refresh(completion)).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        otel_warn!(
+                            "geneva_metrics_exporter.shutdown.deadline_exceeded",
+                            message = "completion notification abandoned at the shutdown deadline"
+                        );
+                        return Ok(());
+                    }
                 }
-                (Some(mut publication), None) => {
-                    let result = publication.request.as_mut().await;
-                    self.publication_completion(publication, result, effect_handler)
-                        .await
-                }
-                (None, Some(completion)) => completion.await,
-                (None, None) => Ok(()),
             }
-        };
-
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), finish).await {
-            Ok(result) => result,
-            Err(_) => {
-                otel_warn!(
-                    "geneva_metrics_exporter.shutdown.deadline_exceeded",
-                    in_flight_publication = had_in_flight,
-                    pending_completion = had_pending_completion,
-                    message = "publication work abandoned at the shutdown deadline"
-                );
-                Ok(())
+            let Some(mut publication) = in_flight.take() else {
+                return Ok(());
+            };
+            let result = if tokio::time::Instant::now() < deadline {
+                Some(
+                    tokio::time::timeout_at(
+                        deadline,
+                        self.with_auth_refresh(publication.request.as_mut()),
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            let result = match result {
+                Some(Ok(result)) => result,
+                None | Some(Err(_)) => {
+                    let result = Err::<(), _>(publication.attempt.failed(()));
+                    _ = self.metrics.record(publication.attempt.complete(result));
+                    otel_warn!(
+                        "geneva_metrics_exporter.shutdown.deadline_exceeded",
+                        message = "publication work abandoned at the shutdown deadline"
+                    );
+                    return Ok(());
+                }
+            };
+            let completed = publication.complete(result, &mut self.metrics);
+            if completed.result.is_ok() && !completed.remaining.as_slice().is_empty() {
+                self.wait_for_shutdown_auth(deadline).await;
+            }
+            match self.publication_completion(completed, effect_handler) {
+                PublicationStart::InFlight(publication) => in_flight = Some(publication),
+                PublicationStart::Completion(completion) => pending_completion = Some(completion),
             }
         }
     }
@@ -255,7 +346,7 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
         let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
         tokio::pin!(margin_sleep);
         let mut armed_margin_deadline: Option<Instant> = None;
-        let mut in_flight: Option<InFlightPublication> = None;
+        let mut in_flight: Option<Box<InFlightPublication>> = None;
         let mut pending_completion: Option<CompletionFuture> = None;
 
         loop {
@@ -308,12 +399,11 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     let publication = in_flight
                         .take()
                         .expect("completed publication must be present");
-                    let completion =
-                        self.publication_completion(publication, result, &effect_handler);
-                    pending_completion = Some(Self::chain_completion(
-                        pending_completion.take(),
-                        completion,
-                    ));
+                    let completed = publication.complete(result, &mut self.metrics);
+                    match self.publication_completion(completed, &effect_handler) {
+                        PublicationStart::InFlight(publication) => in_flight = Some(publication),
+                        PublicationStart::Completion(completion) => pending_completion = Some(completion),
+                    }
                     continue;
                 }
 
@@ -331,18 +421,42 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     .await?;
                     return Ok(TerminalState::new(
                         deadline,
-                        std::iter::empty::<MetricSetSnapshot>(),
+                        self.metrics.terminal_snapshots(),
                     ));
                 }
-                Message::PData(data) => {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    if let Err(error) = self.metrics.report(&mut metrics_reporter) {
+                        otel_warn!("geneva_metrics_exporter.telemetry.failed", error = %error);
+                    }
+                }
+                Message::PData(mut data) => {
+                    let shutdown_deadline = msg_chan.shutdown_deadline();
                     if has_in_flight || has_pending_completion {
-                        let nack = NackMsg::new(SHUTDOWN_AT_CAPACITY_MESSAGE, data);
-                        let completion = Self::nack_completion(&effect_handler, nack);
-                        pending_completion = Some(Self::chain_completion(
+                        let deadline = shutdown_deadline
+                            .expect("closed admission only delivers pdata during shutdown");
+                        self.finish_shutdown_work(
+                            in_flight.take(),
                             pending_completion.take(),
-                            completion,
-                        ));
-                        continue;
+                            deadline,
+                            &effect_handler,
+                        )
+                        .await?;
+                    }
+                    if let Some(deadline) = shutdown_deadline {
+                        if data.signal_type() == SignalType::Metrics {
+                            self.wait_for_shutdown_auth(tokio::time::Instant::from_std(deadline))
+                                .await;
+                        }
+                        if Instant::now() >= deadline {
+                            let mut attempt = self.metrics.attempt(data.signal_type());
+                            attempt.set_item_count_with(|| data.num_items() as u64);
+                            self.record_refusal(attempt);
+                            let nack = NackMsg::new(SHUTDOWN_AT_CAPACITY_MESSAGE, data);
+                            pending_completion = Some(Self::nack_completion(&effect_handler, nack));
+                            continue;
+                        }
                     }
                     match self.start_publication(data, &effect_handler) {
                         PublicationStart::InFlight(publication) => {
@@ -382,6 +496,7 @@ mod tests {
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
     use otel_arrow_dfe_pdata_codec::OtapPayload;
+    use otel_arrow_dfe_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::cell::RefCell;
     use std::time::{Duration, Instant};
@@ -470,6 +585,10 @@ mod tests {
     }
 
     fn metrics_pdata(call_id: usize) -> OtapPdata {
+        metrics_pdata_with_format(call_id, false)
+    }
+
+    fn metrics_pdata_with_format(call_id: usize, native: bool) -> OtapPdata {
         let point = NumberDataPoint {
             attributes: Vec::new(),
             start_time_unix_nano: 0,
@@ -497,8 +616,14 @@ mod tests {
                 schema_url: String::new(),
             }],
         };
-        let payload = OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
-            .expect("request should serialize");
+        let message = OtlpProtoMessage::Metrics(request.into());
+        let payload = if native {
+            OtapPayload::from_otap(otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap(
+                &message,
+            ))
+        } else {
+            OtapPayload::try_from(message).expect("request should serialize")
+        };
         OtapPdata::new_default(payload).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
             TestCallData::default().into(),
@@ -573,6 +698,15 @@ mod tests {
             mapping_config(),
             MetricsPublisher::new(endpoint, timeout).expect("publisher should be created"),
             Box::new(token_provider),
+            ExporterMetrics::register(
+                &otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+                    Interests::NODE_INPUT_METRICS
+                        | Interests::NODE_LOCAL_DURATION
+                        | Interests::NODE_ITEM_COUNTS
+                        | Interests::NODE_SIZE,
+                )
+                .0,
+            ),
         )
     }
 
@@ -597,8 +731,32 @@ mod tests {
         .expect("exporter should start the HTTP publication");
     }
 
-    /// Scenario: Pdata is queued before the bearer provider publishes its initial token.
-    /// Guarantees: The start loop backpressures the inbox and ACKs that same pdata after auth becomes ready.
+    fn metric_value<'a>(
+        snapshots: &'a [MetricSetSnapshot],
+        outcome: &str,
+        name: &str,
+    ) -> &'a MetricValue {
+        snapshots
+            .iter()
+            .find_map(|snapshot| {
+                if snapshot.descriptor().name != "exporter.attempted"
+                    || snapshot.measurement_attribute_value("signal") != Some("metrics")
+                    || snapshot.measurement_attribute_value("outcome") != Some(outcome)
+                {
+                    return None;
+                }
+                snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|field| field.name == name)
+                    .map(|index| &snapshot.get_metrics()[index])
+            })
+            .expect("expected shared exporter metric")
+    }
+
+    /// Scenario: Native OTAP metrics are queued before the bearer provider publishes its initial token.
+    /// Guarantees: The start loop publishes and ACKs native metrics after auth arrives, then reports the standard exporter measurements.
     #[tokio::test]
     async fn start_loop_waits_for_initial_auth() {
         let server = MockServer::start().await;
@@ -615,7 +773,7 @@ mod tests {
 
         let driver = async move {
             pdata_tx
-                .send_async(metrics_pdata(1))
+                .send_async(metrics_pdata_with_format(1, true))
                 .await
                 .expect("pdata should be queued before auth is ready");
             controller.publish("fresh-token");
@@ -627,6 +785,33 @@ mod tests {
                     panic!("pdata should wait for auth rather than be NACKed")
                 }
             }
+
+            let (snapshots, reporter) = MetricsReporter::create_new_and_receiver(8);
+            control_tx
+                .send_async(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: reporter,
+                })
+                .await
+                .expect("telemetry collection should be queued");
+            let mut collected = Vec::new();
+            for _ in 0..4 {
+                collected.push(
+                    snapshots
+                        .recv_async()
+                        .await
+                        .expect("shared snapshot should arrive"),
+                );
+            }
+            assert_eq!(
+                metric_value(&collected, "success", "messages"),
+                &MetricValue::U64(1)
+            );
+            assert_eq!(
+                metric_value(&collected, "success", "items"),
+                &MetricValue::U64(1)
+            );
+            assert!(!metric_value(&collected, "success", "payload.size").is_zero());
+            assert!(!metric_value(&collected, "success", "duration").is_zero());
 
             control_tx
                 .send_async(NodeControlMsg::Shutdown {
@@ -644,7 +829,307 @@ mod tests {
         .await
         .expect("exporter should finish after initial auth arrives");
         drop(control_guard);
-        let _terminal_state = start_result.expect("exporter should shut down cleanly");
+        let terminal_state = start_result.expect("exporter should shut down cleanly");
+        assert!(
+            terminal_state.is_empty(),
+            "periodic reporting must clear deltas"
+        );
+    }
+
+    /// Scenario: Shutdown is already queued with two healthy publications buffered.
+    /// Guarantees: Occupied capacity waits within the grace period, both inputs are ACKed, and both attempts reach terminal telemetry.
+    #[tokio::test]
+    async fn shutdown_publishes_healthy_buffered_metrics() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
+        let exporter = exporter(&server.uri(), provider);
+        let (effect_handler, mut completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+        for call_id in 1..=2 {
+            pdata_tx
+                .send_async(metrics_pdata(call_id))
+                .await
+                .expect("buffer metrics");
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "drain healthy backlog".to_owned(),
+            })
+            .await
+            .expect("queue shutdown");
+        drop(pdata_tx);
+        let driver = async {
+            for _ in 0..2 {
+                assert!(matches!(
+                    completions
+                        .recv()
+                        .await
+                        .expect("drained input should complete"),
+                    PipelineCompletionMsg::DeliverAck { .. },
+                ));
+            }
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("healthy backlog should drain");
+        drop(control_tx);
+        let terminal = result.expect("shutdown should succeed");
+        assert_eq!(terminal.deadline(), deadline);
+        assert_eq!(
+            metric_value(terminal.metrics(), "success", "messages"),
+            &MetricValue::U64(2)
+        );
+        assert_eq!(
+            metric_value(terminal.metrics(), "success", "items"),
+            &MetricValue::U64(2)
+        );
+    }
+
+    /// Scenario: Cached authentication becomes unusable and a replacement arrives during or between shutdown publications.
+    /// Guarantees: Shutdown consumes refreshes while awaiting HTTP, waits for credentials between packets, and ACKs the entire input after both packets succeed.
+    #[tokio::test]
+    async fn shutdown_refreshes_auth_while_draining_split_publications() {
+        for refresh_during_request in [true, false] {
+            let server = MockServer::start().await;
+            for token in ["initial-token", "fresh-token"] {
+                Mock::given(method("POST"))
+                    .and(header("authorization", format!("Bearer {token}")))
+                    .respond_with(ResponseTemplate::new(200))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            let (provider, mut controller) = TestTokenProvider::new(Some("initial-token"));
+            let mut exporter =
+                exporter_with_timeout(&server.uri(), Duration::from_secs(10), provider);
+            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            controller.wait_until_observed().await;
+            let (effect_handler, mut completions) = completion_harness();
+            let data = metrics_pdata(1);
+            let packets = (0..2)
+                .flat_map(|_| {
+                    prepare_publication(&data, &mapping_config())
+                        .expect("prepare packet")
+                        .publications
+                })
+                .collect::<Vec<_>>();
+            let PublicationStart::InFlight(mut publication) =
+                exporter.start_next_publication(data, packets.into_iter(), &effect_handler)
+            else {
+                panic!("first publication should start with usable authentication");
+            };
+            exporter.auth.invalidate(publication.auth_generation);
+            assert!(!exporter.auth.is_ready());
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+            let original_request = publication.request;
+            publication.request = Box::pin(async move {
+                started_tx.send(()).expect("observe publication start");
+                release_rx.await.expect("release first publication");
+                let result = original_request.await;
+                finished_tx
+                    .send(())
+                    .expect("observe publication completion");
+                result
+            });
+            let driver = async {
+                started_rx
+                    .await
+                    .expect("shutdown should poll the first publication");
+                if refresh_during_request {
+                    controller.publish("fresh-token");
+                    controller.wait_until_observed().await;
+                    release_tx
+                        .send(())
+                        .expect("release publication after refresh");
+                    finished_rx.await.expect("first publication should finish");
+                } else {
+                    release_tx
+                        .send(())
+                        .expect("complete publication before refresh");
+                    finished_rx.await.expect("first publication should finish");
+                    controller.publish("fresh-token");
+                    controller.wait_until_observed().await;
+                }
+            };
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+                tokio::join!(
+                    exporter.finish_shutdown_work(
+                        Some(publication),
+                        None,
+                        deadline,
+                        &effect_handler
+                    ),
+                    driver,
+                )
+            })
+            .await
+            .expect("shutdown should consume refreshed authentication and drain both packets");
+            result.expect("shutdown publication work should succeed");
+            assert!(matches!(
+                completions.recv().await.expect("input should complete"),
+                PipelineCompletionMsg::DeliverAck { .. },
+            ));
+            let snapshots = exporter.metrics.terminal_snapshots();
+            assert_eq!(
+                metric_value(&snapshots, "success", "messages"),
+                &MetricValue::U64(2)
+            );
+        }
+    }
+
+    /// Scenario: A split publication needs refreshed authentication, but no replacement arrives before shutdown expires.
+    /// Guarantees: Waiting respects the original virtual deadline, never submits the next packet, and retryably NACKs the input.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_bounds_wait_for_refreshed_auth() {
+        let (provider, _controller) = TestTokenProvider::new(Some("initial-token"));
+        let mut exporter = exporter("http://127.0.0.1:1", provider);
+        poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+        let (effect_handler, mut completions) = completion_harness();
+        let data = metrics_pdata(1);
+        let packets = (0..2)
+            .flat_map(|_| {
+                prepare_publication(&data, &mapping_config())
+                    .expect("prepare packet")
+                    .publications
+            })
+            .collect::<Vec<_>>();
+        let PublicationStart::InFlight(mut publication) =
+            exporter.start_next_publication(data, packets.into_iter(), &effect_handler)
+        else {
+            panic!("first publication should start");
+        };
+        exporter.auth.invalidate(publication.auth_generation);
+        publication.request = Box::pin(async { Ok(()) });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            exporter.finish_shutdown_work(Some(publication), None, deadline, &effect_handler),
+        )
+        .await
+        .expect("authentication wait must be bounded")
+        .expect("shutdown should finish");
+        assert!(tokio::time::Instant::now() >= tokio::time::Instant::from_std(deadline));
+        match completions.recv().await.expect("input should complete") {
+            PipelineCompletionMsg::DeliverNack { nack } => assert!(!nack.permanent),
+            PipelineCompletionMsg::DeliverAck { .. } => {
+                panic!("unsubmitted packets cannot be ACKed")
+            }
+        }
+        let snapshots = exporter.metrics.terminal_snapshots();
+        assert_eq!(
+            metric_value(&snapshots, "success", "messages"),
+            &MetricValue::U64(1)
+        );
+        assert_eq!(
+            metric_value(&snapshots, "refused", "messages"),
+            &MetricValue::U64(1)
+        );
+    }
+
+    /// Scenario: One input is split into two publications and the second succeeds or fails.
+    /// Guarantees: No early ACK is sent, any packet failure NACKs the input, and every HTTP submission records its own telemetry.
+    #[tokio::test]
+    async fn split_publications_complete_once_and_record_each_attempt() {
+        for final_status in [200, 503, 400] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .with_priority(1)
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(final_status))
+                .with_priority(2)
+                .expect(1)
+                .mount(&server)
+                .await;
+            let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
+            let mut exporter = exporter(&server.uri(), provider);
+            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            assert!(exporter.auth.is_ready());
+            let (effect_handler, mut completions) = completion_harness();
+            let data = metrics_pdata(1);
+            let packets = (0..2)
+                .flat_map(|_| {
+                    prepare_publication(&data, &mapping_config())
+                        .expect("prepare packet")
+                        .publications
+                })
+                .collect::<Vec<_>>();
+            let mut work =
+                exporter.start_next_publication(data, packets.into_iter(), &effect_handler);
+            for _ in 0..2 {
+                let PublicationStart::InFlight(mut publication) = work else {
+                    panic!("each packet must be published before input completion");
+                };
+                assert!(matches!(
+                    completions.try_recv(),
+                    Err(otel_arrow_dfe_channel::error::RecvError::Empty),
+                ));
+                let result =
+                    tokio::time::timeout(Duration::from_secs(10), publication.request.as_mut())
+                        .await
+                        .expect("HTTP publication should finish");
+                let completed = publication.complete(result, &mut exporter.metrics);
+                work = exporter.publication_completion(completed, &effect_handler);
+            }
+            let PublicationStart::Completion(completion) = work else {
+                panic!("all packets must resolve to one input completion");
+            };
+            completion
+                .await
+                .expect("input completion should be delivered");
+            match completions
+                .recv()
+                .await
+                .expect("input should complete once")
+            {
+                PipelineCompletionMsg::DeliverAck { .. } => assert_eq!(final_status, 200),
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert_ne!(final_status, 200);
+                    assert_eq!(nack.permanent, final_status == 400);
+                }
+            }
+            let snapshots = exporter.metrics.terminal_snapshots();
+            let successes = if final_status == 200 { 2 } else { 1 };
+            assert_eq!(
+                metric_value(&snapshots, "success", "messages"),
+                &MetricValue::U64(successes)
+            );
+            assert_eq!(
+                metric_value(&snapshots, "success", "items"),
+                &MetricValue::U64(successes)
+            );
+            if final_status != 200 {
+                let outcome = if final_status == 400 {
+                    "refused"
+                } else {
+                    "failure"
+                };
+                assert_eq!(
+                    metric_value(&snapshots, outcome, "messages"),
+                    &MetricValue::U64(1)
+                );
+            }
+            assert!(matches!(
+                completions.try_recv(),
+                Err(otel_arrow_dfe_channel::error::RecvError::Empty),
+            ));
+        }
     }
 
     /// Scenario: The exporter receives shutdown when no HTTP publication is active.
@@ -990,14 +1475,20 @@ mod tests {
         let _terminal_state = start_result.expect("exporter should shut down cleanly");
     }
 
-    /// Scenario: The start loop receives a replay after HTTP 401 and the provider publishes refreshed auth.
+    /// Scenario: The start loop receives a replay after HTTP 401 or 403 and the provider publishes refreshed auth.
     /// Guarantees: The rejected auth generation gates the inbox until refreshed auth releases and ACKs the same refused payload.
     #[tokio::test]
     async fn start_loop_releases_replay_after_auth_refresh() {
+        for status in [401, 403] {
+            assert_releases_replay_after_auth_refresh(status).await;
+        }
+    }
+
+    async fn assert_releases_replay_after_auth_refresh(status: u16) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(header("authorization", "Bearer stale-token"))
-            .respond_with(ResponseTemplate::new(401))
+            .respond_with(ResponseTemplate::new(status))
             .expect(1)
             .mount(&server)
             .await;
@@ -1027,7 +1518,7 @@ mod tests {
             {
                 PipelineCompletionMsg::DeliverNack { nack } => {
                     assert!(!nack.permanent);
-                    assert!(nack.reason.contains("HTTP 401"));
+                    assert!(nack.reason.contains(&format!("HTTP {status}")));
                     *nack.refused
                 }
                 PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),

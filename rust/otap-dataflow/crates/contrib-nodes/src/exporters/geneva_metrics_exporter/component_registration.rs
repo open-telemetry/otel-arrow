@@ -14,6 +14,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
@@ -43,7 +44,7 @@ fn validate_config(value: &serde_json::Value) -> Result<(), ConfigError> {
 }
 
 fn create_exporter(
-    _pipeline: PipelineContext,
+    pipeline: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &EngineExporterConfig,
@@ -72,7 +73,12 @@ fn create_exporter(
     let mapping_config = (&config).into();
 
     Ok(ExporterWrapper::local(
-        GenevaMetricsExporter::new(mapping_config, publisher, token_provider),
+        GenevaMetricsExporter::new(
+            mapping_config,
+            publisher,
+            token_provider,
+            ExporterMetrics::register(&pipeline),
+        ),
         node,
         node_config,
         exporter_config,

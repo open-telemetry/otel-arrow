@@ -22,9 +22,65 @@ const MAX_TIME_BUCKET: u64 = u64::MAX / TICKS_PER_SECOND;
 
 /// Encodes a packet using Geneva Metrics ingestion protocol version 6.
 pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
-    validate_timestamp("packet", packet.current_time_bucket, 0)?;
-    let metric_count = u32::try_from(packet.metrics.len())
-        .map_err(|_| EncodeError::MetricCountOverflow(packet.metrics.len()))?;
+    encode_metrics(packet.current_time_bucket, &packet.metrics)
+}
+
+/// One independently decodable publication and its mapped data point count.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct EncodedPacket {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) item_count: u64,
+}
+
+/// Encodes independently decodable packets bounded by their complete wire size.
+pub(crate) fn encode_bounded(
+    packet: &Packet,
+    maximum: usize,
+) -> Result<Vec<EncodedPacket>, EncodeError> {
+    fn append(
+        current_time_bucket: u64,
+        metrics: &[Metric],
+        maximum: usize,
+        packets: &mut Vec<EncodedPacket>,
+    ) -> Result<(), EncodeError> {
+        let bytes = encode_metrics(current_time_bucket, metrics)?;
+        if bytes.len() <= maximum {
+            packets.push(EncodedPacket {
+                bytes,
+                item_count: metrics.len() as u64,
+            });
+            return Ok(());
+        }
+        if metrics.len() <= 1 {
+            return Err(EncodeError::PacketSizeOverflow {
+                size: bytes.len(),
+                maximum,
+            });
+        }
+        // Rebuild each half's string/metadata tables and CRC. Release the
+        // oversized buffer before recursing, and never clone mapped metrics.
+        drop(bytes);
+        let (left, right) = metrics.split_at(metrics.len() / 2);
+        append(current_time_bucket, left, maximum, packets)?;
+        append(current_time_bucket, right, maximum, packets)
+    }
+
+    let mut packets = Vec::new();
+    if !packet.metrics.is_empty() {
+        append(
+            packet.current_time_bucket,
+            &packet.metrics,
+            maximum,
+            &mut packets,
+        )?;
+    }
+    Ok(packets)
+}
+
+fn encode_metrics(current_time_bucket: u64, metrics: &[Metric]) -> Result<Vec<u8>, EncodeError> {
+    validate_timestamp("packet", current_time_bucket, 0)?;
+    let metric_count = u32::try_from(metrics.len())
+        .map_err(|_| EncodeError::MetricCountOverflow(metrics.len()))?;
     let mut writer = Writer::default();
     writer.write_u16(PROTOCOL_VERSION);
     let crc_position = writer.reserve(size_of::<u32>());
@@ -35,11 +91,11 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     let mut metadata_table = OrderedInterner::<MetadataKey>::default();
     let mut string_table = OrderedInterner::<String>::default();
 
-    writer.write_unsigned_base128(packet.current_time_bucket);
+    writer.write_unsigned_base128(current_time_bucket);
     writer.write_u32(metric_count);
 
-    for (metric_index, metric) in packet.metrics.iter().enumerate() {
-        validate_metric_for_packet(metric_index, metric, packet.current_time_bucket)?;
+    for (metric_index, metric) in metrics.iter().enumerate() {
+        validate_metric_for_packet(metric_index, metric, current_time_bucket)?;
         let namespace_index = string_table.intern_borrowed(&metric.namespace)?;
         let name_index = string_table.intern_borrowed(&metric.name)?;
         let metadata = MetadataKey {
@@ -59,11 +115,10 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
         };
         let metadata_index = metadata_table.intern(metadata)?;
         writer.write_unsigned_base128(metadata_index as u64);
-        let time_difference =
-            i128::from(packet.current_time_bucket) - i128::from(metric.time_bucket);
+        let time_difference = i128::from(current_time_bucket) - i128::from(metric.time_bucket);
         writer.write_signed_base128(i64::try_from(time_difference).map_err(|_| {
             EncodeError::TimeDifferenceOverflow {
-                current_time_bucket: packet.current_time_bucket,
+                current_time_bucket,
                 metric_time_bucket: metric.time_bucket,
             }
         })?);
@@ -632,6 +687,63 @@ mod tests {
                 (length, value)
             })
             .collect()
+    }
+
+    /// Scenario: A packet's full wire size is exactly at or just beyond its publication limit.
+    /// Guarantees: Splitting accounts for tables and CRC, preserves order and counts, and rejects an indivisible oversized metric.
+    #[test]
+    fn bounds_complete_packets_without_losing_metrics() {
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: (0..16)
+                .map(|index| {
+                    let mut metric = standard_metric(unsigned_values(index, 1), SUM | COUNT);
+                    metric.dimensions[0].value = format!("{index:04}{}", "x".repeat(100));
+                    metric
+                })
+                .collect(),
+        };
+        let complete = encode(&packet).expect("packet should encode");
+        let exact = encode_bounded(&packet, complete.len()).expect("exact limit should fit");
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].bytes, complete);
+
+        let split = encode_bounded(&packet, complete.len() - 1).expect("packet should split");
+        assert!(split.len() > 1);
+        let mut offset = 0;
+        for encoded in split {
+            assert!(encoded.bytes.len() < complete.len());
+            let end = offset + encoded.item_count as usize;
+            let expected = encode_metrics(packet.current_time_bucket, &packet.metrics[offset..end])
+                .expect("independent packet should encode");
+            assert_eq!(encoded.bytes, expected);
+            offset = end;
+        }
+        assert_eq!(offset, packet.metrics.len());
+
+        let single = Packet {
+            current_time_bucket: packet.current_time_bucket,
+            metrics: vec![packet.metrics[0].clone()],
+        };
+        let size = encode(&single).expect("single metric should encode").len();
+        assert_eq!(
+            encode_bounded(&single, size - 1).expect_err("indivisible metric must be rejected"),
+            EncodeError::PacketSizeOverflow {
+                size,
+                maximum: size - 1
+            },
+        );
+        assert!(
+            encode_bounded(
+                &Packet {
+                    current_time_bucket: packet.current_time_bucket,
+                    metrics: Vec::new()
+                },
+                size,
+            )
+            .expect("empty input should succeed")
+            .is_empty()
+        );
     }
 
     /// Scenario: Core OTLP gauge and sum metric types are encoded as raw protocol v6 entries.
