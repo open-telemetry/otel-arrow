@@ -147,8 +147,9 @@ mod tests {
                 on_error: None,
             }],
         );
-        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
-            .expect("propagation policy compiles");
+        let propagation_policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(propagation_policy, &[])
+                .expect("propagation policy compiles");
 
         let propagated: Vec<_> = propagation_policy.propagate(headers_after).collect();
 
@@ -209,8 +210,9 @@ mod tests {
             },
             vec![],
         );
-        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
-            .expect("propagation policy compiles");
+        let propagation_policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(propagation_policy, &[])
+                .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
@@ -255,8 +257,9 @@ mod tests {
             },
             vec![],
         );
-        let propagation_policy = CompiledHeaderPropagationPolicy::compile(propagation_policy, &[])
-            .expect("propagation policy compiles");
+        let propagation_policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(propagation_policy, &[])
+                .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
 
         assert_eq!(propagated[0].value_kind, ValueKind::Binary);
