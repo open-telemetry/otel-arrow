@@ -1,162 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792602913151,
+  "lastUpdate": 1792633424248,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Drew Relmas",
-            "username": "drewrelmas",
-            "email": "drewrelmas@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "4c05b596db372a0ca5249a4698f9a65f1a0d6840",
-          "message": "chore(deps): update all patch versions plus test fix (#3654)\n\n# Change Summary\n\nManual fix needed to unblock #3601 \n\n> TRY 3 FAIL [ 0.010s] (1469/1718) otap-df-query-engine-languages\nopl::parser::temporal::test::test_parse_from_invalid_time_literal\n\nTest failure caused by `iso8601` update\n\n## What issue does this PR close?\n\nNA\n\n## How are these changes tested?\n\nN/A\n\n## Are there any user-facing changes?\n\nN/A\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [x] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
-          "timestamp": "2026-08-04T01:12:52Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/4c05b596db372a0ca5249a4698f9a65f1a0d6840"
-        },
-        "date": 1785810852271,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6667555570602417,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.82994714058876,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.10737913486005,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.619270833333335,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.59765625,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99991.43860972355,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98324.82574687547,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001937,
-            "unit": "seconds",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3139279.3403595095,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1167330.6495907973,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 31.927636957538855,
-            "unit": "bytes/log",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.95679657391292,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.36804704425874,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.614973958333334,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.52734375,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98325.7769973711,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98325.7769973711,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.004611,
-            "unit": "seconds",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3219938.078581658,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3026473.4688857566,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 32.74764946599658,
-            "unit": "bytes/log",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -15398,6 +15244,160 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 32.51749862173456,
+            "unit": "bytes/log",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "adgrieco",
+            "username": "adgrieco",
+            "email": "157547602+adgrieco@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c78d87ab8939ca74ae62abe09ab6aa0903388201",
+          "message": "chore(windows_perf_counters): preserve exact native path spelling (#4489)\n\n# Chore Summary\n\nThe receiver uses each counter path exactly as configured, without\ntrimming, rewriting, or respelling it when it looks up the metric\ndefinition.\n\nThis matters because some Windows counter names end in a space. For\nexample, `\\Hyper-V Virtual Switch Port(*)\\IPsec SAs Offloaded ` fails to\nmatch without that trailing space, so trimming breaks it.\n\nThe receiver still treats equivalent selectors as duplicates. `app` and\n`app#0` conflict, but `app` and `app#1` are distinct.\n\n## Related issue\n\nPart of #4074.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: cd7fcffe-9884-47b1-bf3e-5ee928b4d950",
+          "timestamp": "2026-10-21T23:54:14Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c78d87ab8939ca74ae62abe09ab6aa0903388201"
+        },
+        "date": 1792633422942,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.008677448146045208,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.72884169506247,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.11607384903014,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.281119791666665,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.796875,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98333.38521915404,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98324.85239039532,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003548,
+            "unit": "seconds",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3116917.820176246,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1166651.4023794802,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 31.700203401278806,
+            "unit": "bytes/log",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.9055709622518,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.22626671820642,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.9484375,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.40234375,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98327.00234704585,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98327.00234704585,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002236,
+            "unit": "seconds",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3187425.115627603,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3030576.9202096644,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.416579775081146,
             "unit": "bytes/log",
             "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
           }
