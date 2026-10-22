@@ -3,11 +3,12 @@
 
 //! Exact-counter query ownership and synchronous collection. No scheduling or recovery worker.
 
-use super::config::CounterConfig;
+use super::config::{CounterConfig, MetricKind};
 use super::model::{
     Number, Sample, SampleFailure, SamplePoint, SampleValue, ScaleError, scale_double,
     scale_integer,
 };
+use std::sync::Arc;
 
 mod counter_type;
 mod native;
@@ -103,9 +104,10 @@ pub(super) trait PdhApi {
 
 struct CounterHandle<C> {
     config_index: usize,
-    path: String,
+    path: Arc<str>,
     handle: C,
     kind: CounterKind,
+    metric_kind: MetricKind,
     scale_power10: i32,
     previous_base: Option<i64>,
 }
@@ -136,7 +138,7 @@ impl<C> CounterHandle<C> {
             let previous = self.previous_base.replace(raw.second_value);
             if self.kind == CounterKind::CalculatedTwoSampleWithMultiBase && raw.multi_count == 0 {
                 return Err(Error::Calculation {
-                    path: self.path.clone(),
+                    path: self.path.to_string(),
                     message: "multi-counter base denominator must be positive, got 0".to_owned(),
                 });
             }
@@ -178,7 +180,7 @@ impl<C> CounterHandle<C> {
             Number::Double(value) => scale_double(value, self.scale_power10),
         }
         .map_err(|source| Error::Scale {
-            path: self.path.clone(),
+            path: self.path.to_string(),
             source,
         })?;
         Ok(SampleValue::Value(number))
@@ -249,9 +251,10 @@ impl<A: PdhApi> Query<A> {
             };
             query.counters.push(CounterHandle {
                 config_index,
-                path: config.path.clone(),
+                path: Arc::from(config.path.as_str()),
                 handle,
                 kind,
+                metric_kind: config.kind,
                 scale_power10: config.scale_power10,
                 previous_base: None,
             });
@@ -292,7 +295,6 @@ impl<A: PdhApi> Query<A> {
         }
         self.previous_timestamp_unix_nano = timestamp;
         let mut sample = Sample {
-            start_time_unix_nano: self.start_time_unix_nano,
             timestamp_unix_nano: timestamp,
             points: Vec::with_capacity(self.counters.len()),
             failures: Vec::new(),
@@ -308,6 +310,10 @@ impl<A: PdhApi> Query<A> {
             match value {
                 Ok(value) => sample.points.push(SamplePoint {
                     counter_index: counter.config_index,
+                    path: counter.path.clone(),
+                    timestamp_unix_nano: timestamp,
+                    start_time_unix_nano: (counter.metric_kind == MetricKind::Sum)
+                        .then_some(self.start_time_unix_nano),
                     value,
                 }),
                 Err(error) => sample.failures.push(SampleFailure {

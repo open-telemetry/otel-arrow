@@ -6,6 +6,8 @@ use super::*;
 use crate::receivers::windows_perf_counters_receiver::config::{MetricKind, RuntimeConfig};
 use crate::receivers::windows_perf_counters_receiver::model::Number;
 use crate::receivers::windows_perf_counters_receiver::otap_builder::into_otap;
+use crate::receivers::windows_perf_counters_receiver::test_utils::decode;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
@@ -97,6 +99,7 @@ struct State {
     removes: Vec<usize>,
     collect_status: u32,
     timestamp: i64,
+    format_timestamp: Option<i64>,
     formats: Vec<(usize, ValueFormat)>,
     raws: Vec<usize>,
 }
@@ -120,6 +123,7 @@ fn fake(counters: Vec<CounterFixture>) -> (Rc<RefCell<State>>, Vec<CounterConfig
         removes: Vec::new(),
         collect_status: 0,
         timestamp: 100,
+        format_timestamp: None,
         formats: Vec::new(),
         raws: Vec::new(),
     }));
@@ -221,6 +225,9 @@ impl PdhApi for FakePdh {
         assert!(state.handles.contains(counter));
         NativePdh::formatted_with(path, format, |_, value| {
             state.formats.push((index, format));
+            if let Some(timestamp) = state.format_timestamp {
+                state.timestamp = timestamp;
+            }
             let fixture = &state.counters[index];
             value.CStatus = fixture.format_cstatus;
             match (format, fixture.number) {
@@ -594,7 +601,10 @@ fn multi_timer_invalid_base_preserves_readiness() {
             state.borrow_mut().counters[0].multi_count = u32::MAX;
             let recovered = query.collect().unwrap();
             assert!(recovered.failures.is_empty());
-            assert_eq!(recovered.start_time_unix_nano, 100);
+            assert_eq!(
+                recovered.points[0].start_time_unix_nano,
+                (!warmed).then_some(100)
+            );
             assert_eq!(
                 recovered.points[0].value,
                 SampleValue::Value(Number::Double(2.5))
@@ -679,7 +689,7 @@ fn base_progression_and_reset_preserve_sequence_start() {
     ] {
         state.borrow_mut().counters[0].base = base;
         let sample = query.collect().unwrap();
-        assert_eq!(sample.start_time_unix_nano, 100);
+        assert_eq!(sample.points[0].start_time_unix_nano, Some(100));
         assert_eq!(sample.points[0].value, expected);
         assert!(sample.failures.is_empty());
     }
@@ -733,7 +743,7 @@ fn formatted_statuses_omit_and_reset_readiness() {
                     reset.points[1].value,
                     SampleValue::Value(Number::Integer(7))
                 );
-                assert_eq!(reset.start_time_unix_nano, 100);
+                assert_eq!(reset.points[0].start_time_unix_nano, Some(100));
                 {
                     let mut state = state.borrow_mut();
                     state.counters[0].base = 1;
@@ -754,7 +764,7 @@ fn formatted_statuses_omit_and_reset_readiness() {
                 let recovered = query.collect().unwrap();
                 assert!(recovered.failures.is_empty());
                 assert_eq!(recovered.points[0].value, SampleValue::Value(number));
-                assert_eq!(recovered.start_time_unix_nano, 100);
+                assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
                 assert_eq!((state.borrow().opens, state.borrow().adds), (1, 2));
             }
         }
@@ -801,7 +811,7 @@ fn real_formatted_errors_remain_failures() {
             recovered.points[0].value,
             SampleValue::Value(Number::Double(3.0))
         );
-        assert_eq!(recovered.start_time_unix_nano, 100);
+        assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
     }
 }
 
@@ -843,7 +853,7 @@ fn counter_failures_preserve_peers_and_retry_existing_handles() {
             SampleValue::Value(Number::Integer(7))
         );
         assert_eq!(recovered.points[1].value, SampleValue::NoObservation);
-        assert_eq!(recovered.start_time_unix_nano, 100);
+        assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
         assert_eq!((state.borrow().opens, state.borrow().adds), (1, 2));
     }
 }
@@ -896,7 +906,7 @@ fn raw_statuses_omit_and_clear_base_readiness() {
                 recovered.points[0].value,
                 SampleValue::Value(Number::Double(50.0))
             );
-            assert_eq!(recovered.start_time_unix_nano, 100);
+            assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
             assert!(recovered.failures.is_empty());
             assert_eq!((state.borrow().opens, state.borrow().adds), (1, 2));
         }
@@ -958,7 +968,7 @@ fn formatted_invalid_data_preserves_specific_failures() {
                 recovered.points[0].value,
                 SampleValue::Value(Number::Double(3.0))
             );
-            assert_eq!(recovered.start_time_unix_nano, 100);
+            assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
         }
     }
 }
@@ -1013,7 +1023,7 @@ fn real_raw_errors_remain_failures() {
             recovered.points[0].value,
             SampleValue::Value(Number::Double(3.0))
         );
-        assert_eq!(recovered.start_time_unix_nano, 100);
+        assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
     }
 }
 
@@ -1056,7 +1066,7 @@ fn query_failure_retries_without_rebuilding_or_restarting_sequence() {
         SampleValue::Value(Number::Integer(7))
     );
     assert_eq!(recovered.points[1].value, SampleValue::NoObservation);
-    assert_eq!(recovered.start_time_unix_nano, 100);
+    assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
     assert_eq!((state.borrow().opens, state.borrow().adds), (1, 2));
     assert_eq!(
         query.collect().unwrap().points[1].value,
@@ -1092,7 +1102,7 @@ fn query_statuses_omit_and_clear_all_readiness() {
                 .iter()
                 .all(|point| point.value == SampleValue::NoObservation)
         );
-        assert_eq!(sample.start_time_unix_nano, 100);
+        assert_eq!(sample.points[0].start_time_unix_nano, Some(100));
         assert_eq!(sample.timestamp_unix_nano, 110);
         assert!(into_otap(&configs, sample).unwrap().is_none());
         assert_eq!(
@@ -1115,7 +1125,7 @@ fn query_statuses_omit_and_clear_all_readiness() {
             recovered.points[1].value,
             SampleValue::Value(Number::Double(3.0))
         );
-        assert_eq!(recovered.start_time_unix_nano, 100);
+        assert_eq!(recovered.points[0].start_time_unix_nano, Some(100));
         assert_eq!((state.borrow().opens, state.borrow().adds), (1, 2));
     }
 }
@@ -1133,16 +1143,59 @@ fn query_omissions_preserve_timestamp_validation_and_rollback() {
     let omitted = query.collect().unwrap();
     assert!(omitted.failures.is_empty());
     assert_eq!(omitted.points[0].value, SampleValue::NoObservation);
-    assert_eq!(omitted.start_time_unix_nano, 90);
+    assert_eq!(omitted.points[0].start_time_unix_nano, Some(90));
     assert_eq!(omitted.timestamp_unix_nano, 90);
     state.borrow_mut().collect_status = 0;
     state.borrow_mut().timestamp = 120;
     let recovered = query.collect().unwrap();
-    assert_eq!(recovered.start_time_unix_nano, 90);
+    assert_eq!(recovered.points[0].start_time_unix_nano, Some(90));
     assert_eq!(
         recovered.points[0].value,
         SampleValue::Value(Number::Integer(7))
     );
+}
+
+/// Scenario: Native value reads advance the wall clock after a mixed Gauge/Sum query collected.
+/// Guarantees: Concrete paths and collection timestamps reach OTAP unchanged; only the Sum carries its existing cumulative start.
+#[test]
+fn exact_observations_keep_collection_identity_and_time_through_projection() {
+    let (state, mut configs) = fake(vec![
+        CounterFixture::new(0, Number::Integer(7)),
+        CounterFixture::new(0, Number::Integer(9)),
+    ]);
+    configs[0].kind = MetricKind::Gauge;
+    let mut query = open_fake(&state, &configs).unwrap();
+    {
+        let mut state = state.borrow_mut();
+        state.timestamp = 110;
+        state.format_timestamp = Some(900);
+    }
+    let sample = query.collect().unwrap();
+    assert!(sample.failures.is_empty());
+    assert_eq!(sample.points.len(), 2);
+    assert_eq!(state.borrow().timestamp, 900);
+    assert_eq!(sample.timestamp_unix_nano, 110);
+    for (index, point) in sample.points.iter().enumerate() {
+        assert_eq!(point.counter_index, index);
+        assert_eq!(point.path.as_ref(), configs[index].path);
+        assert_eq!(point.timestamp_unix_nano, 110);
+        assert_eq!(point.start_time_unix_nano, (index == 1).then_some(100));
+    }
+    let decoded = decode(into_otap(&configs, sample).unwrap().unwrap());
+    let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+    assert_eq!(metrics.len(), 2);
+    let Some(metric::Data::Gauge(gauge)) = &metrics[0].data else {
+        panic!("expected a Gauge");
+    };
+    let Some(metric::Data::Sum(sum)) = &metrics[1].data else {
+        panic!("expected a Sum");
+    };
+    assert_eq!(gauge.data_points.len(), 1);
+    assert_eq!(gauge.data_points[0].time_unix_nano, 110);
+    assert_eq!(gauge.data_points[0].start_time_unix_nano, 0);
+    assert_eq!(sum.data_points.len(), 1);
+    assert_eq!(sum.data_points[0].time_unix_nano, 110);
+    assert_eq!(sum.data_points[0].start_time_unix_nano, 100);
 }
 
 /// Scenario: The observation clock advances, repeats, then rolls back while counters stay readable.
@@ -1155,7 +1208,8 @@ fn rollback_alone_restarts_cumulative_sequence() {
         state.borrow_mut().timestamp = timestamp;
         let sample = query.collect().unwrap();
         assert_eq!(sample.timestamp_unix_nano, timestamp);
-        assert_eq!(sample.start_time_unix_nano, start);
+        assert_eq!(sample.points[0].timestamp_unix_nano, timestamp);
+        assert_eq!(sample.points[0].start_time_unix_nano, Some(start));
         assert!(into_otap(&configs, sample).unwrap().is_some());
     }
 }
@@ -1182,7 +1236,7 @@ fn rejects_non_positive_timestamps() {
     state.borrow_mut().timestamp = 110;
     state.borrow_mut().counters[1].base = 1;
     let sample = query.collect().unwrap();
-    assert_eq!(sample.start_time_unix_nano, 100);
+    assert_eq!(sample.points[0].start_time_unix_nano, Some(100));
     assert_eq!(sample.points[1].value, SampleValue::NoObservation);
     assert!(sample.failures.is_empty());
 }
