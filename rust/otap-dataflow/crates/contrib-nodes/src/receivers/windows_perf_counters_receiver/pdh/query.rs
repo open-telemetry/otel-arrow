@@ -339,6 +339,9 @@ impl<A: PdhApi> Query<A> {
             let _ = self.retry_states.remove(&key);
             return Ok(false);
         }
+        if self.retry_states.contains_key(&key) {
+            metadata.diagnostics.retry_attempts += 1;
+        }
         match self.add_counter(target.clone()) {
             Ok(()) => {
                 if self.retry_states.remove(&key).is_some() {
@@ -387,7 +390,6 @@ impl<A: PdhApi> Query<A> {
             .map(|(key, state)| (key.clone(), state.target.clone()))
             .collect::<Vec<_>>();
         for (key, target) in due {
-            metadata.diagnostics.retry_attempts += 1;
             let _ = self.try_add_target(key, target, now, metadata)?;
         }
         Ok(())
@@ -499,7 +501,6 @@ impl<A: PdhApi> Query<A> {
         error: &Error,
         metadata: &mut PendingMetadata,
     ) {
-        metadata.diagnostics.discovery_failures += 1;
         if self.identity_failures.insert(config_index) {
             metadata.failures.push(SampleFailure {
                 counter_index: config_index,

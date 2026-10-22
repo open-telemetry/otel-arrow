@@ -1586,7 +1586,8 @@ fn identity_read_recovery_reconciles_before_failed_discovery_collection() {
         assert!(sample.metadata.failures.iter().all(|failure| {
             failure.reason == "native_identity_unavailable" && failure.diagnostic_only
         }));
-        assert!(sample.metadata.diagnostics.discovery_failures > 0);
+        assert_eq!(sample.metadata.diagnostics.discovery_refreshes, 1);
+        assert_eq!(sample.metadata.diagnostics.discovery_failures, 0);
     }
     {
         let mut state = state.borrow_mut();
@@ -1807,7 +1808,7 @@ fn exact_handle_recovery_refreshes_native_identity_ownership() {
 }
 
 /// Scenario: Many wildcard identity comparisons fail while their native counters remain readable.
-/// Guarantees: Collection continues with configured-key dedupe and only one identity warning per selector episode.
+/// Guarantees: Collection continues with configured-key dedupe, one warning per selector episode and no failed-refresh inflation.
 #[test]
 fn wildcard_identity_failures_keep_healthy_collection_with_bounded_warnings() {
     let configs = same_mapping_overlap_configs(["0", "?"]);
@@ -1851,7 +1852,57 @@ fn wildcard_identity_failures_keep_healthy_collection_with_bounded_warnings() {
                 .all(|failure| failure.diagnostic_only)
         );
         assert!(sample.metadata.overflows.is_empty());
+        assert_eq!(sample.metadata.diagnostics.discovery_refreshes, 1);
+        assert_eq!(sample.metadata.diagnostics.discovery_failures, 0);
     }
+}
+
+/// Scenario: A queued wildcard retry's comparison recovers and identifies an already-active exact counter.
+/// Guarantees: The overlap is discarded without a native add, retry attempt, recovery count or extra discovery.
+#[test]
+fn wildcard_overlap_retry_is_discarded_without_counting_an_attempt() {
+    let configs = same_mapping_overlap_configs(["0", "?"]);
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let member = r"\NativeProcess(0)\NativeCounter";
+    let state = fake_state(vec![fake_counter(&exact, Number::Integer(42))]);
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.full_paths.insert(exact.clone(), member.to_owned());
+        let _ = state.expansions.insert(template, vec![member.to_owned()]);
+    }
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::MAX,
+        1,
+        2,
+        None,
+    )
+    .unwrap();
+    let _ = state
+        .borrow_mut()
+        .comparison_errors
+        .insert(member.to_owned(), FakeIdentityError::Recoverable);
+    let initial = query.collect().unwrap();
+    assert_eq!(initial.points.len(), 1);
+    assert_eq!(initial.metadata.diagnostics.counter_add_failures, 1);
+    assert_eq!(query.admitted_members().len(), 2);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let attempts = state.borrow().attempted_adds.len();
+    let discoveries = state.borrow().calls.expand;
+    state.borrow_mut().comparison_errors.clear();
+
+    let recovered = query.collect_at(deadline).unwrap();
+
+    assert_eq!(recovered.points.len(), 1);
+    assert_eq!(recovered.points[0].path.as_ref(), exact);
+    assert_eq!(query.admitted_members().len(), 1);
+    assert_eq!(recovered.metadata.diagnostics.retry_attempts, 0);
+    assert_eq!(recovered.metadata.diagnostics.retry_recoveries, 0);
+    assert_eq!(state.borrow().attempted_adds.len(), attempts);
+    assert_eq!(state.borrow().calls.expand, discoveries);
 }
 
 /// Scenario: Failing wildcard members churn while collection or timestamp errors repeatedly restore pending evidence.
