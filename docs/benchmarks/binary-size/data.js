@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792707892860,
+  "lastUpdate": 1792708787261,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -70355,6 +70355,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d223561deb0ba1c78afb0a65b7cb7d7aae711a9",
+          "message": "refactor(metrics): Migrate etw_receiver telemetry to enum attributes (#4350)\n\n## Description\n\nMigrate `etw_receiver` telemetry from flat counters to dimensioned\nmetric sets using enum attributes, continuing the standardization effort\nin #3530.\n\nIn response to reviewer feedback, delivery accounting is cleanly\ndecoupled from TDH decode quality and external Windows ETW session\nproperties:\n\n### Metric Sets:\n- **`receiver.etw.events`** (`unit = \"{event}\"`): Delivery accounting\ntracking `received` (ingress denominator, counted before channel\nenqueue) and `forwarded` (events successfully sent downstream in\nbatches).\n- **`receiver.etw.drops`** (`unit = \"{event}\"`): Events dropped at the\nreceiver boundary, tracking instrument `events` dimensioned by `reason`\n(`slow_worker`, `forward_failed`, `memory_pressure`).\n- **`receiver.etw.decode`** (`unit = \"{event}\"`): TDH decode quality\ntracking `errors`. Decode failures are non-fatal and still forwarded\ndownstream with empty decoded fields where possible.\n- **`receiver.etw.session`**: Windows ETW session properties covering\n`events.lost` (`unit = \"{event}\"`), `buffers.written` (`unit =\n\"{buffer}\"`), and `buffers.lost` (`unit = \"{buffer}\"`, dimensioned by\n`delivery: real_time | log_file`).\n\nAll metric sets attach fixed `signal=\"logs\"` registration attributes.\n\n### Additional Updates:\n- Created internal\n[`metrics.rs`](rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/metrics.rs)\nwith `EtwReceiverMetrics` supporting `register`, `report`, and\n`terminal_snapshots`.\n- Preserved complete counter-algebra explanation and operational\nsemantics notes in both `metrics.rs` doc comments and\n[`README.md`](rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/README.md).\n- Updated internal telemetry bridge comments across `session.rs` and\n`mod.rs` to reference the new dimensioned instruments.\n- Added breaking change entry in\n[`.chloggen/etw-receiver-metrics.yaml`](rust/otap-dataflow/.chloggen/etw-receiver-metrics.yaml).\n\n## Related issue\n\nPart of #3530\n\n## Validation\n\n- `cargo test -p otel-arrow-dfe-contrib-nodes --features etw --lib\nreceivers::etw_receiver`: 89 passed; 0 failed.\n- `cargo clippy -p otel-arrow-dfe-contrib-nodes --features etw\n--all-targets -- -D warnings`: Passed with zero warnings.\n- `cargo fmt --all -- --check`: Passed cleanly.\n\n## User-facing changes\n\nYes. Users consuming metrics from `receiver.etw` will need to update\ntheir dashboards/queries to use the dimensioned format\n(`receiver.etw.events`, `receiver.etw.drops`, `receiver.etw.decode`,\n`receiver.etw.session`).\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-10-22T21:38:04Z",
+          "tree_id": "dde0c42ee24c79333d626e9720cce95b2e2f22df",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9d223561deb0ba1c78afb0a65b7cb7d7aae711a9"
+        },
+        "date": 1792708767926,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
             "unit": "MB"
           },
           {
