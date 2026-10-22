@@ -80,7 +80,7 @@ pub(super) trait PdhApi {
         i64::try_from(timestamp).map_err(|_| Error::Timestamp("timestamp exceeds i64 nanoseconds"))
     }
     /// Resolves an English template and returns concrete host-language paths.
-    /// Charge the shared budget before allocating raw buffers or decoded paths.
+    /// Check peak raw capacity and retain actual decoded payload charges.
     fn expand(&mut self, path: &str, budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error>;
     /// Refreshes the local object list and returns its object count.
     fn refresh_objects(&mut self) -> Result<usize, Error>;

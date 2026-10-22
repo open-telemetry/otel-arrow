@@ -899,16 +899,21 @@ fn wildcard_expansion_rejects_oversized_sizing_and_repeated_growth() {
     }
 }
 
-/// Scenario: Several individually small wildcard buffers grow beyond the remaining refresh allocation credits.
-/// Guarantees: Every attempt is charged before allocation, and exhaustion prevents another fill call.
+/// Scenario: Repeated native growth fits the peak budget but exceeds it if freed buffers accumulate.
+/// Guarantees: Superseded buffers do not consume the next attempt's budget, and decoding releases the final raw capacity.
 #[test]
-fn wildcard_growth_reserves_every_buffer_before_allocation() {
-    let mut budget = super::super::expansion::DiscoveryBudget::limited(512);
+fn wildcard_growth_releases_superseded_buffers() {
+    let mut budget = super::super::expansion::DiscoveryBudget::limited(700);
     let mut calls = 0;
-    let error =
+    let buffer =
         NativePdh::expanded_path_buffer_budgeted_with("fixture", &mut budget, |size, buffer| {
             calls += 1;
-            assert!(calls <= 3);
+            assert!(calls <= 4);
+            if calls == 4 {
+                buffer.unwrap()[..3].copy_from_slice(&[b'a' as u16, 0, 0]);
+                *size = 3;
+                return Ok(0);
+            }
             *size = if let Some(buffer) = buffer {
                 u32::try_from(buffer.len() + 1).unwrap()
             } else {
@@ -916,22 +921,100 @@ fn wildcard_growth_reserves_every_buffer_before_allocation() {
             };
             Ok(PDH_MORE_DATA)
         })
-        .unwrap_err();
-    assert!(matches!(error, Error::DiscoveryMemoryLimit));
-    assert_eq!(error.reason(), "discovery_memory_limit");
-    assert_eq!(calls, 3);
+        .unwrap();
+    assert_eq!(calls, 4);
+    assert_eq!(
+        NativePdh::parse_discovery_paths(buffer, &mut budget, || Ok(())).unwrap(),
+        ["a"]
+    );
+    budget.reserve(699).unwrap();
 }
 
 /// Scenario: One selector's decoded paths remain live while a later selector decodes another native list.
-/// Guarantees: Retained storage and processing headroom share the same budget and decoding fails before the next string allocation.
+/// Guarantees: Retained UTF-8 bytes and the current raw buffer share the budget, and a failed selector refunds its allocations.
 #[test]
 fn decoded_discovery_paths_share_budget_across_selectors() {
-    let mut budget = super::super::expansion::DiscoveryBudget::limited(9000);
+    let mut budget = super::super::expansion::DiscoveryBudget::limited(27);
     let buffer: Vec<u16> = "member\0\0".encode_utf16().collect();
-    let retained = NativePdh::parse_discovery_paths(&buffer, &mut budget, || Ok(())).unwrap();
-    let error = NativePdh::parse_discovery_paths(&buffer, &mut budget, || Ok(())).unwrap_err();
+    let retained =
+        NativePdh::parse_discovery_paths(buffer.clone(), &mut budget, || Ok(())).unwrap();
+    let error = NativePdh::parse_discovery_paths(buffer, &mut budget, || Ok(())).unwrap_err();
     assert!(matches!(error, Error::DiscoveryMemoryLimit));
     assert_eq!(retained, ["member"]);
+    budget.reserve(21).unwrap();
+}
+
+/// Scenario: Native paths contain multibyte or invalid UTF-16, or a later list entry is malformed.
+/// Guarantees: Charges match lossy UTF-8 output bytes exactly, and discarded partial results leave the budget unchanged.
+#[test]
+fn decoded_discovery_budget_matches_utf8_and_refunds_malformed_lists() {
+    let mut budget = super::super::expansion::DiscoveryBudget::limited(64);
+    let paths =
+        NativePdh::parse_discovery_paths(vec![0xd800, 0x00e9, 0, 0], &mut budget, || Ok(()))
+            .unwrap();
+    assert_eq!(paths, ["\u{fffd}\u{e9}"]);
+    budget.reserve(59).unwrap();
+    assert!(matches!(
+        budget.reserve(1),
+        Err(Error::DiscoveryMemoryLimit)
+    ));
+
+    let mut budget = super::super::expansion::DiscoveryBudget::limited(64);
+    let error =
+        NativePdh::parse_discovery_paths(vec![b'a' as u16, 0, b'b' as u16], &mut budget, || Ok(()))
+            .unwrap_err();
+    assert!(matches!(error, Error::InvalidSample(_)));
+    budget.reserve(64).unwrap();
+}
+
+/// Scenario: Twenty selectors each expand to 2,000 process paths, including multibyte counter names.
+/// Guarantees: All 40,000 decoded members fit the default refresh limit and only their actual UTF-8 bytes remain charged.
+#[test]
+fn discovery_budget_accepts_twenty_selectors_with_two_thousand_instances() {
+    let mut budget = super::super::expansion::DiscoveryBudget::new();
+    let mut retained = Vec::new();
+    let mut decoded_bytes = 0;
+    for selector in 0..20 {
+        let expected: Vec<_> = (0..2000)
+            .map(|member| {
+                format!(
+                    r"\Process(worker-{member:04})\Counter-{selector}-{}",
+                    "V\u{00e4}lue"
+                )
+            })
+            .collect();
+        let native: Vec<_> = expected
+            .iter()
+            .flat_map(|path| path.encode_utf16().chain(Some(0)))
+            .chain(Some(0))
+            .collect();
+        let buffer = NativePdh::expanded_path_buffer_budgeted_with(
+            "fixture",
+            &mut budget,
+            |size, buffer| {
+                *size = u32::try_from(native.len()).unwrap();
+                if let Some(buffer) = buffer {
+                    buffer[..native.len()].copy_from_slice(&native);
+                    Ok(0)
+                } else {
+                    Ok(PDH_MORE_DATA)
+                }
+            },
+        )
+        .unwrap();
+        let paths = NativePdh::parse_discovery_paths(buffer, &mut budget, || Ok(())).unwrap();
+        assert_eq!(paths, expected);
+        decoded_bytes += paths.iter().map(String::len).sum::<usize>();
+        retained.push(paths);
+    }
+    assert_eq!(retained.iter().map(Vec::len).sum::<usize>(), 40_000);
+    budget
+        .reserve(super::super::expansion::DISCOVERY_REFRESH_BYTES - decoded_bytes)
+        .unwrap();
+    assert!(matches!(
+        budget.reserve(1),
+        Err(Error::DiscoveryMemoryLimit)
+    ));
 }
 
 /// Scenario: PDH reports that a valid wildcard currently has no matching instances.

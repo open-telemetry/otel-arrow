@@ -487,19 +487,23 @@ impl NativePdh {
     }
 
     fn parse_discovery_paths(
-        buffer: &[u16],
+        buffer: Vec<u16>,
         budget: &mut super::expansion::DiscoveryBudget,
         mut check: impl FnMut() -> Result<(), Error>,
     ) -> Result<Vec<String>, Error> {
-        Self::parse_multi_sz_with(buffer, |units| {
-            check()?;
-            let capacity = budget.reserve_path(units.len())?;
-            let mut path = String::with_capacity(capacity);
-            path.extend(
-                char::decode_utf16(units.iter().copied())
-                    .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER)),
-            );
-            Ok(path)
+        budget.with_transient(buffer.capacity() * size_of::<u16>(), |budget| {
+            Self::parse_multi_sz_with(&buffer, |units| {
+                check()?;
+                let characters = || {
+                    char::decode_utf16(units.iter().copied())
+                        .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER))
+                };
+                let bytes = characters().map(char::len_utf8).sum();
+                budget.reserve(bytes)?;
+                let mut path = String::with_capacity(bytes);
+                path.extend(characters());
+                Ok(path)
+            })
         })
     }
 
@@ -539,7 +543,7 @@ impl NativePdh {
         for _ in 0..8 {
             size = u32::try_from(capacity)
                 .map_err(|_| Error::InvalidSample("wildcard path list size exceeds u32"))?;
-            budget.reserve(capacity * size_of::<u16>())?;
+            budget.check(capacity * size_of::<u16>())?;
             let mut buffer = vec![0_u16; capacity];
             let status = expand(&mut size, Some(&mut buffer))?;
             if matches!(status, 0 | PDH_CSTATUS_NO_INSTANCE) {
@@ -596,7 +600,7 @@ impl NativePdh {
         if buffer.is_empty() {
             Ok(Vec::new())
         } else {
-            Self::parse_discovery_paths(&buffer, budget, || self.check_running())
+            Self::parse_discovery_paths(buffer, budget, || self.check_running())
         }
     }
 

@@ -420,10 +420,10 @@ impl<A: PdhApi> Query<A> {
         let mut budget = DiscoveryBudget::new();
         for config_index in wildcard_configs {
             self.api.check_running()?;
-            match budget.reserve_selector().and_then(|()| {
-                self.api
-                    .expand(&self.configs[config_index].path, &mut budget)
-            }) {
+            match self
+                .api
+                .expand(&self.configs[config_index].path, &mut budget)
+            {
                 Ok(paths) => {
                     let _ = self.selector_failures.remove(&config_index);
                     let _ = self.object_refresh_selectors.remove(&config_index);

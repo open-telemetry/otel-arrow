@@ -85,7 +85,7 @@ struct FakeState {
     full_paths: BTreeMap<String, String>,
     identity_errors: BTreeMap<String, FakeIdentityError>,
     comparison_errors: BTreeMap<String, FakeIdentityError>,
-    expansion_bytes: BTreeMap<String, usize>,
+    decoded_expansion_bytes: BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -362,14 +362,14 @@ impl PdhApi for FakePdh {
                 status: 1,
             });
         }
-        if let Some(bytes) = state.expansion_bytes.get(path) {
-            budget.reserve(*bytes)?;
-        }
         let paths = state.expansions.get(path).map_or(&[][..], Vec::as_slice);
-        for path in paths {
-            let _ = budget.reserve_path(path.encode_utf16().count())?;
-        }
-        Ok(paths.to_vec())
+        budget.with_transient(0, |budget| {
+            if let Some(bytes) = state.decoded_expansion_bytes.get(path) {
+                budget.reserve(*bytes)?;
+            }
+            budget.reserve(paths.iter().map(String::len).sum())?;
+            Ok(paths.to_vec())
+        })
     }
 
     fn parse_instance(&mut self, path: &str) -> Result<InstanceIdentity, Error> {
@@ -437,7 +437,7 @@ fn fake_state_value(counters: Vec<FakeCounter>) -> FakeState {
         full_paths: BTreeMap::new(),
         identity_errors: BTreeMap::new(),
         comparison_errors: BTreeMap::new(),
-        expansion_bytes: BTreeMap::new(),
+        decoded_expansion_bytes: BTreeMap::new(),
     }
 }
 

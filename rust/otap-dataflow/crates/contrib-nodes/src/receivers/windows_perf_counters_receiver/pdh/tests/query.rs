@@ -342,9 +342,7 @@ impl PdhApi for InvalidHandlePdh {
         self.0.borrow_mut().expand_calls += 1;
         let state = self.0.borrow();
         let paths = state.expansions.get(path).map_or(&[][..], Vec::as_slice);
-        for path in paths {
-            let _ = budget.reserve_path(path.encode_utf16().count())?;
-        }
+        budget.reserve(paths.iter().map(String::len).sum())?;
         Ok(paths.to_vec())
     }
 
@@ -1393,7 +1391,7 @@ fn refresh_memory_budget_spans_selectors_and_preserves_healthy_members() {
             .insert(second.to_owned(), vec![second_new.to_owned()]);
         for selector in [first, second] {
             let _ = state
-                .expansion_bytes
+                .decoded_expansion_bytes
                 .insert(selector.to_owned(), DISCOVERY_REFRESH_BYTES / 2);
         }
     }
@@ -1414,7 +1412,7 @@ fn refresh_memory_budget_spans_selectors_and_preserves_healthy_members() {
             .iter()
             .any(|failure| failure.error.contains("128 MiB"))
     );
-    state.borrow_mut().expansion_bytes.clear();
+    state.borrow_mut().decoded_expansion_bytes.clear();
     let recovered = query.collect().unwrap();
     assert_eq!(
         recovered

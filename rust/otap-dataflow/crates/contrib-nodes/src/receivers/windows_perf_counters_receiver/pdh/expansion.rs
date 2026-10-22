@@ -7,12 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const DISCOVERY_REFRESH_BYTES: usize = 128 * 1024 * 1024;
 
-/// Conservative allocation credits shared by every selector in one refresh.
+/// Decoded payload bytes retained across selectors plus the current raw buffer.
 ///
-/// Raw attempts are charged at capacity. Path credits bound retained candidates
-/// to at most 16,384 and their decoded UTF-8 capacity to at most 8 MiB, reserving
-/// additional copies and bookkeeping for admission. This bounds discovery work,
-/// not process RSS or the separately bounded configured/admitted counter state.
+/// 128 MiB accommodates 40,000 maximum-length ASCII paths and a 2,000-member
+/// native expansion buffer with headroom. This bounds discovery payloads, not
+/// process RSS; configured/admitted state has separate limits.
 pub(in super::super) struct DiscoveryBudget {
     remaining: usize,
 }
@@ -37,25 +36,28 @@ impl DiscoveryBudget {
         Ok(())
     }
 
-    pub(super) fn reserve_selector(&mut self) -> Result<(), Error> {
-        self.reserve(4096)
+    pub(super) fn check(&self, bytes: usize) -> Result<(), Error> {
+        if bytes > self.remaining {
+            return Err(Error::DiscoveryMemoryLimit);
+        }
+        Ok(())
     }
 
-    pub(super) fn reserve_path(&mut self, utf16_units: usize) -> Result<usize, Error> {
-        let utf8_capacity = utf16_units
-            .checked_mul(3)
-            .ok_or(Error::DiscoveryMemoryLimit)?;
-        // Include decoded storage and headroom for the path/key copies made by
-        // normalization, ownership sets, desired membership and admission.
-        // The fixed charge covers vector growth, candidate records and tree
-        // nodes. Credits are never refunded, including failed/raw allocations,
-        // so earlier results and transient growth cannot reuse the same budget.
-        let bytes = utf8_capacity
-            .checked_mul(16)
-            .and_then(|bytes| bytes.checked_add(8192))
-            .ok_or(Error::DiscoveryMemoryLimit)?;
+    pub(super) fn with_transient<T>(
+        &mut self,
+        bytes: usize,
+        allocate: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let before = self.remaining;
         self.reserve(bytes)?;
-        Ok(utf8_capacity)
+        let result = allocate(self);
+        if result.is_ok() {
+            self.remaining += bytes;
+        } else {
+            // A failed selector retains neither its raw buffer nor its paths.
+            self.remaining = before;
+        }
+        result
     }
 }
 
