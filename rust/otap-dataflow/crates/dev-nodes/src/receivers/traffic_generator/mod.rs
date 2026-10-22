@@ -39,8 +39,6 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-#[cfg(test)]
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -824,6 +822,11 @@ mod tests {
     use super::config::{DataSource, GenerationStrategy};
     use super::*;
 
+    fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
+        otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
+            .expect("OTLP conversion")
+    }
+
     use crate::receivers::traffic_generator::config::{Config, TrafficConfig};
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::transport_headers::ValueKind;
@@ -847,7 +850,7 @@ mod tests {
     use tokio::time::{Duration, sleep};
 
     use std::collections::HashSet;
-    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_forge::v1::registry::ResolvedRegistry;
 
     use serde_json::json;
 
@@ -944,10 +947,7 @@ mod tests {
 
     /// Convert OtapPdata signal to OtlpProtoMessage for testing purposes.
     fn pdata_to_otlp_message(value: OtapPdata) -> OtlpProtoMessage {
-        let otlp_bytes: OtlpProtoBytes = value
-            .payload()
-            .try_into_with_default()
-            .expect("can convert signal to otlp bytes");
+        let otlp_bytes = into_otlp(value.payload().clone());
         match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 OtlpProtoMessage::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))
@@ -1142,6 +1142,9 @@ mod tests {
 
     #[test]
     fn test_traffic_generator_receiver() {
+        // weaver fetches remote registries over rustls without choosing a crypto
+        // provider. Production installs one at startup; tests must do it here.
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
         let registry_path = config::default_registry_path();
@@ -1222,6 +1225,9 @@ mod tests {
 
     #[test]
     fn test_traffic_generator_receiver_message_rate_only() {
+        // weaver fetches remote registries over rustls without choosing a crypto
+        // provider. Production installs one at startup; tests must do it here.
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
         let registry_path = config::default_registry_path();
@@ -1295,6 +1301,9 @@ mod tests {
     }
     #[test]
     fn test_traffic_generator_receiver_max_signal_count_only() {
+        // weaver fetches remote registries over rustls without choosing a crypto
+        // provider. Production installs one at startup; tests must do it here.
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let registry_path = config::default_registry_path();
 

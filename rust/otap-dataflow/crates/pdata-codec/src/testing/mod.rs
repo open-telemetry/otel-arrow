@@ -12,14 +12,31 @@
 //!
 //! Conformance checks do not replace codec-specific coverage. Implementations
 //! remain responsible for format edge cases, resource and decompression limits,
-//! conversion fidelity, output compatibility, and any later native batching
-//! contract they advertise.
+//! conversion fidelity, output compatibility, and any native batching contract
+//! they advertise.
+//!
+//! Enabling `testing` exposes helpers without registering any additional codecs.
+//! Fixture registrations require the separate `test-codecs` feature, which
+//! downstream tests must enable only through a dev-dependency.
+
+#[cfg(any(test, feature = "test-codecs"))]
+mod codecs;
+
+#[cfg(any(test, feature = "test-codecs"))]
+pub use codecs::{DECODE_ONLY_ENCODING, ENCODE_ONLY_ENCODING, NATIVE_ENCODING, TEST_ENCODING};
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 
 use crate::{CodecService, EncodedPdata};
+
+/// Injects a cache value solely to exercise failure recovery in downstream tests.
+/// Production code must obtain counts from the codec rather than asserting them.
+#[must_use]
+pub fn with_cached_item_count(payload: crate::PdataPayload, count: usize) -> crate::PdataPayload {
+    payload.with_item_count(count)
+}
 
 /// One encoded sample used by the decoder conformance checks.
 ///

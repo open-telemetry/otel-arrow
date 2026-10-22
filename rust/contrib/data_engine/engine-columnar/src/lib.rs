@@ -4,7 +4,11 @@
 pub(crate) mod columnar_records;
 pub(crate) mod engine;
 pub(crate) mod engine_diagnostic;
+pub(crate) mod execution_context;
 pub(crate) mod primitives;
+pub(crate) mod scalars;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 
 pub use columnar_records::*;
 pub use engine::*;

@@ -3,11 +3,12 @@
 
 //! Exact-counter query ownership and synchronous collection. No scheduling or recovery worker.
 
-use super::config::CounterConfig;
+use super::config::{CounterConfig, MetricKind};
 use super::model::{
     Number, Sample, SampleFailure, SamplePoint, SampleValue, ScaleError, scale_double,
     scale_integer,
 };
+use std::sync::Arc;
 
 mod counter_type;
 mod native;
@@ -72,6 +73,13 @@ pub(super) enum ValueFormat {
     Double,
 }
 
+/// Checked native fields used to validate receiver-side sampling state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RawSample {
+    second_value: i64,
+    multi_count: u32,
+}
+
 /// Owns an open query and its counters; dropping the adapter closes the query.
 /// No raw native handle crosses this boundary.
 pub(super) trait PdhApi {
@@ -82,8 +90,8 @@ pub(super) trait PdhApi {
     fn counter_type(&mut self, counter: &Self::Counter, path: &str) -> Result<u32, Error>;
     /// Returns whether collection has data; an expected omission returns false.
     fn collect(&mut self) -> Result<bool, Error>;
-    /// Returns a checked raw base, an expected omission, or a validated failure.
-    fn raw(&mut self, counter: &Self::Counter, path: &str) -> Result<Option<i64>, Error>;
+    /// Returns checked raw sampling fields, an expected omission, or a validated failure.
+    fn raw(&mut self, counter: &Self::Counter, path: &str) -> Result<Option<RawSample>, Error>;
     /// Returns an unscaled value, an expected omission, or a validated failure.
     fn formatted(
         &mut self,
@@ -96,9 +104,10 @@ pub(super) trait PdhApi {
 
 struct CounterHandle<C> {
     config_index: usize,
-    path: String,
+    path: Arc<str>,
     handle: C,
     kind: CounterKind,
+    metric_kind: MetricKind,
     scale_power10: i32,
     previous_base: Option<i64>,
 }
@@ -109,9 +118,12 @@ impl<C> CounterHandle<C> {
     }
 
     fn read(&mut self, api: &mut impl PdhApi<Counter = C>) -> Result<SampleValue, Error> {
-        if self.kind != CounterKind::Direct {
-            let base = match api.raw(&self.handle, &self.path) {
-                Ok(Some(base)) => base,
+        if !matches!(
+            self.kind,
+            CounterKind::Direct | CounterKind::FormattedSingleSample
+        ) {
+            let raw = match api.raw(&self.handle, &self.path) {
+                Ok(Some(raw)) => raw,
                 Ok(None) => {
                     self.reset_readiness();
                     return Ok(SampleValue::NoObservation);
@@ -121,26 +133,26 @@ impl<C> CounterHandle<C> {
                     return Err(error);
                 }
             };
-            if self.kind == CounterKind::RawFraction {
-                if base <= 0 {
-                    return Err(Error::Calculation {
-                        path: self.path.clone(),
-                        message: format!("base denominator must be positive, got {base}"),
-                    });
-                }
-            } else {
-                let Some(previous) = self.previous_base.replace(base) else {
-                    return Ok(SampleValue::NoObservation);
-                };
-                if self.kind == CounterKind::CalculatedTwoSampleWithBase {
-                    match base.cmp(&previous) {
-                        std::cmp::Ordering::Less => {
-                            self.reset_readiness();
-                            return Ok(SampleValue::NoObservation);
-                        }
-                        std::cmp::Ordering::Equal => return Ok(SampleValue::NoObservation),
-                        std::cmp::Ordering::Greater => {}
+            // The next interval uses its own current MultiCount, so even
+            // a zero-base sample must advance the raw baseline.
+            let previous = self.previous_base.replace(raw.second_value);
+            if self.kind == CounterKind::CalculatedTwoSampleWithMultiBase && raw.multi_count == 0 {
+                return Err(Error::Calculation {
+                    path: self.path.to_string(),
+                    message: "multi-counter base denominator must be positive, got 0".to_owned(),
+                });
+            }
+            let Some(previous) = previous else {
+                return Ok(SampleValue::NoObservation);
+            };
+            if self.kind == CounterKind::CalculatedTwoSampleWithBase {
+                match raw.second_value.cmp(&previous) {
+                    std::cmp::Ordering::Less => {
+                        self.reset_readiness();
+                        return Ok(SampleValue::NoObservation);
                     }
+                    std::cmp::Ordering::Equal => return Ok(SampleValue::NoObservation),
+                    std::cmp::Ordering::Greater => {}
                 }
             }
         }
@@ -168,7 +180,7 @@ impl<C> CounterHandle<C> {
             Number::Double(value) => scale_double(value, self.scale_power10),
         }
         .map_err(|source| Error::Scale {
-            path: self.path.clone(),
+            path: self.path.to_string(),
             source,
         })?;
         Ok(SampleValue::Value(number))
@@ -239,9 +251,10 @@ impl<A: PdhApi> Query<A> {
             };
             query.counters.push(CounterHandle {
                 config_index,
-                path: config.path.clone(),
+                path: Arc::from(config.path.as_str()),
                 handle,
                 kind,
+                metric_kind: config.kind,
                 scale_power10: config.scale_power10,
                 previous_base: None,
             });
@@ -282,7 +295,6 @@ impl<A: PdhApi> Query<A> {
         }
         self.previous_timestamp_unix_nano = timestamp;
         let mut sample = Sample {
-            start_time_unix_nano: self.start_time_unix_nano,
             timestamp_unix_nano: timestamp,
             points: Vec::with_capacity(self.counters.len()),
             failures: Vec::new(),
@@ -298,6 +310,10 @@ impl<A: PdhApi> Query<A> {
             match value {
                 Ok(value) => sample.points.push(SamplePoint {
                     counter_index: counter.config_index,
+                    path: counter.path.clone(),
+                    timestamp_unix_nano: timestamp,
+                    start_time_unix_nano: (counter.metric_kind == MetricKind::Sum)
+                        .then_some(self.start_time_unix_nano),
                     value,
                 }),
                 Err(error) => sample.failures.push(SampleFailure {
