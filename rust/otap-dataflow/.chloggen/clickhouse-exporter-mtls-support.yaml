@@ -11,7 +11,7 @@ component: pipeline
 note: Add TLS and mTLS support to the ClickHouse exporter via a new `tls` config block.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: []
+issues: [4505]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
