@@ -264,6 +264,14 @@ impl PdhApi for InvalidHandlePdh {
         }
     }
 
+    fn full_path(&mut self, _counter: &Self::Counter, path: &str) -> Result<String, Error> {
+        Ok(path.to_owned())
+    }
+
+    fn comparison_path(&mut self, path: &str) -> Result<String, Error> {
+        NativePdh::comparison_path_fixture(path)
+    }
+
     fn collect(&mut self) -> Result<bool, Error> {
         let mut state = self.0.borrow_mut();
         if let Some(status) = state.collect_status {
@@ -330,15 +338,14 @@ impl PdhApi for InvalidHandlePdh {
         Ok(0)
     }
 
-    fn expand(&mut self, path: &str) -> Result<Vec<String>, Error> {
+    fn expand(&mut self, path: &str, budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error> {
         self.0.borrow_mut().expand_calls += 1;
-        Ok(self
-            .0
-            .borrow()
-            .expansions
-            .get(path)
-            .cloned()
-            .unwrap_or_default())
+        let state = self.0.borrow();
+        let paths = state.expansions.get(path).map_or(&[][..], Vec::as_slice);
+        for path in paths {
+            let _ = budget.reserve_path(path.encode_utf16().count())?;
+        }
+        Ok(paths.to_vec())
     }
 
     fn parse_instance(&mut self, path: &str) -> Result<InstanceIdentity, Error> {
@@ -941,7 +948,7 @@ fn wanted_pending_removal_retains_seed_and_cleanup_outcome() {
             FakePdh::new(Rc::clone(&restored_state)),
             vec![config],
             Duration::ZERO,
-            Duration::from_secs(3600),
+            Duration::MAX,
             2,
             2,
             Some(&seed),
@@ -1136,7 +1143,7 @@ fn pending_replacement_handoff_preserves_owner_and_pattern_quota() {
         FakePdh::new(fake_state(counters())),
         configs,
         Duration::ZERO,
-        Duration::from_secs(3600),
+        Duration::MAX,
         2,
         3,
         Some(&seed),
@@ -1323,6 +1330,604 @@ fn exact_and_overlapping_wildcard_share_native_key() {
                 .collect::<Vec<_>>(),
             [(0, exact_path)]
         );
+    }
+}
+
+/// Scenario: Earlier selector results consume refresh memory before a later selector expands.
+/// Guarantees: Aggregate exhaustion retains the later selector's healthy members, diagnoses omission, and recovers with a fresh budget.
+#[test]
+fn refresh_memory_budget_spans_selectors_and_preserves_healthy_members() {
+    let first = r"\First(*)\Value";
+    let second = r"\Second(*)\Value";
+    let first_old = r"\First(old)\Value";
+    let first_new = r"\First(new)\Value";
+    let second_old = r"\Second(old)\Value";
+    let second_new = r"\Second(new)\Value";
+    let healthy = r"\Memory\Available Bytes";
+    let mut configs = vec![
+        counter(first, "first"),
+        counter(second, "second"),
+        counter(healthy, "memory"),
+    ];
+    for (index, config) in configs.iter_mut().enumerate() {
+        config.source_mapping_index = index;
+        if index < 2 {
+            config.instance_config = InstanceConfig::Wildcard {
+                excluded_aggregation: None,
+            };
+        }
+    }
+    let state = fake_state(
+        [first_old, first_new, second_old, second_new, healthy]
+            .into_iter()
+            .map(|path| fake_counter(path, Number::Integer(7)))
+            .collect(),
+    );
+    {
+        let mut state = state.borrow_mut();
+        let _ = state
+            .expansions
+            .insert(first.to_owned(), vec![first_old.to_owned()]);
+        let _ = state
+            .expansions
+            .insert(second.to_owned(), vec![second_old.to_owned()]);
+    }
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::ZERO,
+        1,
+        3,
+        None,
+    )
+    .unwrap();
+    assert_eq!(query.collect().unwrap().points.len(), 3);
+    {
+        let mut state = state.borrow_mut();
+        let _ = state
+            .expansions
+            .insert(first.to_owned(), vec![first_new.to_owned()]);
+        let _ = state
+            .expansions
+            .insert(second.to_owned(), vec![second_new.to_owned()]);
+        for selector in [first, second] {
+            let _ = state
+                .expansion_bytes
+                .insert(selector.to_owned(), DISCOVERY_REFRESH_BYTES / 2);
+        }
+    }
+    let bounded = query.collect().unwrap();
+    assert_eq!(
+        bounded
+            .points
+            .iter()
+            .map(|point| point.path.as_ref())
+            .collect::<Vec<_>>(),
+        [first_new, second_old, healthy],
+    );
+    assert_eq!(bounded.metadata.diagnostics.discovery_failures, 1);
+    assert!(
+        bounded
+            .metadata
+            .failures
+            .iter()
+            .any(|failure| failure.error.contains("128 MiB"))
+    );
+    state.borrow_mut().expansion_bytes.clear();
+    let recovered = query.collect().unwrap();
+    assert_eq!(
+        recovered
+            .points
+            .iter()
+            .map(|point| point.path.as_ref())
+            .collect::<Vec<_>>(),
+        [first_new, second_new, healthy],
+    );
+    assert_eq!(recovered.metadata.diagnostics.discovery_failures, 0);
+}
+
+fn same_mapping_overlap_configs(instances: [&str; 2]) -> Vec<CounterConfig> {
+    let config = Config::from_json(&serde_json::json!({
+        "metrics": {"shared": {"unit": "1", "gauge": {}}},
+        "perfcounters": [{
+            "object": "Process", "instances": instances,
+            "counters": [{"name": "ID Process", "metric": "shared"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(config.counters.len(), 2);
+    assert_eq!(config.counters[0].name, config.counters[1].name);
+    assert_eq!(
+        config.counters[0].source_mapping_index,
+        config.counters[1].source_mapping_index
+    );
+    config.counters
+}
+
+/// Scenario: Exact and expanded members share a native identity through suffix aliases and display-language spelling.
+/// Guarantees: Exact paths win before either quota is charged; native add and output paths remain unchanged.
+#[test]
+fn same_mapping_native_identity_preserves_paths_and_capacity() {
+    for (reported, overlap, peer) in [
+        (
+            r"\Process(worker#00)\ID Process",
+            r"\Process(worker)\ID Process",
+            r"\Process(worker#1)\ID Process",
+        ),
+        (
+            r"\\LOCAL\NativeProcess(WORKER#00)\NativeCounter",
+            r"\NativeProcess(worker)\NativeCounter",
+            r"\NativeProcess(worker#1)\NativeCounter",
+        ),
+    ] {
+        let configs = same_mapping_overlap_configs(["worker#00", "worker*"]);
+        let exact = configs[0].path.clone();
+        let template = configs[1].path.clone();
+        let state = fake_state(vec![
+            fake_counter(&exact, Number::Integer(42)),
+            fake_counter(overlap, Number::Integer(99)),
+            fake_counter(peer, Number::Integer(7)),
+        ]);
+        let _ = state
+            .borrow_mut()
+            .full_paths
+            .insert(exact.clone(), reported.to_owned());
+        let _ = state
+            .borrow_mut()
+            .expansions
+            .insert(template, vec![overlap.to_owned(), peer.to_owned()]);
+        let mut query = Query::open_with_seed(
+            FakePdh::new(Rc::clone(&state)),
+            configs,
+            Duration::ZERO,
+            Duration::ZERO,
+            1,
+            2,
+            None,
+        )
+        .unwrap();
+        for _ in 0..3 {
+            let sample = query.collect().unwrap();
+            assert_eq!(query.active_expanded_count(), 1);
+            assert_eq!(
+                sample
+                    .points
+                    .iter()
+                    .map(|point| point.path.as_ref())
+                    .collect::<Vec<_>>(),
+                [exact.as_str(), peer]
+            );
+            assert!(sample.metadata.overflows.is_empty());
+            assert!(sample.metadata.failures.is_empty());
+        }
+        assert_eq!(
+            state.borrow().attempted_adds,
+            [
+                (exact, CounterLanguage::English),
+                (peer.to_owned(), CounterLanguage::Localized)
+            ]
+        );
+        assert!(state.borrow().removed.is_empty());
+    }
+}
+
+/// Scenario: Different mappings select the same native instance through exact and wildcard paths.
+/// Guarantees: Comparison-only dedupe does not change cross-mapping membership or emitted path identity.
+#[test]
+fn native_identity_preserves_cross_mapping_overlap() {
+    let mut configs = same_mapping_overlap_configs(["0", "?"]);
+    configs[1].source_mapping_index = 1;
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let member = r"\NativeProcess(0)\NativeCounter";
+    let state = fake_state(vec![
+        fake_counter(&exact, Number::Integer(42)),
+        fake_counter(member, Number::Integer(7)),
+    ]);
+    let _ = state
+        .borrow_mut()
+        .full_paths
+        .insert(exact.clone(), member.to_owned());
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template, vec![member.to_owned()]);
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::ZERO,
+        1,
+        2,
+        None,
+    )
+    .unwrap();
+    let sample = query.collect().unwrap();
+    assert_eq!(sample.points.len(), 2);
+    assert_eq!(sample.points[0].path.as_ref(), exact);
+    assert_eq!(sample.points[1].path.as_ref(), member);
+}
+
+/// Scenario: Exact identity reads fail repeatedly, then recover while discovery and native removal fail.
+/// Guarantees: Healthy data and configured-key dedupe survive, warnings are episode-bounded, and the overlapping member retires before collection with cleanup retained.
+#[test]
+fn identity_read_recovery_reconciles_before_failed_discovery_collection() {
+    let configs = same_mapping_overlap_configs(["0", "?"]);
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let member = r"\NativeProcess(0)\NativeCounter";
+    let state = fake_state(vec![
+        fake_counter(&exact, Number::Integer(42)),
+        fake_counter(member, Number::Integer(7)),
+    ]);
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.full_paths.insert(exact.clone(), member.to_owned());
+        let _ = state
+            .identity_errors
+            .insert(exact.clone(), FakeIdentityError::Recoverable);
+        let _ = state
+            .expansions
+            .insert(template, vec![exact.clone(), member.to_owned()]);
+    }
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::ZERO,
+        2,
+        3,
+        None,
+    )
+    .unwrap();
+    for attempt in 0..3 {
+        let sample = query.collect().unwrap();
+        assert_eq!(sample.points.len(), 2);
+        assert_eq!(sample.metadata.failures.len(), usize::from(attempt == 0));
+        assert!(sample.metadata.failures.iter().all(|failure| {
+            failure.reason == "native_identity_unavailable" && failure.diagnostic_only
+        }));
+        assert!(sample.metadata.diagnostics.discovery_failures > 0);
+    }
+    {
+        let mut state = state.borrow_mut();
+        state.identity_errors.clear();
+        state.expand_error = true;
+        state.remove_error = true;
+    }
+    let recovered = query.collect().unwrap();
+    assert_eq!(recovered.points.len(), 1);
+    assert_eq!(recovered.points[0].path.as_ref(), exact);
+    assert_eq!(query.active_expanded_count(), 0);
+    assert_eq!(state.borrow().removed, [1]);
+    state.borrow_mut().remove_error = false;
+    let cleaned = query
+        .collect_at(Instant::now() + Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(cleaned.points.len(), 1);
+    assert_eq!(state.borrow().removed, [1, 1]);
+    assert_eq!(state.borrow().added, [exact, member.to_owned()]);
+}
+
+/// Scenario: A missing exact source succeeds on retry after its native wildcard member was admitted.
+/// Guarantees: The wildcard retires before that collection without waiting for another discovery or rewriting exact output.
+#[test]
+fn exact_add_retry_reconciles_native_overlap_without_discovery() {
+    let configs = same_mapping_overlap_configs(["0", "?"]);
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let member = r"\NativeProcess(0)\NativeCounter";
+    let state = fake_state(vec![fake_counter(member, Number::Integer(7))]);
+    let _ = state
+        .borrow_mut()
+        .full_paths
+        .insert(exact.clone(), member.to_owned());
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template, vec![member.to_owned()]);
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::MAX,
+        1,
+        2,
+        None,
+    )
+    .unwrap();
+    assert_eq!(query.collect().unwrap().points[0].path.as_ref(), member);
+    let discoveries = state.borrow().calls.expand;
+    {
+        let mut state = state.borrow_mut();
+        state
+            .counters
+            .push(fake_counter(&exact, Number::Integer(42)));
+        state.expand_error = true;
+    }
+    let recovered = query
+        .collect_at(Instant::now() + Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(recovered.points.len(), 1);
+    assert_eq!(recovered.points[0].path.as_ref(), exact);
+    assert_eq!(recovered.metadata.diagnostics.retry_recoveries, 1);
+    assert_eq!(state.borrow().calls.expand, discoveries);
+    assert_eq!(state.borrow().removed, [0]);
+}
+
+/// Scenario: A rebuilt query re-adds exact sources before restoring wildcard members admitted during identity degradation.
+/// Guarantees: Fresh native metadata suppresses the seeded overlap while retaining an unrelated seeded peer without rediscovery.
+#[test]
+fn query_rebuild_rechecks_identity_before_seeded_wildcard_restoration() {
+    let configs = same_mapping_overlap_configs(["0", "?"]);
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let member = r"\NativeProcess(0)\NativeCounter";
+    let peer = r"\NativeProcess(1)\NativeCounter";
+    let state = fake_state(vec![
+        fake_counter(&exact, Number::Integer(42)),
+        fake_counter(member, Number::Integer(7)),
+        fake_counter(peer, Number::Integer(8)),
+    ]);
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.full_paths.insert(exact.clone(), member.to_owned());
+        let _ = state
+            .identity_errors
+            .insert(exact.clone(), FakeIdentityError::Recoverable);
+        let _ = state
+            .expansions
+            .insert(template, vec![member.to_owned(), peer.to_owned()]);
+    }
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs.clone(),
+        Duration::ZERO,
+        Duration::from_secs(3600),
+        2,
+        3,
+        None,
+    )
+    .unwrap();
+    assert_eq!(query.collect().unwrap().points.len(), 3);
+    let seed = query.recreation_seed();
+    drop(query);
+    let discoveries = state.borrow().calls.expand;
+    let reads = state.borrow().calls.full_path;
+    {
+        let mut state = state.borrow_mut();
+        state.identity_errors.clear();
+        state.expand_error = true;
+        state.added.clear();
+    }
+    let mut rebuilt = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::from_secs(3600),
+        2,
+        3,
+        Some(&seed),
+    )
+    .unwrap();
+    let sample = rebuilt.collect().unwrap();
+    assert_eq!(sample.points.len(), 2);
+    assert_eq!(state.borrow().added, [exact, peer.to_owned()]);
+    assert_eq!(state.borrow().calls.full_path, reads + 1);
+    assert_eq!(state.borrow().calls.expand, discoveries);
+}
+
+/// Scenario: Native metadata reads or comparison parsing request cancellation or rebuild during open or discovery retry.
+/// Guarantees: These errors propagate before collection rather than becoming recoverable warnings.
+#[test]
+fn identity_reads_preserve_stop_and_rebuild_errors() {
+    for comparison in [false, true] {
+        for error in [FakeIdentityError::Stop, FakeIdentityError::Rebuild] {
+            for retry in [false, true] {
+                let configs = same_mapping_overlap_configs(["0", "?"]);
+                let exact = configs[0].path.clone();
+                let state = fake_state(vec![fake_counter(&exact, Number::Integer(42))]);
+                {
+                    let mut state = state.borrow_mut();
+                    let errors = if comparison {
+                        &mut state.comparison_errors
+                    } else {
+                        &mut state.identity_errors
+                    };
+                    let _ = errors.insert(
+                        exact.clone(),
+                        if retry {
+                            FakeIdentityError::Recoverable
+                        } else {
+                            error
+                        },
+                    );
+                }
+                let opened = Query::open_with_seed(
+                    FakePdh::new(Rc::clone(&state)),
+                    configs,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    1,
+                    2,
+                    None,
+                );
+                let actual = if retry {
+                    let mut query = opened.unwrap();
+                    {
+                        let mut state = state.borrow_mut();
+                        let errors = if comparison {
+                            &mut state.comparison_errors
+                        } else {
+                            &mut state.identity_errors
+                        };
+                        let _ = errors.insert(exact, error);
+                    }
+                    query.collect().unwrap_err()
+                } else {
+                    opened.err().expect("identity error must fail opening")
+                };
+                match error {
+                    FakeIdentityError::Stop => assert!(actual.is_stop()),
+                    FakeIdentityError::Rebuild => {
+                        assert!(actual.requires_immediate_query_rebuild())
+                    }
+                    FakeIdentityError::Recoverable => unreachable!(),
+                }
+                assert_eq!(state.borrow().calls.collect, 0);
+            }
+        }
+    }
+}
+
+/// Scenario: An invalid exact handle retires before its wildcard alias is discovered and the exact add recovers.
+/// Guarantees: Stale comparison identity cannot suppress healthy admission, and successful re-add reconciles that member before collection.
+#[test]
+fn exact_handle_recovery_refreshes_native_identity_ownership() {
+    let configs = same_mapping_overlap_configs(["worker#00", "worker*"]);
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let member = r"\Process(worker)\ID Process";
+    let (state, mut query) = invalid_handle_query(
+        configs,
+        BTreeMap::from([(template, vec![member.to_owned()])]),
+    );
+    assert_eq!(query.collect().unwrap().points.len(), 1);
+    state.borrow_mut().invalidate_on_collect = true;
+    assert!(query.collect().unwrap().points.is_empty());
+    query.refresh_all_wildcards_managed().unwrap();
+    assert_eq!(query.active_expanded_count(), 1);
+    let recovered = query
+        .collect_at(Instant::now() + Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(recovered.points.len(), 1);
+    assert_eq!(recovered.points[0].path.as_ref(), exact);
+    assert_eq!(query.active_expanded_count(), 0);
+    assert_eq!(state.borrow().active.len(), 1);
+    assert_eq!(state.borrow().cleanup_attempts.len(), 2);
+}
+
+/// Scenario: Many wildcard identity comparisons fail while their native counters remain readable.
+/// Guarantees: Collection continues with configured-key dedupe and only one identity warning per selector episode.
+#[test]
+fn wildcard_identity_failures_keep_healthy_collection_with_bounded_warnings() {
+    let configs = same_mapping_overlap_configs(["0", "?"]);
+    let exact = configs[0].path.clone();
+    let template = configs[1].path.clone();
+    let state = fake_state(vec![fake_counter(&exact, Number::Integer(42))]);
+    {
+        let mut state = state.borrow_mut();
+        let mut paths = vec![exact.clone()];
+        for index in 1..=8 {
+            let path = format!(r"\NativeProcess({index})\NativeCounter");
+            state
+                .counters
+                .push(fake_counter(&path, Number::Integer(index)));
+            let _ = state
+                .comparison_errors
+                .insert(path.clone(), FakeIdentityError::Recoverable);
+            paths.push(path);
+        }
+        let _ = state.expansions.insert(template, paths);
+    }
+    let mut query = Query::open_with_seed(
+        FakePdh::new(Rc::clone(&state)),
+        configs,
+        Duration::ZERO,
+        Duration::ZERO,
+        8,
+        9,
+        None,
+    )
+    .unwrap();
+    for attempt in 0..3 {
+        let sample = query.collect().unwrap();
+        assert_eq!(sample.points.len(), 9);
+        assert_eq!(sample.metadata.failures.len(), usize::from(attempt == 0));
+        assert!(
+            sample
+                .metadata
+                .failures
+                .iter()
+                .all(|failure| failure.diagnostic_only)
+        );
+        assert!(sample.metadata.overflows.is_empty());
+    }
+}
+
+/// Scenario: Failing wildcard members churn while collection or timestamp errors repeatedly restore pending evidence.
+/// Guarantees: Only current identities retain failure details, aggregate failure counts survive, and healthy peers recover normally.
+#[test]
+fn failed_collection_restoration_prunes_departed_failure_details() {
+    let healthy = r"\Memory\Available Bytes";
+    let template = r"\Process(worker*)\Private Bytes";
+    for (timestamp_failure, permanent) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let mut wildcard = counter(template, "process.private");
+        wildcard.source_mapping_index = 1;
+        wildcard.instance_config = InstanceConfig::Wildcard {
+            excluded_aggregation: None,
+        };
+        let state = fake_state(vec![fake_counter(healthy, Number::Integer(42))]);
+        let mut query = Query::open_with_seed(
+            FakePdh::new(Rc::clone(&state)),
+            vec![counter(healthy, "memory"), wildcard],
+            Duration::ZERO,
+            Duration::ZERO,
+            1,
+            2,
+            None,
+        )
+        .unwrap();
+        let mut latest_path = String::new();
+        for index in 0..32 {
+            latest_path = format!(r"\Process(worker{index})\Private Bytes");
+            {
+                let mut state = state.borrow_mut();
+                let _ = state
+                    .expansions
+                    .insert(template.to_owned(), vec![latest_path.clone()]);
+                state.collect_error = !timestamp_failure;
+                state.timestamp_error = timestamp_failure;
+                if permanent {
+                    state.counters.push(FakeCounter {
+                        native_type: 0x4003_0401,
+                        ..fake_counter(&latest_path, Number::Integer(7))
+                    });
+                }
+            }
+            query.refresh_all_wildcards_managed().unwrap();
+            assert!(query.collect().is_err());
+            assert_eq!(
+                query.admitted_members().len(),
+                if permanent { 1 } else { 2 }
+            );
+            assert_eq!(query.pending.failures.len(), 1);
+            assert_eq!(query.pending.failures[0].path.as_ref(), latest_path);
+            assert_eq!(
+                query.pending.diagnostics.counter_add_failures,
+                2 * (index + 1)
+            );
+        }
+        {
+            let mut state = state.borrow_mut();
+            state.collect_error = false;
+            state.timestamp_error = false;
+            if permanent {
+                state.counters.last_mut().unwrap().native_type = 0x0001_0100;
+            } else {
+                state
+                    .counters
+                    .push(fake_counter(&latest_path, Number::Integer(7)));
+            }
+        }
+        let recovered = query.collect().unwrap();
+        assert_eq!(recovered.points.len(), 2);
+        assert_eq!(recovered.metadata.diagnostics.counter_add_failures, 64);
+        assert_eq!(recovered.metadata.failures.len(), 1);
+        assert_eq!(recovered.metadata.failures[0].path.as_ref(), latest_path);
     }
 }
 
@@ -1809,10 +2414,10 @@ fn queued_retry_cleanup_failure_requires_query_rebuild() {
     assert_eq!(state.borrow().removed, [0]);
 }
 
-/// Scenario: One normalized mapping selects an English exact instance and a stable localized wildcard for the same instance.
-/// Guarantees: Repeated production refreshes retain both identities and calculated values without spurious native replacement or renewed warm-up.
+/// Scenario: One normalized mapping selects an exact instance and an overlapping expanded member on any display language.
+/// Guarantees: Repeated refreshes retain only the exact identity and its calculated value without replacement or renewed warm-up.
 #[test]
-fn mixed_language_exact_and_wildcard_group_preserves_calculated_readiness() {
+fn same_mapping_overlap_preserves_calculated_readiness() {
     let config = Config::from_json(&serde_json::json!({
         "metrics": {"processor": {"unit": "%", "gauge": {}}},
         "perfcounters": [{
@@ -1823,58 +2428,68 @@ fn mixed_language_exact_and_wildcard_group_preserves_calculated_readiness() {
     .unwrap();
     let exact = r"\Processor(0)\% Processor Time";
     let template = r"\Processor(?)\% Processor Time";
-    let localized = r"\Prozessor(0)\Prozessorzeit (%)";
     assert_eq!(config.counters.len(), 2);
     assert_eq!(
         config.counters[0].source_mapping_index,
         config.counters[1].source_mapping_index
     );
-    let (state, mut query) = fake_query_with_cadences(
-        config.counters,
-        [exact, localized]
-            .into_iter()
-            .map(|path| FakeCounter {
-                native_type: 0x2151_0500,
-                raw: Some(10),
-                ..fake_counter(path, Number::Double(7.0))
-            })
-            .collect(),
-        Duration::ZERO,
-        Duration::ZERO,
-    );
-    let _ = state
-        .borrow_mut()
-        .expansions
-        .insert(template.to_owned(), vec![localized.to_owned()]);
-    let first = query.collect().unwrap();
-    assert_eq!(first.points.len(), 2);
-    assert!(
-        first
-            .points
-            .iter()
-            .all(|point| point.value == SampleValue::Warming)
-    );
-    for _ in 0..3 {
-        {
-            let mut state = state.borrow_mut();
-            state.timestamp += 10;
-            for counter in &mut state.counters {
-                counter.raw = counter.raw.map(|value| value + 1);
-            }
-        }
-        let sample = query.collect().unwrap();
-        assert_eq!(sample.points.len(), 2);
+    for member in [exact, r"\NativeProcessor(0)\NativeTime"] {
+        let state = fake_state(
+            [exact, member]
+                .into_iter()
+                .map(|path| FakeCounter {
+                    native_type: 0x2151_0500,
+                    raw: Some(10),
+                    ..fake_counter(path, Number::Double(7.0))
+                })
+                .collect(),
+        );
+        let _ = state
+            .borrow_mut()
+            .full_paths
+            .insert(exact.to_owned(), member.to_owned());
+        let _ = state
+            .borrow_mut()
+            .expansions
+            .insert(template.to_owned(), vec![member.to_owned()]);
+        let mut query = Query::open_with_seed(
+            FakePdh::new(Rc::clone(&state)),
+            config.counters.clone(),
+            Duration::ZERO,
+            Duration::ZERO,
+            1,
+            2,
+            None,
+        )
+        .unwrap();
+        let first = query.collect().unwrap();
+        assert_eq!(first.points.len(), 1);
+        assert_eq!(first.points[0].path.as_ref(), exact);
         assert!(
-            sample
+            first
                 .points
                 .iter()
-                .all(|point| point.value == SampleValue::Value(Number::Double(7.0)))
+                .all(|point| point.value == SampleValue::Warming)
         );
-        assert_eq!(
-            state.borrow().added,
-            [exact.to_owned(), localized.to_owned()]
-        );
-        assert!(state.borrow().removed.is_empty());
+        for _ in 0..3 {
+            {
+                let mut state = state.borrow_mut();
+                state.timestamp += 10;
+                for counter in &mut state.counters {
+                    counter.raw = counter.raw.map(|value| value + 1);
+                }
+            }
+            let sample = query.collect().unwrap();
+            assert_eq!(sample.points.len(), 1);
+            assert!(
+                sample
+                    .points
+                    .iter()
+                    .all(|point| point.value == SampleValue::Value(Number::Double(7.0)))
+            );
+            assert_eq!(state.borrow().added, [exact.to_owned()]);
+            assert!(state.borrow().removed.is_empty());
+        }
     }
 }
 

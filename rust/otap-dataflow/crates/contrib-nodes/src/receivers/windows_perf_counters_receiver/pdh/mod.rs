@@ -6,6 +6,7 @@
 //! Windows handles remain on the synchronous thread that owns the query.
 
 use super::model::{InstanceIdentity, Number};
+pub(super) use expansion::DiscoveryBudget;
 mod counter_type;
 mod error;
 mod expansion;
@@ -52,6 +53,10 @@ pub(super) trait PdhApi {
     fn add(&mut self, path: &str, language: CounterLanguage) -> Result<Self::Counter, Error>;
     fn remove(&mut self, counter: &Self::Counter, path: &str) -> Result<(), Error>;
     fn counter_type(&mut self, counter: &Self::Counter, path: &str) -> Result<u32, Error>;
+    /// Reads the native display-language path without changing the configured path.
+    fn full_path(&mut self, counter: &Self::Counter, path: &str) -> Result<String, Error>;
+    /// Parses a comparison-only local path with canonical instance suffix spelling.
+    fn comparison_path(&mut self, path: &str) -> Result<String, Error>;
     /// Returns whether collection has data; an expected omission returns false.
     fn collect(&mut self) -> Result<bool, Error>;
     /// Returns checked raw sampling fields, an expected omission, or a validated failure.
@@ -75,7 +80,8 @@ pub(super) trait PdhApi {
         i64::try_from(timestamp).map_err(|_| Error::Timestamp("timestamp exceeds i64 nanoseconds"))
     }
     /// Resolves an English template and returns concrete host-language paths.
-    fn expand(&mut self, path: &str) -> Result<Vec<String>, Error>;
+    /// Charge the shared budget before allocating raw buffers or decoded paths.
+    fn expand(&mut self, path: &str, budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error>;
     /// Refreshes the local object list and returns its object count.
     fn refresh_objects(&mut self) -> Result<usize, Error>;
     /// Parses the instance identity from one concrete path.

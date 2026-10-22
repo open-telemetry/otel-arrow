@@ -6,6 +6,8 @@ use super::counter_type::UnsupportedNativeType;
 use std::sync::Arc;
 use windows_sys::Win32::System::Performance::PDH_INVALID_HANDLE;
 
+pub(super) const WORKER_FAILURE_PATH: &str = "<worker>";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in super::super) enum PdhOperation {
     AddEnglishCounter,
@@ -81,6 +83,10 @@ pub(in super::super) enum Error {
     InvalidCounterToken { path: String },
     #[error("invalid performance-counter sample: {0}")]
     InvalidSample(&'static str),
+    #[error("wildcard path list exceeds 64 MiB discovery buffer limit")]
+    DiscoveryBufferLimit,
+    #[error("wildcard refresh exceeds 128 MiB discovery allocation budget")]
+    DiscoveryMemoryLimit,
     #[error("performance-counter timestamp read failed: {0}")]
     Timestamp(&'static str),
     #[error("no usable performance counters or recoverable availability work: {detail}")]
@@ -145,6 +151,8 @@ impl Error {
             Self::CounterSetup { .. } => "counter_setup",
             Self::InvalidCounterToken { .. } => "invalid_counter_token",
             Self::InvalidSample(_) => "invalid_sample",
+            Self::DiscoveryBufferLimit => "discovery_buffer_limit",
+            Self::DiscoveryMemoryLimit => "discovery_memory_limit",
             Self::Timestamp(_) => "timestamp",
             Self::NoUsableCounters { .. } => "no_usable_counters",
             Self::Calculation { .. } => "calculation",
@@ -213,7 +221,7 @@ impl Error {
 pub(super) fn sample_failure(counter_index: usize, error: &Error) -> SampleFailure {
     SampleFailure {
         counter_index,
-        path: Arc::from(error.path().unwrap_or("<worker>")),
+        path: Arc::from(error.path().unwrap_or(WORKER_FAILURE_PATH)),
         reason: error.reason(),
         error: error.bounded_detail(),
         diagnostic_only: false,

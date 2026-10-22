@@ -9,10 +9,11 @@ use super::super::model::{
     SampleMember, SamplePoint, SampleValue, scale_double, scale_integer,
 };
 use super::counter_type::{CounterKind, classify_native_type};
-use super::error::{Error, sample_failure};
+use super::error::{Error, WORKER_FAILURE_PATH, sample_failure};
 use super::expansion::{
-    CounterKey, ExpansionAllocation, InstanceGroupKey, cleanup_aggregation_instances,
-    expansion_allocation, instance_groups, keyed_expanded_paths, refresh_changes_with_group_resets,
+    CounterKey, DiscoveryBudget, ExpansionAllocation, InstanceGroupKey,
+    cleanup_aggregation_instances, expansion_allocation, instance_groups, keyed_expanded_paths,
+    refresh_changes_with_group_resets,
 };
 use super::native::NativePdh;
 use super::timing::{cumulative_start_time, positive_timestamp};
@@ -43,6 +44,9 @@ pub(super) struct Query<A: PdhApi = NativePdh> {
     pub(super) last_object_refresh: Instant,
     selector_failures: BTreeSet<usize>,
     object_refresh_selectors: BTreeSet<usize>,
+    comparison_mappings: BTreeSet<usize>,
+    identity_failures: BTreeSet<usize>,
+    exact_identities: BTreeMap<CounterKey, usize>,
 }
 
 impl<A: PdhApi> Query<A> {
@@ -71,6 +75,11 @@ impl<A: PdhApi> Query<A> {
             let timestamp = positive_timestamp(api.timestamp()?)?;
             (timestamp, timestamp)
         };
+        let comparison_mappings = configs
+            .iter()
+            .filter(|config| config.instance_config.is_wildcard())
+            .map(|config| config.source_mapping_index)
+            .collect();
         let mut query = Self {
             api,
             start_time_unix_nano,
@@ -94,10 +103,15 @@ impl<A: PdhApi> Query<A> {
                 .map_or_else(BTreeSet::new, |seed| seed.selector_failures.clone()),
             object_refresh_selectors: seed
                 .map_or_else(BTreeSet::new, |seed| seed.object_refresh_selectors.clone()),
+            comparison_mappings,
+            identity_failures: seed
+                .map_or_else(BTreeSet::new, |seed| seed.identity_failures.clone()),
+            exact_identities: BTreeMap::new(),
         };
         query.initialize_exact_counters()?;
         query.ensure_available_or_recoverable(&query.pending)?;
         let mut metadata = PendingMetadata::default();
+        query.refresh_exact_identities(&mut metadata)?;
         if let Some(seed) = seed {
             query.initialize_seeded_wildcards(seed, &mut metadata)?;
         }
@@ -165,6 +179,7 @@ impl<A: PdhApi> Query<A> {
             last_object_refresh: self.last_object_refresh,
             selector_failures: self.selector_failures.clone(),
             object_refresh_selectors: self.object_refresh_selectors.clone(),
+            identity_failures: self.identity_failures.clone(),
         }
     }
 
@@ -297,6 +312,7 @@ impl<A: PdhApi> Query<A> {
                 emit_instance_attribute: target.emit_instance_attribute,
                 admission_order: target.admission_order,
                 removal_counted: target.removal_counted,
+                native_identity: None,
             },
         );
         Ok(())
@@ -316,10 +332,23 @@ impl<A: PdhApi> Query<A> {
         now: Instant,
         metadata: &mut PendingMetadata,
     ) -> Result<bool, Error> {
+        if target.origin.is_wildcard()
+            && self.wildcard_matches_exact(target.config_index, &target.path, metadata)?
+                == Some(true)
+        {
+            let _ = self.retry_states.remove(&key);
+            return Ok(false);
+        }
         match self.add_counter(target.clone()) {
             Ok(()) => {
                 if self.retry_states.remove(&key).is_some() {
                     metadata.diagnostics.retry_recoveries += 1;
+                }
+                if !target.origin.is_wildcard()
+                    && self.comparison_mappings.contains(&key.source_mapping_index)
+                    && self.read_exact_identity(&key, metadata)?
+                {
+                    self.reconcile_exact_overlaps(metadata)?;
                 }
                 Ok(true)
             }
@@ -366,6 +395,7 @@ impl<A: PdhApi> Query<A> {
 
     fn refresh_wildcards(&mut self, metadata: &mut PendingMetadata) -> Result<(), Error> {
         metadata.diagnostics.discovery_refreshes += 1;
+        self.refresh_exact_identities(metadata)?;
         let refresh_interval = self.wildcard_refresh_interval.max(Duration::from_secs(600));
         if !self.object_refresh_selectors.is_empty()
             && self.last_object_refresh.elapsed() >= refresh_interval
@@ -387,9 +417,13 @@ impl<A: PdhApi> Query<A> {
             .collect::<Vec<_>>();
         let mut discoveries = Vec::new();
         let mut desired = DesiredCounters::new();
+        let mut budget = DiscoveryBudget::new();
         for config_index in wildcard_configs {
             self.api.check_running()?;
-            match self.api.expand(&self.configs[config_index].path) {
+            match budget.reserve_selector().and_then(|()| {
+                self.api
+                    .expand(&self.configs[config_index].path, &mut budget)
+            }) {
                 Ok(paths) => {
                     let _ = self.selector_failures.remove(&config_index);
                     let _ = self.object_refresh_selectors.remove(&config_index);
@@ -457,6 +491,148 @@ impl<A: PdhApi> Query<A> {
                 error: error.to_string(),
                 diagnostic_only: true,
             })
+    }
+
+    fn record_identity_failure(
+        &mut self,
+        config_index: usize,
+        error: &Error,
+        metadata: &mut PendingMetadata,
+    ) {
+        metadata.diagnostics.discovery_failures += 1;
+        if self.identity_failures.insert(config_index) {
+            metadata.failures.push(SampleFailure {
+                counter_index: config_index,
+                path: Arc::from(self.configs[config_index].path.as_str()),
+                reason: "native_identity_unavailable",
+                error: error.bounded_detail(),
+                diagnostic_only: true,
+            });
+        }
+    }
+
+    fn read_exact_identity(
+        &mut self,
+        key: &CounterKey,
+        metadata: &mut PendingMetadata,
+    ) -> Result<bool, Error> {
+        self.api.check_running()?;
+        let counter = &self.counters[key];
+        let config_index = counter.config_index;
+        let identity = self
+            .api
+            .full_path(&counter.handle, &counter.path)
+            .and_then(|path| self.api.comparison_path(&path));
+        self.api.check_running()?;
+        match identity {
+            Ok(path) => {
+                let identity = CounterKey::new(key.source_mapping_index, &path);
+                *self.exact_identities.entry(identity.clone()).or_default() += 1;
+                self.counters
+                    .get_mut(key)
+                    .expect("identity read retains its counter")
+                    .native_identity = Some(identity);
+                let _ = self.identity_failures.remove(&config_index);
+                Ok(true)
+            }
+            Err(error) if error.is_stop() || error.requires_immediate_query_rebuild() => Err(error),
+            Err(error) => {
+                self.record_identity_failure(config_index, &error, metadata);
+                Ok(false)
+            }
+        }
+    }
+
+    fn refresh_exact_identities(&mut self, metadata: &mut PendingMetadata) -> Result<(), Error> {
+        let missing = self
+            .counters
+            .iter()
+            .filter(|(key, counter)| {
+                !counter.origin.is_wildcard()
+                    && counter.native_identity.is_none()
+                    && self.comparison_mappings.contains(&key.source_mapping_index)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for key in missing {
+            changed |= self.read_exact_identity(&key, metadata)?;
+        }
+        if changed {
+            self.reconcile_exact_overlaps(metadata)?;
+        }
+        Ok(())
+    }
+
+    fn wildcard_matches_exact(
+        &mut self,
+        config_index: usize,
+        path: &str,
+        metadata: &mut PendingMetadata,
+    ) -> Result<Option<bool>, Error> {
+        let key = CounterKey::new(self.configs[config_index].source_mapping_index, path);
+        if self
+            .counters
+            .get(&key)
+            .is_some_and(|counter| !counter.origin.is_wildcard())
+            || self
+                .retry_states
+                .get(&key)
+                .is_some_and(|state| !state.target.origin.is_wildcard())
+            || self
+                .pending_removals
+                .get(&key)
+                .and_then(|removal| removal.retry_target.as_ref())
+                .is_some_and(|target| !target.origin.is_wildcard())
+        {
+            return Ok(Some(true));
+        }
+        if !self
+            .exact_identities
+            .range(CounterKey::new(key.source_mapping_index, "")..)
+            .next()
+            .is_some_and(|(identity, _)| identity.source_mapping_index == key.source_mapping_index)
+        {
+            return Ok(Some(false));
+        }
+        self.api.check_running()?;
+        let identity = self.api.comparison_path(path);
+        self.api.check_running()?;
+        match identity {
+            Ok(path) => {
+                let identity = CounterKey::new(key.source_mapping_index, &path);
+                Ok(Some(self.exact_identities.contains_key(&identity)))
+            }
+            Err(error) if error.is_stop() || error.requires_immediate_query_rebuild() => Err(error),
+            Err(error) => {
+                self.record_identity_failure(config_index, &error, metadata);
+                Ok(None)
+            }
+        }
+    }
+
+    fn reconcile_exact_overlaps(&mut self, metadata: &mut PendingMetadata) -> Result<(), Error> {
+        let targets = self
+            .counter_targets()
+            .filter(|(_, target)| target.origin.is_wildcard())
+            .map(|(key, target)| (key.clone(), target))
+            .collect::<Vec<_>>();
+        let mut wanted = BTreeSet::new();
+        for (key, target) in targets {
+            if self.wildcard_matches_exact(target.config_index, &target.path, metadata)?
+                != Some(true)
+            {
+                let _ = wanted.insert(key);
+            }
+        }
+        let removed = self
+            .counters
+            .iter()
+            .filter(|(key, counter)| counter.origin.is_wildcard() && !wanted.contains(*key))
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        self.discard_unwanted_wildcard_retries(&wanted, metadata);
+        self.remove_wildcard_counters(&removed, &wanted, metadata)
     }
 
     fn reserve_failed_discovery(
@@ -593,13 +769,31 @@ impl<A: PdhApi> Query<A> {
                             .is_some_and(|state| !state.target.origin.is_wildcard())
                 })
                 .collect::<Vec<_>>();
-            let discovered = paths.len();
+            let mut distinct = Vec::with_capacity(paths.len());
+            let mut identity_failed = false;
+            for (key, path) in paths {
+                match self.wildcard_matches_exact(config_index, &path, metadata)? {
+                    Some(true) => {}
+                    result => {
+                        identity_failed |= result.is_none();
+                        distinct.push((key, path));
+                    }
+                }
+            }
+            if !identity_failed {
+                let _ = self.identity_failures.remove(&config_index);
+            }
+            let paths = distinct;
             let discovered_keys = paths
                 .iter()
                 .map(|(key, _)| key.clone())
                 .collect::<BTreeSet<_>>();
             self.restore_rediscovered_pending_removals(&discovered_keys);
-            prepared.push((config_index, aggregation_only, discovered, paths));
+            prepared.push(PreparedDiscovery {
+                config_index,
+                aggregation_only,
+                paths,
+            });
         }
         let known_groups = self.wildcard_instance_groups();
         let discovered_keys = desired
@@ -608,7 +802,7 @@ impl<A: PdhApi> Query<A> {
             .chain(
                 prepared
                     .iter()
-                    .flat_map(|(_, _, _, paths)| paths.iter().map(|(key, _)| key.clone())),
+                    .flat_map(|discovery| discovery.paths.iter().map(|(key, _)| key.clone())),
             )
             .collect::<BTreeSet<_>>();
         let disappeared = self
@@ -636,74 +830,68 @@ impl<A: PdhApi> Query<A> {
         let mut candidates = prepared
             .iter()
             .enumerate()
-            .flat_map(|(discovery_index, (config_index, _, _, paths))| {
+            .flat_map(|(discovery_index, discovery)| {
                 let admitted = &admitted;
-                let mapping_index = self.configs[*config_index].source_mapping_index;
-                paths
+                let mapping_index = self.configs[discovery.config_index].source_mapping_index;
+                discovery
+                    .paths
                     .iter()
                     .enumerate()
                     .map(move |(path_index, (key, path))| {
                         let admission = admitted.get(key).copied();
-                        (
-                            admission.is_none(),
-                            admission.map_or(0, |(order, _)| order),
-                            mapping_index,
-                            admission.is_some_and(|(_, owner)| owner != *config_index),
-                            key,
-                            path,
+                        AdmissionCandidate {
+                            priority: AdmissionPriority {
+                                new_member: admission.is_none(),
+                                admission_order: admission.map_or(0, |(order, _)| order),
+                                mapping_index,
+                                owner_changed: admission
+                                    .is_some_and(|(_, owner)| owner != discovery.config_index),
+                                key,
+                                path,
+                            },
                             discovery_index,
                             path_index,
-                        )
+                        }
                     })
             })
             .collect::<Vec<_>>();
         candidates.sort_unstable();
-        let mut selected = vec![BTreeSet::new(); prepared.len()];
-        let mut duplicates = vec![0; prepared.len()];
-        let mut omitted_examples = vec![Vec::new(); prepared.len()];
+        let mut results = vec![AdmissionResult::default(); prepared.len()];
         let mut remaining = self.remaining_expansion_capacity(expanded_total);
         let mut owned = desired.keys().cloned().collect::<BTreeSet<_>>();
-        for (_, _, _, _, _, _, discovery_index, path_index) in candidates {
-            let key = &prepared[discovery_index].3[path_index].0;
+        for candidate in candidates {
+            let result = &mut results[candidate.discovery_index];
+            let (key, path) = &prepared[candidate.discovery_index].paths[candidate.path_index];
             if owned.contains(key) {
-                duplicates[discovery_index] += 1;
+                result.duplicates += 1;
                 continue;
             }
-            if selected[discovery_index].len() < self.max_instances_per_wildcard
+            if result.selected.len() < self.max_instances_per_wildcard
                 && remaining > 0
                 && owned.insert(key.clone())
             {
-                let _ = selected[discovery_index].insert(path_index);
+                let _ = result.selected.insert(candidate.path_index);
                 remaining -= 1;
-            } else if omitted_examples[discovery_index].len() < 3 {
-                omitted_examples[discovery_index].push(Arc::from(
-                    prepared[discovery_index].3[path_index].1.as_str(),
-                ));
+            } else if result.omitted_examples.len() < 3 {
+                result.omitted_examples.push(Arc::from(path.as_str()));
             }
         }
-        for (
-            (((config_index, aggregation_only, discovered, paths), selected), duplicates),
-            examples,
-        ) in prepared
-            .into_iter()
-            .zip(selected)
-            .zip(duplicates)
-            .zip(omitted_examples)
-        {
-            let discovered = discovered - duplicates;
+        for (discovery, result) in prepared.into_iter().zip(results) {
+            let config_index = discovery.config_index;
+            let discovered = discovery.paths.len() - result.duplicates;
             let per_wildcard_retained = discovered.min(self.max_instances_per_wildcard);
             metadata.record_expansion_overflows(
                 config_index,
                 discovered,
                 ExpansionAllocation {
-                    retained: selected.len(),
+                    retained: result.selected.len(),
                     per_wildcard_omitted: discovered - per_wildcard_retained,
-                    total_omitted: per_wildcard_retained.saturating_sub(selected.len()),
+                    total_omitted: per_wildcard_retained.saturating_sub(result.selected.len()),
                 },
-                examples,
+                result.omitted_examples,
             );
-            for (path_index, (key, path)) in paths.into_iter().enumerate() {
-                if !selected.contains(&path_index) {
+            for (path_index, (key, path)) in discovery.paths.into_iter().enumerate() {
+                if !result.selected.contains(&path_index) {
                     continue;
                 }
                 self.api.check_running()?;
@@ -711,7 +899,7 @@ impl<A: PdhApi> Query<A> {
                     Ok(instance) => {
                         let emit_instance_attribute =
                             self.configs[config_index].instance_config.emit_attribute()
-                                && !aggregation_only;
+                                && !discovery.aggregation_only;
                         let _ = desired.insert(
                             key,
                             DesiredCounter::new(
@@ -784,6 +972,7 @@ impl<A: PdhApi> Query<A> {
         let changes = self.plan_wildcard_reconciliation(&desired, known_groups);
         self.discard_unwanted_wildcard_retries(&changes.wanted, metadata);
         self.remove_wildcard_counters(&changes.removed, &changes.wanted, metadata)?;
+        self.prune_pending_failures(&desired);
         self.add_wildcard_counters(&changes.added, &changes.live, &mut desired, metadata)?;
         Ok(())
     }
@@ -971,6 +1160,46 @@ impl<A: PdhApi> Query<A> {
 
     fn restore_pending_metadata(&mut self, metadata: PendingMetadata) {
         self.pending.merge(metadata);
+    }
+
+    fn prune_pending_failures(&mut self, desired: &DesiredCounters) {
+        let retained = self
+            .configs
+            .iter()
+            .enumerate()
+            .map(|(index, config)| (index, config.path.as_str()))
+            .chain(
+                desired
+                    .values()
+                    .map(|counter| (counter.config_index, counter.path.as_ref())),
+            )
+            .chain(
+                self.counters
+                    .values()
+                    .map(|counter| (counter.config_index, counter.path.as_ref())),
+            )
+            .chain(
+                self.retry_states
+                    .values()
+                    .map(|state| (state.target.config_index, state.target.path.as_ref())),
+            )
+            .chain(
+                self.pending_removals
+                    .values()
+                    .map(|removal| (removal.counter.config_index, removal.counter.path.as_ref())),
+            )
+            .chain(self.pending_removals.values().filter_map(|removal| {
+                removal
+                    .retry_target
+                    .as_ref()
+                    .map(|target| (target.config_index, target.path.as_ref()))
+            }))
+            .collect::<BTreeSet<_>>();
+        self.pending.failures.retain(|failure| {
+            failure.path.as_ref() == WORKER_FAILURE_PATH
+                || self.selector_failures.contains(&failure.counter_index)
+                || retained.contains(&(failure.counter_index, failure.path.as_ref()))
+        });
     }
 
     fn restore_collection_error(&mut self, metadata: PendingMetadata, error: Error) -> Error {
@@ -1197,6 +1426,16 @@ impl<A: PdhApi> Query<A> {
             let counter = self.counters.remove(&key).ok_or(Error::InvalidSample(
                 "invalid-handle recovery lost an existing counter",
             ))?;
+            if let Some(identity) = &counter.native_identity {
+                let owners = self
+                    .exact_identities
+                    .get_mut(identity)
+                    .expect("installed exact identity is indexed");
+                *owners -= 1;
+                if *owners == 0 {
+                    let _ = self.exact_identities.remove(identity);
+                }
+            }
             if let Err(error) = self.api.remove(&counter.handle, &counter.path) {
                 metadata
                     .failures
@@ -1272,6 +1511,7 @@ pub(super) struct QueryRecreationSeed {
     last_object_refresh: Instant,
     selector_failures: BTreeSet<usize>,
     object_refresh_selectors: BTreeSet<usize>,
+    identity_failures: BTreeSet<usize>,
 }
 
 struct WildcardReconciliation {
@@ -1284,6 +1524,37 @@ struct WildcardReconciliation {
 struct WildcardDiscovery {
     config_index: usize,
     paths: Vec<String>,
+}
+
+struct PreparedDiscovery {
+    config_index: usize,
+    aggregation_only: bool,
+    paths: Vec<(CounterKey, String)>,
+}
+
+/// Field order defines retained age, mapping ownership and path tie-break priority.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct AdmissionPriority<'a> {
+    new_member: bool,
+    admission_order: u64,
+    mapping_index: usize,
+    owner_changed: bool,
+    key: &'a CounterKey,
+    path: &'a str,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct AdmissionCandidate<'a> {
+    priority: AdmissionPriority<'a>,
+    discovery_index: usize,
+    path_index: usize,
+}
+
+#[derive(Clone, Default)]
+struct AdmissionResult {
+    selected: BTreeSet<usize>,
+    duplicates: usize,
+    omitted_examples: Vec<Arc<str>>,
 }
 
 #[derive(Clone)]
@@ -1415,6 +1686,7 @@ struct CounterHandle<C> {
     emit_instance_attribute: bool,
     admission_order: Option<u64>,
     removal_counted: bool,
+    native_identity: Option<CounterKey>,
 }
 
 struct PendingRemoval<C> {

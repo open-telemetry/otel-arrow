@@ -82,12 +82,43 @@ struct FakeState {
     stop_after_parse: Option<Arc<AtomicBool>>,
     removed: Vec<usize>,
     expansions: BTreeMap<String, Vec<String>>,
+    full_paths: BTreeMap<String, String>,
+    identity_errors: BTreeMap<String, FakeIdentityError>,
+    comparison_errors: BTreeMap<String, FakeIdentityError>,
+    expansion_bytes: BTreeMap<String, usize>,
+}
+
+#[derive(Clone, Copy)]
+enum FakeIdentityError {
+    Recoverable,
+    Stop,
+    Rebuild,
+}
+
+impl FakeIdentityError {
+    fn error(self, path: &str) -> Error {
+        match self {
+            Self::Recoverable => Error::Pdh {
+                operation: PdhOperation::GetCounterInfo,
+                path: path.to_owned(),
+                status: 1,
+            },
+            Self::Stop => Error::WorkerStopRequested,
+            Self::Rebuild => Error::CounterSetup {
+                path: path.to_owned(),
+                message: "identity read requires rebuild".to_owned(),
+                permanent: false,
+                cleanup_failed: true,
+            },
+        }
+    }
 }
 
 #[derive(Default)]
 struct FakeNativeCalls {
     add: usize,
     counter_type: usize,
+    full_path: usize,
     collect: usize,
     raw: usize,
     formatted: usize,
@@ -202,6 +233,26 @@ impl PdhApi for FakePdh {
         Ok(state.counters[index].native_type)
     }
 
+    fn full_path(&mut self, counter: &Self::Counter, path: &str) -> Result<String, Error> {
+        let _ = self.counter_index(counter, path)?;
+        let mut state = self.state.borrow_mut();
+        state.calls.full_path += 1;
+        if let Some(error) = state.identity_errors.get(path) {
+            return Err(error.error(path));
+        }
+        Ok(state
+            .full_paths
+            .get(path)
+            .map_or_else(|| path.to_owned(), Clone::clone))
+    }
+
+    fn comparison_path(&mut self, path: &str) -> Result<String, Error> {
+        if let Some(error) = self.state.borrow().comparison_errors.get(path) {
+            return Err(error.error(path));
+        }
+        NativePdh::comparison_path_fixture(path)
+    }
+
     fn collect(&mut self) -> Result<bool, Error> {
         let mut state = self.state.borrow_mut();
         state.calls.collect += 1;
@@ -290,7 +341,7 @@ impl PdhApi for FakePdh {
         }
     }
 
-    fn expand(&mut self, path: &str) -> Result<Vec<String>, Error> {
+    fn expand(&mut self, path: &str, budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error> {
         let mut state = self.state.borrow_mut();
         state.calls.expand += 1;
         state.calls.order.push("lookup");
@@ -311,7 +362,14 @@ impl PdhApi for FakePdh {
                 status: 1,
             });
         }
-        Ok(state.expansions.get(path).cloned().unwrap_or_default())
+        if let Some(bytes) = state.expansion_bytes.get(path) {
+            budget.reserve(*bytes)?;
+        }
+        let paths = state.expansions.get(path).map_or(&[][..], Vec::as_slice);
+        for path in paths {
+            let _ = budget.reserve_path(path.encode_utf16().count())?;
+        }
+        Ok(paths.to_vec())
     }
 
     fn parse_instance(&mut self, path: &str) -> Result<InstanceIdentity, Error> {
@@ -376,6 +434,10 @@ fn fake_state_value(counters: Vec<FakeCounter>) -> FakeState {
         stop_after_parse: None,
         removed: Vec::new(),
         expansions: BTreeMap::new(),
+        full_paths: BTreeMap::new(),
+        identity_errors: BTreeMap::new(),
+        comparison_errors: BTreeMap::new(),
+        expansion_bytes: BTreeMap::new(),
     }
 }
 

@@ -11,11 +11,35 @@ impl NativePdh {
     pub(in super::super) fn parse_instance_path(path: &str) -> Result<InstanceIdentity, Error> {
         Self::parse_instance_controlled(path, &AtomicBool::new(false))
     }
+
+    pub(in super::super) fn comparison_path_fixture(path: &str) -> Result<String, Error> {
+        Self::comparison_path_controlled(path, &AtomicBool::new(false))
+    }
 }
 
 impl<T: Clone + Default> NativeBuffer<T> {
     fn as_mut_ptr<U>(&mut self) -> *mut U {
         self.storage.as_mut_ptr().cast::<U>()
+    }
+}
+
+/// Scenario: A native path contains machine, object, parent, numeric instance suffix and counter components.
+/// Guarantees: Comparison removes only the machine prefix and normalizes the parsed instance suffix, never object or counter spelling.
+#[test]
+fn comparison_paths_normalize_only_native_instance_components() {
+    for (path, expected) in [
+        (
+            r"\\LOCAL\Object#00(worker#00)\Counter#00",
+            r"\Object#00(worker)\Counter#00",
+        ),
+        (
+            r"\Object(parent/worker#0001)\Counter",
+            r"\Object(parent/worker#1)\Counter",
+        ),
+        (r"\Object(worker#1)\Counter", r"\Object(worker#1)\Counter"),
+        (r"\Object\Counter#00", r"\Object\Counter#00"),
+    ] {
+        assert_eq!(NativePdh::comparison_path_fixture(path).unwrap(), expected);
     }
 }
 use super::super::super::TEST_PDH_LOCK;
@@ -462,24 +486,14 @@ fn fixed_header_buffer_preserves_fill_size_boundaries() {
     }
 }
 
-/// Scenario: Native sizing overflows rounded capacity or wildcard headroom, or returns an unaligned string.
-/// Guarantees: Overflow fails before allocation and string decoding checks UTF-16 alignment.
+/// Scenario: Native sizing exceeds metadata capacity or returns an unaligned string.
+/// Guarantees: Size violations fail before allocation and string decoding checks UTF-16 alignment.
 #[test]
 fn native_size_overflow_and_pointer_alignment_are_checked() {
     assert!(matches!(
         NativeBuffer::<usize>::with_byte_capacity(u32::MAX, "overflow"),
         Err(Error::InvalidSample("overflow"))
     ));
-    let error = NativePdh::expanded_path_buffer_with("fixture", |size, buffer| {
-        assert!(
-            buffer.is_none(),
-            "overflow must fail before fill allocation"
-        );
-        *size = u32::MAX;
-        Ok(PDH_MORE_DATA)
-    })
-    .unwrap_err();
-    assert!(matches!(error, Error::InvalidSample(_)));
     let buffer = NativeBuffer::<usize>::with_byte_capacity(32, "fixture").unwrap();
     let pointer = buffer.as_ptr::<u8>().wrapping_add(1).cast::<u16>();
     assert!(matches!(
@@ -852,6 +866,72 @@ fn wildcard_expansion_retries_growing_membership() {
 
     assert_eq!(calls, 3);
     assert_eq!(buffer, [b'a' as u16, 0, 0]);
+}
+
+/// Scenario: Wildcard sizing or a growth response after several smaller growth reports exceeds the buffer budget.
+/// Guarantees: Expansion fails before allocating the oversized buffer or issuing another fill call.
+#[test]
+fn wildcard_expansion_rejects_oversized_sizing_and_repeated_growth() {
+    let oversized = u32::try_from(64 * 1024 * 1024 / size_of::<u16>() + 1).unwrap();
+    for oversized_sizing in [false, true] {
+        let mut calls = 0;
+        let error = NativePdh::expanded_path_buffer_with("fixture", |size, buffer| {
+            calls += 1;
+            assert!(calls <= if oversized_sizing { 1 } else { 5 });
+            if buffer.is_none() && !oversized_sizing {
+                *size = 4;
+            } else if !oversized_sizing && calls < 5 {
+                *size = u32::try_from(buffer.unwrap().len() + 1).unwrap();
+            } else {
+                assert_eq!(buffer.is_none(), oversized_sizing);
+                *size = oversized;
+            }
+            Ok(PDH_MORE_DATA)
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::DiscoveryBufferLimit));
+        assert_eq!(error.reason(), "discovery_buffer_limit");
+        assert_eq!(
+            error.to_string(),
+            "wildcard path list exceeds 64 MiB discovery buffer limit"
+        );
+        assert_eq!(calls, if oversized_sizing { 1 } else { 5 });
+    }
+}
+
+/// Scenario: Several individually small wildcard buffers grow beyond the remaining refresh allocation credits.
+/// Guarantees: Every attempt is charged before allocation, and exhaustion prevents another fill call.
+#[test]
+fn wildcard_growth_reserves_every_buffer_before_allocation() {
+    let mut budget = super::super::expansion::DiscoveryBudget::limited(512);
+    let mut calls = 0;
+    let error =
+        NativePdh::expanded_path_buffer_budgeted_with("fixture", &mut budget, |size, buffer| {
+            calls += 1;
+            assert!(calls <= 3);
+            *size = if let Some(buffer) = buffer {
+                u32::try_from(buffer.len() + 1).unwrap()
+            } else {
+                4
+            };
+            Ok(PDH_MORE_DATA)
+        })
+        .unwrap_err();
+    assert!(matches!(error, Error::DiscoveryMemoryLimit));
+    assert_eq!(error.reason(), "discovery_memory_limit");
+    assert_eq!(calls, 3);
+}
+
+/// Scenario: One selector's decoded paths remain live while a later selector decodes another native list.
+/// Guarantees: Retained storage and processing headroom share the same budget and decoding fails before the next string allocation.
+#[test]
+fn decoded_discovery_paths_share_budget_across_selectors() {
+    let mut budget = super::super::expansion::DiscoveryBudget::limited(9000);
+    let buffer: Vec<u16> = "member\0\0".encode_utf16().collect();
+    let retained = NativePdh::parse_discovery_paths(&buffer, &mut budget, || Ok(())).unwrap();
+    let error = NativePdh::parse_discovery_paths(&buffer, &mut budget, || Ok(())).unwrap_err();
+    assert!(matches!(error, Error::DiscoveryMemoryLimit));
+    assert_eq!(retained, ["member"]);
 }
 
 /// Scenario: PDH reports that a valid wildcard currently has no matching instances.

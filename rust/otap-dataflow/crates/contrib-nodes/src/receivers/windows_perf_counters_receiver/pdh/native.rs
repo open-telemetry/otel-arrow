@@ -29,6 +29,10 @@ use windows_sys::Win32::System::Performance::{
 // These flags are not exposed by windows-sys 0.61.2.
 const PDH_FMT_NOSCALE: u32 = 0x0000_1000;
 const PDH_FMT_NOCAP100: u32 = 0x0000_8000;
+// Discovery receives the whole list before admission can select individual members.
+const MAX_DISCOVERY_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DISCOVERY_BUFFER_UNITS: usize = MAX_DISCOVERY_BUFFER_BYTES / size_of::<u16>();
+
 pub(super) fn initialize_worker(node: &str, shutdown: &AtomicBool) -> Result<(), Error> {
     check_running(shutdown)?;
     // SAFETY: This reads only the calling worker thread's UI language.
@@ -90,6 +94,15 @@ where
     U: TryFrom<T>,
 {
     U::try_from(value).map_err(|_| Error::WorkerObjectRefresh { stage, status })
+}
+
+fn discovery_size(size: u32) -> Result<usize, Error> {
+    let size = usize::try_from(size)
+        .map_err(|_| Error::InvalidSample("wildcard path list size exceeds usize"))?;
+    if size > MAX_DISCOVERY_BUFFER_UNITS {
+        return Err(Error::DiscoveryBufferLimit);
+    }
+    Ok(size)
 }
 
 pub(super) fn check(operation: PdhOperation, path: &str, status: u32) -> Result<(), Error> {
@@ -427,7 +440,7 @@ impl NativePdh {
         let (buffer, filled) =
             fixed_header_buffer_with::<usize>(path, &COUNTER_INFO_BUFFER, |size, buffer| {
                 self.check_running()?;
-                // SAFETY: The counter belongs to this lookup query. The helper
+                // SAFETY: The counter belongs to this query. The helper
                 // supplies aligned writable storage or null for sizing.
                 Ok(unsafe {
                     PdhGetCounterInfoW(
@@ -446,6 +459,13 @@ impl NativePdh {
     }
 
     fn parse_multi_sz(buffer: &[u16]) -> Result<Vec<String>, Error> {
+        Self::parse_multi_sz_with(buffer, |units| Ok(String::from_utf16_lossy(units)))
+    }
+
+    fn parse_multi_sz_with(
+        buffer: &[u16],
+        mut decode: impl FnMut(&[u16]) -> Result<String, Error>,
+    ) -> Result<Vec<String>, Error> {
         let mut values = Vec::new();
         let mut start = 0;
         while start < buffer.len() {
@@ -458,7 +478,7 @@ impl NativePdh {
                 return Ok(values);
             }
             let end = start + relative_end;
-            values.push(String::from_utf16_lossy(&buffer[start..end]));
+            values.push(decode(&buffer[start..end])?);
             start = end + 1;
         }
         Err(Error::InvalidSample(
@@ -466,8 +486,38 @@ impl NativePdh {
         ))
     }
 
+    fn parse_discovery_paths(
+        buffer: &[u16],
+        budget: &mut super::expansion::DiscoveryBudget,
+        mut check: impl FnMut() -> Result<(), Error>,
+    ) -> Result<Vec<String>, Error> {
+        Self::parse_multi_sz_with(buffer, |units| {
+            check()?;
+            let capacity = budget.reserve_path(units.len())?;
+            let mut path = String::with_capacity(capacity);
+            path.extend(
+                char::decode_utf16(units.iter().copied())
+                    .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER)),
+            );
+            Ok(path)
+        })
+    }
+
+    #[cfg(test)]
     fn expanded_path_buffer_with(
         path: &str,
+        expand: impl FnMut(&mut u32, Option<&mut [u16]>) -> Result<u32, Error>,
+    ) -> Result<Vec<u16>, Error> {
+        Self::expanded_path_buffer_budgeted_with(
+            path,
+            &mut super::expansion::DiscoveryBudget::new(),
+            expand,
+        )
+    }
+
+    fn expanded_path_buffer_budgeted_with(
+        path: &str,
+        budget: &mut super::expansion::DiscoveryBudget,
         mut expand: impl FnMut(&mut u32, Option<&mut [u16]>) -> Result<u32, Error>,
     ) -> Result<Vec<u16>, Error> {
         let mut size = 0;
@@ -482,16 +532,14 @@ impl NativePdh {
                 status: size_status,
             });
         }
-        let measured = usize::try_from(size)
-            .map_err(|_| Error::InvalidSample("wildcard path list size exceeds usize"))?;
+        let measured = discovery_size(size)?;
         let headroom = measured / 4;
-        let mut capacity = measured
-            .checked_add(headroom.max(64))
-            .ok_or(Error::InvalidSample("wildcard path list size overflowed"))?;
+        let mut capacity = (measured + headroom.max(64)).min(MAX_DISCOVERY_BUFFER_UNITS);
         let mut last_status = PDH_MORE_DATA;
         for _ in 0..8 {
             size = u32::try_from(capacity)
                 .map_err(|_| Error::InvalidSample("wildcard path list size exceeds u32"))?;
+            budget.reserve(capacity * size_of::<u16>())?;
             let mut buffer = vec![0_u16; capacity];
             let status = expand(&mut size, Some(&mut buffer))?;
             if matches!(status, 0 | PDH_CSTATUS_NO_INSTANCE) {
@@ -512,13 +560,9 @@ impl NativePdh {
             if !matches!(status, PDH_MORE_DATA | PDH_INVALID_ARGUMENT) {
                 break;
             }
-            let reported = usize::try_from(size)
-                .map_err(|_| Error::InvalidSample("wildcard path list size exceeds usize"))?;
-            let geometric = capacity
-                .checked_add(capacity / 2)
-                .and_then(|value| value.checked_add(64))
-                .ok_or(Error::InvalidSample("wildcard path list size overflowed"))?;
-            capacity = reported.max(geometric);
+            let reported = discovery_size(size)?;
+            let geometric = capacity + capacity / 2 + 64;
+            capacity = reported.max(geometric).min(MAX_DISCOVERY_BUFFER_UNITS);
         }
         Err(Error::Pdh {
             operation: PdhOperation::ExpandWildcardPath,
@@ -527,9 +571,13 @@ impl NativePdh {
         })
     }
 
-    fn expand_wildcard(&mut self, path: &str) -> Result<Vec<String>, Error> {
+    fn expand_wildcard(
+        &mut self,
+        path: &str,
+        budget: &mut super::expansion::DiscoveryBudget,
+    ) -> Result<Vec<String>, Error> {
         let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
-        let buffer = Self::expanded_path_buffer_with(path, |size, buffer| {
+        let buffer = Self::expanded_path_buffer_budgeted_with(path, budget, |size, buffer| {
             self.check_running()?;
             // SAFETY: The path is NUL-terminated. The optional buffer, when present,
             // is writable for the size supplied to PDH.
@@ -548,7 +596,7 @@ impl NativePdh {
         if buffer.is_empty() {
             Ok(Vec::new())
         } else {
-            Self::parse_multi_sz(&buffer)
+            Self::parse_discovery_paths(&buffer, budget, || self.check_running())
         }
     }
 
@@ -556,39 +604,82 @@ impl NativePdh {
         path: &str,
         shutdown: &AtomicBool,
     ) -> Result<InstanceIdentity, Error> {
-        let wide_path: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
-        let result = Self::parse_instance_identity_with(path, |size, buffer| {
-            check_running(shutdown)?;
-            // SAFETY: The path is NUL-terminated. Sizing uses null and zero;
-            // filling uses an aligned writable slice.
-            Ok(unsafe {
-                PdhParseCounterPathW(
-                    wide_path.as_ptr(),
-                    buffer.map_or(null_mut(), |buffer| buffer.as_mut_ptr().cast()),
-                    size,
-                    0,
-                )
-            })
-        });
-        check_running(shutdown)?;
-        result
+        Self::parse_path_controlled(path, shutdown, Self::instance_from_buffer)
     }
 
+    fn parse_path_controlled<T>(
+        path: &str,
+        shutdown: &AtomicBool,
+        decode: impl FnOnce(&NativeBuffer<usize>, usize) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let wide_path: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let result =
+            fixed_header_buffer_with::<usize>(path, &COUNTER_PATH_BUFFER, |size, buffer| {
+                check_running(shutdown)?;
+                // SAFETY: The path is NUL-terminated. Sizing uses null and zero;
+                // filling uses an aligned writable slice.
+                Ok(unsafe {
+                    PdhParseCounterPathW(
+                        wide_path.as_ptr(),
+                        buffer.map_or(null_mut(), |buffer| buffer.as_mut_ptr().cast()),
+                        size,
+                        0,
+                    )
+                })
+            });
+        check_running(shutdown)?;
+        let (buffer, filled_size) = result?;
+        decode(&buffer, filled_size)
+    }
+
+    #[cfg(test)]
     fn parse_instance_identity_with(
         path: &str,
         parse: impl FnMut(&mut u32, Option<&mut [usize]>) -> Result<u32, Error>,
     ) -> Result<InstanceIdentity, Error> {
         let (buffer, filled_size) = fixed_header_buffer_with(path, &COUNTER_PATH_BUFFER, parse)?;
+        Self::instance_from_buffer(&buffer, filled_size)
+    }
+
+    fn instance_from_buffer(
+        buffer: &NativeBuffer<usize>,
+        filled_size: usize,
+    ) -> Result<InstanceIdentity, Error> {
         // SAFETY: Successful parsing initialized the fixed pointer fields.
         let elements = unsafe { &*buffer.as_ptr::<PDH_COUNTER_PATH_ELEMENTS_W>() };
-        let name = Self::wide_string(elements.szInstanceName, &buffer, filled_size)?.ok_or(
+        let name = Self::wide_string(elements.szInstanceName, buffer, filled_size)?.ok_or(
             Error::InvalidSample("expanded path has no instance identity"),
         )?;
-        let parent = Self::wide_string(elements.szParentInstance, &buffer, filled_size)?;
+        let parent = Self::wide_string(elements.szParentInstance, buffer, filled_size)?;
         Ok(InstanceIdentity {
             name,
             parent: parent.filter(|value| !value.is_empty()),
             index: elements.dwInstanceIndex,
+        })
+    }
+
+    fn comparison_path_controlled(path: &str, shutdown: &AtomicBool) -> Result<String, Error> {
+        Self::parse_path_controlled(path, shutdown, |buffer, filled| {
+            // SAFETY: Successful parsing initialized the validated fixed header.
+            let elements = unsafe { &*buffer.as_ptr::<PDH_COUNTER_PATH_ELEMENTS_W>() };
+            let object = Self::wide_string(elements.szObjectName, buffer, filled)?
+                .ok_or(Error::InvalidSample("native path has no object"))?;
+            let counter = Self::wide_string(elements.szCounterName, buffer, filled)?
+                .ok_or(Error::InvalidSample("native path has no counter"))?;
+            if elements.szInstanceName.is_null() {
+                return Ok(format!(r"\{object}\{counter}"));
+            }
+            let instance = Self::instance_from_buffer(buffer, filled)?;
+            let name = if instance.index == 0 {
+                instance.name
+            } else {
+                format!("{}#{}", instance.name, instance.index)
+            };
+            let name = super::super::config::instance_comparison_key(&name);
+            let component = instance
+                .parent
+                .map_or_else(|| name.clone(), |parent| format!("{parent}/{name}"));
+            Ok(format!(r"\{object}({component})\{counter}"))
         })
     }
 
@@ -732,6 +823,14 @@ impl PdhApi for NativePdh {
         })
     }
 
+    fn full_path(&mut self, counter: &CounterToken, path: &str) -> Result<String, Error> {
+        Self::full_path(self, counter, path)
+    }
+
+    fn comparison_path(&mut self, path: &str) -> Result<String, Error> {
+        Self::comparison_path_controlled(path, &self.shutdown)
+    }
+
     fn collect(&mut self) -> Result<bool, Error> {
         self.check_running()?;
         // SAFETY: The adapter owns the live query and is borrowed exclusively.
@@ -763,7 +862,11 @@ impl PdhApi for NativePdh {
         })
     }
 
-    fn expand(&mut self, path: &str) -> Result<Vec<String>, Error> {
+    fn expand(
+        &mut self,
+        path: &str,
+        budget: &mut super::expansion::DiscoveryBudget,
+    ) -> Result<Vec<String>, Error> {
         self.check_running()?;
         if !self.lookup_queries.contains_key(path) {
             let api = Self::open_controlled(self.node.clone(), self.shutdown.clone())?;
@@ -777,7 +880,7 @@ impl PdhApi for NativePdh {
             .expect("lookup query was inserted");
         let localized =
             resolve_template(&mut lookup.api, &mut lookup.pending, path, Self::full_path)?;
-        self.expand_wildcard(&localized)
+        self.expand_wildcard(&localized, budget)
     }
 
     fn refresh_objects(&mut self) -> Result<usize, Error> {

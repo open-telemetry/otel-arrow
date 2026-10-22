@@ -983,7 +983,7 @@ fn rejects_duplicate_instances_case_insensitively() {
 }
 
 /// Scenario: Object, instance and counter components contain delimiters, wildcard characters or NUL.
-/// Guarantees: NUL is rejected before FFI; other native spelling is preserved without a substitute PDH grammar.
+/// Guarantees: NUL and remote-shaped object/counter components are rejected; other native spelling remains verbatim.
 #[test]
 fn preserves_non_nul_reserved_components_and_rejects_nul() {
     for reserved in ['\\', '(', ')', '*', '?', '\0'] {
@@ -1000,11 +1000,15 @@ fn preserves_non_nul_reserved_components_and_rejects_nul() {
             assert_config_error(object, "perfcounters[0].object must not contain NUL");
             assert_config_error(instance, "perfcounters[0].instances must not contain NUL");
         } else {
-            let object = Config::from_json(&object).unwrap();
-            assert_eq!(
-                object.counters[0].path,
-                format!(r"\Mem{reserved}ory\Available Bytes")
-            );
+            if reserved == '\\' {
+                assert_config_error(object, "remote collection is not supported");
+            } else {
+                let object = Config::from_json(&object).unwrap();
+                assert_eq!(
+                    object.counters[0].path,
+                    format!(r"\Mem{reserved}ory\Available Bytes")
+                );
+            }
             let instance = Config::from_json(&instance).unwrap();
             assert_eq!(
                 instance.counters[0].path,
@@ -1026,6 +1030,8 @@ fn preserves_non_nul_reserved_components_and_rejects_nul() {
                 counter,
                 "perfcounters[0].counters[0].name must not contain NUL",
             );
+        } else if reserved == '\\' {
+            assert_config_error(counter, "remote collection is not supported");
         } else {
             let counter = Config::from_json(&counter).unwrap();
             assert_eq!(
@@ -1035,6 +1041,36 @@ fn preserves_non_nul_reserved_components_and_rejects_nul() {
             assert!(!counter.counters[0].instance_config.is_wildcard());
         }
     }
+}
+
+/// Scenario: Object or counter configuration can construct a machine-prefixed path.
+/// Guarantees: Remote-shaped components fail explicitly while valid local selectors retain their paths.
+#[test]
+fn rejects_remote_shaped_native_components() {
+    for object in [r"\REMOTE\Process", r"\\REMOTE\Process", r"Process\child"] {
+        assert_config_error(
+            gauge_config(json!({
+                "object": object,
+                "instances": "worker",
+                "counters": [{"name": "ID Process", "metric": "available"}]
+            })),
+            "perfcounters[0].object must not contain backslash: remote collection is not supported",
+        );
+    }
+    assert_config_error(
+        gauge_config(json!({
+            "object": "Process",
+            "counters": [{"name": r"ID\Process", "metric": "available"}]
+        })),
+        "perfcounters[0].counters[0].name must not contain backslash: remote collection is not supported",
+    );
+    let config = Config::from_json(&gauge_config(json!({
+        "object": "Process",
+        "instances": "worker",
+        "counters": [{"name": "ID Process", "metric": "available"}]
+    })))
+    .unwrap();
+    assert_eq!(config.counters[0].path, r"\Process(worker)\ID Process");
 }
 
 /// Scenario: Path segments have leading or trailing whitespace.

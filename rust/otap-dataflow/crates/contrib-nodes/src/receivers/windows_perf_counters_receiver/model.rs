@@ -217,7 +217,12 @@ fn merge_latest_by_key<T, K: Eq + std::hash::Hash>(
     if latest.is_empty() {
         return;
     }
-    if current.len().saturating_mul(latest.len()) <= METADATA_INDEX_WORK_THRESHOLD {
+    if current
+        .len()
+        .saturating_add(latest.len())
+        .saturating_mul(latest.len())
+        <= METADATA_INDEX_WORK_THRESHOLD
+    {
         merge_latest_linearly(current, latest, key);
         return;
     }
@@ -242,7 +247,12 @@ fn merge_older_by_key<T, K: Eq + std::hash::Hash>(
     if older.is_empty() {
         return;
     }
-    if current.len().saturating_mul(older.len()) <= METADATA_INDEX_WORK_THRESHOLD {
+    if current
+        .len()
+        .saturating_add(older.len())
+        .saturating_mul(older.len())
+        <= METADATA_INDEX_WORK_THRESHOLD
+    {
         merge_older_linearly(current, older, key);
         return;
     }
@@ -437,6 +447,38 @@ mod tests {
         });
         assert_eq!(older_target.failures.len(), 1);
         assert_eq!(older_target.failures[0].error, "first");
+    }
+
+    /// Scenario: An empty destination receives thousands of distinct failures and one repeated key.
+    /// Guarantees: Both freshness policies preserve order and duplicate semantics with linear key work as the destination grows.
+    #[test]
+    fn large_initial_metadata_merges_bound_key_work() {
+        for latest in [false, true] {
+            let calls = std::cell::Cell::new(0);
+            let mut current = Vec::new();
+            let mut incoming = (0..4_096)
+                .map(|index| failure(index, "first"))
+                .collect::<Vec<_>>();
+            incoming.push(failure(0, "last"));
+            let incoming_count = incoming.len();
+            let key = |item: &SampleFailure| {
+                calls.set(calls.get() + 1);
+                MetadataKey::new(item.counter_index, item.reason)
+            };
+            if latest {
+                merge_latest_by_key(&mut current, incoming, key);
+            } else {
+                merge_older_by_key(&mut current, incoming, key);
+            }
+            assert_eq!(current.len(), 4_096);
+            assert_eq!(current[0].error, if latest { "last" } else { "first" });
+            assert_eq!(current[4_095].counter_index, 4_095);
+            assert!(
+                calls.get() <= 2 * incoming_count,
+                "{} key evaluations for {incoming_count} incoming failures",
+                calls.get()
+            );
+        }
     }
 
     /// Scenario: Two concrete wildcard members report the same failure class under one mapping.

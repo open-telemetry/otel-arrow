@@ -5,6 +5,60 @@ use super::super::model::InstanceIdentity;
 use super::error::Error;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) const DISCOVERY_REFRESH_BYTES: usize = 128 * 1024 * 1024;
+
+/// Conservative allocation credits shared by every selector in one refresh.
+///
+/// Raw attempts are charged at capacity. Path credits bound retained candidates
+/// to at most 16,384 and their decoded UTF-8 capacity to at most 8 MiB, reserving
+/// additional copies and bookkeeping for admission. This bounds discovery work,
+/// not process RSS or the separately bounded configured/admitted counter state.
+pub(in super::super) struct DiscoveryBudget {
+    remaining: usize,
+}
+
+impl DiscoveryBudget {
+    pub(super) fn new() -> Self {
+        Self {
+            remaining: DISCOVERY_REFRESH_BYTES,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn limited(bytes: usize) -> Self {
+        Self { remaining: bytes }
+    }
+
+    pub(super) fn reserve(&mut self, bytes: usize) -> Result<(), Error> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes)
+            .ok_or(Error::DiscoveryMemoryLimit)?;
+        Ok(())
+    }
+
+    pub(super) fn reserve_selector(&mut self) -> Result<(), Error> {
+        self.reserve(4096)
+    }
+
+    pub(super) fn reserve_path(&mut self, utf16_units: usize) -> Result<usize, Error> {
+        let utf8_capacity = utf16_units
+            .checked_mul(3)
+            .ok_or(Error::DiscoveryMemoryLimit)?;
+        // Include decoded storage and headroom for the path/key copies made by
+        // normalization, ownership sets, desired membership and admission.
+        // The fixed charge covers vector growth, candidate records and tree
+        // nodes. Credits are never refunded, including failed/raw allocations,
+        // so earlier results and transient growth cannot reuse the same budget.
+        let bytes = utf8_capacity
+            .checked_mul(16)
+            .and_then(|bytes| bytes.checked_add(8192))
+            .ok_or(Error::DiscoveryMemoryLimit)?;
+        self.reserve(bytes)?;
+        Ok(utf8_capacity)
+    }
+}
+
 #[cfg(test)]
 pub(super) use test_support::parse_instance;
 

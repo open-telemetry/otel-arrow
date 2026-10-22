@@ -459,6 +459,16 @@ fn validate_native_component<'a>(field: &str, value: &'a str) -> Result<&'a str,
     Ok(value)
 }
 
+fn validate_local_component<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
+    let value = validate_native_component(field, value)?;
+    if value.contains('\\') {
+        return Err(invalid(format!(
+            "{field} must not contain backslash: remote collection is not supported"
+        )));
+    }
+    Ok(value)
+}
+
 fn is_path_metric_name(name: &str) -> bool {
     name.starts_with('\\')
 }
@@ -654,7 +664,7 @@ fn normalize_object(
     warnings: &mut Vec<ConfigWarning>,
 ) -> Result<(), Error> {
     let object_field = format!("perfcounters[{object_index}]");
-    let object_name = validate_native_component(&format!("{object_field}.object"), &object.object)?;
+    let object_name = validate_local_component(&format!("{object_field}.object"), &object.object)?;
     if object.counters.is_empty() {
         return Err(invalid(format!(
             "{object_field}.counters must contain at least one entry"
@@ -712,7 +722,7 @@ impl ObjectNormalizer<'_> {
             self.object_index
         );
         let counter_name =
-            validate_native_component(&format!("{counter_field}.name"), &mapping.name)?;
+            validate_local_component(&format!("{counter_field}.name"), &mapping.name)?;
         if !(MIN_SCALE_POWER10..=MAX_SCALE_POWER10).contains(&mapping.scale_power10) {
             let expanded = self
                 .instances
@@ -977,7 +987,7 @@ fn counter_path(object: &str, instance: Option<&str>, counter: &str) -> String {
 }
 
 /// Comparison only; preserve configured spelling in paths, metric names and lookup.
-fn instance_comparison_key(value: &str) -> String {
+pub(super) fn instance_comparison_key(value: &str) -> String {
     let lowercase = value.to_lowercase();
     match lowercase.rsplit_once('#') {
         Some((name, index))
