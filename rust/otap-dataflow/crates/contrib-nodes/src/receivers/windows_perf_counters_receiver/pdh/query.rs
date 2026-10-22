@@ -111,7 +111,7 @@ impl<A: PdhApi> Query<A> {
         query.initialize_exact_counters()?;
         query.ensure_available_or_recoverable(&query.pending)?;
         let mut metadata = PendingMetadata::default();
-        query.refresh_exact_identities(&mut metadata)?;
+        query.refresh_exact_identities(Instant::now(), &mut metadata)?;
         if let Some(seed) = seed {
             query.initialize_seeded_wildcards(seed, &mut metadata)?;
         }
@@ -351,7 +351,7 @@ impl<A: PdhApi> Query<A> {
                     && self.comparison_mappings.contains(&key.source_mapping_index)
                     && self.read_exact_identity(&key, metadata)?
                 {
-                    self.reconcile_exact_overlaps(metadata)?;
+                    self.reconcile_exact_overlaps(now, metadata)?;
                 }
                 Ok(true)
             }
@@ -395,14 +395,18 @@ impl<A: PdhApi> Query<A> {
         Ok(())
     }
 
-    fn refresh_wildcards(&mut self, metadata: &mut PendingMetadata) -> Result<(), Error> {
+    fn refresh_wildcards(
+        &mut self,
+        now: Instant,
+        metadata: &mut PendingMetadata,
+    ) -> Result<(), Error> {
         metadata.diagnostics.discovery_refreshes += 1;
-        self.refresh_exact_identities(metadata)?;
+        self.refresh_exact_identities(now, metadata)?;
         let refresh_interval = self.wildcard_refresh_interval.max(Duration::from_secs(600));
         if !self.object_refresh_selectors.is_empty()
-            && self.last_object_refresh.elapsed() >= refresh_interval
+            && now.saturating_duration_since(self.last_object_refresh) >= refresh_interval
         {
-            self.last_object_refresh = Instant::now();
+            self.last_object_refresh = now;
             match self.api.refresh_objects() {
                 Ok(_) => {}
                 Err(error) if error.is_stop() => return Err(error),
@@ -448,24 +452,29 @@ impl<A: PdhApi> Query<A> {
             }
         }
         let reserved = desired.len();
-        self.prepare_successful_discoveries(discoveries, &mut desired, reserved, metadata)?;
-        self.last_wildcard_refresh = Instant::now();
+        self.prepare_successful_discoveries(discoveries, &mut desired, reserved, now, metadata)?;
+        self.last_wildcard_refresh = now;
         self.initial_wildcard_refresh = false;
         Ok(())
     }
 
-    pub(super) fn wildcard_refresh_due(&self) -> bool {
+    pub(super) fn wildcard_refresh_due(&self, now: Instant) -> bool {
         (self.initial_wildcard_refresh && self.has_wildcard_configs())
             || ((self.has_wildcard_configs() || !self.object_refresh_selectors.is_empty())
-                && self.last_wildcard_refresh.elapsed() >= self.wildcard_refresh_interval)
+                && now.saturating_duration_since(self.last_wildcard_refresh)
+                    >= self.wildcard_refresh_interval)
     }
 
     pub(super) fn refresh_all_wildcards_managed(&mut self) -> Result<(), Error> {
-        if !self.wildcard_refresh_due() {
+        self.refresh_all_wildcards_at(Instant::now())
+    }
+
+    fn refresh_all_wildcards_at(&mut self, now: Instant) -> Result<(), Error> {
+        if !self.wildcard_refresh_due(now) {
             return Ok(());
         }
         let mut metadata = PendingMetadata::default();
-        let result = self.refresh_wildcards(&mut metadata);
+        let result = self.refresh_wildcards(now, &mut metadata);
         self.pending.merge(metadata);
         result
     }
@@ -544,7 +553,11 @@ impl<A: PdhApi> Query<A> {
         }
     }
 
-    fn refresh_exact_identities(&mut self, metadata: &mut PendingMetadata) -> Result<(), Error> {
+    fn refresh_exact_identities(
+        &mut self,
+        now: Instant,
+        metadata: &mut PendingMetadata,
+    ) -> Result<(), Error> {
         let missing = self
             .counters
             .iter()
@@ -560,7 +573,7 @@ impl<A: PdhApi> Query<A> {
             changed |= self.read_exact_identity(&key, metadata)?;
         }
         if changed {
-            self.reconcile_exact_overlaps(metadata)?;
+            self.reconcile_exact_overlaps(now, metadata)?;
         }
         Ok(())
     }
@@ -612,7 +625,11 @@ impl<A: PdhApi> Query<A> {
         }
     }
 
-    fn reconcile_exact_overlaps(&mut self, metadata: &mut PendingMetadata) -> Result<(), Error> {
+    fn reconcile_exact_overlaps(
+        &mut self,
+        now: Instant,
+        metadata: &mut PendingMetadata,
+    ) -> Result<(), Error> {
         let targets = self
             .counter_targets()
             .filter(|(_, target)| target.origin.is_wildcard())
@@ -633,7 +650,7 @@ impl<A: PdhApi> Query<A> {
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         self.discard_unwanted_wildcard_retries(&wanted, metadata);
-        self.remove_wildcard_counters(&removed, &wanted, metadata)
+        self.remove_wildcard_counters(&removed, &wanted, now, metadata)
     }
 
     fn reserve_failed_discovery(
@@ -702,6 +719,7 @@ impl<A: PdhApi> Query<A> {
         discoveries: Vec<WildcardDiscovery>,
         desired: &mut DesiredCounters,
         expanded_total: usize,
+        now: Instant,
         metadata: &mut PendingMetadata,
     ) -> Result<(), Error> {
         let mut prepared = Vec::new();
@@ -815,7 +833,7 @@ impl<A: PdhApi> Query<A> {
             })
             .collect::<Vec<_>>();
         self.discard_unwanted_wildcard_retries(&discovered_keys, metadata);
-        self.remove_wildcard_counters(&disappeared, &discovered_keys, metadata)?;
+        self.remove_wildcard_counters(&disappeared, &discovered_keys, now, metadata)?;
         let admitted = self
             .counter_targets()
             .filter_map(|(key, target)| {
@@ -919,7 +937,7 @@ impl<A: PdhApi> Query<A> {
                 }
             }
         }
-        self.reconcile_wildcards_with_groups(std::mem::take(desired), &known_groups, metadata)
+        self.reconcile_wildcards_with_groups(std::mem::take(desired), &known_groups, now, metadata)
     }
 
     fn restore_rediscovered_pending_removals(&mut self, discovered: &BTreeSet<CounterKey>) {
@@ -942,6 +960,7 @@ impl<A: PdhApi> Query<A> {
         &mut self,
         mut desired: DesiredCounters,
         known_groups: &BTreeMap<InstanceGroupKey, BTreeSet<CounterKey>>,
+        now: Instant,
         metadata: &mut PendingMetadata,
     ) -> Result<(), Error> {
         for (key, target) in &desired {
@@ -972,9 +991,9 @@ impl<A: PdhApi> Query<A> {
         }
         let changes = self.plan_wildcard_reconciliation(&desired, known_groups);
         self.discard_unwanted_wildcard_retries(&changes.wanted, metadata);
-        self.remove_wildcard_counters(&changes.removed, &changes.wanted, metadata)?;
+        self.remove_wildcard_counters(&changes.removed, &changes.wanted, now, metadata)?;
         self.prune_pending_failures(&desired);
-        self.add_wildcard_counters(&changes.added, &changes.live, &mut desired, metadata)?;
+        self.add_wildcard_counters(&changes.added, &changes.live, &mut desired, now, metadata)?;
         Ok(())
     }
 
@@ -1069,6 +1088,7 @@ impl<A: PdhApi> Query<A> {
         &mut self,
         removed: &[CounterKey],
         wanted: &BTreeSet<CounterKey>,
+        now: Instant,
         metadata: &mut PendingMetadata,
     ) -> Result<(), Error> {
         for key in removed {
@@ -1090,12 +1110,7 @@ impl<A: PdhApi> Query<A> {
                 let retry_target = wanted.contains(key).then(|| counter.target());
                 let _ = self.pending_removals.insert(
                     key.clone(),
-                    PendingRemoval::new(
-                        counter,
-                        retry_target,
-                        Instant::now(),
-                        self.exact_retry_cap,
-                    ),
+                    PendingRemoval::new(counter, retry_target, now, self.exact_retry_cap),
                 );
                 if error.is_stop() {
                     return Err(error);
@@ -1110,9 +1125,9 @@ impl<A: PdhApi> Query<A> {
         added: &[CounterKey],
         live: &BTreeSet<CounterKey>,
         desired: &mut DesiredCounters,
+        now: Instant,
         metadata: &mut PendingMetadata,
     ) -> Result<(), Error> {
-        let now = Instant::now();
         for key in added {
             if self
                 .pending_removals
@@ -1311,7 +1326,7 @@ impl<A: PdhApi> Query<A> {
 
     pub(super) fn collect_at(&mut self, now: Instant) -> Result<Sample, Error> {
         self.api.check_running()?;
-        self.refresh_all_wildcards_managed()?;
+        self.refresh_all_wildcards_at(now)?;
         let mut metadata = std::mem::take(&mut self.pending);
         metadata.diagnostics.any_query_collected = false;
         if let Err(error) = self.retry_pending_removals(now, &mut metadata) {
@@ -1363,7 +1378,7 @@ impl<A: PdhApi> Query<A> {
             timestamp_unix_nano,
         );
         metadata.diagnostics.any_query_collected = true;
-        let points = match self.collect_points(has_data, timestamp_unix_nano, &mut metadata) {
+        let points = match self.collect_points(has_data, timestamp_unix_nano, now, &mut metadata) {
             Ok(points) => points,
             Err(error) => return Err(self.restore_collection_error(metadata, error)),
         };
@@ -1380,6 +1395,7 @@ impl<A: PdhApi> Query<A> {
         &mut self,
         has_data: bool,
         timestamp_unix_nano: i64,
+        now: Instant,
         metadata: &mut PendingMetadata,
     ) -> Result<Vec<SamplePoint>, Error> {
         let mut points = Vec::with_capacity(self.counters.len());
@@ -1422,7 +1438,6 @@ impl<A: PdhApi> Query<A> {
                 .cmp(&right.counter_index)
                 .then_with(|| left.path.cmp(&right.path))
         });
-        let now = Instant::now();
         for (key, target) in retired {
             let counter = self.counters.remove(&key).ok_or(Error::InvalidSample(
                 "invalid-handle recovery lost an existing counter",

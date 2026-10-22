@@ -1164,8 +1164,8 @@ fn pending_replacement_handoff_preserves_owner_and_pattern_quota() {
     assert_eq!(replacement.value, SampleValue::Warming);
 }
 
-/// Scenario: A departed member's first removal fails and more collections arrive before the cleanup retry deadline.
-/// Guarantees: Pending ownership retains capacity without another native removal or repeated failure record on each intervening collection.
+/// Scenario: A departed member's removal fails twice and collection crosses each controlled cleanup deadline.
+/// Guarantees: No removal or failure repeats before a deadline; cleanup retries exactly at the deadline and eventually releases ownership.
 #[test]
 fn pending_removal_waits_for_cleanup_backoff() {
     let template = r"\Process(*)\Private Bytes";
@@ -1186,21 +1186,37 @@ fn pending_removal_waits_for_cleanup_backoff() {
         .borrow_mut()
         .expansions
         .insert(template.to_owned(), vec![expanded.to_owned()]);
-    query.refresh_all_wildcards_managed().unwrap();
-    let _ = query.collect().unwrap();
+    let now = Instant::now();
+    assert_eq!(query.collect_at(now).unwrap().points.len(), 1);
     {
         let mut state = state.borrow_mut();
         let _ = state.expansions.insert(template.to_owned(), Vec::new());
         state.remove_error = true;
     }
-    query.refresh_all_wildcards_managed().unwrap();
-    let first = query.collect().unwrap();
-    let second = query.collect().unwrap();
+    let first = query.collect_at(now).unwrap();
+    let deadline = now + Duration::from_secs(1);
+    let second = query
+        .collect_at(deadline - Duration::from_nanos(1))
+        .unwrap();
     assert_eq!(state.borrow().removed, [0]);
     assert_eq!(first.metadata.diagnostics.discovery_failures, 0);
     assert_eq!(first.metadata.failures.len(), 1);
     assert_eq!(second.metadata.diagnostics.discovery_failures, 0);
     assert!(second.metadata.failures.is_empty());
+    let retry = query.collect_at(deadline).unwrap();
+    assert_eq!(state.borrow().removed, [0, 0]);
+    assert_eq!(retry.metadata.failures.len(), 1);
+    state.borrow_mut().remove_error = false;
+    let next_deadline = deadline + Duration::from_secs(2);
+    let waiting = query
+        .collect_at(next_deadline - Duration::from_nanos(1))
+        .unwrap();
+    assert_eq!(state.borrow().removed, [0, 0]);
+    assert!(waiting.metadata.failures.is_empty());
+    let cleaned = query.collect_at(next_deadline).unwrap();
+    assert_eq!(state.borrow().removed, [0, 0, 0]);
+    assert!(cleaned.metadata.failures.is_empty());
+    assert!(query.admitted_members().is_empty());
 }
 
 /// Scenario: Seventeen startup patterns each discover 257 available members under the fixed MVP bounds.
@@ -1572,15 +1588,16 @@ fn identity_read_recovery_reconciles_before_failed_discovery_collection() {
     let mut query = Query::open_with_seed(
         FakePdh::new(Rc::clone(&state)),
         configs,
-        Duration::ZERO,
+        Duration::from_secs(60),
         Duration::ZERO,
         2,
         3,
         None,
     )
     .unwrap();
+    let now = Instant::now();
     for attempt in 0..3 {
-        let sample = query.collect().unwrap();
+        let sample = query.collect_at(now).unwrap();
         assert_eq!(sample.points.len(), 2);
         assert_eq!(sample.metadata.failures.len(), usize::from(attempt == 0));
         assert!(sample.metadata.failures.iter().all(|failure| {
@@ -1595,15 +1612,13 @@ fn identity_read_recovery_reconciles_before_failed_discovery_collection() {
         state.expand_error = true;
         state.remove_error = true;
     }
-    let recovered = query.collect().unwrap();
+    let recovered = query.collect_at(now).unwrap();
     assert_eq!(recovered.points.len(), 1);
     assert_eq!(recovered.points[0].path.as_ref(), exact);
     assert_eq!(query.active_expanded_count(), 0);
     assert_eq!(state.borrow().removed, [1]);
     state.borrow_mut().remove_error = false;
-    let cleaned = query
-        .collect_at(Instant::now() + Duration::from_secs(60))
-        .unwrap();
+    let cleaned = query.collect_at(now + Duration::from_secs(1)).unwrap();
     assert_eq!(cleaned.points.len(), 1);
     assert_eq!(state.borrow().removed, [1, 1]);
     assert_eq!(state.borrow().added, [exact, member.to_owned()]);
@@ -2677,7 +2692,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
 }
 
 /// Scenario: Exact-only discovery has an unresolved selector and reaches the minimum or configured object-refresh interval.
-/// Guarantees: There is no startup refresh or extra exact retry, each due discovery refreshes once, and failed refresh cannot stop healthy collection.
+/// Guarantees: Controlled discovery and object-refresh boundaries cause exactly one refresh without extra retries or loss of healthy collection.
 #[test]
 fn unresolved_exact_drives_conditional_refresh_at_discovery_only() {
     for (discovery, refresh_fails) in [(60, false), (900, false), (60, true)] {
@@ -2692,16 +2707,20 @@ fn unresolved_exact_drives_conditional_refresh_at_discovery_only() {
             interval,
         );
         state.borrow_mut().object_refresh_error = refresh_fails;
-        let _ = query.collect().unwrap();
+        let now = Instant::now();
+        query.last_wildcard_refresh = now;
+        query.last_object_refresh = now;
+        let _ = query.collect_at(now).unwrap();
         assert_eq!(state.borrow().calls.refresh, 0);
-        query.last_wildcard_refresh = Instant::now() - interval;
-        query.last_object_refresh = Instant::now() - (required - Duration::from_secs(1));
-        let _ = query.collect().unwrap();
+        let deadline = now + required;
+        let before = deadline - Duration::from_nanos(1);
+        query.last_wildcard_refresh = before - interval;
+        let early = query.collect_at(before).unwrap();
+        assert_eq!(early.metadata.diagnostics.discovery_refreshes, 1);
         assert_eq!(state.borrow().calls.refresh, 0);
-        query.last_wildcard_refresh = Instant::now() - interval;
-        query.last_object_refresh = Instant::now() - required;
+        query.last_wildcard_refresh = deadline - interval;
         let attempts = state.borrow().calls.add;
-        let refreshed = query.collect().unwrap();
+        let refreshed = query.collect_at(deadline).unwrap();
         assert_eq!(refreshed.points.len(), 1);
         assert!(refreshed.metadata.failures.is_empty());
         assert_eq!(
@@ -2710,17 +2729,21 @@ fn unresolved_exact_drives_conditional_refresh_at_discovery_only() {
         );
         assert_eq!(state.borrow().calls.refresh, 1);
         assert_eq!(state.borrow().calls.add, attempts + 1);
-        query.last_wildcard_refresh = Instant::now() - interval;
-        let _ = query.collect().unwrap();
+        let steady = query.collect_at(deadline).unwrap();
+        assert_eq!(steady.metadata.diagnostics.discovery_refreshes, 0);
+        assert_eq!(state.borrow().calls.refresh, 1);
+        query.last_wildcard_refresh = deadline - interval;
+        let _ = query.collect_at(deadline).unwrap();
         assert_eq!(state.borrow().calls.refresh, 1);
         state
             .borrow_mut()
             .counters
             .push(fake_counter(missing, Number::Integer(7)));
-        let _ = query.collect().unwrap();
-        query.last_wildcard_refresh = Instant::now() - interval;
-        query.last_object_refresh = Instant::now() - required;
-        assert_eq!(query.collect().unwrap().points.len(), 2);
+        assert_eq!(query.collect_at(deadline).unwrap().points.len(), 2);
+        query.last_wildcard_refresh = deadline + required - interval;
+        let resolved = query.collect_at(deadline + required).unwrap();
+        assert_eq!(resolved.points.len(), 2);
+        assert_eq!(resolved.metadata.diagnostics.discovery_refreshes, 0);
         assert_eq!(state.borrow().calls.refresh, 1);
     }
 }
@@ -2936,7 +2959,7 @@ fn wildcard_remove_failure_stays_owned_until_local_retry() {
     let (state, mut query) = fake_query_with_cadences(
         vec![config],
         vec![fake_counter(expanded, Number::Integer(42))],
-        Duration::ZERO,
+        Duration::from_secs(60),
         Duration::ZERO,
     );
     {
@@ -2945,7 +2968,8 @@ fn wildcard_remove_failure_stays_owned_until_local_retry() {
             .expansions
             .insert(template.to_owned(), vec![expanded.to_owned()]);
     }
-    let admitted = query.collect().unwrap();
+    let now = Instant::now();
+    let admitted = query.collect_at(now).unwrap();
     assert_eq!(admitted.points.len(), 1);
     assert_eq!(query.active_expanded_count(), 1);
     {
@@ -2955,7 +2979,7 @@ fn wildcard_remove_failure_stays_owned_until_local_retry() {
         state.timestamp = 110;
     }
 
-    let pending = query.collect().unwrap();
+    let pending = query.collect_at(now).unwrap();
     assert!(pending.points.is_empty());
     assert_eq!(query.active_expanded_count(), 0);
     assert_eq!(pending.metadata.failures.len(), 1);
@@ -2967,7 +2991,7 @@ fn wildcard_remove_failure_stays_owned_until_local_retry() {
         state.remove_error = false;
         state.timestamp = 120;
     }
-    let cleaned = query.collect().unwrap();
+    let cleaned = query.collect_at(now + Duration::from_secs(1)).unwrap();
     assert!(cleaned.points.is_empty());
     assert_eq!(query.active_expanded_count(), 0);
     assert_eq!(state.borrow().removed, [0, 0]);
@@ -3120,7 +3144,7 @@ fn rediscovered_pending_removal_restores_existing_handle() {
     let (state, mut query) = fake_query_with_seed(
         vec![config],
         vec![fake_counter(expanded, Number::Integer(42))],
-        Duration::ZERO,
+        Duration::from_secs(60),
         Duration::ZERO,
         1,
         None,
@@ -3129,7 +3153,8 @@ fn rediscovered_pending_removal_restores_existing_handle() {
         .borrow_mut()
         .expansions
         .insert(template.to_owned(), vec![expanded.to_owned()]);
-    assert_eq!(query.collect().unwrap().points.len(), 1);
+    let now = Instant::now();
+    assert_eq!(query.collect_at(now).unwrap().points.len(), 1);
 
     {
         let mut state = state.borrow_mut();
@@ -3137,7 +3162,7 @@ fn rediscovered_pending_removal_restores_existing_handle() {
         state.remove_error = true;
         state.timestamp = 110;
     }
-    let removed = query.collect().unwrap();
+    let removed = query.collect_at(now).unwrap();
     assert!(removed.points.is_empty());
     assert_eq!(removed.metadata.diagnostics.instances_removed, 1);
     assert_eq!(query.active_expanded_count(), 0);
@@ -3150,7 +3175,7 @@ fn rediscovered_pending_removal_restores_existing_handle() {
         state.remove_error = false;
         state.timestamp = 120;
     }
-    let restored = query.collect().unwrap();
+    let restored = query.collect_at(now).unwrap();
 
     assert_eq!(restored.points.len(), 1);
     assert_eq!(restored.points[0].path.as_ref(), expanded);
@@ -3162,7 +3187,7 @@ fn rediscovered_pending_removal_restores_existing_handle() {
         state.remove_error = true;
         state.timestamp = 130;
     }
-    let removed_again = query.collect().unwrap();
+    let removed_again = query.collect_at(now).unwrap();
     assert!(removed_again.points.is_empty());
     assert_eq!(removed_again.metadata.diagnostics.instances_removed, 0);
     let state = state.borrow();
