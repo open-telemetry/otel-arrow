@@ -65,7 +65,8 @@ policies:
         name: preserve
       overrides:
         - match:
-            stored_names: [request_id]
+            # "named" is a new alias for stored_names
+            named: [request_id]
           action: drop
 ```
 
@@ -149,74 +150,38 @@ This proposal retains the existing `default` and ordered `overrides`
 form. It extends source selection and output naming without introducing
 a separate `rules` form or requiring existing configurations to migrate.
 
-The existing `match.stored_names` continues to match primitive transport
-headers by stored name, case-insensitively. Overrides may instead use
-`match.selector`, with the same selector syntax as `default.selector`,
-to select other domains, composites, or composite members. An override
-must specify exactly one of `match.stored_names` and `match.selector`.
-
-For each selected source entry or composite member, the first matching
-override determines the action and naming. Both `propagate` and `drop`
-stop further evaluation for that source, not for unrelated sources.
-When no override matches, `default.action` applies only if
-`default.selector` selects the source; otherwise it is not propagated.
-An override may propagate a source even when the default selector is
-`none`. An omitted override action remains `propagate`; omitted naming
-and `on_error` settings inherit from the default.
-
-The existing `name: preserve` and `name: stored_name` remain unchanged.
-Two additional naming strategies are proposed, usable in defaults and
-overrides:
-
-- `name: literal`, with a sibling `literal` field specifying the output
-  header name.
-- `name: fields`, with a sibling `fields` mapping from composite member
-  names to output header names.
-
-The `literal` and `fields` settings are valid only with their respective
-strategies. Inheriting a naming strategy also inherits its associated
-settings. `preserve` requires an original transport header name; sources
-without one must use another strategy. For composite members,
-`stored_name` uses the configured member name.
-
-For example, preserve captured headers by default, rename two captured
-headers using the existing match form, and explicitly propagate an
-identity field and a randomness member:
+For example, drop captured headers by default, propagate a composite
+entry by its stored name, an authorized identity field with a custom
+header name, and a randomness value:
 
 ```yaml
 header_propagation:
   default:
     selector:
       type: all_captured
-    action: propagate
-    name: preserve
+    action: drop
   overrides:
     - match:
-        stored_names: [workspace_id, environment]
+        # Here, a named composite entry using the stored name
+        stored_names: [customer:workspace_id]
       action: propagate
       name: stored_name
 
     - match:
-        selector:
-          type: authorized_identity
-          named: [customer_id]
+        # This field is added, defaults to transport_header.
+        type: authorized_identity
+        stored_names: [customer_id]
       action: propagate
       name: literal
       literal: x-customer-id
 
     - match:
-        selector:
-          type: named
-          named: ["delivery:id"]
+        # Here, a composite randomness entry using a literal name
+        stored_names: ["delivery:id"]
       action: propagate
       name: literal
       literal: x-idempotency
 ```
-
-Here, `workspace_id` and `environment` are emitted using stored names,
-not also their original names. Other captured headers use the default.
-A matching `drop` override would exclude its source even though the
-default selects all captured headers.
 
 ### Proposed selectors
 
@@ -241,9 +206,9 @@ These selectors are available in both `default.selector` and
 
 ### Whole composite and selected fields
 
-The whole-composite override emits multiple headers, only when
-`product_user` is present. It uses the same `named` selector and
-`name` field as other propagation settings:
+The whole-composite override emits multiple headers when the composite
+entry is valid. It uses a `composite` selector and field in the match
+selector:
 
 ```yaml
 header_propagation:
@@ -252,9 +217,8 @@ header_propagation:
       type: none
   overrides:
     - match:
-        selector:
-          type: named
-          named: [product_user]
+        type: composite
+        composite: product_user
       action: propagate
       name: fields
       fields:
@@ -262,17 +226,8 @@ header_propagation:
         workspace: x-workspace-id
 ```
 
-The `fields` strategy selects the listed value-bearing members of the
-selected composite; unlisted members are not selected by that override.
-Listing only `customer` would propagate only that member. Field names
-must exist in the selected composite; invalid mappings are configuration
-errors. Selecting a member never bypasses the enclosing composite's
-presence conditions.
-
-A whole-composite selection and a qualified selection of one of its
-members overlap for that member, so the first matching override wins.
-A primitive source and a member referencing it remain distinct context
-references; selecting one does not implicitly select the other.
+This form of selector expands into the same configuration as an
+explicit match clause for every entry in the composite.
 
 ## Context transfer
 
