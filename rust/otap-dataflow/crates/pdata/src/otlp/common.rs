@@ -325,14 +325,10 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
-/// Suffix appended to truncated strings.
-pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
-
 /// Returned when a buffer write cannot fit within the size limit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EncodeFailure {
-    /// Dropped due to space limit. If a TruncateResult, it means no
-    /// valid data could be written in the available space.
+    /// Dropped due to space limit.
     Dropped,
 }
 
@@ -346,26 +342,8 @@ impl fmt::Display for EncodeFailure {
     }
 }
 
-/// Truncation status.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Truncation {
-    /// No truncation.
-    None,
-    /// Some truncation
-    Some,
-}
-
-impl From<()> for Truncation {
-    fn from(_: ()) -> Self {
-        Truncation::None
-    }
-}
-
 /// Result type for encoding methods that can fail only because of a size limit.
 pub type EncodeResult<T = ()> = Result<T, EncodeFailure>;
-
-/// Result type for encoding methods with truncation.
-pub type TruncateResult = EncodeResult<Truncation>;
 
 const fn tag_width_limit(tagw: usize) -> usize {
     1 << (7 * tagw)
@@ -375,29 +353,6 @@ const MAX_TAG_WIDTH: usize = 4;
 
 /// The maximum supported protocol buffer size limit (1 << 28) = 256MiB.
 pub const MAX_OTLP_SIZE_LIMIT: usize = tag_width_limit(MAX_TAG_WIDTH);
-
-/// Compute the number of bytes needed to encode a varint value.
-#[inline]
-const fn varint_len(value: u64) -> usize {
-    // Each byte encodes 7 bits; we need ceil(bits_needed / 7), minimum 1.
-    if value == 0 {
-        return 1;
-    }
-    let bits = 64 - value.leading_zeros() as usize;
-    bits.div_ceil(7)
-}
-
-/// Truncate a string to at most `max_bytes` bytes at a UTF-8 character boundary.
-fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
 
 /// Build an `N`-byte zero-valued varint placeholder at compile time.
 const fn make_len_placeholder<const N: usize>() -> [u8; N] {
@@ -522,54 +477,6 @@ pub trait BoundedBuf {
         self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
         self.try_extend_slice(val)
-    }
-
-    /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
-    fn encode_string_truncating(&mut self, tag: u64, val: &str) -> TruncateResult {
-        let full_len = val.len();
-        let tag_bytes = varint_len((tag << 3) | wire_types::LEN);
-
-        // Check if the full string fits.
-        let full_field_size = tag_bytes + varint_len(full_len as u64) + full_len;
-        if self.len() + full_field_size <= self.limit() {
-            return Ok(self.encode_string(tag, val)?.into());
-        }
-
-        let suffix_len = TRUNCATION_SUFFIX.len();
-        let avail = self.remaining();
-
-        // Minimum encoding is: tag + 1-byte length varint + suffix bytes.
-        let min_overhead = tag_bytes + 1 + suffix_len;
-        if avail < min_overhead {
-            return Err(EncodeFailure::Dropped);
-        }
-
-        // After the tag, we have `len_and_payload` bytes for the
-        // length varint plus the payload (content + suffix). The
-        // `min_overhead` check above guarantees there is room for the
-        // varint and the suffix, so `content_len` is non-negative.
-        let len_and_payload = avail - tag_bytes;
-        let len_varint_size = varint_len(len_and_payload as u64);
-        debug_assert!(
-            len_and_payload >= len_varint_size + suffix_len,
-            "min_overhead check guarantees varint + suffix fit",
-        );
-        let content_len = len_and_payload - len_varint_size - suffix_len;
-
-        // Truncate at a UTF-8 character boundary.
-        let truncated_str = truncate_utf8(val, content_len);
-        let payload_len = truncated_str.len() + suffix_len;
-
-        // Pre-validated: each write fits within the limit.
-        self.encode_field_tag(tag, wire_types::LEN)
-            .expect("pre-validated fit");
-        self.encode_varint(payload_len as u64)
-            .expect("pre-validated fit");
-        self.try_extend_slice(truncated_str.as_bytes())
-            .expect("pre-validated fit");
-        self.try_extend_slice(TRUNCATION_SUFFIX)
-            .expect("pre-validated fit");
-        Ok(Truncation::Some)
     }
 
     /// Returns the narrowest placeholder width sufficient for this
@@ -1296,12 +1203,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::proto::opentelemetry::common::v1::AnyValue;
-    use crate::proto::opentelemetry::common::v1::any_value::Value::StringValue;
     use crate::{
         arrays::MaybeDictArrayAccessor,
         proto::OtlpProtoMessage,
-        proto::consts::wire_types,
         schema::consts,
         testing::{fixtures::*, round_trip::*},
     };
@@ -1309,7 +1213,6 @@ mod test {
         array::{RecordBatch, StructArray, UInt16Array},
         datatypes::{DataType, Field, Fields, Schema, UInt16Type},
     };
-    use prost::Message;
     use std::sync::Arc;
 
     /// Scenario: child rows have shuffled parent IDs and parents are visited in ascending order.
@@ -1828,122 +1731,6 @@ mod test {
         });
         assert!(matches!(r, Err(EncodeFailure::Dropped)));
         assert_eq!(buf.len(), 0, "try_atomic rolled back partial bytes");
-    }
-
-    /// Scenario: a length-delimited callback writes five bytes and reports successful truncation.
-    /// Guarantees: the length is patched to five and a subsequent field can still be appended.
-    #[test]
-    fn encode_len_delimited_partial_patches_length_on_err() {
-        let mut buf = StackProtoBuffer::<128>::default();
-        // Pre-write a marker field so we can detect mis-parsing of trailing data.
-        buf.encode_string(7, "marker").unwrap();
-        let len_before = buf.len();
-
-        let r: Truncation = buf
-            .encode_len_delimited(1, |b| {
-                b.extend_from_slice(b"abcde")?;
-                Ok::<_, EncodeFailure>(Truncation::Some)
-            })
-            .unwrap();
-        assert_eq!(r, Truncation::Some);
-
-        // Read back: tag for field 1 (LEN), then patched length, then 5 bytes.
-        let bytes = &buf.as_ref()[len_before..];
-        assert_eq!(bytes[0], (1 << 3) | wire_types::LEN as u8);
-        // Placeholder width 1 expected (small remaining after marker).
-        let payload_len = bytes[1] as usize;
-        assert_eq!(payload_len, 5, "length patched to written-bytes count");
-        assert_eq!(&bytes[2..2 + payload_len], b"abcde");
-
-        // Append another field after the partial one and confirm it parses.
-        buf.encode_string(8, "after").unwrap();
-        // Find "after" by scanning -- it must be intact at the end.
-        assert!(
-            buf.as_ref().windows(5).any(|w| w == b"after"),
-            "subsequent field is intact when partial used"
-        );
-    }
-
-    /// Scenario: strings fully fit, require truncation, or cannot fit in a bounded buffer.
-    /// Guarantees: full writes have no suffix, truncation adds `[...]`, and hard failure changes no bytes.
-    #[test]
-    fn encode_string_truncating_three_outcomes() {
-        // (a) Full fit -> Ok(false), no suffix.
-        let mut buf = StackProtoBuffer::<64>::default();
-        let r = buf.encode_string_truncating(1, "hi");
-        assert!(matches!(r, Ok(Truncation::None)));
-        assert!(!buf.as_ref().windows(5).any(|w| w == TRUNCATION_SUFFIX));
-
-        // (b) Truncated -> Ok(true), output ends with suffix.
-        let mut buf = StackProtoBuffer::<32>::default();
-        let long = "X".repeat(1000);
-        let r = buf.encode_string_truncating(1, &long);
-        assert!(matches!(r, Ok(Truncation::Some)));
-        assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
-
-        // (c) Hard fail -> Dropped, buffer unchanged.
-        let mut buf = StackProtoBuffer::<4>::default();
-        // Pre-fill so remaining < min_overhead.
-        buf.extend_from_slice(b"abcd").unwrap();
-        let snapshot: Vec<u8> = buf.as_ref().to_vec();
-        let r = buf.encode_string_truncating(1, &long);
-        assert!(matches!(r, Err(EncodeFailure::Dropped)));
-        assert_eq!(
-            buf.as_ref(),
-            snapshot.as_slice(),
-            "no partial bytes on hard fail"
-        );
-    }
-
-    /// Scenario: a long string is truncated while encoding an AnyValue into a bounded buffer.
-    /// Guarantees: prost decodes a string containing the original prefix and the `[...]` suffix.
-    #[test]
-    fn encode_string_truncating_round_trips_via_prost() {
-        let mut buf = StackProtoBuffer::<48>::default();
-        let long = "Y".repeat(500);
-        let r = buf.encode_string_truncating(1, &long);
-        assert!(matches!(r, Ok(Truncation::Some)));
-
-        // Decode as AnyValue (field 1 = string_value).
-        let av = AnyValue::decode(buf.to_bytes()).expect("valid wire bytes");
-        let s = match av.value {
-            Some(StringValue(s)) => s,
-            other => panic!("unexpected AnyValue variant: {:?}", other),
-        };
-        assert!(
-            s.ends_with("[...]"),
-            "decoded value should end with truncation suffix"
-        );
-        assert!(s.starts_with("YY"));
-    }
-
-    /// Scenario: a string of four-byte UTF-8 characters is truncated at every possible byte budget.
-    /// Guarantees: each result is a character-aligned prefix within budget, or the full input if it fits.
-    #[test]
-    fn truncate_utf8_returns_char_boundary_prefix() {
-        // 4-byte UTF-8 characters (U+1F600, 4 bytes each).
-        let s: String = std::iter::repeat_n('\u{1F600}', 5).collect();
-        assert_eq!(s.len(), 20);
-
-        // For every possible max_bytes, the result must be:
-        //   - a valid &str prefix of `s` (implicit: no panic on slicing)
-        //   - of length <= max_bytes
-        //   - of length >= max_bytes - 3 (since chars are at most 4 bytes)
-        for max_bytes in 0..=s.len() {
-            let out = truncate_utf8(&s, max_bytes);
-            assert!(out.len() <= max_bytes, "max_bytes={max_bytes}");
-            assert!(
-                max_bytes < 4 || out.len() >= max_bytes - 3,
-                "max_bytes={max_bytes}, out.len()={}",
-                out.len()
-            );
-            assert!(s.starts_with(out));
-            // out.len() must be a multiple of 4 (each char is 4 bytes).
-            assert_eq!(out.len() % 4, 0, "max_bytes={max_bytes}");
-        }
-
-        // Above the input length, returns the whole string.
-        assert_eq!(truncate_utf8(&s, 1000), s.as_str());
     }
 
     /// Scenario: a buffer temporarily restricts its remaining capacity to eight bytes without writing.
