@@ -645,16 +645,25 @@ pub(crate) async fn build_tonic_client_tls(
 ///
 /// Returns `Ok(None)` when TLS settings are empty and the endpoint URI does not
 /// use `https://`, meaning the connection should remain plaintext.
+///
+/// # Server name override
+///
+/// The returned `Option<String>` is the `server_name` from the TLS config,
+/// if set. Unlike tonic's `ClientTlsConfig` (which carries domain info
+/// internally), `rustls::ClientConfig` does not carry SNI configuration --
+/// callers must apply it at the connector level (e.g. via
+/// [`hyper_rustls::FixedServerNameResolver`]). Ignoring this value will cause
+/// certificate verification to use the hostname from the endpoint URL instead.
 pub async fn build_rustls_client_config(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
-) -> Result<Option<rustls::ClientConfig>, io::Error> {
+) -> Result<Option<(rustls::ClientConfig, Option<String>)>, io::Error> {
     let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
         return Ok(None);
     };
-    Ok(Some(
-        build_rustls_client_config_from_material(&material).await?,
-    ))
+    let server_name = material.server_name.clone();
+    let client_config = build_rustls_client_config_from_material(&material).await?;
+    Ok(Some((client_config, server_name)))
 }
 
 /// Builds a [`rustls::ClientConfig`] from already-loaded client TLS material.

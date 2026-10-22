@@ -130,19 +130,32 @@ pub(crate) async fn build_client(
     database: &str,
 ) -> Result<Client, ClickhouseExporterError> {
     let mut client = if let Some(tls_config) = &config.tls {
-        let rustls_config = otel_arrow_dfe_otap::tls_utils::build_rustls_client_config(
-            Some(tls_config),
-            &config.endpoint,
-        )
-        .await
-        .map_err(ClickhouseExporterError::TlsConfig)?
-        .ok_or_else(|| {
-            ClickhouseExporterError::TlsConfig(std::io::Error::new(
+        // Reject contradictory config: insecure=true makes no sense on an
+        // https:// endpoint. Other components (OpAMP, OAuth2, admin-api, proxy)
+        // follow the same pattern.
+        if tls_config.insecure == Some(true) && config.endpoint.starts_with("https://") {
+            return Err(ClickhouseExporterError::TlsConfig(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "TLS config block present with insecure=true and no custom CA \
-                 on a non-https endpoint",
-            ))
-        })?;
+                "tls.insecure=true is not supported on https:// endpoints; \
+                 use an http:// endpoint for plaintext connections or remove \
+                 the insecure setting",
+            )));
+        }
+
+        let (rustls_config, server_name_override) =
+            otel_arrow_dfe_otap::tls_utils::build_rustls_client_config(
+                Some(tls_config),
+                &config.endpoint,
+            )
+            .await
+            .map_err(ClickhouseExporterError::TlsConfig)?
+            .ok_or_else(|| {
+                ClickhouseExporterError::TlsConfig(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "TLS config block present with insecure=true and no custom CA \
+                     on a non-https endpoint",
+                ))
+            })?;
 
         let mut connector_builder = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(rustls_config)
@@ -150,7 +163,7 @@ pub(crate) async fn build_client(
 
         // Apply server_name_override for SNI and certificate verification when
         // the user connects by IP or needs a hostname that differs from the URL.
-        if let Some(ref server_name) = tls_config.server_name {
+        if let Some(ref server_name) = server_name_override {
             let name =
                 rustls::pki_types::ServerName::try_from(server_name.clone()).map_err(|e| {
                     ClickhouseExporterError::TlsConfig(std::io::Error::new(
@@ -344,6 +357,58 @@ mod tests {
         assert!(
             err_msg.contains("insecure=true"),
             "error should mention insecure=true: {err_msg}",
+        );
+    }
+
+    /// Scenario: build_client with insecure=true on an https:// endpoint.
+    /// Guarantees: the contradictory configuration is rejected with a clear
+    /// error before any TLS material is loaded.
+    #[tokio::test]
+    async fn build_client_tls_insecure_on_https_errors() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let tls = TlsClientConfig {
+            insecure: Some(true),
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("https://clickhouse.example.com:8443", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(result.is_err(), "insecure=true on https:// should error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("insecure=true"),
+            "error should mention insecure=true: {err_msg}",
+        );
+        assert!(
+            err_msg.contains("https://"),
+            "error should mention https://: {err_msg}",
+        );
+    }
+
+    /// Scenario: build_client with an invalid server_name_override value.
+    /// Guarantees: the ServerName::try_from error branch is exercised and
+    /// returns a TlsConfig error mentioning the invalid value.
+    #[tokio::test]
+    async fn build_client_with_invalid_server_name_override_errors() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("Test CA");
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            server_name: Some("not a valid name!@#".to_string()),
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("https://10.0.0.1:8443", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(result.is_err(), "invalid server_name_override should error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("server_name_override"),
+            "error should mention server_name_override: {err_msg}",
         );
     }
 
