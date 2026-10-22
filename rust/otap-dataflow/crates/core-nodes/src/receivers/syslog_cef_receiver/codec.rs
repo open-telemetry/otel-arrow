@@ -41,7 +41,7 @@ use super::arrow_records_encoder::ReceivedArrowRecordsBuilder;
 use super::{MAX_MESSAGE_SIZE, parser};
 
 /// Stable identity of the versioned syslog/CEF batch representation.
-pub const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
+const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
 
 const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
@@ -65,7 +65,7 @@ const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
 /// A malformed syslog batch frame.
 #[derive(Debug, thiserror::Error)]
 #[error("{reason}")]
-pub struct SyslogFramingError {
+pub(super) struct SyslogFramingError {
     reason: String,
 }
 
@@ -91,7 +91,7 @@ fn predicted_frame_capacity(max_items: usize, message_len: usize) -> usize {
 }
 
 /// Accumulates framed syslog messages without parsing them.
-pub(crate) struct SyslogBatchBuilder {
+pub(super) struct SyslogBatchBuilder {
     bytes: BytesMut,
     item_count: u32,
     max_items_hint: usize,
@@ -108,7 +108,7 @@ pub(crate) struct SyslogBatchBuilder {
 /// Only the codec builder can construct this value. Its bytes and count cannot
 /// be replaced independently. Cloning shares the bytes and preserves the count.
 #[derive(Clone)]
-pub struct SyslogBatch {
+pub(super) struct SyslogBatch {
     bytes: Bytes,
     item_count: usize,
 }
@@ -134,13 +134,13 @@ impl Default for SyslogBatchBuilder {
 impl SyslogBatchBuilder {
     /// Creates an empty batch with space for its header.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with_max_items(1)
     }
 
     /// Creates an empty batch using a bounded first-message capacity estimate.
     #[must_use]
-    pub(crate) fn with_max_items(max_items_hint: usize) -> Self {
+    pub(super) fn with_max_items(max_items_hint: usize) -> Self {
         let mut bytes = BytesMut::with_capacity(BATCH_HEADER_LEN + RUN_HEADER_LEN);
         bytes.extend_from_slice(MAGIC);
         bytes.put_u32(0);
@@ -157,26 +157,26 @@ impl SyslogBatchBuilder {
 
     /// Number of framed messages currently buffered.
     #[must_use]
-    pub(crate) const fn len(&self) -> u32 {
+    pub(super) const fn len(&self) -> u32 {
         self.item_count
     }
 
     /// Returns true when no messages have been appended.
     #[must_use]
-    pub(crate) const fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.item_count == 0
     }
 
     /// Flushes before another maximum-sized message or a new year run could exceed
     /// the hard byte limit. The caller also applies its configured item target.
-    pub(crate) fn should_flush(&self, max_items: usize) -> bool {
+    pub(super) fn should_flush(&self, max_items: usize) -> bool {
         self.len() as usize >= max_items.min(MAX_BATCH_ITEMS)
             || self.bytes.len()
                 > MAX_BATCH_BYTES - MAX_MESSAGE_SIZE - FRAME_HEADER_LEN - RUN_HEADER_LEN
     }
 
     /// Copies a socket-backed message and captures its local receipt year.
-    pub(crate) fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
+    pub(super) fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
         self.append_with_year(message, Local::now().year())
     }
 
@@ -233,23 +233,23 @@ impl SyslogBatchBuilder {
 
     /// Replaces this builder while retaining its configured item-count hint.
     #[must_use]
-    pub(crate) fn take(&mut self) -> Self {
+    pub(super) fn take(&mut self) -> Self {
         let replacement = Self::with_max_items(self.max_items_hint);
         std::mem::replace(self, replacement)
     }
 
     /// Discards buffered messages and releases their allocation.
-    pub(crate) fn discard(&mut self) {
+    pub(super) fn discard(&mut self) {
         *self = Self::with_max_items(self.max_items_hint);
     }
 
     #[cfg(test)]
-    pub(crate) fn capacity(&self) -> usize {
+    pub(super) fn capacity(&self) -> usize {
         self.bytes.capacity()
     }
 
     /// Seals a non-empty batch, assigning the flush timestamp to every year run.
-    pub(crate) fn finish(mut self, observed_time: i64) -> Result<SyslogBatch, SyslogFramingError> {
+    pub(super) fn finish(mut self, observed_time: i64) -> Result<SyslogBatch, SyslogFramingError> {
         if self.is_empty() {
             return Err(framing_error("cannot seal an empty syslog batch"));
         }
@@ -486,6 +486,26 @@ impl PdataBatcher for SyslogBatcher {
                 .unwrap_or(MAX_BATCH_ITEMS)
                 .min(MAX_BATCH_ITEMS)
         });
+        // Timer flushes often contain one undersized input. Keep its buffer
+        // when no split is needed, but consume every frame so malformed framing
+        // still fails. Neither requested targets nor this shortcut relax the
+        // hard item/byte limits or the per-message limit checked by FrameIter.
+        if let [input] = inputs.as_slice()
+            && input.len() <= MAX_BATCH_BYTES
+        {
+            let (count, mut frames) = validated_frames(input)
+                .map_err(|error| operation_error(CodecOperation::Batch, error))?;
+            if count <= max_items {
+                frames
+                    .try_for_each(|frame| frame.map(|_| ()))
+                    .map_err(|error| operation_error(CodecOperation::Batch, error))?;
+                return Ok(CodecBatches {
+                    batches: inputs.into_iter().map(|bytes| (bytes, 0..=0)).collect(),
+                    completed_inputs: Vec::new(),
+                    budget_fallbacks: 0,
+                });
+            }
+        }
         let limited_splits = settings.max_split_fragments.is_some()
             || settings.max_split_overhead_bytes.is_some()
             || settings.max_split_fragments_per_flush.is_some();
@@ -729,7 +749,7 @@ register_pdata_codec!(
 );
 
 /// Resolves the linked syslog codec from the validated production registry.
-pub fn resolve_syslog() -> Result<ResolvedCodec, RegistryError> {
+pub(super) fn resolve_syslog() -> Result<ResolvedCodec, RegistryError> {
     static RESOLVED: LazyLock<Result<ResolvedCodec, RegistryError>> =
         LazyLock::new(|| CodecRegistry::global()?.resolve(&SYSLOG_CEF_ENCODING));
     RESOLVED.as_ref().copied().map_err(Clone::clone)
@@ -743,6 +763,13 @@ pub mod bench_support {
     use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload, ResolvedCodec};
 
     use super::*;
+
+    /// Opaque framed input for repeated benchmark materialization.
+    ///
+    /// Only the benchmark facade constructs this handle; framing internals
+    /// remain private to the receiver. Cloning shares its encoded buffer.
+    #[derive(Clone)]
+    pub struct FramedSyslogBatch(SyslogBatch);
 
     /// Reusable codec state matching one pipeline runtime's effect-handler state.
     pub struct SyslogCodecBench {
@@ -775,7 +802,7 @@ pub mod bench_support {
 
         /// Frames one receiver batch without resolving or invoking mutable codec state.
         #[must_use]
-        pub fn frame(&self, messages: &[&[u8]]) -> SyslogBatch {
+        pub fn frame(&self, messages: &[&[u8]]) -> FramedSyslogBatch {
             let mut builder = SyslogBatchBuilder::with_max_items(messages.len());
             for message in messages {
                 builder
@@ -783,22 +810,24 @@ pub mod bench_support {
                     .expect("benchmark message must fit syslog framing");
             }
             let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-            builder
-                .finish(observed_time)
-                .expect("benchmark batch must not be empty")
+            FramedSyslogBatch(
+                builder
+                    .finish(observed_time)
+                    .expect("benchmark batch must not be empty"),
+            )
         }
 
         /// Admits an already framed batch without creating mutable codec state.
         #[must_use]
-        pub fn admit_framed(&self, batch: SyslogBatch) -> OtapPayload {
+        fn admit_framed(&self, batch: FramedSyslogBatch) -> OtapPayload {
             self.codec
-                .admit_built(batch)
+                .admit_built(batch.0)
                 .expect("benchmark batch must be admitted")
         }
 
         /// Materializes an already framed batch through reusable codec state.
         #[must_use]
-        pub fn materialize_framed(&mut self, batch: &SyslogBatch) -> OtapArrowRecords {
+        pub fn materialize_framed(&mut self, batch: &FramedSyslogBatch) -> OtapArrowRecords {
             self.admit_framed(batch.clone())
                 .try_into_otap(&self.service)
                 .expect("benchmark syslog batch must decode")
@@ -850,6 +879,149 @@ mod tests {
             bytes.extend_from_slice(message);
         }
         bytes.freeze()
+    }
+
+    /// Scenario: One timer-flushed input is undersized or exactly at either decode cap.
+    /// Guarantees: Valid frames retain their original buffer and ownership without a split-budget fallback.
+    #[test]
+    fn single_input_reuses_validated_buffer_at_decode_boundaries() {
+        let mut mixed = SyslogBatchBuilder::new();
+        mixed.append_with_year(b"first", 2024).unwrap();
+        mixed.append_with_year(b"second", 2025).unwrap();
+        let mixed = mixed.finish(42).unwrap().bytes;
+        let at_item_limit = batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS], 42);
+        let large = vec![b'x'; MAX_MESSAGE_SIZE];
+        let mut full = SyslogBatchBuilder::new();
+        for _ in 0..15 {
+            full.append_with_year(&large, 2024).unwrap();
+        }
+        let remaining = MAX_BATCH_BYTES - full.bytes.len() - FRAME_HEADER_LEN;
+        full.append_with_year(&large[..remaining], 2024).unwrap();
+        let at_byte_limit = full.finish(42).unwrap().bytes;
+        assert_eq!(at_byte_limit.len(), MAX_BATCH_BYTES);
+
+        for input in [mixed, at_item_limit, at_byte_limit] {
+            let count = validated_item_count(&input).unwrap();
+            for settings in [
+                SYSLOG_BATCH_SETTINGS,
+                BatchSettings {
+                    max_size: NonZeroU64::new(u64::MAX),
+                    max_split_fragments: NonZeroU64::new(1),
+                    max_split_overhead_bytes: NonZeroU64::new(1),
+                    max_split_fragments_per_flush: NonZeroU64::new(1),
+                    ..SYSLOG_BATCH_SETTINGS
+                },
+            ] {
+                let output = SyslogBatcher
+                    .batch(SignalType::Logs, &settings, vec![input.clone()])
+                    .unwrap();
+                assert_eq!(output.batches.len(), 1);
+                let (bytes, owners) = &output.batches[0];
+                assert_eq!(bytes.as_ptr(), input.as_ptr());
+                assert_eq!(bytes, &input);
+                assert_eq!(*owners, 0..=0);
+                assert_eq!(output.budget_fallbacks, 0);
+                assert!(output.completed_inputs.is_empty());
+                assert_eq!(
+                    SyslogDecoder
+                        .decode(SignalType::Logs, bytes)
+                        .unwrap()
+                        .num_items(),
+                    count
+                );
+            }
+        }
+    }
+
+    /// Scenario: A single fitting input has a valid outer header but malformed nested framing.
+    /// Guarantees: The reuse path rejects truncated, trailing, miscounted, and oversized frames and remains reusable.
+    #[test]
+    fn single_input_reuse_validates_every_frame_and_recovers() {
+        let valid = batch(&[b"first", b"second"], 42);
+        let mut trailing = valid.to_vec();
+        trailing.push(0);
+        let mut invalid_run = valid.to_vec();
+        invalid_run[16..20].copy_from_slice(&0_u32.to_be_bytes());
+        let mut wrong_count = valid.to_vec();
+        wrong_count[4..8].copy_from_slice(&3_u32.to_be_bytes());
+        let too_large = vec![b'x'; MAX_MESSAGE_SIZE + 1];
+        let mut batcher = SyslogBatcher;
+        for invalid in [
+            valid.slice(..valid.len() - 1),
+            Bytes::from(trailing),
+            Bytes::from(invalid_run),
+            Bytes::from(wrong_count),
+            unchecked_batch(&[too_large.as_slice()]),
+        ] {
+            assert!(validated_frames(&invalid).is_ok());
+            assert!(
+                batcher
+                    .batch(SignalType::Logs, &SYSLOG_BATCH_SETTINGS, vec![invalid])
+                    .is_err()
+            );
+            let recovered = batcher
+                .batch(
+                    SignalType::Logs,
+                    &SYSLOG_BATCH_SETTINGS,
+                    vec![valid.clone()],
+                )
+                .unwrap();
+            assert_eq!(recovered.batches[0].0.as_ptr(), valid.as_ptr());
+        }
+    }
+
+    /// Scenario: One input exceeds a requested item target or a hard item/byte cap.
+    /// Guarantees: Single-input reuse never bypasses splitting, decode limits, message order, or input ownership.
+    #[test]
+    fn single_input_reuse_still_splits_oversized_batches() {
+        let large = vec![b'x'; MAX_MESSAGE_SIZE];
+        for (input, max_size, expected_counts) in [
+            (
+                batch(&[b"one", b"two", b"three", b"four"], 42),
+                NonZeroU64::new(2),
+                vec![2, 2],
+            ),
+            (
+                unchecked_batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS + 1]),
+                None,
+                vec![256, 1],
+            ),
+            (
+                unchecked_batch(&[large.as_slice(); 16]),
+                NonZeroU64::new(u64::MAX),
+                vec![15, 1],
+            ),
+        ] {
+            let messages = |bytes: &Bytes| {
+                validated_frames(bytes)
+                    .unwrap()
+                    .1
+                    .map(|frame| frame.unwrap().message.to_vec())
+                    .collect::<Vec<_>>()
+            };
+            let expected_messages = messages(&input);
+            let settings = BatchSettings {
+                min_size: Some(1),
+                max_size,
+                ..SYSLOG_BATCH_SETTINGS
+            };
+            let result = SyslogBatcher
+                .batch(SignalType::Logs, &settings, vec![input])
+                .unwrap();
+            let mut actual_messages = Vec::new();
+            let mut counts = Vec::new();
+            for (bytes, owners) in result.batches {
+                counts.push(validated_item_count(&bytes).unwrap());
+                assert!(bytes.len() <= MAX_BATCH_BYTES);
+                assert_eq!(owners, 0..=0);
+                assert!(SyslogDecoder.decode(SignalType::Logs, &bytes).is_ok());
+                actual_messages.extend(messages(&bytes));
+            }
+            assert_eq!(counts, expected_counts);
+            assert_eq!(actual_messages, expected_messages);
+            assert_eq!(result.budget_fallbacks, 0);
+            assert!(result.completed_inputs.is_empty());
+        }
     }
 
     /// Scenario: Admission reaches either hard bound or receives an oversized message.

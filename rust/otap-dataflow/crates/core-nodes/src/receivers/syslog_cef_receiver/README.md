@@ -416,7 +416,8 @@ downstream:
 
 A batch is flushed when either:
 
-- **`batch.max_size`** messages have accumulated (default: 100, capped at 256), or
+- **`batch.max_size`** messages have accumulated (default: 100, capped at
+  256), or
 - The encoded buffer cannot reserve space for another 16 KiB message within
   its 256 KiB limit, or
 - **`batch.max_batch_duration_ms`** milliseconds have elapsed since the last flush
@@ -458,6 +459,48 @@ This batching strategy balances:
 - **Latency**: Configurable max delay for low-volume streams
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
+
+### Migrating downstream batch settings
+
+Previously, the receiver emitted native OTAP, so a downstream batch processor
+using the default `format: preserve` applied its `otap` settings to syslog.
+The receiver now emits encoded `syslog-batch` inputs, which use codec defaults
+unless that processor configures `codecs.syslog-batch`.
+
+Before, a syslog-only pipeline could use:
+
+```yaml
+type: processor:batch
+config:
+  format: preserve
+  otap:
+    min_size: 50
+    max_size: 200
+    sizer: items
+```
+
+To apply those limits while retaining encoded syslog, use:
+
+```yaml
+type: processor:batch
+config:
+  format: preserve
+  codecs:
+    syslog-batch:
+      min_size: 50
+      max_size: 200
+      sizer: items
+```
+
+These are settings on the downstream batch processor, not the receiver's
+`batch` section. Keep an `otap` block as well if the processor also handles
+native OTAP traffic. The syslog codec supports item sizing only. Its hard
+256-message and 256-KiB caps still apply, so copying a larger previous target
+does not restore larger encoded outputs.
+
+Alternatively, set `format: otap` and keep the original `otap` block to retain
+native OTAP batching. That materializes receiver batches before merging them;
+the encoded syslog caps do not limit subsequent native OTAP batch sizes.
 
 ### Pressure-aware rate admission
 
@@ -506,8 +549,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 Each UDP datagram or emitted TCP frame records one shared receiver observation
 when receiver-local handling terminates. TCP payload size excludes the newline
-delimiter. Processing duration covers active admission, parsing, and record
-append work. It excludes batch buffering and pipeline handoff.
+delimiter. Processing duration covers active admission and encoded-frame
+append work. It excludes batch buffering, deferred parsing and Arrow
+construction, and pipeline handoff.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
@@ -515,8 +559,10 @@ append work. It excludes batch buffering and pipeline handoff.
 | `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
 | `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
-`outcome=success` means receiver-local admission, parsing, and record append
- completed. `outcome=refused` means memory-pressure or rate-limit admission
+`outcome=success` means receiver-local admission and encoded-frame append
+completed. It does not certify that content parsing or Arrow construction
+will succeed when requested downstream. `outcome=refused` means memory-pressure
+or rate-limit admission
 rejected the message, or the framed input was rejected as invalid. The current
 implementation does not emit `outcome=failure`; that outcome is reserved for
 other receiver-local processing errors. Batch buffering, batch construction,

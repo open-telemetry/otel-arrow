@@ -2082,6 +2082,59 @@ mod tests {
         );
     }
 
+    /// Scenario: The syslog README migrates preserve-mode item limits from OTAP to encoded syslog.
+    /// Guarantees: Both published YAML examples resolve; only codec settings override syslog defaults, and explicit OTAP output retains native settings.
+    #[cfg(feature = "syslog-cef")]
+    #[test]
+    fn syslog_batching_migration_examples_resolve_expected_plans() {
+        let readme = include_str!("../../receivers/syslog_cef_receiver/README.md");
+        let section = readme
+            .split("### Migrating downstream batch settings\n")
+            .nth(1)
+            .unwrap()
+            .split("\n### ")
+            .next()
+            .unwrap();
+        let configs: Vec<Config> = section
+            .split("```yaml\n")
+            .skip(1)
+            .map(|block| {
+                let node: serde_yaml::Value =
+                    serde_yaml::from_str(block.split("```").next().unwrap()).unwrap();
+                serde_yaml::from_value(node["config"].clone()).unwrap()
+            })
+            .collect();
+        assert_eq!(configs.len(), 2);
+        let syslog = PdataFormat::encoded(
+            CodecRegistry::global()
+                .unwrap()
+                .resolve(&PdataEncoding::new("syslog-batch"))
+                .unwrap(),
+        );
+        let settings = |config: &Config, format| {
+            config
+                .plans()
+                .unwrap()
+                .into_iter()
+                .find(|(candidate, _)| *candidate == format)
+                .unwrap()
+                .1
+                .settings()
+                .clone()
+        };
+        let original = settings(&configs[0], PdataFormat::OTAP);
+        let implicit_syslog = settings(&configs[0], syslog);
+        assert_eq!(implicit_syslog, syslog.default_settings());
+        assert_ne!(implicit_syslog, original);
+        assert_eq!(settings(&configs[1], syslog), original);
+        let mut native = configs.into_iter().next().unwrap();
+        native.format = BatchingFormat::Otap;
+        let plans = native.plans().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].1.output_format(), PdataFormat::OTAP);
+        assert_eq!(plans[0].1.settings(), &original);
+    }
+
     /// Scenario: preserve mode receives a native-batching extension and a
     /// decoder-only extension, and downstream changes their output representation.
     /// Guarantees: native output retains its codec, fallback emits OTAP, and both
