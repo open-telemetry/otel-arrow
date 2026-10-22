@@ -68,7 +68,7 @@ otel-arrow-dfe-core-nodes = { version = "0.62.0", path = "crates/core-nodes", de
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.62.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.62.0", path = "crates/expohisto" }
-otel-arrow-dfe-filelog-checkpoint = { path = "crates/filelog-checkpoint" }
+otel-arrow-dfe-filelog-checkpoint = { version = "0.62.0", path = "crates/filelog-checkpoint" }
 otel-arrow-dfe-otap = { version = "0.62.0", path = "crates/otap" }
 otel-arrow-dfe-scraper = { version = "0.62.0", path = "crates/scraper" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
