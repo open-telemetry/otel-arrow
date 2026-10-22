@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Projects exact-counter samples into OTAP metric records.
+//! Projects concrete counter observations into OTAP metric records.
 
 use super::config::{CounterConfig, MetricKind};
 use super::model::{Number, Sample, SampleValue};
@@ -13,12 +13,12 @@ use otel_arrow_dfe_pdata::encode::record::metrics::{
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords};
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const AGGREGATION_TEMPORALITY_CUMULATIVE: i32 = 2;
 
 /// Projects already-scaled counter samples into OTAP metrics.
-/// Each input point must reference a distinct configured counter.
+/// Each configured mapping and concrete path pair may occur only once.
 /// Only numeric values are emitted; returns `Ok(None)` when there are none.
 /// Contract violations reject the whole sample and indicate a collection bug, not bad counter data.
 pub(super) fn into_otap(
@@ -35,35 +35,49 @@ pub(super) fn into_otap(
     let mut points = NumberDataPointsRecordBatchBuilder::new();
     let mut attrs = StrKeysAttributesRecordBatchBuilder::<u32>::new();
     let mut metric_ids = BTreeMap::new();
-    let mut seen_counters = vec![false; counters.len()];
+    let mut seen_counters = BTreeSet::new();
     let mut point_count = 0_u32;
 
-    for point in sample.points {
+    for point in &sample.points {
         let counter = counters.get(point.counter_index).ok_or_else(|| {
             ArrowError::InvalidArgumentError(format!(
                 "sample references missing configured counter {}",
                 point.counter_index
             ))
         })?;
-        if seen_counters[point.counter_index] {
+        if !seen_counters.insert((point.counter_index, point.path.as_ref())) {
             return Err(ArrowError::InvalidArgumentError(format!(
                 "sample repeats counter {} (metric {}) at index {}",
-                counter.path, counter.name, point.counter_index
+                point.path, counter.name, point.counter_index
             )));
         }
-        seen_counters[point.counter_index] = true;
         let SampleValue::Value(value) = point.value else {
             continue;
         };
-        if counter.kind == MetricKind::Sum
-            && (sample.start_time_unix_nano <= 0
-                || sample.start_time_unix_nano > sample.timestamp_unix_nano)
-        {
+        if point.timestamp_unix_nano <= 0 {
             return Err(ArrowError::InvalidArgumentError(format!(
-                "Sum {} ({}) has invalid start time {} for timestamp {}",
-                counter.name, counter.path, sample.start_time_unix_nano, sample.timestamp_unix_nano
+                "counter {} has non-positive timestamp {}",
+                point.path, point.timestamp_unix_nano
             )));
         }
+        let start_time_unix_nano = match counter.kind {
+            MetricKind::Gauge => None,
+            MetricKind::Sum => {
+                let start = point.start_time_unix_nano.ok_or_else(|| {
+                    ArrowError::InvalidArgumentError(format!(
+                        "Sum {} ({}) has no start time",
+                        counter.name, point.path
+                    ))
+                })?;
+                if start <= 0 || start > point.timestamp_unix_nano {
+                    return Err(ArrowError::InvalidArgumentError(format!(
+                        "Sum {} ({}) has invalid start time {} for timestamp {}",
+                        counter.name, point.path, start, point.timestamp_unix_nano
+                    )));
+                }
+                Some(start)
+            }
+        };
         let metric_id = if let Some(metric_id) = metric_ids.get(&counter.name) {
             *metric_id
         } else {
@@ -93,11 +107,8 @@ pub(super) fn into_otap(
 
         points.append_id(point_count);
         points.append_parent_id(metric_id);
-        points.append_start_time_unix_nano(match counter.kind {
-            MetricKind::Gauge => None,
-            MetricKind::Sum => Some(sample.start_time_unix_nano),
-        });
-        points.append_time_unix_nano(sample.timestamp_unix_nano);
+        points.append_start_time_unix_nano(start_time_unix_nano);
+        points.append_time_unix_nano(point.timestamp_unix_nano);
         match value {
             Number::Integer(value) => {
                 points.append_int_value(Some(value));
@@ -110,7 +121,7 @@ pub(super) fn into_otap(
             Number::Double(value) => {
                 return Err(ArrowError::InvalidArgumentError(format!(
                     "counter {} has non-finite double value {value}",
-                    counter.path
+                    point.path
                 )));
             }
         }
@@ -123,7 +134,7 @@ pub(super) fn into_otap(
         }
         attrs.append_parent_id(&point_count);
         attrs.append_key("windows.perf_counter.path");
-        attrs.any_values_builder.append_str(counter.path.as_bytes());
+        attrs.any_values_builder.append_str(point.path.as_bytes());
         point_count = point_count.checked_add(1).ok_or_else(|| {
             ArrowError::InvalidArgumentError("too many counter values".to_owned())
         })?;
