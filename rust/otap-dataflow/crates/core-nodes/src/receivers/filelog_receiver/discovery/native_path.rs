@@ -8,6 +8,26 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+/// Shared native byte bound, including room for the syscall terminator.
+pub(super) fn check_path_bytes(path: &Path, limit: usize) -> io::Result<()> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.len() >= limit {
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
+    if bytes.contains(&0) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    Ok(())
+}
+
+pub(super) fn valid_absolute_path(path: &Path, limit: usize) -> bool {
+    path.is_absolute()
+        && check_path_bytes(path, limit).is_ok()
+        && !path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+}
+
 pub(super) struct NativePath {
     bytes: Vec<u8>,
     len: usize,
@@ -27,13 +47,7 @@ impl NativePath {
 
     pub fn load(&mut self, path: &Path) -> io::Result<()> {
         let bytes = path.as_os_str().as_bytes();
-        // Preserve the scanner's strict path bound, including truncation checks.
-        if bytes.len() >= self.bytes.len() - 1 {
-            return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
-        }
-        if bytes.contains(&0) {
-            return Err(io::Error::from_raw_os_error(libc::EINVAL));
-        }
+        check_path_bytes(path, self.bytes.len() - 1)?;
         self.bytes[..bytes.len()].copy_from_slice(bytes);
         self.bytes[bytes.len()] = 0;
         self.len = bytes.len();
