@@ -1,0 +1,322 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use super::batch::{Batch, deliver};
+use super::probe::{ProbeContext, ProbeScratch};
+use super::roots::{ExclusionRoot, resolve_exclusion, resolve_include_root};
+use super::walk::Walker;
+use super::*;
+use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
+use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
+
+/// Linux scanner with bounded reusable scratch and root baselines.
+///
+/// `scan` emits observations, not reconciliation transitions. Matching policy
+/// is supplied precompiled; include-root baselines reset when this scanner is recreated. Expected
+/// roots returning after an outage may be used again. A changed root does not
+/// become the new baseline automatically.
+pub struct Scanner<P> {
+    config: ScanConfig,
+    matcher: P,
+    include_baselines: Vec<Option<FileLocator>>,
+    exclusions: Vec<ExclusionRoot>,
+    capability: Option<Result<(), i32>>,
+    scratch: ProbeScratch,
+    target: Vec<u8>,
+    directory_buffer: Vec<MaybeUninit<u8>>,
+    walker: Walker,
+    batch: Batch,
+}
+
+impl<P: MatchPolicy> Scanner<P> {
+    /// Checks all explicit bounds before allocating scratch.
+    pub fn new(mut config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
+        let limits = config.limits;
+        if !(1..=1024).contains(&limits.depth)
+            || !(1..=65536).contains(&limits.path_bytes)
+            || !(1..=1024).contains(&limits.roots)
+            || !(1..=1024).contains(&limits.batch)
+            || !(16..=65535).contains(&limits.fingerprint_bytes)
+            || limits.work_units == 0
+            || config.include_roots.is_empty()
+            || config.include_roots.len() > limits.roots
+            || config.exclusion_roots.len() > limits.roots
+            || limits
+                .ignored_header_bytes
+                .checked_add(limits.fingerprint_bytes as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+            || config
+                .include_roots
+                .iter()
+                .chain(&config.exclusion_roots)
+                .any(|root| {
+                    !root.is_absolute()
+                        || root
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                        || root.as_os_str().as_bytes().len() >= limits.path_bytes
+                        || root.as_os_str().as_bytes().contains(&0)
+                })
+        {
+            return Err(InvalidScanConfig);
+        }
+        // Normalize only exclusion lookup prefixes, once and after validation.
+        // Trailing "/" or "/." must not hide a final alias from no-follow checks.
+        // Include spellings remain unchanged because matchers see those paths.
+        for root in &mut config.exclusion_roots {
+            let mut normalized = PathBuf::with_capacity(root.as_os_str().len());
+            normalized.extend(root.components());
+            *root = normalized;
+        }
+        Ok(Self {
+            include_baselines: vec![None; config.include_roots.len()],
+            exclusions: config
+                .exclusion_roots
+                .iter()
+                .enumerate()
+                .map(|(index, _)| ExclusionRoot {
+                    index,
+                    locator: FileLocator {
+                        device: 0,
+                        inode: 0,
+                    },
+                    missing_suffix: PathBuf::new(),
+                })
+                .collect(),
+            capability: None,
+            scratch: ProbeScratch::new(limits),
+            target: vec![0; limits.path_bytes],
+            directory_buffer: vec![MaybeUninit::uninit(); 8192],
+            walker: Walker::new(limits),
+            batch: Batch::new(limits),
+            config,
+            matcher,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_capability_result(&mut self, result: Result<(), i32>) {
+        self.capability = Some(result);
+    }
+
+    /// Accounts for scanner-owned storage, including spare capacity.
+    ///
+    /// Matcher-owned heap belongs to configuration accounting. Consumer copies
+    /// belong to the caller. Call only between synchronous scans; traversal
+    /// peak adds at most `depth` frames with two bounded native paths each.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.include_baselines.capacity() * size_of::<Option<FileLocator>>()
+            + self.exclusions.capacity() * size_of::<ExclusionRoot>()
+            + self
+                .exclusions
+                .iter()
+                .map(|r| r.missing_suffix.capacity())
+                .sum::<usize>()
+            + self.config.include_roots.capacity() * size_of::<PathBuf>()
+            + self.config.exclusion_roots.capacity() * size_of::<PathBuf>()
+            + self
+                .config
+                .include_roots
+                .iter()
+                .chain(&self.config.exclusion_roots)
+                .map(|p| p.capacity())
+                .sum::<usize>()
+            + self.scratch.retained_bytes()
+            + self.target.capacity()
+            + self.directory_buffer.capacity()
+            + self.walker.heap_bytes()
+            + self.batch.heap_bytes()
+    }
+
+    /// Scans roots in configuration order and delivers batches synchronously.
+    ///
+    /// Returning false from `consume` cancels the pass. Consumers must bound any
+    /// copying and check cancellation while blocked. No directory or source
+    /// descriptor is held during delivery. Filesystem errors are not retried;
+    /// probe-budget contention gets one scheduler yield/retry. Environmental
+    /// backoff and scheduling belong to the worker.
+    pub fn scan(
+        &mut self,
+        generation: u64,
+        budget: &ProbeBudget,
+        cancelled: impl FnMut() -> bool,
+        consume: impl FnMut(&[Observation]) -> bool,
+    ) -> ScanCompletion {
+        self.scan_with_requests(
+            generation,
+            budget,
+            |_| ProbeRequest::Full,
+            cancelled,
+            consume,
+        )
+    }
+
+    /// Scans using a caller-owned bounded lookup to request presence-only evidence.
+    /// Request full validation whenever admission or lifecycle validation is needed.
+    pub fn scan_with_requests(
+        &mut self,
+        generation: u64,
+        budget: &ProbeBudget,
+        mut request: impl FnMut(&Path) -> ProbeRequest,
+        mut cancelled: impl FnMut() -> bool,
+        mut consume: impl FnMut(&[Observation]) -> bool,
+    ) -> ScanCompletion {
+        let mut completion = ScanCompletion {
+            generation,
+            complete: true,
+            cancelled: false,
+            observations: 0,
+        };
+        self.walker.clear();
+        self.batch.clear();
+        if cancelled() {
+            completion.complete = false;
+            completion.cancelled = true;
+            return completion;
+        }
+        let capability = self.capability.unwrap_or_else(|| {
+            openat2(
+                CWD,
+                c"/",
+                OFlags::PATH | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            )
+            .map(drop)
+            .map_err(|e| e.raw_os_error())
+        });
+        self.capability = match capability {
+            Ok(()) | Err(libc::ENOSYS | libc::EINVAL | libc::EPERM) => Some(capability),
+            Err(_) => None,
+        };
+        if let Err(errno) = capability {
+            self.batch.emit(
+                Path::new("/"),
+                if matches!(errno, libc::EMFILE | libc::ENFILE) {
+                    ScanReason::DescriptorExhausted
+                } else {
+                    ScanReason::VerificationUnavailable
+                },
+                Some(errno),
+            );
+            let _ = deliver(&mut self.batch, &mut completion, &mut consume);
+            return completion;
+        }
+        let mut work_left = self.config.limits.work_units;
+        let mut policy_available = true;
+        for (index, root) in self.config.exclusion_roots.iter().enumerate() {
+            if cancelled() {
+                completion.cancelled = true;
+                break;
+            }
+            match resolve_exclusion(
+                root,
+                &mut self.target,
+                &mut self.scratch.native,
+                &mut self.exclusions[index],
+                &mut cancelled,
+            ) {
+                Ok(()) => (),
+                Err((reason, error)) => {
+                    policy_available = false;
+                    completion.complete = false;
+                    self.batch.emit(root, reason, error.raw_os_error());
+                    if (reason == ScanReason::Cancelled || self.batch.is_full())
+                        && !deliver(&mut self.batch, &mut completion, &mut consume)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        // Failed mappings never enter policy evaluation, preserving root indexes.
+        let context = ProbeContext {
+            config: &self.config,
+            matcher: &self.matcher,
+            roots: &self.exclusions,
+            budget,
+            policy_available,
+        };
+        for index in 0..self.config.include_roots.len() {
+            if work_left == 0 {
+                self.batch
+                    .emit(&self.config.include_roots[index], ScanReason::Limit, None);
+                completion.complete = false;
+                break;
+            }
+            if completion.cancelled || cancelled() {
+                completion.cancelled = true;
+                break;
+            }
+            let root = &self.config.include_roots[index];
+            match resolve_include_root(
+                root,
+                &mut self.target,
+                &mut self.scratch.native,
+                &mut self.include_baselines[index],
+                self.config.checkpoint_namespace,
+            ) {
+                Ok((physical, locator, changed)) => {
+                    if changed {
+                        self.batch.emit(root, ScanReason::RootChanged, None);
+                        self.batch.last_mut().locator = Some(locator);
+                        completion.complete = false;
+                        if self.batch.is_full()
+                            && !deliver(&mut self.batch, &mut completion, &mut consume)
+                        {
+                            break;
+                        }
+                    }
+                    if self.matcher.excludes_subtree(root) {
+                        continue;
+                    }
+                    self.walker
+                        .start(root, physical, locator, self.config.limits);
+                }
+                Err((reason, error)) => {
+                    self.batch.emit(root, reason, error.raw_os_error());
+                    completion.complete = false;
+                }
+            }
+            while !self.walker.is_empty() && !completion.cancelled {
+                if work_left == 0 {
+                    self.batch
+                        .emit(self.walker.current_path(), ScanReason::Limit, None);
+                    completion.complete = false;
+                    break;
+                }
+                if cancelled() {
+                    completion.cancelled = true;
+                    break;
+                }
+                self.walker.step(
+                    &context,
+                    &mut self.batch,
+                    &mut self.scratch,
+                    &mut self.directory_buffer,
+                    &mut work_left,
+                    &mut request,
+                    &mut cancelled,
+                );
+                if !deliver(&mut self.batch, &mut completion, &mut consume) {
+                    break;
+                }
+            }
+            if !completion.cancelled && !deliver(&mut self.batch, &mut completion, &mut consume) {
+                break;
+            }
+        }
+        if !completion.cancelled {
+            let _ = deliver(&mut self.batch, &mut completion, &mut consume);
+        }
+        if completion.cancelled {
+            completion.complete = false;
+        }
+        self.walker.clear();
+        self.batch.clear();
+        completion
+    }
+}

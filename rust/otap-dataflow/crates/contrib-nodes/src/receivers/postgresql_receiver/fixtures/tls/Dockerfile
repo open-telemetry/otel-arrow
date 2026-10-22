@@ -1,7 +1,7 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-FROM postgres:15.19
+FROM postgres:15.19@sha256:c99dd5066e988cd61a72ffe962da08e277eecaba000bbdda0bdaf9f63b56c174
 
 COPY init.sql /docker-entrypoint-initdb.d/10-receiver-fixture.sql
 COPY start-postgres.sh /usr/local/bin/start-postgres-tls

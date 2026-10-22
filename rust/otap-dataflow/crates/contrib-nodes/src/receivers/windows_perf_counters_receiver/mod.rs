@@ -3,7 +3,7 @@
 
 //! Windows performance-counter receiver.
 
-/// Configuration parsing, validation, and exact-path normalization.
+/// Configuration parsing, validation, and exact native-path identity.
 #[cfg_attr(
     not(test),
     allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
