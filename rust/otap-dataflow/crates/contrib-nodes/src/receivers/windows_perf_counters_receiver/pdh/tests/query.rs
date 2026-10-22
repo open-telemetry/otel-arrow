@@ -197,6 +197,88 @@ fn unsupported_type_failure_retains_counter_path() {
 }
 use windows_sys::Win32::System::Performance::PDH_INVALID_HANDLE;
 
+/// Scenario: Exact and wildcard failures retry, resolve, and a wildcard fails again with healthy retained members.
+/// Guarantees: The worker's diagnostic consumer emits one warning per episode and no recovery events on steady collection.
+#[test]
+fn collection_diagnostics_log_selector_episodes_without_reminders() {
+    use tracing_subscriber::layer::SubscriberExt;
+    // The test subscriber shares captured event names; production log state stays worker-local.
+    #[derive(Clone, Default)]
+    struct Events(Arc<std::sync::Mutex<Vec<&'static str>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0.lock().unwrap().push(event.metadata().name());
+        }
+    }
+    let output = Events::default();
+    let subscriber = tracing_subscriber::registry().with(output.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        let healthy = r"\Memory\Available Bytes";
+        let missing = r"\Memory\Late Counter";
+        let template = r"\Process(worker*)\ID Process";
+        let member = r"\Prozess(worker)\Prozesskennung";
+        let wildcard = CounterConfig {
+            instance_config: InstanceConfig::Wildcard {
+                excluded_aggregation: None,
+            },
+            ..counter(template, "process")
+        };
+        let configs = vec![
+            counter(healthy, "healthy"),
+            counter(missing, "late"),
+            wildcard,
+        ];
+        let (state, mut query) = fake_query_with_cadences(
+            configs.clone(),
+            vec![fake_counter(healthy, Number::Integer(42))],
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        state.borrow_mut().expand_error = true;
+        let mut logs = diagnostics::SampleLogState::new("diagnostics-test".to_owned(), configs);
+        for _ in 0..3 {
+            logs.log(&query.collect().unwrap()).unwrap();
+        }
+        {
+            let mut state = state.borrow_mut();
+            state.expand_error = false;
+            state
+                .counters
+                .push(fake_counter(missing, Number::Integer(7)));
+            state
+                .counters
+                .push(fake_counter(member, Number::Integer(99)));
+            let _ = state
+                .expansions
+                .insert(template.to_owned(), vec![member.to_owned()]);
+        }
+        logs.log(&query.collect().unwrap()).unwrap();
+        let before_steady = output.0.lock().unwrap().len();
+        logs.log(&query.collect().unwrap()).unwrap();
+        assert_eq!(output.0.lock().unwrap().len(), before_steady);
+        state.borrow_mut().expand_error = true;
+        for _ in 0..3 {
+            let sample = query.collect().unwrap();
+            assert_eq!(sample.points.len(), 3);
+            logs.log(&sample).unwrap();
+        }
+    });
+    let captured = output.0.lock().unwrap();
+    assert_eq!(
+        captured
+            .iter()
+            .filter(|name| **name == "windows_perf_counters_receiver.counter.fail")
+            .count(),
+        3
+    );
+    assert!(captured.contains(&"windows_perf_counters_receiver.instances.change"));
+    assert!(captured.contains(&"windows_perf_counters_receiver.recovery.change"));
+}
+
 struct InvalidHandleState {
     next_handle: usize,
     paths: BTreeMap<usize, String>,

@@ -2298,6 +2298,7 @@ async fn blocked_collect_worker() -> (
         vec![counter(r"\Memory\Available Bytes", "available")],
         Duration::from_secs(30),
         4_096,
+        "test".to_owned(),
         move |configs, limit, seed, shutdown| {
             Query::open_with_seed(
                 PeakPdh {

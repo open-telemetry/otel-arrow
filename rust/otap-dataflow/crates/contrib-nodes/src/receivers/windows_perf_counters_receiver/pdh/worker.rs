@@ -6,6 +6,7 @@
 use super::super::config::CounterConfig;
 use super::super::model::{PendingMetadata, Sample, SampleMember};
 use super::PdhApi;
+use super::diagnostics::SampleLogState;
 use super::error::Error;
 use super::query::{Query, QueryRecreationSeed, record_query_failure, retry_delay};
 use super::timing::positive_timestamp;
@@ -70,6 +71,7 @@ impl Worker {
             counters,
             cadence.retry_cap,
             max_native_counters,
+            node,
             move |counters, query_limit, seed, shutdown| {
                 settings.open(counters, query_limit, seed, shutdown)
             },
@@ -81,6 +83,7 @@ impl Worker {
         counters: Vec<CounterConfig>,
         query_retry_cap: Duration,
         max_native_counters: usize,
+        node: String,
         mut open: F,
     ) -> Result<Self, Error>
     where
@@ -101,6 +104,7 @@ impl Worker {
         let worker_accepted = Arc::clone(&accepted);
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown_requested);
+        let logs = SampleLogState::new(node, counters.clone());
         let join = std::thread::Builder::new()
             .name("windows-perf-counters-pdh".to_owned())
             .spawn(move || {
@@ -118,6 +122,7 @@ impl Worker {
                     completion_tx,
                     worker_accepted,
                     worker_shutdown,
+                    logs,
                 );
             })
             .map_err(|err| Error::WorkerStart(err.to_string()))?;
@@ -271,6 +276,7 @@ fn run_worker_thread<A, F>(
     completion_tx: oneshot::Sender<()>,
     accepted: Arc<AtomicBool>,
     shutdown_requested: Arc<AtomicBool>,
+    mut logs: SampleLogState,
 ) where
     A: PdhApi,
     F: QueryFactory<A>,
@@ -301,7 +307,10 @@ fn run_worker_thread<A, F>(
         match rx.recv() {
             Ok(Command::Collect(response)) => {
                 let accepted = AcceptedCollectGuard::new(Arc::clone(&accepted));
-                let result = collect_query(&mut slot, open, Instant::now());
+                let result = collect_query(&mut slot, open, Instant::now()).and_then(|sample| {
+                    logs.log(&sample)?;
+                    Ok(sample)
+                });
                 drop(accepted);
                 let _ = response.send(result);
             }

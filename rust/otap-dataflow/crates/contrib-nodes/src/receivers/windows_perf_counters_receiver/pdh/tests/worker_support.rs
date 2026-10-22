@@ -24,6 +24,7 @@ impl Worker {
             counters,
             query_retry_cap,
             max_native_counters,
+            "test".to_owned(),
             move |configs, limit, seed, _shutdown| open(configs, limit, seed),
         )
         .await

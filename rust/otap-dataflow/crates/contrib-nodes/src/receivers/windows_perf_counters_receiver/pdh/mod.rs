@@ -8,6 +8,7 @@
 use super::model::{InstanceIdentity, Number};
 pub(super) use expansion::DiscoveryBudget;
 mod counter_type;
+mod diagnostics;
 mod error;
 mod expansion;
 mod native;
