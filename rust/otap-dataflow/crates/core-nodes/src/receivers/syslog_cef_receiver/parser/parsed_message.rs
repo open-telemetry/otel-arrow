@@ -107,6 +107,16 @@ impl ParsedSyslogMessage<'_> {
     /// Returns the time when the event occurred.
     // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
     pub(crate) fn timestamp(&self) -> Option<u64> {
+        self.timestamp_inner(None)
+    }
+
+    /// Uses the receiver's local year for yearless RFC 3164 timestamps.
+    /// RFC 5424 and raw CEF keep their existing timestamp semantics.
+    pub(crate) fn timestamp_with_year(&self, received_local_year: i32) -> Option<u64> {
+        self.timestamp_inner(Some(received_local_year))
+    }
+
+    fn timestamp_inner(&self, received_local_year: Option<i32>) -> Option<u64> {
         match self {
             ParsedSyslogMessage::Rfc5424(msg) | ParsedSyslogMessage::CefWithRfc5424(msg, _) => {
                 msg.timestamp.and_then(|ts| {
@@ -121,30 +131,18 @@ impl ParsedSyslogMessage<'_> {
             }
             ParsedSyslogMessage::Rfc3164(msg) | ParsedSyslogMessage::CefWithRfc3164(msg, _) => {
                 msg.timestamp.and_then(|ts| {
-                    std::str::from_utf8(ts).ok().and_then(|timestamp_str| {
-                        // RFC 3164 format: "Oct 11 22:14:15"
-                        // We need to assume the current year and local timezone
-                        let current_year = Local::now().year();
-
-                        // Parse the timestamp with assumed year
-                        let full_timestamp = format!("{current_year} {timestamp_str}");
-
-                        // Try to parse with format "%Y %b %d %H:%M:%S"
-                        if let Ok(naive_dt) =
-                            NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S")
-                        {
-                            // Convert to local timezone, then to UTC
-                            if let Some(local_dt) = Local.from_local_datetime(&naive_dt).single() {
-                                return Some(
-                                    local_dt
-                                        .with_timezone(&Utc)
-                                        .timestamp_nanos_opt()
-                                        .unwrap_or(0) as u64,
-                                );
-                            }
-                        }
-
-                        None
+                    // Encoded messages retain the receipt year. Only the eager
+                    // compatibility path infers it from the clock here. Resolve
+                    // local time for the event date, preserving DST behavior.
+                    let year = received_local_year.unwrap_or_else(|| Local::now().year());
+                    let timestamp = std::str::from_utf8(ts).ok()?;
+                    let naive = NaiveDateTime::parse_from_str(
+                        &format!("{year} {timestamp}"),
+                        "%Y %b %d %H:%M:%S",
+                    )
+                    .ok()?;
+                    Local.from_local_datetime(&naive).single().map(|local| {
+                        local.with_timezone(&Utc).timestamp_nanos_opt().unwrap_or(0) as u64
                     })
                 })
             }
@@ -456,6 +454,8 @@ mod tests {
         assert_eq!(timestamp_nanos, expected_nanos);
     }
 
+    /// Scenario: A plain RFC 3164 message omits the event year.
+    /// Guarantees: The eager compatibility path uses the current year and local timezone.
     #[test]
     fn test_parsed_syslog_message_timestamp_rfc3164() {
         let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8";
@@ -474,6 +474,97 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap_or(0) as u64;
             assert_eq!(timestamp_nanos, expected_nanos);
+        }
+    }
+
+    /// Scenario: Deferred RFC 3164 and wrapped CEF decoding infers a year for February 29.
+    /// Guarantees: Canonical and mixed-case dates use the receipt year for leap-day validation.
+    #[test]
+    fn test_receipt_year_controls_leap_day_validation() {
+        let expected = Local
+            .with_ymd_and_hms(2024, 2, 29, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        for month in ["Feb", "fEb"] {
+            for body in ["tag: message", "CEF:0|Security|product|1.0|100|test|10|"] {
+                let input = format!("<34>{month} 29 12:00:00 host {body}");
+                let parsed = parse(input.as_bytes()).unwrap();
+                assert_eq!(parsed.timestamp_with_year(2024), Some(expected));
+                assert_eq!(parsed.timestamp_with_year(2023), None);
+            }
+        }
+    }
+
+    /// Scenario: RFC 3164 and wrapped CEF timestamps straddle local DST transitions.
+    /// Guarantees: Gaps and ambiguous times have no timestamp; adjacent times resolve normally.
+    #[cfg(unix)]
+    #[test]
+    fn test_rfc3164_local_dst_transitions() {
+        use chrono::NaiveDate;
+
+        const CHILD: &str = "OTEL_SYSLOG_DST_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // A subprocess avoids mutating process-wide TZ while other tests run.
+            let module = module_path!()
+                .split_once("::")
+                .expect("crate-qualified module")
+                .1;
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(format!("{module}::test_rfc3164_local_dst_transitions"))
+                .env(CHILD, "1")
+                .env("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2")
+                .output()
+                .expect("run isolated local-timezone test");
+            assert!(output.status.success(), "child failed: {output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+
+        let year = Local::now().year();
+        let sunday = |month: u32, week: u32| {
+            let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+            let offset = (7 - first.weekday().num_days_from_sunday()) % 7 + 7 * (week - 1);
+            first + chrono::Duration::days(i64::from(offset))
+        };
+        let spring = sunday(3, 2);
+        let fall = sunday(11, 1);
+        let gap = spring.and_hms_opt(2, 30, 0).unwrap();
+        let ambiguous = fall.and_hms_opt(1, 30, 0).unwrap();
+        assert!(matches!(
+            Local.from_local_datetime(&gap),
+            chrono::LocalResult::None
+        ));
+        assert!(matches!(
+            Local.from_local_datetime(&ambiguous),
+            chrono::LocalResult::Ambiguous(_, _)
+        ));
+        for (date, hour, resolved) in [
+            (spring, 1, true),
+            (spring, 2, false),
+            (spring, 3, true),
+            (fall, 0, true),
+            (fall, 1, false),
+            (fall, 2, true),
+        ] {
+            let naive = date.and_hms_opt(hour, 30, 0).unwrap();
+            let expected = Local
+                .from_local_datetime(&naive)
+                .single()
+                .map(|dt| dt.timestamp_nanos_opt().unwrap() as u64);
+            assert_eq!(expected.is_some(), resolved);
+            for body in ["tag: message", "CEF:0|Security|product|1.0|100|test|10|"] {
+                let input = format!("<34>{} host {body}", naive.format("%b %e %H:%M:%S"));
+                let parsed = parse(input.as_bytes()).unwrap();
+                assert_eq!(parsed.timestamp(), expected, "local timestamp: {naive}");
+                assert_eq!(
+                    parsed.timestamp_with_year(year),
+                    expected,
+                    "receipt timestamp: {naive}"
+                );
+            }
         }
     }
 
