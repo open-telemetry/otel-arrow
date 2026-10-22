@@ -232,6 +232,9 @@ pub enum Error {
         message: String,
     },
 
+    #[error("invalid data encountered during OTLP encoding")]
+    InvalidOtlpEncoding,
+
     #[error("buffer full")]
     Dropped,
 
@@ -261,7 +264,10 @@ pub enum Error {
 }
 
 impl From<EncodeFailure> for Error {
-    fn from(_: EncodeFailure) -> Self {
-        Error::Dropped
+    fn from(f: EncodeFailure) -> Self {
+        match f {
+            EncodeFailure::Dropped => Error::Dropped,
+            EncodeFailure::Invalid => Error::InvalidOtlpEncoding,
+        }
     }
 }
