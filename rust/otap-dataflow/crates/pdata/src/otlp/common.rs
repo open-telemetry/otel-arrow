@@ -502,7 +502,7 @@ pub trait BoundedBuf {
     }
 
     /// An unsigned varint encoding.
-    #[inline]
+    #[inline(always)]
     fn encode_varint(&mut self, value: u64) -> EncodeResult {
         if value < tag_width_limit(1) as u64 {
             return self.try_extend_slice(&[value as u8]);
