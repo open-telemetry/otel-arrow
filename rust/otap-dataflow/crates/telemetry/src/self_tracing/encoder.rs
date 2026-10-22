@@ -78,7 +78,7 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
     }
 }
 
-// BoundedBuf support methods. TODO(4453) these are for internal use.
+// BoundedBuf support methods.
 mod bounded {
     use super::{BoundedBufFmt, SavedCallsite, ValueEncoder};
     use otel_arrow_dfe_pdata::otlp::{
