@@ -564,7 +564,6 @@ pub const fn level_to_severity_number(level: &Level) -> u8 {
 /// The fragment contains only the encoded `resource` field. Both OTLP message
 /// types assign that field the same number, so callers can reuse these bytes
 /// without constructing an intermediate SDK resource.
-#[must_use]
 pub(crate) fn encode_config_resource_field(
     resource_attributes: &HashMap<String, ConfigAttributeValue>,
 ) -> Result<Bytes, EncodeFailure> {

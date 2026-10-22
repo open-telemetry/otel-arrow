@@ -359,8 +359,11 @@ impl fmt::Display for EncodeFailure {
 }
 
 impl From<Error> for EncodeFailure {
-    fn from(_: Error) -> Self {
-        EncodeFailure::Invalid
+    fn from(err: Error) -> Self {
+        match err {
+            Error::InternalBufferFull => Self::Dropped,
+            _ => Self::Invalid,
+        }
     }
 }
 
