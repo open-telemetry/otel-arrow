@@ -83,8 +83,9 @@ impl Partitioner {
     pub fn try_new(
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
+        signal_context: SignalContext,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new(true, RecordType::Signal(SignalContext::All));
+        let expr_planner = ExprPlanner::new(true, RecordType::Signal(signal_context));
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {
@@ -1081,6 +1082,7 @@ mod test {
     use crate::pipeline::partition::{
         AnyValueStructComparator, ArrayComparator, GroupIdPool, PartitionValue, Partitioner,
     };
+    use crate::pipeline::{SignalContext, SignalKind};
 
     #[test]
     fn test_partition_logs_by_severity_number() {
@@ -1114,7 +1116,12 @@ mod test {
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("severity_number", default_parser_options())
                 .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner = Partitioner::try_new(
+            scalar_expr,
+            functions,
+            SignalContext::Single(SignalKind::Logs),
+        )
+        .unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
@@ -1207,7 +1214,12 @@ mod test {
 
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("name", default_parser_options()).unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner = Partitioner::try_new(
+            scalar_expr,
+            functions,
+            SignalContext::Single(SignalKind::Traces),
+        )
+        .unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
@@ -1303,7 +1315,12 @@ mod test {
             default_parser_options(),
         )
         .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner = Partitioner::try_new(
+            scalar_expr,
+            functions,
+            SignalContext::Single(SignalKind::Logs),
+        )
+        .unwrap();
         let partitions = partitioner.partition(input).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 2);
 
@@ -1388,7 +1405,8 @@ mod test {
             default_parser_options(),
         )
         .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner =
+            Partitioner::try_new(scalar_expr, functions, SignalContext::All).unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 1);
         assert_eq!(partitions[0].value, PartitionValue::Null);
@@ -1462,7 +1480,8 @@ mod test {
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("attributes[\"x\"]", default_parser_options())
                 .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner =
+            Partitioner::try_new(scalar_expr, functions, SignalContext::All).unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 3);
 
