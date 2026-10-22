@@ -288,8 +288,8 @@ composite is present.
 
 #### Context materialization
 
-Materialization is performed through new-context bindings. Several different
-forms of new-context binding will be built:
+Materialization is performed through materialization bindings. At
+least two different forms of new context are provided:
 
 - Receiver bindings build new context in stages, gathering transport
   headers authorized identity, and network-info fields before
@@ -298,22 +298,9 @@ forms of new-context binding will be built:
 - Processorbindings build new context by projecting the input contexts
   into output contexts. The binding first projects one or more input
   contexts, then materializes a single new output context.
-  
-#### Outbound transport-header propagation
 
-Outbound propagation resolves qualified `composite:member` selectors against
-the same compiled layout used for receiver-boundary materialization. Exporters
-therefore do not re-evaluate a composite's conditions against source values
-that may have changed later in the pipeline.
-
-Transport-header members retain their text or binary value kind and their
-original wire name when capture policy requires it. Constant and randomness
-members have no original wire name, so `name: preserve` falls back to the
-configured member name. Duplicate source values retain source order.
-
-Captured transport headers and materialized composites share one immutable
-context store per pdata message. Detached clones share that store until a
-processor explicitly takes or replaces transport headers.
+Materialization resolves qualified composite context enties from the
+finalized primitive context entries.
 
 #### Composite context entry dimensions
 
@@ -551,13 +538,9 @@ impl PartitionProcessor {
 ```
 
 Projector bindings fall into categories such as 1:1, 1:N, N:1, N:M,
-etc. Their construction contract must explicitly identify the input
-entries preserved as output sources. Splitting, partitioning, and
-batching construct new contexts; they must not implement this contract
-by cloning an input context wholesale. For partitioned output, only
-the partition keys are preserved. The bound constructor evaluates the
-required output composites from those sources, rather than copying
-input composite snapshots.
+etc. Specific binding features will dictate which context entries
+survive into the output context and which are dropped during
+processing.
 
 #### Example: constructing batch output context
 
@@ -599,29 +582,6 @@ groups:
                       min_size: 1000
                       sizer: items
 ```
-
-The batch processor must bind a context constructor whose preserved
-source is the partition key `xyz`. The engine binds the required
-`delivery` composite to that constructor. For each emitted batch, the
-processor supplies the partition's typed `xyz` value and constructs a
-new output context. This evaluates `delivery` from `xyz` and generates
-a new `delivery:id`; it does not copy an incoming `delivery` snapshot
-or its randomness. Other incoming entries are absent unless they are
-also partition keys. If an output composite requires an unavailable
-source or its conditions do not match, it is absent; construction must
-not bypass its presence requirements.
-
-For example, two batches emitted for `xyz=acme` each retain `xyz=acme`,
-but receive independently generated `delivery:id` values. This holds
-whether they combine multiple inputs or split one input into multiple
-output batches. The processor constructs the context once per emitted
-batch, not once per long-lived partition. Persisting and retrying one
-of those batches preserves its already constructed identifier.
-
-Projector binding users must coordinate with the engine memory
-controller when they retain work base on Pdata context, and nodes that
-use these bindings are responsible for determining what happens when
-capacity is reached.
 
 ### Pdata context sinks
 
