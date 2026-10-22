@@ -7,6 +7,7 @@ use super::super::model::{
     SampleFailure, SampleValue, merge_diagnostics,
 };
 use super::super::{
+    TEST_PDH_LOCK,
     config::Config,
     otap_builder::{into_otap, project_sample},
     test_utils::decode,
@@ -19,6 +20,9 @@ use super::*;
 use super::{QueryCadence, Worker};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -45,6 +49,13 @@ fn cumulative_sum(path: &str, name: &str, unit: &str) -> CounterConfig {
         unit: Arc::from(unit),
         ..counter(path, name)
     }
+}
+
+fn query_counts() -> (usize, usize) {
+    (
+        QUERY_OPENS.load(Ordering::Relaxed),
+        QUERY_CLOSES.load(Ordering::Relaxed),
+    )
 }
 
 struct FakeCounter {
@@ -626,6 +637,7 @@ fn temporary_template_cleanup_is_bounded_and_stop_safe() {
     }
 }
 
+mod live;
 mod query;
 mod timing;
 mod worker;
