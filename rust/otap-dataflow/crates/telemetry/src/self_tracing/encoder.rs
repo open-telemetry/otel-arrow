@@ -131,7 +131,7 @@ mod bounded {
     ) -> TruncateResult {
         buf.encode_len_delimited(tag, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(tag, encode)
+            buf.encode_len_delimited(KEY_VALUE_VALUE, encode)
         })
     }
 
@@ -369,7 +369,7 @@ struct ValueEncoder<'a, B: BoundedBuf> {
 
     /// ensures exactly one value is written.
     #[cfg(debug_assertions)]
-    once: bool,
+    single: bool,
 }
 
 impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
@@ -377,18 +377,18 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         Self {
             buf,
             #[cfg(debug_assertions)]
-            once: false,
+            single: false,
         }
     }
 
-    fn once(&mut self, f: impl FnOnce(&mut B) -> TruncateResult) -> TruncateResult {
+    fn once<T, E>(&mut self, f: impl FnOnce(&mut B) -> Result<T, E>) -> Result<T, E> {
         #[cfg(debug_assertions)]
         {
             debug_assert!(
-                !self.once,
+                !self.single,
                 "value callback must write at most one AnyValue variant"
             );
-            self.once = true;
+            self.single = true;
         }
         f(self.buf)
     }
@@ -399,9 +399,11 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         field: u64,
         body: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        self.buf.encode_len_delimited(field, |buf| {
-            let mut encoder = NestedEncoder::new(buf);
-            body(&mut encoder)
+        self.once(|buf| {
+            buf.encode_len_delimited(field, |buf| {
+                let mut encoder = NestedEncoder::new(buf);
+                body(&mut encoder)
+            })
         })
     }
 
@@ -410,23 +412,26 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
     }
 
     fn encode_i64(&mut self, value: i64) -> EncodeResult {
-        bounded::primtiive_field(self.buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
-            buf.encode_varint(value as u64)
+        self.once(|buf| {
+            bounded::primtiive_field(buf, ANY_VALUE_INT_VALUE, wire_types::VARINT, |buf| {
+                buf.encode_varint(value as u64)
+            })
         })
     }
 
     fn encode_f64(&mut self, value: f64) -> EncodeResult {
-        bounded::primtiive_field(
-            self.buf,
-            ANY_VALUE_DOUBLE_VALUE,
-            wire_types::FIXED64,
-            |buf| buf.try_extend_slice(&value.to_le_bytes()),
-        )
+        self.once(|buf| {
+            bounded::primtiive_field(buf, ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64, |buf| {
+                buf.try_extend_slice(&value.to_le_bytes())
+            })
+        })
     }
 
     fn encode_bool(&mut self, value: bool) -> EncodeResult {
-        bounded::primtiive_field(self.buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
-            buf.encode_varint(u64::from(value))
+        self.once(|buf| {
+            bounded::primtiive_field(buf, ANY_VALUE_BOOL_VALUE, wire_types::VARINT, |buf| {
+                buf.encode_varint(u64::from(value))
+            })
         })
     }
 
