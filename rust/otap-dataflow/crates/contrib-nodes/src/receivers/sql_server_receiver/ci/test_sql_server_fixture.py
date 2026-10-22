@@ -20,9 +20,7 @@ FIXTURE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FIXTURE)
 
 CI_SPEC = importlib.util.spec_from_file_location(
-    "sql_server_ci",
-    Path(__file__).resolve().parents[1] / "crates" / "contrib-nodes" / "src"
-    / "receivers" / "sql_server_receiver" / "ci" / "run.py",
+    "sql_server_ci", Path(__file__).with_name("run.py"),
 )
 CI = importlib.util.module_from_spec(CI_SPEC)
 CI_SPEC.loader.exec_module(CI)
@@ -137,6 +135,237 @@ class PrerequisiteTests(unittest.TestCase):
         self.assertNotIn("SENSITIVE", str(raised.exception))
 
 
+class StartupTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "fixture"
+        self.container = None
+        self.commands = []
+        self.failure = None
+        self.cleanup_failure = None
+        self.owner_mismatch = False
+        for patch in (
+            mock.patch.object(FIXTURE, "find_executable", side_effect=lambda name: name),
+            mock.patch.object(FIXTURE.subprocess, "run", side_effect=self.command),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def metadata(self):
+        return json.loads((self.directory / "fixture.json").read_text(encoding="utf-8"))
+
+    def command(self, args, **options):
+        self.commands.append(args)
+        output = ""
+        if args[0] == "openssl":
+            metadata = self.metadata()
+            self.assertFalse(metadata["launch_attempted"])
+            for option in ("-keyout", "-out"):
+                if option in args:
+                    Path(args[args.index(option) + 1]).write_text("generated", encoding="ascii")
+            if self.failure == f"certificate-{args[1]}":
+                return subprocess.CompletedProcess(args, 1, "", "certificate failure")
+        elif args[1] == "info":
+            output = "linux"
+        elif args[1] == "run":
+            metadata = self.metadata()
+            self.assertTrue(metadata["launch_attempted"])
+            self.assertEqual(args[args.index("--name") + 1], metadata["container"])
+            self.assertEqual(args[args.index("--label") + 1], f"{FIXTURE.LABEL}={metadata['owner']}")
+            self.assertEqual(
+                metadata["owner"], FIXTURE.hashlib.sha256(str(self.directory).encode()).hexdigest()
+            )
+            if self.failure == "launch-before":
+                raise subprocess.TimeoutExpired(args, 180)
+            self.container = {
+                "id": "owned-container-id", "name": metadata["container"],
+                "owner": metadata["owner"],
+            }
+            if self.failure == "launch-after":
+                raise subprocess.TimeoutExpired(args, 180)
+            output = self.container["id"]
+        elif args[1] == "inspect":
+            if self.container is None or self.cleanup_failure == "inspect":
+                return subprocess.CompletedProcess(args, 1, "", "cannot inspect")
+            self.assertIn(args[2], (self.container["name"], self.container["id"]))
+            owner = "another-owner" if self.owner_mismatch else self.container["owner"]
+            output = f"{self.container['id']} {owner}"
+        elif args[1] == "logs":
+            output = "server diagnostics"
+        elif args[1] == "rm":
+            self.assertEqual(args[3], self.container["id"])
+            if self.cleanup_failure == "remove":
+                raise subprocess.TimeoutExpired(args, 60)
+            self.container = None
+        elif args[1] == "exec":
+            if self.failure == "setup" and "-i" in args:
+                return subprocess.CompletedProcess(args, 1, "", "setup failure")
+            if "ProductVersion" in args[-1]:
+                output = "16.0.4295.3"
+        elif args[1] == "port":
+            output = "127.0.0.1:12345"
+        else:
+            self.fail(f"Unexpected command: {args[:2]}")
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    def assert_cleaned(self):
+        self.assertIsNone(self.container)
+        self.assertTrue(self.metadata()["stopped"])
+        for name in ("reader-password.txt", "setup.sql", "ca.key", "server.key",
+                     "original.key", "replacement.key", "expired.key", "fixture.json.tmp"):
+            self.assertFalse((self.directory / name).exists(), name)
+
+    # Scenario: Provisioning succeeds with all external commands replaced by controlled local fakes.
+    # Guarantees: Recovery identity exists before secrets and launch, and ready metadata still supplies live inputs.
+    def test_success_persists_identity_and_ready_environment(self):
+        FIXTURE.start(self.directory)
+        metadata = self.metadata()
+        self.assertEqual(metadata["container"], self.container["id"])
+        self.assertEqual(metadata["env"]["OTAP_SQL_SERVER_PORT"], "12345")
+        self.assertNotIn("stopped", metadata)
+        self.assertTrue((self.directory / "reader-password.txt").is_file())
+        self.assertFalse((self.directory / "ca.key").exists())
+        FIXTURE.stop(self.directory)
+        self.assert_cleaned()
+
+    # Scenario: Certificate generation fails either at the first key or after generating replacement keys.
+    # Guarantees: No Docker launch is attempted, and every generated private key is removed.
+    def test_certificate_failure_cleans_without_docker(self):
+        for command in ("req", "ca"):
+            with self.subTest(command=command):
+                self.directory = self.directory.parent / command
+                self.failure = f"certificate-{command}"
+                with self.assertRaisesRegex(RuntimeError, "openssl failed"):
+                    FIXTURE.start(self.directory)
+                self.assert_cleaned()
+        self.assertFalse(any(args[1] in ("run", "inspect", "rm") for args in self.commands))
+
+    # Scenario: Writing SQL setup fails after producing certificates and partially writing a password-bearing file.
+    # Guarantees: Cleanup removes the partial SQL file and every generated secret without launching Docker.
+    def test_secret_file_write_failure_cleans_before_launch(self):
+        original = Path.write_text
+
+        def fail_setup(path, *args, **kwargs):
+            if path.name == "setup.sql":
+                original(path, "partial-secret", encoding="ascii")
+                raise OSError("setup write failed")
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", autospec=True, side_effect=fail_setup):
+            with self.assertRaisesRegex(OSError, "setup write failed"):
+                FIXTURE.start(self.directory)
+        self.assert_cleaned()
+        self.assertFalse(any(args[1] in ("run", "inspect", "rm") for args in self.commands))
+
+    # Scenario: Docker creates a container but times out without returning its ID, or SQL setup fails afterward.
+    # Guarantees: Cleanup resolves the saved identity, checks ownership, and removes the immutable container ID.
+    def test_failure_after_creation_cleans_owned_container(self):
+        for failure in ("launch-after", "setup"):
+            with self.subTest(failure=failure):
+                self.directory = self.directory.parent / failure
+                self.failure = failure
+                with self.assertRaises((subprocess.TimeoutExpired, RuntimeError)):
+                    FIXTURE.start(self.directory)
+                self.assert_cleaned()
+        self.assertEqual(sum(args[1] == "rm" for args in self.commands), 2)
+
+    # Scenario: Docker times out before a container can be observed, so creation may still be in flight.
+    # Guarantees: An inspect failure is not treated as confirmed absence; recovery identity and secrets survive.
+    def test_unobserved_launch_preserves_recovery_metadata(self):
+        self.failure = "launch-before"
+        with self.assertRaisesRegex(RuntimeError, "cleanup is unconfirmed"):
+            FIXTURE.start(self.directory)
+        metadata = self.metadata()
+        self.assertTrue(metadata["launch_attempted"])
+        self.assertNotIn("stopped", metadata)
+        self.assertTrue((self.directory / "server.key").exists())
+        self.assertFalse(any(args[1] == "rm" for args in self.commands))
+
+    # Scenario: A timed-out launch leaves an owned container but inspection or removal also fails.
+    # Guarantees: Startup reports unconfirmed cleanup and preserves usable metadata for a later successful stop.
+    def test_cleanup_failure_preserves_recoverable_state(self):
+        for failure in ("inspect", "remove"):
+            with self.subTest(failure=failure):
+                self.directory = self.directory.parent / failure
+                self.failure = "launch-after"
+                self.cleanup_failure = failure
+                with self.assertRaisesRegex(RuntimeError, "cleanup is unconfirmed"):
+                    FIXTURE.start(self.directory)
+                self.assertNotIn("stopped", self.metadata())
+                self.assertTrue((self.directory / "server.key").exists())
+                self.assertIsNotNone(self.container)
+                self.cleanup_failure = None
+                FIXTURE.stop(self.directory)
+                self.assert_cleaned()
+
+    # Scenario: A reserved name resolves to a container whose ownership label does not match after startup fails.
+    # Guarantees: Failure cleanup never removes that container or discards recovery credentials.
+    def test_startup_cleanup_refuses_mismatched_owner(self):
+        self.failure = "launch-after"
+        self.owner_mismatch = True
+        with self.assertRaisesRegex(RuntimeError, "cleanup is unconfirmed"):
+            FIXTURE.start(self.directory)
+        self.assertIsNotNone(self.container)
+        self.assertNotIn("stopped", self.metadata())
+        self.assertTrue((self.directory / "reader-password.txt").exists())
+        self.assertFalse(any(args[1] == "rm" for args in self.commands))
+
+    # Scenario: A manifest write is partial, or its atomic replacement fails, at each startup phase.
+    # Guarantees: Initial failure creates no secrets; later failures retain the prior valid state and clean resources.
+    def test_manifest_failures_do_not_orphan_resources(self):
+        for operation in ("write_text", "replace"):
+            original = getattr(Path, operation)
+            for failed_write in (1, 2, 3, 4):
+                with self.subTest(operation=operation, failed_write=failed_write):
+                    self.directory = self.directory.parent / f"{operation}-{failed_write}"
+                    calls = 0
+
+                    def fail_manifest(path, *args, **kwargs):
+                        nonlocal calls
+                        if path.name == "fixture.json.tmp":
+                            calls += 1
+                            if calls == failed_write:
+                                if operation == "write_text":
+                                    original(path, "{", encoding="utf-8")
+                                raise OSError("manifest failure")
+                        return original(path, *args, **kwargs)
+
+                    with mock.patch.object(Path, operation, autospec=True, side_effect=fail_manifest):
+                        with self.assertRaisesRegex(OSError, "manifest failure"):
+                            FIXTURE.start(self.directory)
+                    if failed_write == 1:
+                        self.assertEqual(list(self.directory.iterdir()), [])
+                    else:
+                        self.assert_cleaned()
+                    self.assertIsNone(self.container)
+
+    # Scenario: The post-launch manifest replacement fails and Docker cannot confirm container removal.
+    # Guarantees: The reserved-name manifest remains valid and can drive a later ownership-checked cleanup.
+    def test_manifest_and_cleanup_failure_preserve_original_identity(self):
+        original = Path.replace
+        calls = 0
+
+        def fail_manifest(path, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError("manifest failure")
+            return original(path, *args, **kwargs)
+
+        self.cleanup_failure = "remove"
+        with mock.patch.object(Path, "replace", autospec=True, side_effect=fail_manifest):
+            with self.assertRaisesRegex(RuntimeError, "cleanup is unconfirmed"):
+                FIXTURE.start(self.directory)
+        self.assertEqual(self.metadata()["container"], self.container["name"])
+        self.assertNotIn("stopped", self.metadata())
+        self.assertTrue((self.directory / "server.key").exists())
+        self.assertFalse((self.directory / "fixture.json.tmp").exists())
+        self.cleanup_failure = None
+        FIXTURE.stop(self.directory)
+        self.assert_cleaned()
+
+
 class CleanupTests(unittest.TestCase):
     def fixture(self, directory):
         (directory / "fixture.json").write_text(
@@ -154,7 +383,7 @@ class CleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             self.fixture(directory)
-            with mock.patch.object(FIXTURE, "run", return_value="different-owner") as run:
+            with mock.patch.object(FIXTURE, "run", return_value="unowned-id different-owner") as run:
                 with self.assertRaisesRegex(RuntimeError, "not owned"):
                     FIXTURE.stop(directory)
                 self.assertEqual(run.call_count, 1)
@@ -168,7 +397,9 @@ class CleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             self.fixture(directory)
-            with mock.patch.object(FIXTURE, "run", side_effect=["owner-label", "diagnostics", ""]) as run:
+            with mock.patch.object(
+                FIXTURE, "run", side_effect=["owned-container-id owner-label", "diagnostics", ""]
+            ) as run:
                 FIXTURE.stop(directory)
                 FIXTURE.stop(directory)
                 self.assertEqual(run.call_count, 3)
@@ -186,7 +417,8 @@ class CleanupTests(unittest.TestCase):
             directory = Path(temporary)
             self.fixture(directory)
             with mock.patch.object(
-                FIXTURE, "run", side_effect=["owner-label", RuntimeError("logs failed"), ""]
+                FIXTURE, "run",
+                side_effect=["owned-container-id owner-label", RuntimeError("logs failed"), ""]
             ) as run:
                 with self.assertRaisesRegex(RuntimeError, "logs failed"):
                     FIXTURE.stop(directory)
@@ -201,17 +433,38 @@ class CleanupTests(unittest.TestCase):
             directory = Path(temporary)
             self.fixture(directory)
             with mock.patch.object(
-                FIXTURE, "run", side_effect=["owner-label", "log", RuntimeError("remove failed")]
+                FIXTURE, "run",
+                side_effect=["owned-container-id owner-label", "log", RuntimeError("remove failed")]
             ):
                 with self.assertRaisesRegex(RuntimeError, "remove failed"):
                     FIXTURE.stop(directory)
             self.assertTrue((directory / "server.key").exists())
             self.assertNotIn("stopped", json.loads((directory / "fixture.json").read_text()))
 
+    # Scenario: Container removal succeeds but persisting the final stopped state fails.
+    # Guarantees: The error remains visible and the previous manifest is preserved rather than truncated.
+    def test_failed_cleanup_manifest_preserves_last_valid_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.fixture(directory)
+            before = (directory / "fixture.json").read_bytes()
+            with (
+                mock.patch.object(
+                    FIXTURE, "run",
+                    side_effect=["owned-container-id owner-label", "diagnostics", ""],
+                ),
+                mock.patch.object(Path, "replace", side_effect=OSError("manifest failure")),
+            ):
+                with self.assertRaisesRegex(OSError, "manifest failure"):
+                    FIXTURE.stop(directory)
+            self.assertEqual((directory / "fixture.json").read_bytes(), before)
+            self.assertFalse((directory / "fixture.json.tmp").exists())
+            self.assertFalse((directory / "server.key").exists())
+
 
 class IntegrationRunnerTests(unittest.TestCase):
     # Scenario: CI launches the integration entry point without a live server in unit tests.
-    # Guarantees: Fixture variables and the ignored-test selector reach Cargo in the correct workspace.
+    # Guarantees: CI discovers the colocated tests and passes fixture variables and the live selector to Cargo.
     def test_live_command_uses_fixture_environment(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -233,6 +486,11 @@ class IntegrationRunnerTests(unittest.TestCase):
             self.assertEqual(run.call_count, 9)
             trial.assert_called_once_with(fixture, root / "artifacts")
             self.assertEqual(CI.SCRIPT.resolve(), Path(FIXTURE.__file__).resolve())
+            self.assertEqual(run.call_args_list[0].args[0], [
+                CI.sys.executable, "-B", "-m", "unittest", "discover",
+                "-s", str(Path(__file__).resolve().parent),
+                "-p", "test_sql_server_fixture.py",
+            ])
             command = run.call_args_list[2].args[0]
             self.assertIn("sql_server_receiver::live_tests", command)
             self.assertIn("--ignored", command)
@@ -301,6 +559,31 @@ class IntegrationRunnerTests(unittest.TestCase):
                 CI.main()
                 self.assertEqual(run.call_args.args[0][2], "stop")
             self.assertEqual([path.name for path in artifacts.iterdir()], ["server.log"])
+
+    # Scenario: Startup left only recovery metadata, without the ready environment or a server log.
+    # Guarantees: The CI cleanup entry point still invokes stop with the private fixture directory.
+    def test_cleanup_accepts_partial_startup_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = root / "sql-server-fixture"
+            fixture.mkdir()
+            (fixture / "fixture.json").write_text(
+                json.dumps({"container": "reserved-name", "owner": "owner-label",
+                            "launch_attempted": True}), encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(os.environ, {
+                    "RUNNER_TEMP": str(root),
+                    "OTEL_ARROW_INTEGRATION_ARTIFACT_DIR": str(root / "artifacts"),
+                }),
+                mock.patch.object(CI.sys, "argv", ["run.py", "cleanup"]),
+                mock.patch.object(CI, "run") as run,
+            ):
+                CI.main()
+            run.assert_called_once_with([
+                CI.sys.executable, str(CI.SCRIPT), "stop", "--directory", str(fixture),
+            ])
+            self.assertFalse((root / "artifacts").exists())
 
 
 class EngineTrialTests(unittest.TestCase):
@@ -398,7 +681,7 @@ class FaultTests(unittest.TestCase):
                 lambda: FIXTURE.rotate_certificate(directory, "expired"),
                 lambda: FIXTURE.disconnect_readers(directory),
             ):
-                with mock.patch.object(FIXTURE, "run", return_value="another-owner") as run:
+                with mock.patch.object(FIXTURE, "run", return_value="unowned-id another-owner") as run:
                     with self.assertRaisesRegex(RuntimeError, "not owned"):
                         operation()
                     self.assertEqual(run.call_count, 1)
@@ -413,7 +696,7 @@ class FaultTests(unittest.TestCase):
                 state = self.fixture(directory)
                 with (
                     mock.patch.object(
-                        FIXTURE, "run", side_effect=["owner-label", "restarted", "127.0.0.1:53758"]
+                        FIXTURE, "run", side_effect=["owned-id owner-label", "restarted", "127.0.0.1:53758"]
                     ) as run,
                     mock.patch.object(FIXTURE, "admin_query") as query,
                 ):
@@ -448,7 +731,7 @@ class FaultTests(unittest.TestCase):
             before = (directory / "fixture.json").read_text()
             with (
                 mock.patch.object(FIXTURE, "run", side_effect=[
-                    "owner-label", "restarted", RuntimeError("port discovery failed"),
+                    "owned-id owner-label", "restarted", RuntimeError("port discovery failed"),
                 ]),
                 mock.patch.object(FIXTURE, "admin_query"),
             ):
@@ -463,7 +746,7 @@ class FaultTests(unittest.TestCase):
             directory = Path(temporary)
             self.fixture(directory)
             with (
-                mock.patch.object(FIXTURE, "run", side_effect=["owner-label", "restarted"]),
+                mock.patch.object(FIXTURE, "run", side_effect=["owned-id owner-label", "restarted"]),
                 mock.patch.object(FIXTURE, "admin_query", side_effect=RuntimeError("not ready")),
                 mock.patch.object(FIXTURE.time, "monotonic", side_effect=[0, 121]),
             ):
@@ -479,7 +762,7 @@ class FaultTests(unittest.TestCase):
             directory = Path(temporary)
             self.fixture(directory)
             with (
-                mock.patch.object(FIXTURE, "run", return_value="owner-label"),
+                mock.patch.object(FIXTURE, "run", return_value="owned-id owner-label"),
                 mock.patch.object(FIXTURE, "admin_query") as query,
             ):
                 FIXTURE.disconnect_readers(directory)

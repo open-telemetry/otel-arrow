@@ -26,7 +26,7 @@ In **Terminal A**:
 ```powershell
 $engine = (Resolve-Path .\rust\otap-dataflow\target\debug\df_engine.exe).Path
 $demo = Join-Path $env:TEMP ('otel-sql-demo-' + [guid]::NewGuid().ToString('N'))
-python .\rust\otap-dataflow\scripts\sql-server-fixture.py start --directory $demo
+python .\rust\otap-dataflow\crates\contrib-nodes\src\receivers\sql_server_receiver\ci\sql-server-fixture.py start --directory $demo
 if ($LASTEXITCODE -ne 0) { throw 'Fixture setup failed; do not continue' }
 
 $fixture = Get-Content (Join-Path $demo 'fixture.json') -Raw | ConvertFrom-Json
@@ -105,7 +105,7 @@ Client exit or socket closure alone is not proof.
 Stop the engine in Terminal A and wait for its prompt. From the repository root:
 
 ```powershell
-python .\rust\otap-dataflow\scripts\sql-server-fixture.py stop --directory $demo
+python .\rust\otap-dataflow\crates\contrib-nodes\src\receivers\sql_server_receiver\ci\sql-server-fixture.py stop --directory $demo
 if ($LASTEXITCODE -ne 0) { throw 'Fixture cleanup failed; inspect the error' }
 ```
 

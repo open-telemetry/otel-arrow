@@ -11,8 +11,6 @@
     "rust/otap-dataflow/crates/engine/src/capability/**",
     "rust/otap-dataflow/crates/engine/src/local/capability/**",
     "rust/otap-dataflow/crates/otap/src/crypto.rs",
-    "rust/otap-dataflow/scripts/sql-server-fixture.py",
-    "rust/otap-dataflow/scripts/test_sql_server_fixture.py",
     "rust/otap-dataflow/configs/sql-server-console.yaml"
   ],
   "command": [

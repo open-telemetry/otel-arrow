@@ -114,6 +114,16 @@ def published_port(docker, container):
     return port
 
 
+def write_metadata(directory, metadata):
+    state = directory / "fixture.json"
+    pending = directory / "fixture.json.tmp"
+    try:
+        pending.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        pending.replace(state)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def start(directory, allow_unencrypted=False):
     openssl = find_executable("openssl")
     docker = find_executable("docker")
@@ -126,6 +136,30 @@ def start(directory, allow_unencrypted=False):
     if server_os != "linux":
         raise RuntimeError("The fixture requires Docker in Linux-container mode.")
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+    metadata = {
+        "container": "otel-sql-" + secrets.token_hex(5),
+        "owner": hashlib.sha256(str(directory).encode()).hexdigest(),
+        "image": IMAGE,
+        "allow_unencrypted": allow_unencrypted,
+        "launch_attempted": False,
+    }
+    # No secrets or Docker resources may be created without recovery metadata.
+    write_metadata(directory, metadata)
+    try:
+        provision(directory, metadata, openssl, docker)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError):
+        try:
+            stop(directory)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as cleanup_error:
+            raise RuntimeError(
+                f"Fixture startup failed and cleanup is unconfirmed: {cleanup_error}. "
+                f"Preserve {directory}, correct the cleanup error, and retry stop."
+            ) from cleanup_error
+        raise
+
+
+def provision(directory, metadata, openssl, docker):
+    allow_unencrypted = metadata["allow_unencrypted"]
     ca_key = directory / "ca.key"
     ca = directory / "ca.crt"
     key = directory / "server.key"
@@ -183,8 +217,6 @@ GRANT SELECT ON dbo.OTAP_SQL_EVENTS TO otel_reader;
 GO
 """, encoding="ascii"
     )
-    owner = hashlib.sha256(str(directory).encode()).hexdigest()
-    name = "otel-sql-" + secrets.token_hex(5)
     environment = dict(os.environ, MSSQL_SA_PASSWORD=admin_password)
     startup = (
         "set -eu; "
@@ -196,76 +228,74 @@ GO
         "update-ca-certificates >/dev/null; "
         "exec runuser -u mssql -- /opt/mssql/bin/sqlservr"
     )
+    # A timeout can occur after Docker creates the container. Keep its reserved
+    # name on disk before issuing the request, even when no ID is returned.
+    metadata["launch_attempted"] = True
+    write_metadata(directory, metadata)
     container = run([
-        docker, "run", "--detach", "--name", name,
-        "--label", f"{LABEL}={owner}", "--memory", "3g",
+        docker, "run", "--detach", "--name", metadata["container"],
+        "--label", f"{LABEL}={metadata['owner']}", "--memory", "3g",
         "--publish", "127.0.0.1::1433",
         "--env", "ACCEPT_EULA=Y", "--env", "MSSQL_PID=Developer",
         "--env", "MSSQL_SA_PASSWORD", "--user", "0",
         "--mount", f"type=bind,source={directory},target=/fixture,readonly",
         "--entrypoint", "/bin/bash", IMAGE, "-c", startup,
     ], env=environment, timeout=180)
-    metadata = {
-        "container": container, "owner": owner, "image": IMAGE,
-        "allow_unencrypted": allow_unencrypted,
-    }
-    state = directory / "fixture.json"
-    state.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    try:
-        # Admin setup also verifies the fixture certificate; no sqlcmd -C bypass.
-        admin_env = dict(os.environ, SQLCMDPASSWORD=admin_password)
-        command = [docker, "exec", "--env", "SQLCMDPASSWORD", container,
-                   SQLCMD, "-S", "localhost", "-U", "sa", "-N", "-b", "-l", "2"]
-        deadline = time.monotonic() + 120
-        while True:
-            probe = subprocess.run(command + ["-Q", "SELECT 1"],
-                                   env=admin_env, capture_output=True, timeout=10,
-                                   check=False)
-            if probe.returncode == 0:
-                break
-            if time.monotonic() >= deadline:
-                raise RuntimeError("SQL Server did not become ready within 120 seconds")
-            time.sleep(1)
-        run(command + ["-i", "/fixture/setup.sql"], env=admin_env)
-        version = run(command + ["-h", "-1", "-W", "-Q",
-                      "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(30))"],
-                      env=admin_env)
-        if not version.startswith("16."):
-            raise RuntimeError("The fixture did not report SQL Server 2022")
-        port = published_port(docker, container)
-        metadata.update({
-            "server_version": version,
-            "env": {
-                "OTAP_SQL_SERVER_HOST": "localhost",
-                "OTAP_SQL_SERVER_PORT": str(port),
-                "OTAP_SQL_SERVER_DATABASE": "otap_fixture",
-                "OTAP_SQL_SERVER_USERNAME": "otel_reader",
-                "OTAP_SQL_SERVER_PASSWORD_FILE": str(password_file),
-                "OTAP_SQL_SERVER_CA_FILE": str(ca),
-                "OTAP_SQL_SERVER_ALLOW_UNENCRYPTED": "1" if allow_unencrypted else "0",
-                "OTAP_SQL_SERVER_FIXTURE_DIRECTORY": str(directory),
-                "OTAP_SQL_SERVER_FIXTURE_PYTHON": sys.executable,
-                "OTAP_SQL_SERVER_CERTIFICATE": "valid",
-            },
-        })
-        state.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        # Keep the server key until stop so a deliberate container restart works.
-        for filename in ["setup.sql", "ca.key"]:
-            (directory / filename).unlink()
-        print(str(state))
-    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError):
-        stop(directory)
-        raise
+    metadata["container"] = container
+    write_metadata(directory, metadata)
+    # Admin setup also verifies the fixture certificate; no sqlcmd -C bypass.
+    admin_env = dict(os.environ, SQLCMDPASSWORD=admin_password)
+    command = [docker, "exec", "--env", "SQLCMDPASSWORD", container,
+               SQLCMD, "-S", "localhost", "-U", "sa", "-N", "-b", "-l", "2"]
+    deadline = time.monotonic() + 120
+    while True:
+        probe = subprocess.run(command + ["-Q", "SELECT 1"],
+                               env=admin_env, capture_output=True, timeout=10,
+                               check=False)
+        if probe.returncode == 0:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("SQL Server did not become ready within 120 seconds")
+        time.sleep(1)
+    run(command + ["-i", "/fixture/setup.sql"], env=admin_env)
+    version = run(command + ["-h", "-1", "-W", "-Q",
+                  "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(30))"],
+                  env=admin_env)
+    if not version.startswith("16."):
+        raise RuntimeError("The fixture did not report SQL Server 2022")
+    port = published_port(docker, container)
+    metadata.update({
+        "server_version": version,
+        "env": {
+            "OTAP_SQL_SERVER_HOST": "localhost",
+            "OTAP_SQL_SERVER_PORT": str(port),
+            "OTAP_SQL_SERVER_DATABASE": "otap_fixture",
+            "OTAP_SQL_SERVER_USERNAME": "otel_reader",
+            "OTAP_SQL_SERVER_PASSWORD_FILE": str(password_file),
+            "OTAP_SQL_SERVER_CA_FILE": str(ca),
+            "OTAP_SQL_SERVER_ALLOW_UNENCRYPTED": "1" if allow_unencrypted else "0",
+            "OTAP_SQL_SERVER_FIXTURE_DIRECTORY": str(directory),
+            "OTAP_SQL_SERVER_FIXTURE_PYTHON": sys.executable,
+            "OTAP_SQL_SERVER_CERTIFICATE": "valid",
+        },
+    })
+    write_metadata(directory, metadata)
+    # Keep the server key until stop so a deliberate container restart works.
+    for filename in ["setup.sql", "ca.key"]:
+        (directory / filename).unlink()
+    print(str(directory / "fixture.json"))
 
 
 def owned_fixture(directory):
     metadata = json.loads((directory / "fixture.json").read_text(encoding="utf-8"))
     if metadata.get("stopped"):
         raise RuntimeError("Fixture is already stopped")
-    identity = run(["docker", "inspect", metadata["container"], "--format",
-                    '{{index .Config.Labels "' + LABEL + '"}}'])
-    if identity != metadata["owner"]:
+    identity = run(["docker", "inspect", metadata["container"], "--type", "container", "--format",
+                    '{{.Id}} {{index .Config.Labels "' + LABEL + '"}}']).split()
+    if len(identity) != 2 or identity[1] != metadata["owner"]:
         raise RuntimeError("Refusing to remove a container not owned by this fixture")
+    # Use the inspected immutable ID, not a name that could be reused.
+    metadata["container"] = identity[0]
     return metadata
 
 
@@ -298,7 +328,7 @@ def rotate_certificate(directory, variant):
     # Docker may allocate a new ephemeral host port on restart.
     metadata["env"]["OTAP_SQL_SERVER_PORT"] = str(published_port("docker", metadata["container"]))
     metadata["env"]["OTAP_SQL_SERVER_CERTIFICATE"] = variant
-    (directory / "fixture.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    write_metadata(directory, metadata)
     print(f"Installed {variant} fixture certificate; global trust unchanged")
 
 
@@ -325,10 +355,22 @@ DEALLOCATE readers;
     print("Disconnected only the owned fixture's SQL receiver sessions")
 
 
+def finish_cleanup(directory, metadata):
+    for filename in ["reader-password.txt", "setup.sql", "ca.key", "server.key",
+                     "original.key", "replacement.key", "expired.key"]:
+        (directory / filename).unlink(missing_ok=True)
+    metadata["stopped"] = True
+    write_metadata(directory, metadata)
+
+
 def stop(directory):
     state = json.loads((directory / "fixture.json").read_text(encoding="utf-8"))
     if state.get("stopped"):
         print("Fixture is already stopped")
+        return
+    if state.get("launch_attempted") is False:
+        finish_cleanup(directory, state)
+        print("Removed generated secrets; no container launch was attempted")
         return
     metadata = owned_fixture(directory)
     try:
@@ -338,13 +380,7 @@ def stop(directory):
     finally:
         # A diagnostic failure must not leave an otherwise removable owned server running.
         run(["docker", "rm", "--force", metadata["container"]])
-        for filename in ["reader-password.txt", "setup.sql", "ca.key", "server.key",
-                         "original.key", "replacement.key", "expired.key"]:
-            path = directory / filename
-            if path.exists():
-                path.unlink()
-        metadata["stopped"] = True
-        (directory / "fixture.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        finish_cleanup(directory, metadata)
     print("Removed fixture container and generated secrets")
 
 

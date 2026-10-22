@@ -470,9 +470,10 @@ async fn live_idle_disconnect_is_contained() {
         .unwrap();
     let cursor = first.rows.last().unwrap().cursor.clone();
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("scripts")
+        .join("src")
+        .join("receivers")
+        .join("sql_server_receiver")
+        .join("ci")
         .join("sql-server-fixture.py");
     let status = std::process::Command::new(required("OTAP_SQL_SERVER_FIXTURE_PYTHON"))
         .arg(script)

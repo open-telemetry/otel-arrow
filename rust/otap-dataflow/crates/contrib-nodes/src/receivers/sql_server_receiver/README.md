@@ -500,6 +500,9 @@ are required for its deterministic tests.
 Run from `rust/otap-dataflow`:
 
 ```powershell
+python -B -m unittest discover `
+    -s crates\contrib-nodes\src\receivers\sql_server_receiver\ci `
+    -p test_sql_server_fixture.py
 cargo check -p otel-arrow-dfe-contrib-nodes --no-default-features `
     --features sql-server
 cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features `
@@ -529,7 +532,7 @@ the checkout, and do not proceed if setup fails.
 
 ```powershell
 # From the repository root; use a new directory for each run.
-python rust\otap-dataflow\scripts\sql-server-fixture.py start `
+python rust\otap-dataflow\crates\contrib-nodes\src\receivers\sql_server_receiver\ci\sql-server-fixture.py start `
     --directory C:\temp\otel-sql-fixture --allow-unencrypted
 if ($LASTEXITCODE -ne 0) { throw 'Fixture setup failed' }
 $fixture = Get-Content C:\temp\otel-sql-fixture\fixture.json -Raw | ConvertFrom-Json
@@ -544,7 +547,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Live tests failed' }
 } finally {
     Pop-Location
-    python rust\otap-dataflow\scripts\sql-server-fixture.py stop `
+    python rust\otap-dataflow\crates\contrib-nodes\src\receivers\sql_server_receiver\ci\sql-server-fixture.py stop `
         --directory C:\temp\otel-sql-fixture
 }
 ```
@@ -556,6 +559,18 @@ isolated credentials, and provisions a SELECT-only reader. Setup also verifies
 TLS. Stop verifies container ownership and removes only owned resources and
 generated secrets. Keep its directory private; never upload credential/key
 files. Certificates expire after two days.
+
+Recovery metadata is saved before generating secrets or launching Docker, and
+manifest updates are atomic. If setup fails before launch, generated secrets
+are removed without contacting Docker. After a launch attempt, cleanup verifies
+ownership and targets the inspected container ID, including when `docker run`
+times out without returning an ID. If inspection or removal fails, setup reports
+unconfirmed cleanup and retains the private directory and recovery metadata.
+Retry `stop` with the same directory once Docker is available. A failed inspection
+does not prove the container is absent; if it still cannot be inspected, verify
+the reserved container name in `fixture.json` and the launch outcome with a
+Docker administrator before discarding recovery files. Do not reuse that
+directory for another launch.
 
 Omitting `--allow-unencrypted` enforces TLS on the server (the demo default).
 The explicit flag permits the full suite's non-TLS cases; secure-default tests

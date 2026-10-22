@@ -3,4 +3,6 @@ status:
   class: receiver
   codeowners:
     active:
+      - athomas9195
+      - bendu
       - juanjosalco

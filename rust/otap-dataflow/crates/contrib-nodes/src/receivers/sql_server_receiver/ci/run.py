@@ -16,7 +16,7 @@ import time
 
 
 WORKSPACE = Path(__file__).resolve().parents[6]
-SCRIPT = WORKSPACE / "scripts" / "sql-server-fixture.py"
+SCRIPT = Path(__file__).resolve().with_name("sql-server-fixture.py")
 
 
 def run(command, *, env=None):
@@ -105,7 +105,7 @@ def main():
 
     run([
         sys.executable, "-B", "-m", "unittest", "discover",
-        "-s", "scripts", "-p", "test_sql_server_fixture.py",
+        "-s", str(SCRIPT.parent), "-p", "test_sql_server_fixture.py",
     ])
     run([
         sys.executable, str(SCRIPT), "start", "--directory", str(directory),
