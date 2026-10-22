@@ -374,7 +374,7 @@ async fn sdk_rejects_invalid_values_and_metadata_for_each_secret() {
 
 /// Scenario: The production SDK retry policy sees a transient secret-read failure.
 /// Guarantees: Its built-in retry recovers without adding a custom source retry layer.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sdk_default_retry_recovers_transient_failure() {
     use super::testing::*;
     use azure_core::http::RetryOptions;
