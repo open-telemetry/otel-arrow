@@ -10,6 +10,7 @@ mod counter_type;
 mod error;
 mod expansion;
 mod native;
+mod query;
 mod timing;
 
 pub(super) use error::{Error, PdhOperation};
