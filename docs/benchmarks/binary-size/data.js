@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792630201799,
+  "lastUpdate": 1792638875345,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -69531,6 +69531,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "289aa3ef0dd3d91b884c8f7d3ba92b51a3a0e072",
+          "message": "feat(context): propagate materialized context to outbound headers (#4413)\n\n# Change summary\n\nAdds outbound transport-header propagation from receiver-materialized\npdata\ncontext.\n\n- Qualified selectors support transport-header, constant, and UUID v7\nmembers.\n- Composite presence and values use the receiver-boundary snapshot.\n- Partitioned outputs preserve structural sharing when appending\nheaders.\n- Legacy overrides remain scoped to captured primitive headers.\n\nFull RFC 0006 rule-based propagation, including qualified per-member\noverrides,\nis intentionally deferred to separate work.\n\n## Related issue\n\n* Part of #4202\n\n## Validation\n\n* `cargo fmt --all -- --check` - passed\n* `cargo test -p otel-arrow-dfe-config --lib` - passed\n* `cargo test -p otel-arrow-dfe-engine --lib` - passed\n* `cargo test -p otel-arrow-dfe-otap --lib` - passed\n* `cargo test -p otel-arrow-dfe-core-nodes --lib` - passed\n* Engine propagation, receiver wiring, clippy, and documentation checks\n- passed\n* `cargo xtask quick-check` - locally blocked by the Windows OpenSSL\nprerequisite\n\n## User-facing changes\n\nExporters can propagate selected captured headers and qualified\ncomposite\ntransport-header, constant, and UUID v7 members as outbound transport\nheaders.\nA changelog entry is included.",
+          "timestamp": "2026-10-22T02:16:19Z",
+          "tree_id": "21205506520f84a7a5bea88ae25a3737703e3271",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/289aa3ef0dd3d91b884c8f7d3ba92b51a3a0e072"
+        },
+        "date": 1792638855373,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.11,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.83,
             "unit": "MB"
           }
         ]
