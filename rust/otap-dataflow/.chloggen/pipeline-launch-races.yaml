@@ -18,4 +18,4 @@ issues: [4490]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext:
+subtext: Global shutdown prevents new pipeline launches while already-started instances register and drain. Startup failures retain their original cause after teardown.

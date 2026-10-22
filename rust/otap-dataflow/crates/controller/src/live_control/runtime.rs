@@ -256,8 +256,11 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Launches stay admitted during global shutdown: bootstrap may still be launching when a
-        // failed pipeline requests shutdown, and registration forwards shutdown to late instances.
+        // Serialize admission with the shutdown snapshot so every admitted launch
+        // is counted before shutdown can conclude that producers have drained.
+        if state.global_shutdown_requested {
+            return Err(Error::PipelineLaunchCancelled);
+        }
         if state.launching_instances.contains_key(pipeline_key)
             || state
                 .runtime_instances

@@ -8609,11 +8609,10 @@ fn launch_registration_during_global_shutdown_inherits_shutdown() {
     assert!(runtime.all_instances_exited());
 }
 
-/// Scenario: bootstrap launches another producer after a failed pipeline already requested global shutdown.
-/// Guarantees: the late launch is admitted and counted, receives shutdown on registration, and shutdown
-/// completes only after it exits.
+/// Scenario: a launch is attempted during global shutdown and again after its coordinator completes.
+/// Guarantees: both attempts are rejected without creating reservations or changing instance liveness.
 #[test]
-fn launch_reservation_after_global_shutdown_is_admitted_and_shut_down() {
+fn launch_reservation_after_global_shutdown_is_rejected_without_changing_liveness() {
     let runtime = test_runtime(&empty_engine_config());
     let mut first = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
     let first_key = first.pipeline_key.clone();
@@ -8627,30 +8626,34 @@ fn launch_reservation_after_global_shutdown_is_admitted_and_shut_down() {
         .recv_timeout(Duration::from_secs(5))
         .expect("registered producer should receive shutdown");
 
-    let mut late = launched_runtime_instance(&runtime, "g1", "p1", 1, 7);
+    let late = launched_runtime_instance(&runtime, "g1", "p1", 1, 7);
     let late_key = late.pipeline_key.clone();
-    let (sender, notifications) = deadline_notifying_admin_sender();
-    late.control_sender = sender;
-    runtime
-        .reserve_instance_launch(
+    let reserve_late = || {
+        runtime.reserve_instance_launch(
             &late_key,
             Arc::clone(&late.context_bindings),
             Arc::clone(&late.startup_ready),
         )
-        .expect("launch during global shutdown should be admitted");
-    runtime.register_launched_instance(late);
-    let (reason, _) = notifications
-        .recv_timeout(Duration::from_secs(5))
-        .expect("late registration should receive shutdown");
-    assert!(reason.contains("global shutdown"));
-
+    };
+    assert!(matches!(
+        reserve_late(),
+        Err(Error::PipelineLaunchCancelled)
+    ));
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.active_instances, 1);
+        assert!(!state.launching_instances.contains_key(&late_key));
+    }
     runtime.note_instance_exit(first_key, RuntimeInstanceExit::Success);
-    assert!(
-        !runtime.all_instances_exited(),
-        "the late launch must still count as live"
-    );
-    runtime.note_instance_exit(late_key, RuntimeInstanceExit::Success);
     assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
+    assert!(
+        matches!(reserve_late(), Err(Error::PipelineLaunchCancelled)),
+        "completing shutdown must not reopen launch admission"
+    );
     assert!(runtime.all_instances_exited());
 }
 

@@ -580,7 +580,7 @@ pub(super) struct ControllerRuntimeState {
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
     /// Count of runtime instances still launching or active.
     pub(super) active_instances: usize,
-    /// Whether at least one engine-wide shutdown request has been accepted.
+    /// Whether engine-wide shutdown has been accepted and closed new launch admission.
     pub(super) global_shutdown_requested: bool,
     /// The deadline for the global shutdown, if requested.
     pub(super) global_shutdown_deadline: Option<Instant>,
