@@ -290,7 +290,7 @@ pub fn attribute_field_type(field_name: &str) -> Option<ExprLogicalType> {
 }
 
 /// Returns true if the field on the root batch can be a dictionary encoded type
-pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
+pub fn field_supports_dict_encoding(field_name: &str) -> bool {
     // TODO - when we have better support for time arithmetic we should test that this
     // duration type gets coerced into a dictionary during assignment for column with name
     // consts::DURATION_TIME_UNIX_NANO
