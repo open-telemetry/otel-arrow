@@ -2996,7 +2996,8 @@ mod tests {
             },
             vec![],
         );
-        HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
+        HeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles")
     }
 
     fn conditional_workspace_policy() -> HeaderPropagationPolicy {
@@ -3028,7 +3029,7 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        HeaderPropagationPolicy::compile(
+        HeaderPropagationPolicy::compile_standalone(
             policy,
             &[ContextEntryDeclaration {
                 scope: ContextScope::Engine,
@@ -3068,7 +3069,7 @@ mod tests {
             }
         }))
         .expect("valid generated propagation policy");
-        HeaderPropagationPolicy::compile(
+        HeaderPropagationPolicy::compile_standalone(
             policy,
             &[ContextEntryDeclaration {
                 scope: ContextScope::Engine,
@@ -3206,8 +3207,8 @@ mod tests {
                 on_error: None,
             }],
         );
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+        let policy = HeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
@@ -3333,8 +3334,8 @@ mod tests {
             },
             vec![],
         );
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+        let policy = HeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();

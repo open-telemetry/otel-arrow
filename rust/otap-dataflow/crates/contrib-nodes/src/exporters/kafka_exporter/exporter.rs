@@ -7189,7 +7189,7 @@ pub mod test_support {
                 },
                 vec![],
             );
-            let policy = CompiledHeaderPropagationPolicy::compile(policy, &[])
+            let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
                 .expect("propagation policy compiles");
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
@@ -7275,7 +7275,7 @@ pub mod test_support {
                 }
             }))
             .expect("valid propagation policy");
-            let policy = CompiledHeaderPropagationPolicy::compile(
+            let policy = CompiledHeaderPropagationPolicy::compile_standalone(
                 propagation,
                 &[ContextEntryDeclaration {
                     scope: ContextScope::Engine,

@@ -271,7 +271,8 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             },
             vec![],
         );
-        let policy = HeaderPropagationPolicy::compile(unqualified, &[]).expect("unqualified");
+        let policy =
+            HeaderPropagationPolicy::compile_standalone(unqualified, &[]).expect("unqualified");
         assert_eq!(policy.propagate(&headers).count(), member_count);
         let _ = group.bench_with_input(
             BenchmarkId::new("unqualified", format!("{member_count}_members")),
@@ -293,8 +294,8 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             ("miss", Some(false)),
         ] {
             let (config, declarations) = small_composite_config(member_count, condition);
-            let policy =
-                HeaderPropagationPolicy::compile(config, &declarations).expect("composite");
+            let policy = HeaderPropagationPolicy::compile_standalone(config, &declarations)
+                .expect("composite");
             let materialized = materialize(&policy, &headers);
             assert_eq!(
                 policy
@@ -412,7 +413,7 @@ default:
         header_count - 1
     ))
     .expect("valid unqualified propagation policy");
-    HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
+    HeaderPropagationPolicy::compile_standalone(policy, &[]).expect("propagation policy compiles")
 }
 
 fn conditional_policy(
@@ -429,7 +430,7 @@ default:
 "#,
     )
     .expect("valid conditional propagation policy");
-    HeaderPropagationPolicy::compile(
+    HeaderPropagationPolicy::compile_standalone(
         policy,
         &[conditional_declaration(
             header_count,
@@ -520,7 +521,7 @@ default:
             },
         });
     }
-    HeaderPropagationPolicy::compile(
+    HeaderPropagationPolicy::compile_standalone(
         policy,
         &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -573,7 +574,7 @@ default:
             },
         });
     }
-    HeaderPropagationPolicy::compile(
+    HeaderPropagationPolicy::compile_standalone(
         policy,
         &[ContextEntryDeclaration {
             scope: ContextScope::Engine,
