@@ -1,0 +1,7 @@
+type: azure_key_vault_sasl_auth
+status:
+  class: extension
+  codeowners:
+    active:
+      - gouslu
+      - pritishnahar95

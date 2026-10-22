@@ -542,7 +542,12 @@ impl<
                         // expiry, but a value stays usable until ~30 s before
                         // expiry, so reusing it here would defer the planned
                         // early refresh far too long.
-                        if rx.has_changed().unwrap_or(false)
+                        // Once acquisition also reuses a value published before
+                        // start(), not only one published while awaiting the lock.
+                        if (matches!(
+                            inner.refresh_policy.strategy,
+                            BackgroundProviderRefreshStrategy::Once
+                        ) || rx.has_changed().unwrap_or(false))
                             && let Some(value) = self.current_fresh_value() {
                             return Ok(value);
                         }
