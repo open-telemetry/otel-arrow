@@ -465,6 +465,7 @@ impl<A: PdhApi> Query<A> {
                     >= self.wildcard_refresh_interval)
     }
 
+    #[cfg(test)]
     pub(super) fn refresh_all_wildcards_managed(&mut self) -> Result<(), Error> {
         self.refresh_all_wildcards_at(Instant::now())
     }
