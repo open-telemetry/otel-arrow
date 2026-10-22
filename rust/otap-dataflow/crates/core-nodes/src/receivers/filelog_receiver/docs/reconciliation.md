@@ -99,6 +99,16 @@ remain visible through `rebounds` for identity feedback. Historical context
 alone never blocks admission or changes a predecessor. No predecessor progress
 is transferred.
 
+Rebound feedback is per-pass work. If a candidate is admitted at a smaller alias,
+another path's predecessor can remain Live without a successor link. Its rebound
+is reported again on each later pass that observes the replacement at that path,
+even when the replacement is resident and produces no offer. The owner must
+handle identity feedback and call `resolve_rebound` for the current generation
+each time; `supersede` cannot be used after the replacement already has a Live
+owner. This can repeat throughout incomplete passes, until a qualifying complete
+pass publishes a new binding or the lifecycle owner deactivates/retires the
+predecessor. Disappearance evidence alone does not retire the record.
+
 Both atomic admission and legacy `supersede`/`track` use the same successor-link
 helper. It updates established ancestors and retains runtime ID plus locator,
 so inode reuse cannot resolve an old rebound. Active Live ownership remains

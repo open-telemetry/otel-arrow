@@ -958,7 +958,7 @@ impl Reconciler {
         self.candidates.block_conflicts(|candidate| {
             self.locators
                 .records(&candidate.locator, &self.tracked)
-                .any(|tracked| tracked.pass.conflict)
+                .any(|tracked| tracked.file.active && tracked.pass.conflict)
                 || self
                     .bindings
                     .records(candidate.path.as_os_str(), &self.tracked)
