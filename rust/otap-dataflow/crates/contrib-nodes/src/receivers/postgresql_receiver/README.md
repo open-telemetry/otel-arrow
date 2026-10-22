@@ -357,6 +357,43 @@ advances the acknowledged checkpoint.
 
 ## Development
 
+### Live integration CI
+
+The component's `ci/integration-test.json` registers an affected-path-selected,
+advisory (`required: false`) PostgreSQL smoke job on Ubuntu 24.04 in the shared
+contrib integration workflow, following the Oracle receiver pattern. It reuses
+the pinned TLS Docker fixture and explicitly runs the otherwise ignored
+`live_scalar_and_snapshot_native_execution` test. This covers real PostgreSQL
+TLS/login, catalog validation, prepare/bind/portal execution, scalar pagination,
+and both exact-fit and overflowing snapshots. The harness fails if the named
+test is missing or no live test executes. Before provisioning, it runs
+`ci/test_harness.py` contract checks for discovery, failure propagation,
+cleanup, and rejection of missing or no-op tests using fake external commands.
+Those checks are not a substitute for the subsequent live test.
+
+From the repository root, with Docker Compose v2, OpenSSL, GNU `timeout`, Python,
+and the Rust build prerequisites installed, run the same entry point as CI:
+
+```sh
+python3 .github/scripts/run-contrib-integration-test.py --manifest rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/integration-test.json
+```
+
+Each run owns a unique Compose project, database, network, private temporary
+export directory, and OS-assigned loopback port. It neither uses the walkthrough
+database on port 5432 nor changes host trust. Compose waits for initialization
+and fixture-query readiness, with bounded provisioning and test commands.
+Cleanup runs on exit and through the shared runner, removes only that project's
+containers/volumes and exported credentials, and surfaces cleanup failures.
+Failure artifacts contain test output and container state, not credentials,
+container logs, or Compose configuration.
+
+The manual Compose walkthrough keeps its existing defaults. The live test also
+accepts `OTEL_ARROW_POSTGRESQL_TEST_PORT` and
+`OTEL_ARROW_POSTGRESQL_TEST_CA_FILE` for an isolated fixture; checkpoint state
+always uses a per-test temporary directory.
+
+### Unit and transport tests
+
 Run commands from `rust/otap-dataflow`.
 
 Run the complete PostgreSQL receiver unit and loopback transport suite:

@@ -476,7 +476,9 @@ async fn reconnect_reloads_custom_ca_file() {
 }
 
 fn live_mode_config(
-    fixture: &std::path::Path,
+    ca_file: &std::path::Path,
+    port: u16,
+    state_directory: &std::path::Path,
     source_id: &str,
     statement: &str,
     watermark: serde_json::Value,
@@ -486,9 +488,9 @@ fn live_mode_config(
         "source_id": source_id,
         "connection": {
             "host": "localhost",
-            "port": 5432,
+            "port": port,
             "database": "receiver_fixture",
-            "tls": {"ca_file": fixture.join("out").join("ca.pem")}
+            "tls": {"ca_file": ca_file}
         },
         "query": {
             "statement": statement,
@@ -498,7 +500,7 @@ fn live_mode_config(
             "max_batch_bytes": "10 MiB"
         },
         "watermark": watermark,
-        "checkpoint": {"directory": fixture.join("out").join("mode-test-state")}
+        "checkpoint": {"directory": state_directory}
     });
     super::super::config::PostgreSqlReceiverConfig::parse(&raw)
         .and_then(super::super::config::PostgreSqlReceiverConfig::validate)
@@ -515,7 +517,7 @@ async fn close_live_adapter(adapter: &mut PostgreSqlAdapter) {
 /// Scenario: The Docker TLS fixture executes native scalar pages and exact-fit or overflowing snapshots.
 /// Guarantees: Real PostgreSQL catalog, prepare, bind, portal, decode, and N+1 paths preserve mode semantics.
 #[tokio::test]
-#[ignore = "requires the PostgreSQL TLS Docker Compose fixture on localhost:5432"]
+#[ignore = "requires the PostgreSQL TLS Docker Compose fixture; see ci/run.sh"]
 async fn live_scalar_and_snapshot_native_execution() {
     bounded_test(async {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -525,15 +527,24 @@ async fn live_scalar_and_snapshot_native_execution() {
             .join("postgresql_receiver")
             .join("fixtures")
             .join("tls");
+        let ca_file = std::env::var_os("OTEL_ARROW_POSTGRESQL_TEST_CA_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| fixture.join("out").join("ca.pem"));
+        let port = std::env::var("OTEL_ARROW_POSTGRESQL_TEST_PORT")
+            .map(|value| value.parse::<u16>().expect("valid live fixture port"))
+            .unwrap_or(5432);
+        let state_directory = tempfile::tempdir().expect("live checkpoint directory");
         assert!(
-            fixture.join("out").join("ca.pem").is_file(),
+            ca_file.is_file(),
             "start the PostgreSQL TLS Docker Compose fixture first"
         );
         let credential = BasicAuthCredential::new("otel_reader", "otel-reader-password")
             .expect("fixture credential");
 
         let scalar = live_mode_config(
-            &fixture,
+            &ca_file,
+            port,
+            state_directory.path(),
             "scalar-native-test",
             "SELECT e.event_id, e.event_ts, e.actor FROM public.receiver_events AS e \
              WHERE e.event_id > :last_value ORDER BY e.event_id ASC",
@@ -590,7 +601,9 @@ async fn live_scalar_and_snapshot_native_execution() {
 
         for (max_rows, expected) in [(3, Ok(3)), (2, Err(Error::SnapshotRowLimit { limit: 2 }))] {
             let snapshot = live_mode_config(
-                &fixture,
+                &ca_file,
+                port,
+                state_directory.path(),
                 &format!("snapshot-native-{max_rows}"),
                 "SELECT e.event_id, e.event_ts, e.actor FROM public.receiver_events AS e \
                  ORDER BY e.event_id ASC",
