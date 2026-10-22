@@ -51,9 +51,9 @@ The same long-path and short-path fixtures were used before and after compaction
 
 | Fixture (10,000 records) | Previous live heap | Compact live heap | Compact estimate | Compact charge |
 | --- | ---: | ---: | ---: | ---: |
-| Near-limit paths and alias buffers | 293,623,320 | 126,370,264 | 126,371,136 | 128,025,680 |
-| Short-path metadata replacement churn | 10,620,392 | 3,500,264 | 3,501,136 | 5,215,215 |
-| Populated short binding/parent indexes | Not previously measured | 3,620,264 | 3,621,136 | 6,085,360 |
+| Near-limit paths and alias buffers | 293,623,320 | 126,370,264 | 126,371,144 | 128,025,680 |
+| Short-path metadata replacement churn | 10,620,392 | 3,500,264 | 3,501,144 | 5,215,215 |
+| Populated short binding/parent indexes | Not previously measured | 3,620,264 | 3,621,144 | 6,085,360 |
 
 Long-path live heap fell by about 57%; short-path metadata by about 67%.
 The long-path peak was 126,374,358 bytes, within the charge including temporary

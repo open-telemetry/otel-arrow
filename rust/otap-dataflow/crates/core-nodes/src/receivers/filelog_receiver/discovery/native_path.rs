@@ -28,6 +28,16 @@ pub(super) fn valid_absolute_path(path: &Path, limit: usize) -> bool {
             .any(|c| c == std::path::Component::ParentDir)
 }
 
+/// Complete filename accepted by targeted checks; directory observations use
+/// `valid_absolute_path` instead. Inspect native bytes because Path normalizes
+/// trailing separators and dot components when reporting file_name.
+pub(super) fn valid_binding_path(path: &Path, limit: usize) -> bool {
+    valid_absolute_path(path, limit)
+        && path.file_name().is_some()
+        && !path.as_os_str().as_bytes().ends_with(b"/")
+        && !path.as_os_str().as_bytes().ends_with(b"/.")
+}
+
 pub(super) struct NativePath {
     bytes: Vec<u8>,
     len: usize,

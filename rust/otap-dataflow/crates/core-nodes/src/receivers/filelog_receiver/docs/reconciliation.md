@@ -20,6 +20,9 @@ Use one owner and one active pass:
    cursor returns None. No path copies or repeated full-table searches are
    needed. The preallocated worklist admits each tracked ID at most once per
    pass; each ID needs at most an earlier-alias check and a binding check.
+   If `batch.check` rejects the request before returning evidence, call
+   `skip_binding_checks` for that ID or abort the pass. Skipping advances work
+   conservatively: no negative conclusion is allowed from that failed pass.
 5. Pass the exact scanner `ScanCompletion` to `finish`. Targeted checks do not
    contribute to its observation count. Protocol errors poison completeness;
    `abort` can end a failed or cancelled consumer pass.
@@ -64,7 +67,9 @@ cannot revoke a reader with a currently validated eligible binding or alias.
 One earlier eligible alias is retained as a hint and revalidated before using it
 to prevent exclusion. A definitive miss or a fresh different locator expires
 that hint; busy or inaccessible checks retain it. Unknown binding checks require
-the complete-pass fallback. Exclusion never changes offsets or durable records.
+the complete-pass fallback. Required alias-check coverage failures block prompt
+exclusion for the rest of that pass, even if a later binding check is locally
+conclusive. Exclusion never changes offsets or durable records.
 
 Targeted checks share traversal's ancestor subtree policy, root validation,
 pin-bound source probes and transient descriptor budget. They recheck parents
@@ -79,12 +84,20 @@ An eligible established binding wins over a smaller alias. New proposals use
 minimum complete native path bytes; observations never overwrite bindings.
 
 `Replacement::Possible(predecessor)` carries context to identity resolution,
-including during incomplete scans. A candidate's own existing durable state
-wins. Reconnection leaves the predecessor Live and its rebound unresolved; a
+including during incomplete scans and after the predecessor is retired or its
+path changes again. This historical hint is not supersession authority. When
+several predecessors contribute hints, the smallest runtime ID is retained as
+a deterministic representative, not as the owner of the selected path.
+A candidate's own existing durable state wins. Reconnection leaves the
+predecessor Live and its rebound unresolved; a
 competing live binding is rejected before the identity callback. Only admission
 requiring a new identity can supersede the predecessor on an incomplete pass.
-Only that branch can exempt the predecessor's claim during binding preflight.
-No predecessor progress is transferred.
+Only that branch can exempt a claim during binding preflight. The exemption
+and supersession target come from the current Live owner of the selected
+candidate path and must match fresh rebound evidence. Other hardlink predecessors
+remain visible through `rebounds` for identity feedback. Historical context
+alone never blocks admission or changes a predecessor. No predecessor progress
+is transferred.
 
 Both atomic admission and legacy `supersede`/`track` use the same successor-link
 helper. It updates established ancestors and retains runtime ID plus locator,
@@ -118,6 +131,11 @@ locator rank. Mixed batches reserve overflow opportunities and backfill unused
 slots; a one-slot budget alternates groups. Full tracked capacity still permits
 identity matching and reconnection. Only identities proven to require new slots
 are parked while capacity is full. No finite starvation bound is claimed.
+Detected candidate instability is latched
+for the entire pass, even when an overflow sample is later evicted. Token
+validation uses generation, slot bounds, selection and acknowledgement state
+without searching the offer list. A feedback cursor skips acknowledged prefixes
+once, so draining offers does not repeatedly scan earlier acknowledgements.
 
 `overflow_observations` counts sightings, not unique unretained files. Statistics
 also report pending depth, oldest age and actual successful admission time.

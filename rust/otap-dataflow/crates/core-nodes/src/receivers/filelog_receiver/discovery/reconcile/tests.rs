@@ -1855,3 +1855,444 @@ fn compact_metadata_charge_covers_structural_upper_bound() {
         "metadata layout {per_record} exceeds its charge"
     );
 }
+
+/// Scenario: An earlier alias loses required coverage before the binding is proved missing or excluded.
+/// Guarantees: Later local evidence cannot revoke the reader in that pass; a fresh pass can establish exclusion.
+#[test]
+fn alias_coverage_failure_stays_latched_until_next_pass() {
+    use super::super::{BindingCheck, BindingScope};
+    for failure in [
+        ScanReason::Coverage,
+        ScanReason::Policy,
+        ScanReason::RootUnavailable,
+    ] {
+        for binding_reason in [ScanReason::Missing, ScanReason::Excluded] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/a")).unwrap();
+            r.track(file(2, "/unseen")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(99), "/", ScanReason::Directory),
+                &mut events,
+            );
+            feed(&mut r, &observation(1, "/a"), &mut events);
+            feed(&mut r, &observation(1, "/z"), &mut events);
+            let _ = finish(&mut r, true, &mut events);
+            for generation in [2, 3] {
+                events.clear();
+                start(&mut r, generation);
+                feed(
+                    &mut r,
+                    &evidence(Some(1), "/excluded-alias", ScanReason::Excluded),
+                    &mut events,
+                );
+                assert_eq!(r.next_binding_check(), Some(TrackedId(1)));
+                assert_eq!(
+                    r.binding_request(TrackedId(1)).unwrap().path,
+                    Path::new("/z")
+                );
+                let alias = evidence(
+                    None,
+                    "/z",
+                    if generation == 2 {
+                        failure
+                    } else {
+                        ScanReason::Missing
+                    },
+                );
+                r.apply_binding_check(
+                    generation,
+                    TrackedId(1),
+                    BindingCheck {
+                        observation: &alias,
+                        parent: None,
+                        context_valid: false,
+                        scope: if generation == 2 {
+                            BindingScope::Coverage
+                        } else {
+                            BindingScope::Binding
+                        },
+                        diagnostic_path: &alias.path,
+                    },
+                    Duration::from_secs(generation * 10),
+                    |e| record(e, &mut events),
+                )
+                .unwrap();
+                assert_eq!(r.next_binding_check(), Some(TrackedId(1)));
+                assert_eq!(
+                    r.binding_request(TrackedId(1)).unwrap().path,
+                    Path::new("/a")
+                );
+                let binding = evidence(None, "/a", binding_reason);
+                r.apply_binding_check(
+                    generation,
+                    TrackedId(1),
+                    BindingCheck {
+                        observation: &binding,
+                        parent: Some(locator(99)),
+                        context_valid: true,
+                        scope: BindingScope::Binding,
+                        diagnostic_path: &binding.path,
+                    },
+                    Duration::from_secs(generation * 10),
+                    |e| record(e, &mut events),
+                )
+                .unwrap();
+                assert_eq!(r.next_binding_check(), None);
+                assert_eq!(events.contains(&"excluded:1".into()), generation == 3);
+                assert_eq!(finish(&mut r, true, &mut events).complete, generation == 3);
+                assert_eq!(events.contains(&"missing:2".into()), generation == 3);
+            }
+        }
+    }
+}
+
+/// Scenario: Recovery supplies directory spellings rather than complete filenames as bindings.
+/// Guarantees: Tracking and targeted checks reject the same spellings, while directory observations remain valid.
+#[test]
+fn recovered_bindings_share_scanner_filename_validation() {
+    let root = tempfile::tempdir().unwrap();
+    let mut scanner = scanner(root.path());
+    for path in ["/", "/.", "/var/log/app.log/", "/var/log/app.log/."] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        assert_eq!(r.track(file(1, path)), Err(ReconcileError::Tracked));
+        assert!(
+            scanner
+                .check_binding(
+                    Path::new(path),
+                    None,
+                    &super::super::ProbeBudget::default(),
+                    || false,
+                    |_| panic!("invalid filename produced evidence")
+                )
+                .is_err()
+        );
+        start(&mut r, 1);
+        let mut events = Vec::new();
+        feed(
+            &mut r,
+            &evidence(Some(99), path, ScanReason::Directory),
+            &mut events,
+        );
+        assert_eq!(
+            r.observe(1, &observation(1, path), Duration::from_secs(10), |_| {}),
+            Err(ReconcileError::Observation)
+        );
+        assert!(!finish(&mut r, true, &mut events).complete);
+    }
+}
+
+/// Scenario: A scanner with a smaller path bound rejects a valid reconciler request before returning evidence.
+/// Guarantees: Explicit failure completion advances the cursor without exclusion or disappearance, and rejects stale skips.
+#[test]
+fn rejected_binding_request_can_advance_without_negative_evidence() {
+    use super::super::{ProbeBudget, ScanConfig, ScanLimits, Scanner, SymlinkPolicy};
+    let root = tempfile::tempdir().unwrap();
+    let mut scanner = Scanner::new(
+        ScanConfig {
+            include_roots: vec![root.path().to_owned()],
+            exclusion_roots: vec![],
+            symlinks: SymlinkPolicy::Reject,
+            checkpoint_namespace: locator(u64::MAX),
+            limits: ScanLimits {
+                path_bytes: 256,
+                ..ScanLimits::default()
+            },
+        },
+        Policy,
+    )
+    .unwrap();
+    let mut r = Reconciler::new(limits()).unwrap();
+    let long = format!("/{}", "a".repeat(300));
+    r.track(file(1, &long)).unwrap();
+    r.track(file(2, "/b")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    for id in [1, 2] {
+        feed(
+            &mut r,
+            &evidence(Some(id), "/excluded", ScanReason::Excluded),
+            &mut events,
+        );
+    }
+    let budget = ProbeBudget::default();
+    let mut batch = scanner.binding_batch(&budget, || false);
+    assert_eq!(r.next_binding_check(), Some(TrackedId(1)));
+    let request = r.binding_request(TrackedId(1)).unwrap();
+    assert!(batch.check(request.path, request.parent).is_err());
+    assert_eq!(
+        r.skip_binding_checks(0, TrackedId(1), |_| {}),
+        Err(ReconcileError::Generation)
+    );
+    r.skip_binding_checks(1, TrackedId(1), |e| record(e, &mut events))
+        .unwrap();
+    assert_eq!(
+        r.skip_binding_checks(1, TrackedId(1), |_| {}),
+        Err(ReconcileError::Feedback)
+    );
+    assert_eq!(r.next_binding_check(), Some(TrackedId(2)));
+    let request = r.binding_request(TrackedId(2)).unwrap();
+    let check = batch.check(request.path, request.parent).unwrap();
+    r.apply_binding_check(1, TrackedId(2), check, Duration::from_secs(10), |e| {
+        record(e, &mut events)
+    })
+    .unwrap();
+    assert_eq!(r.next_binding_check(), None);
+    assert!(!finish(&mut r, true, &mut events).complete);
+    assert!(!events.contains(&"excluded:1".into()));
+    assert!(!events.iter().any(|e| e.starts_with("missing:")));
+}
+
+/// Scenario: A full tracked table defers a replacement, then explicit retirement frees its predecessor's slot.
+/// Guarantees: Fresh admission retains historical start policy without requiring the retired predecessor to exist.
+#[test]
+fn deferred_replacement_survives_predecessor_retirement() {
+    let mut r = Reconciler::new(ReconcileLimits {
+        tracked: 1,
+        ..limits()
+    })
+    .unwrap();
+    r.track(file(1, "/a")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(&mut r, &observation(2, "/a"), &mut events);
+    let _ = finish(&mut r, false, &mut events);
+    let token = r.offers().unwrap().next().unwrap().token;
+    r.acknowledge(
+        token,
+        IdentityFeedback::NeedsCapacity,
+        Duration::from_secs(11),
+    )
+    .unwrap();
+    drop(r.untrack(TrackedId(1)).unwrap());
+    start(&mut r, 2);
+    feed(&mut r, &observation(2, "/a"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    let offer = r.offers().unwrap().next().unwrap();
+    assert_eq!(offer.candidate.first_seen, Duration::from_secs(10));
+    let token = offer.token;
+    assert!(
+        r.admit(token, file(2, "/a"), |candidate| {
+            assert_eq!(candidate.replacement, Replacement::Possible(TrackedId(1)));
+            Some(Duration::from_secs(22))
+        })
+        .unwrap()
+    );
+    assert!(r.tracked(TrackedId(1)).is_none());
+    assert_eq!(r.tracked(TrackedId(2)).unwrap().role, BindingRole::Live);
+}
+
+/// Scenario: A deferred replacement moves to an archive while its predecessor's path changes again, possibly unstably.
+/// Guarantees: Historical context neither supersedes nor blocks on the unrelated current rebound; stable archived evidence remains admissible.
+#[test]
+fn deferred_replacement_survives_further_rotation() {
+    for unstable_current_binding in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/a")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(&mut r, &observation(2, "/a"), &mut events);
+        let _ = finish(&mut r, false, &mut events);
+        let token = r.offers().unwrap().next().unwrap().token;
+        r.acknowledge(token, IdentityFeedback::Deferred, Duration::from_secs(11))
+            .unwrap();
+        start(&mut r, 2);
+        feed(&mut r, &observation(2, "/archive"), &mut events);
+        feed(&mut r, &observation(3, "/a"), &mut events);
+        if unstable_current_binding {
+            feed(&mut r, &observation(4, "/a"), &mut events);
+        }
+        let _ = finish(&mut r, false, &mut events);
+        let offer = r
+            .offers()
+            .unwrap()
+            .find(|o| o.candidate.locator == locator(2))
+            .unwrap();
+        let token = offer.token;
+        assert!(
+            r.admit(token, file(2, "/archive"), |candidate| {
+                assert_eq!(candidate.replacement, Replacement::Possible(TrackedId(1)));
+                Some(Duration::from_secs(22))
+            })
+            .unwrap()
+        );
+        assert_eq!(r.tracked(TrackedId(1)).unwrap().role, BindingRole::Live);
+        assert_eq!(
+            r.rebounds().collect::<Vec<_>>(),
+            vec![Rebound {
+                predecessor: TrackedId(1),
+                replacement: locator(if unstable_current_binding { 4 } else { 3 }),
+            }]
+        );
+        if !unstable_current_binding {
+            let token = r.offers().unwrap().next().unwrap().token;
+            assert!(
+                r.admit(token, file(3, "/a"), |_| Some(Duration::from_secs(23)))
+                    .unwrap()
+            );
+            assert_eq!(
+                r.tracked[&TrackedId(1)].successor,
+                Some((TrackedId(3), locator(3)))
+            );
+        }
+    }
+}
+
+/// Scenario: Two tracked paths become stable hardlinks to a new candidate, in either traversal order.
+/// Guarantees: Admission publishes the minimum path, supersedes only that path's owner, and retains other rebound work.
+#[test]
+fn hardlink_admission_uses_selected_path_owner() {
+    for reverse in [false, true] {
+        for complete in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/a")).unwrap();
+            r.track(file(3, "/b")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(&mut r, &observation(1, "/a.old"), &mut events);
+            feed(&mut r, &observation(3, "/b.old"), &mut events);
+            for path in if reverse { ["/b", "/a"] } else { ["/a", "/b"] } {
+                feed(&mut r, &observation(2, path), &mut events);
+            }
+            assert_eq!(finish(&mut r, complete, &mut events).complete, complete);
+            let offer = r.offers().unwrap().next().unwrap();
+            assert_eq!(offer.candidate.path, Path::new("/a"));
+            assert_eq!(
+                offer.candidate.replacement,
+                Replacement::Possible(TrackedId(1))
+            );
+            let token = offer.token;
+            assert!(
+                r.admit(token, file(2, "/a"), |_| Some(Duration::from_secs(12)))
+                    .unwrap()
+            );
+            assert_eq!(
+                r.tracked(TrackedId(1)).unwrap().role,
+                BindingRole::Superseded
+            );
+            assert_eq!(r.tracked(TrackedId(3)).unwrap().role, BindingRole::Live);
+            assert_eq!(
+                r.rebounds().collect::<Vec<_>>(),
+                vec![Rebound {
+                    predecessor: TrackedId(3),
+                    replacement: locator(2)
+                }]
+            );
+            assert_eq!(
+                r.binding_proposal(1, TrackedId(3)),
+                Err(ReconcileError::Feedback)
+            );
+            r.resolve_rebound(1, TrackedId(3), locator(2)).unwrap();
+            if complete {
+                assert!(r.rebind(1, TrackedId(3), |_| true).unwrap());
+                assert_eq!(
+                    r.tracked(TrackedId(3)).unwrap().binding.as_deref(),
+                    Some(Path::new("/b.old"))
+                );
+            }
+        }
+    }
+}
+
+/// Scenario: An overflow sample becomes inconsistent, then a better-ranked locator evicts that sample.
+/// Guarantees: Eviction cannot restore completeness or emit disappearance; the next stable pass resets the latch.
+#[test]
+fn evicted_overflow_conflict_keeps_pass_incomplete() {
+    for shrink in [false, true] {
+        let mut r = Reconciler::new(ReconcileLimits {
+            pending: 1,
+            offers: 1,
+            ..limits()
+        })
+        .unwrap();
+        r.track(file(2000, "/unseen")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(&mut r, &observation(1, "/pending"), &mut events);
+        feed(&mut r, &observation(2, "/overflow"), &mut events);
+        let mut changed = observation(2, "/overflow");
+        if shrink {
+            changed.size = Some(2);
+            changed.fingerprint = b"ab".to_vec();
+        } else {
+            changed.fingerprint = b"xyz".to_vec();
+        }
+        feed(&mut r, &changed, &mut events);
+        // Fixed generation, seed and inventory force replacement of the initial
+        // sample. Assert the eviction below instead of assuming it happened.
+        for inode in 3..=1024 {
+            feed(&mut r, &observation(inode, "/other"), &mut events);
+        }
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"missing:2000".into()));
+        let offered = r.offers().unwrap().next().unwrap().candidate.locator;
+        assert_ne!(offered, locator(1));
+        assert_ne!(offered, locator(2));
+        events.clear();
+        start(&mut r, 2);
+        assert!(finish(&mut r, true, &mut events).complete);
+        assert!(events.contains(&"missing:2000".into()));
+    }
+}
+
+/// Scenario: A 10,000-offer batch receives forward or reverse feedback, mixing deferral and rejection.
+/// Guarantees: Every selected token resolves once, duplicate/stale callbacks never execute, and exhausted batches expose no offers.
+#[test]
+fn large_offer_batch_preserves_token_lifecycle() {
+    for reverse in [false, true] {
+        let mut r = Reconciler::new(ReconcileLimits {
+            pending: 10000,
+            offers: 10000,
+            ..limits()
+        })
+        .unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        for inode in 1..=10000 {
+            feed(&mut r, &observation(inode, "/candidate"), &mut events);
+        }
+        assert!(finish(&mut r, true, &mut events).complete);
+        let tokens: Vec<_> = r.offers().unwrap().map(|o| o.token).collect();
+        assert_eq!(tokens.len(), 10000);
+        for index in 0..tokens.len() {
+            let token = if reverse {
+                tokens[tokens.len() - index - 1]
+            } else {
+                r.offers().unwrap().next().unwrap().token
+            };
+            let expected = if index % 2 == 0 {
+                IdentityFeedback::Deferred
+            } else {
+                IdentityFeedback::Rejected
+            };
+            assert_eq!(
+                r.resolve_offer(token, |_| (expected, Duration::from_secs(12)))
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                r.resolve_offer(token, |_| panic!("duplicate token callback")),
+                Err(ReconcileError::Feedback)
+            );
+        }
+        assert_eq!(r.offers().unwrap().count(), 0);
+        start(&mut r, 2);
+        feed(&mut r, &observation(10001, "/fresh"), &mut events);
+        let _ = finish(&mut r, true, &mut events);
+        assert_eq!(
+            r.resolve_offer(tokens[0], |_| panic!("stale token callback")),
+            Err(ReconcileError::Feedback)
+        );
+        let fresh = r.offers().unwrap().next().unwrap().token;
+        assert_eq!(
+            r.resolve_offer(fresh, |_| (
+                IdentityFeedback::Deferred,
+                Duration::from_secs(22)
+            ))
+            .unwrap(),
+            IdentityFeedback::Deferred
+        );
+    }
+}

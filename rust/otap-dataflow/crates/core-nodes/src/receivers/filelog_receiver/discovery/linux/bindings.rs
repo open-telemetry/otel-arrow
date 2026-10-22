@@ -282,11 +282,7 @@ impl<P: MatchPolicy, C: FnMut() -> bool> BindingBatch<'_, P, C> {
         expected_parent: Option<FileLocator>,
     ) -> Result<BindingCheck<'_>, InvalidBindingPath> {
         let scanner = &mut *self.scanner;
-        if !native_path::valid_absolute_path(path, scanner.config.limits.path_bytes)
-            || path.file_name().is_none()
-            || path.as_os_str().as_bytes().ends_with(b"/")
-            || path.as_os_str().as_bytes().ends_with(b"/.")
-        {
+        if !native_path::valid_binding_path(path, scanner.config.limits.path_bytes) {
             return Err(InvalidBindingPath);
         }
         scanner.batch.clear();

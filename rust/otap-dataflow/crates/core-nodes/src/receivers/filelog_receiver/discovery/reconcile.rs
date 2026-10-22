@@ -381,7 +381,7 @@ impl Reconciler {
         ignore: Option<TrackedId>,
     ) -> Result<(), ReconcileError> {
         if let Some(path) = &file.binding {
-            if !valid_path(path, self.limits.path_bytes) {
+            if !super::native_path::valid_binding_path(path, self.limits.path_bytes) {
                 return Err(ReconcileError::Tracked);
             }
             if file.active
@@ -742,6 +742,35 @@ impl Reconciler {
         None
     }
 
+    /// Abandons this identity's remaining targeted checks after a scanner request
+    /// cannot be evaluated. Preserve uncertainty, invalidate completion, and let
+    /// the cursor advance. Normal scanner outcomes belong in apply_binding_check.
+    /// No exclusion or disappearance can be inferred from a rejected request.
+    pub fn skip_binding_checks(
+        &mut self,
+        generation: u64,
+        id: TrackedId,
+        mut emit: impl FnMut(Evidence<'_>),
+    ) -> Result<(), ReconcileError> {
+        let pass = self.pass.as_ref().ok_or(ReconcileError::Phase)?;
+        if pass.generation != generation {
+            return Err(ReconcileError::Generation);
+        }
+        if self.binding_request(id).is_none() {
+            return Err(ReconcileError::Feedback);
+        }
+        let tracked = self
+            .tracked
+            .get_mut(&id)
+            .expect("validated binding request");
+        tracked.pass.alias_checked = true;
+        tracked.pass.binding_checked = true;
+        tracked.pass.exclusion_blocked = true;
+        self.pass.as_mut().expect("active pass").complete = false;
+        emit(Evidence::CoverageLost(ScanReason::Coverage));
+        Ok(())
+    }
+
     /// Borrows the next request. `BindingBatch::check` returns scanner-owned evidence,
     /// so this borrow ends before `apply_binding_check` mutates reconciliation.
     #[must_use]
@@ -821,7 +850,6 @@ impl Reconciler {
                 emit,
             );
         }
-        tracked.pass.exclusion_blocked = false;
         let unchanged = check.parent.is_some() && check.parent == tracked.parent;
         if binding {
             if check.scope == BindingScope::ParentChanged
@@ -927,8 +955,15 @@ impl Reconciler {
         }
         let pass = self.pass.take().expect("checked active pass");
         self.detect_binding_cycles();
-        self.candidates
-            .block_replacements(|id| self.tracked.get(&id).is_some_and(|t| t.pass.conflict));
+        self.candidates.block_conflicts(|candidate| {
+            self.locators
+                .records(&candidate.locator, &self.tracked)
+                .any(|tracked| tracked.pass.conflict)
+                || self
+                    .bindings
+                    .records(candidate.path.as_os_str(), &self.tracked)
+                    .any(|tracked| tracked.file.active && tracked.pass.conflict)
+        });
         self.unresolved_rebounds = self
             .tracked
             .values()
@@ -1037,11 +1072,7 @@ impl Reconciler {
         if self.pass.is_some() {
             return Err(ReconcileError::Phase);
         }
-        let offer = self
-            .candidates
-            .offers()
-            .find(|offer| offer.token == token)
-            .ok_or(ReconcileError::Feedback)?;
+        let offer = self.candidates.offer(token)?;
         let (feedback, admitted_at) = resolve(offer);
         self.acknowledge(token, feedback, admitted_at)?;
         Ok(feedback)
@@ -1191,7 +1222,8 @@ fn valid_observation(observation: &Observation, limits: ReconcileLimits) -> bool
     valid_path(&observation.path, limits.path_bytes)
         && observation.fingerprint.len() <= limits.fingerprint_bytes
         && if observation.reason.is_none() {
-            observation.locator.is_some()
+            super::native_path::valid_binding_path(&observation.path, limits.path_bytes)
+                && observation.locator.is_some()
                 && observation
                     .size
                     .is_some_and(|size| observation.fingerprint.len() as u64 <= size)

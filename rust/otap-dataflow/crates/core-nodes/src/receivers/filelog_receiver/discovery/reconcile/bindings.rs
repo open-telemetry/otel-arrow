@@ -244,16 +244,20 @@ impl Reconciler {
         if self.pass.is_some() {
             return Err(ReconcileError::Phase);
         }
-        let offer = self
-            .candidates
-            .offers()
-            .find(|offer| offer.token == token)
-            .ok_or(ReconcileError::Feedback)?;
+        let offer = self.candidates.offer(token)?;
         let candidate = offer.candidate;
         let new_identity = !self.tracked.contains_key(&file.id);
-        let replacing = match (new_identity, candidate.replacement) {
-            (true, Replacement::Possible(id)) => Some(id),
-            _ => None,
+        // Historical replacement context controls start policy, not ownership.
+        // Only the current Live owner of the chosen path can be superseded or
+        // exempted from duplicate-binding preflight. Other rebounds remain work
+        // for the identity owner, even when their paths alias this candidate.
+        let replacing = if new_identity {
+            self.bindings
+                .records(candidate.path.as_os_str(), &self.tracked)
+                .find(|tracked| tracked.file.active && tracked.file.role == BindingRole::Live)
+                .map(|tracked| tracked.file.id)
+        } else {
+            None
         };
         if file.locator != candidate.locator {
             return Err(ReconcileError::Tracked);

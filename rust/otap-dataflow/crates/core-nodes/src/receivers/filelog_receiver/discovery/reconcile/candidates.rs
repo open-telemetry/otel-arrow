@@ -31,7 +31,8 @@ pub struct Candidate {
     pub fingerprint: Vec<u8>,
     /// Original retained discovery time; overflow candidates have no historical age.
     pub first_seen: Duration,
-    /// Replacement context retained independently of chosen alias.
+    /// Historical start-policy context, independent of the chosen alias. The
+    /// predecessor may be retired; this is not current supersession authority.
     pub replacement: Replacement,
 }
 
@@ -74,6 +75,7 @@ struct Slot {
     order: u64,
     rank: u64,
     acknowledged: bool,
+    selected: bool,
     needs_capacity: bool,
 }
 
@@ -90,6 +92,8 @@ pub(super) struct Candidates {
     seed: u64,
     sequence: u64,
     overflow_turn: bool,
+    conflict_seen: bool,
+    feedback_cursor: usize,
 }
 
 impl Candidates {
@@ -116,6 +120,7 @@ impl Candidates {
                     order: 0,
                     rank: 0,
                     acknowledged: false,
+                    selected: false,
                     needs_capacity: false,
                 })
                 .collect(),
@@ -133,6 +138,8 @@ impl Candidates {
             seed: 0,
             sequence: 0,
             overflow_turn: false,
+            conflict_seen: false,
+            feedback_cursor: 0,
         }
     }
 
@@ -147,7 +154,10 @@ impl Candidates {
             slot.seen = false;
             slot.conflict = false;
             slot.acknowledged = false;
+            slot.selected = false;
         }
+        self.conflict_seen = false;
+        self.feedback_cursor = 0;
         self.sample.clear();
         self.selected.clear();
         self.order.clear();
@@ -174,12 +184,17 @@ impl Candidates {
                         .starts_with(&slot.candidate.fingerprint)
                 {
                     slot.conflict = true;
+                    self.conflict_seen = true;
                 }
             }
             refresh(slot, observation, first_in_pass);
-            if replacement != Replacement::Unrelated {
-                slot.candidate.replacement = replacement;
-            }
+            slot.candidate.replacement = match (slot.candidate.replacement, replacement) {
+                (Replacement::Possible(old), Replacement::Possible(new)) => {
+                    Replacement::Possible(TrackedId(old.0.min(new.0)))
+                }
+                (Replacement::Unrelated, current) => current,
+                (historical, Replacement::Unrelated) => historical,
+            };
             return Ok(false);
         }
         let next_sequence = self
@@ -283,10 +298,29 @@ impl Candidates {
                 .iter()
                 .copied(),
         );
+        for &index in &self.selected {
+            self.slots[index].selected = true;
+        }
+    }
+
+    /// Validates all token consumers through the same constant-time boundary.
+    pub(super) fn offer(&self, token: OfferToken) -> Result<CandidateOffer<'_>, ReconcileError> {
+        let slot = self.slots.get(token.slot).ok_or(ReconcileError::Feedback)?;
+        if token.generation != self.generation
+            || !slot.selected
+            || !slot.occupied
+            || slot.acknowledged
+        {
+            return Err(ReconcileError::Feedback);
+        }
+        Ok(CandidateOffer {
+            token,
+            candidate: &slot.candidate,
+        })
     }
 
     pub(super) fn offers(&self) -> impl Iterator<Item = CandidateOffer<'_>> {
-        self.selected
+        self.selected[self.feedback_cursor..]
             .iter()
             .filter(|&&index| self.slots[index].occupied && !self.slots[index].acknowledged)
             .map(|&index| CandidateOffer {
@@ -303,13 +337,7 @@ impl Candidates {
         token: OfferToken,
         feedback: IdentityFeedback,
     ) -> Result<(), ReconcileError> {
-        if token.generation != self.generation
-            || !self.selected.contains(&token.slot)
-            || !self.slots[token.slot].occupied
-            || self.slots[token.slot].acknowledged
-        {
-            return Err(ReconcileError::Feedback);
-        }
+        let _ = self.offer(token)?;
         self.slots[token.slot].acknowledged = true;
         self.slots[token.slot].needs_capacity = feedback == IdentityFeedback::NeedsCapacity;
         if matches!(
@@ -317,6 +345,14 @@ impl Candidates {
             IdentityFeedback::Admitted | IdentityFeedback::Rejected
         ) {
             self.remove(token.slot);
+        }
+        // Each selected entry is passed at most once per batch. Repeated
+        // offers().next() calls therefore do not rescan acknowledged prefixes.
+        while let Some(&index) = self.selected.get(self.feedback_cursor) {
+            if self.slots[index].occupied && !self.slots[index].acknowledged {
+                break;
+            }
+            self.feedback_cursor += 1;
         }
         Ok(())
     }
@@ -344,21 +380,17 @@ impl Candidates {
         Ok(())
     }
 
-    pub(super) fn block_replacements(&mut self, conflicts: impl Fn(TrackedId) -> bool) {
+    pub(super) fn block_conflicts(&mut self, conflicts: impl Fn(&Candidate) -> bool) {
         for slot in &mut self.slots {
-            if slot.occupied
-                && let Replacement::Possible(id) = slot.candidate.replacement
-                && conflicts(id)
-            {
+            if slot.occupied && slot.seen && conflicts(&slot.candidate) {
                 slot.conflict = true;
+                self.conflict_seen = true;
             }
         }
     }
 
     pub(super) fn has_conflict(&self) -> bool {
-        self.slots
-            .iter()
-            .any(|slot| slot.occupied && slot.seen && slot.conflict)
+        self.conflict_seen
     }
 
     pub(super) fn pending_len(&self) -> usize {
