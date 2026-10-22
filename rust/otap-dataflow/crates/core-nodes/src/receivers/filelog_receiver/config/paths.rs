@@ -403,15 +403,19 @@ fn build(pattern: &str, setting: &str) -> Result<Glob, ConfigError> {
 
 // Find the last separator before any metacharacter. Escaped Unix metacharacters
 // are literal root bytes; the suffix retains its original glob syntax.
-fn prefix(pattern: &str) -> (PathBuf, &str) {
+pub(super) fn prefix(pattern: &str) -> (PathBuf, &str) {
     let mut literal = String::new();
     let mut root_len = 0;
     let mut suffix = 0;
     let mut chars = pattern.char_indices();
     while let Some((i, ch)) = chars.next() {
         if ch == '\\' && !cfg!(windows) {
-            if let Some((_, escaped)) = chars.next() {
+            if let Some((offset, escaped)) = chars.next() {
                 literal.push(escaped);
+                if escaped == '/' {
+                    root_len = literal.len();
+                    suffix = offset + escaped.len_utf8();
+                }
             }
         } else if ch == '/' || (cfg!(windows) && ch == '\\') {
             literal.push(ch);

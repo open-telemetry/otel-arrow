@@ -713,7 +713,7 @@ fn windows_paths() {
 #[test]
 fn exact_identity_ceiling() {
     let c = compiled(
-        "limits: {max_tracked_files: 2588, max_pending_candidates: 43045, max_open_files: 512}",
+        "limits: {max_tracked_files: 6248, max_pending_candidates: 24945, max_open_files: 512}",
     )
     .unwrap();
     assert_eq!(
@@ -721,11 +721,11 @@ fn exact_identity_ceiling() {
         1 << 30
     );
     let e = compiled(
-        "limits: {max_tracked_files: 2588, max_pending_candidates: 43046, max_open_files: 512}",
+        "limits: {max_tracked_files: 6248, max_pending_candidates: 24946, max_open_files: 512}",
     )
     .unwrap_err();
     assert!(e.reason.contains("ceiling=1073741824"));
-    assert!(e.reason.contains("max_pending_candidates=43046"));
+    assert!(e.reason.contains("max_pending_candidates=24946"));
 }
 
 /// Scenario: Scanner root capacity exactly equals a derived native root length.
@@ -1073,5 +1073,24 @@ fn deep_separator_alternative() {
             assert!(!policy.may_descend(&root.join("unrelated")));
             assert!(!policy.may_descend(&root.join("a/not-a")));
         }
+    }
+}
+
+/// Scenario: A Unix fixed include prefix ends in an escaped separator.
+/// Guarantees: Discovery receives the complete literal root and only the file glob as its suffix.
+#[cfg(unix)]
+#[test]
+fn escaped_include_separator_keeps_fixed_root() {
+    for (pattern, root) in [
+        (r"/logs/private\/*.log", "/logs/private/"),
+        (r"/logs/private\\\/*.log", "/logs/private\\/"),
+    ] {
+        let (prefix, suffix) = paths::prefix(pattern);
+        assert_eq!(prefix, Path::new(root));
+        assert_eq!(suffix, "*.log");
+        let policy = PathPolicy::compile(&[pattern.into()], &[], Path::new("/work")).unwrap();
+        assert_eq!(policy.include_roots(), &[Path::new(root)]);
+        assert!(policy.includes(&Path::new(root).join("app.log")));
+        assert!(!policy.may_descend(&Path::new(root).join("child")));
     }
 }

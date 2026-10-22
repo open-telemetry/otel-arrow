@@ -84,6 +84,11 @@ attributes. The minimum partial-state estimate includes framing buffers and
 unread bytes left from one read turn. Startup must add runtime reader state
 before deciding how many unfinished records it can hold.
 
+Snapshot admission includes older fingerprint windows within the existing
+checkpoint recovery ceilings. Reducing `identity.fingerprint_bytes` alone does
+not shrink that budget. Retained-record and reader estimates allow the format's
+maximum fingerprint size; incompatible records keep their existing evidence.
+
 These estimates do not reserve memory or guarantee total process memory use.
 Startup must include the remaining costs without counting shared storage twice.
 

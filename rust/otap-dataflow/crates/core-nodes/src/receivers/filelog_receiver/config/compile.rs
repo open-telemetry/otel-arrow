@@ -63,7 +63,7 @@ pub struct ResourceEstimates {
     pub matching_bytes: u64,
     /// Portable file and recovery phase bounds.
     pub checkpoint: checkpoint::CheckpointBounds,
-    /// Maximum encoded snapshot section under the configured fingerprint window.
+    /// Maximum admitted snapshot section, including historical fingerprint windows.
     pub snapshot_bytes: u64,
     /// Conservative logical record size, including enabled metadata.
     pub record_bytes: u64,
@@ -510,9 +510,12 @@ impl Config {
     ) -> Result<ResourceEstimates, ConfigError> {
         let f = self.identity.fingerprint_bytes;
         let l = &self.limits;
+        // Incompatible durable records retain their old evidence unchanged.
+        // Candidate and open-reader evidence still uses the selected window.
+        let retained_f = checkpoint::FINGERPRINT_MAX_BYTES as u64;
         let p = 44 + checkpoint::ADVISORY_PATH_STORED_MAX_BYTES as u64;
         let identity_inputs = format!(
-            "max_tracked_files={}, max_pending_candidates={}, max_open_files={}, fingerprint_bytes={f}",
+            "max_tracked_files={}, max_pending_candidates={}, max_open_files={}, fingerprint_bytes={f}, retained_fingerprint_bytes={retained_f}",
             l.max_tracked_files, l.max_pending_candidates, l.max_open_files,
         );
         let identity = (|| {
@@ -521,7 +524,7 @@ impl Config {
                 .checked_add(l.max_open_files)?
                 .checked_mul(5 * f + 4 * p + 2048)?;
             let open = l.max_open_files.checked_mul(10 * f + 10 * p + 4096)?;
-            let records = l.max_tracked_files.checked_mul(f + p + 34 + 384)?;
+            let records = l.max_tracked_files.checked_mul(retained_f + p + 34 + 384)?;
             candidates
                 .checked_add(open)?
                 .checked_add(records)?
@@ -542,12 +545,12 @@ impl Config {
             ));
         }
         let reader_inputs = format!(
-            "limits.max_tracked_files={}, identity.fingerprint_bytes={f}, limits.max_read_bytes_per_turn={}",
+            "limits.max_tracked_files={}, identity.fingerprint_bytes={f}, retained_fingerprint_bytes={retained_f}, limits.max_read_bytes_per_turn={}",
             l.max_tracked_files, l.max_read_bytes_per_turn,
         );
         let readers = l
             .max_tracked_files
-            .checked_mul(f + 2 * p + 1024)
+            .checked_mul(retained_f + 2 * p + 1024)
             .and_then(|n| n.checked_add(l.max_read_bytes_per_turn))
             .ok_or_else(|| {
                 ConfigError::new(
@@ -567,19 +570,16 @@ impl Config {
             self.checkpoint.compact_after_transactions,
             l.max_tracked_files,
         );
-        let snapshot = checkpoint::maximum_snapshot_bytes(
+        let checkpoint = checkpoint::CheckpointBounds::for_population(
             u32::try_from(l.max_tracked_files)
                 .map_err(|e| ConfigError::new("limits.max_tracked_files", e.to_string()))?,
             u16::try_from(f)
                 .map_err(|e| ConfigError::new("identity.fingerprint_bytes", e.to_string()))?,
-        )
-        .map_err(|e| ConfigError::new("checkpoint", format!("{e}; {checkpoint_inputs}")))?;
-        let checkpoint = checkpoint::CheckpointBounds::new(
-            snapshot,
             self.checkpoint.compact_after_bytes,
             self.checkpoint.compact_after_transactions,
         )
         .map_err(|e| ConfigError::new("checkpoint", format!("{e}; {checkpoint_inputs}")))?;
+        let snapshot = checkpoint.snapshot_bytes;
         let payload = if let Some(mode) = grouping {
             MultilineConfig {
                 line,

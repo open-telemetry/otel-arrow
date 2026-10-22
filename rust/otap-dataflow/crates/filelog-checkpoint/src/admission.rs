@@ -89,6 +89,32 @@ pub fn maximum_snapshot_bytes(tracked: u32, fingerprint: u16) -> Result<u64, Adm
 }
 
 impl CheckpointBounds {
+    /// Admit the configured population while retaining older fingerprint windows.
+    /// The snapshot budget is independent of the selected window once its own
+    /// worst case fits. Historical records may use the remaining recovery budget,
+    /// up to the format maximum per record, without raising any 1 GiB ceiling.
+    pub fn for_population(
+        tracked: u32,
+        fingerprint: u16,
+        wal_threshold: u64,
+        transactions: u64,
+    ) -> Result<Self, AdmissionError> {
+        let current = Self::new(
+            maximum_snapshot_bytes(tracked, fingerprint)?,
+            wal_threshold,
+            transactions,
+        )?;
+        // Validation above proves all subtractions and this addition fit. Each
+        // extra snapshot byte costs one file byte, four snapshot-phase bytes,
+        // and three WAL-phase bytes.
+        let headroom = (CHECKPOINT_MAX_BYTES - current.checkpoint_file_bytes)
+            .min((CHECKPOINT_MAX_BYTES - current.snapshot_phase_bytes) / 4)
+            .min((CHECKPOINT_MAX_BYTES - current.wal_phase_bytes) / 3);
+        let snapshot =
+            maximum_snapshot_bytes(tracked, u16::MAX)?.min(current.snapshot_bytes + headroom);
+        Self::new(snapshot, wal_threshold, transactions)
+    }
+
     /// Derive and validate admission from explicit snapshot and WAL limits.
     /// The store uses this same calculation before opening a namespace.
     pub fn new(
@@ -162,6 +188,35 @@ impl CheckpointBounds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: Historical evidence exceeds the current window for small and default populations.
+    /// Guarantees: Window reductions keep the same snapshot budget without exceeding recovery ceilings.
+    #[test]
+    fn historical_fingerprints_respect_recovery_ceiling() {
+        for (tracked, old_window, wal) in [
+            (1, u16::MAX, 64 << 20),
+            (10_000, 1000, 64 << 20),
+            (10_000, 1000, 700 << 20),
+        ] {
+            let old = CheckpointBounds::for_population(tracked, old_window, wal, 10_000).unwrap();
+            let new = CheckpointBounds::for_population(tracked, 16, wal, 10_000).unwrap();
+            assert_eq!(old, new);
+            assert!(new.snapshot_bytes >= maximum_snapshot_bytes(tracked, old_window).unwrap());
+            assert!(new.checkpoint_file_bytes <= CHECKPOINT_MAX_BYTES);
+            assert!(new.snapshot_phase_bytes <= CHECKPOINT_MAX_BYTES);
+            assert!(new.wal_phase_bytes <= CHECKPOINT_MAX_BYTES);
+            if tracked == 1 {
+                assert_eq!(
+                    new.snapshot_bytes,
+                    maximum_snapshot_bytes(1, u16::MAX).unwrap()
+                );
+            } else {
+                assert!(CheckpointBounds::new(new.snapshot_bytes + 1, wal, 10_000).is_err());
+            }
+        }
+        // Current-window admission must still reject an oversized population.
+        assert!(CheckpointBounds::for_population(10_000, u16::MAX, 64 << 20, 10_000).is_err());
+    }
 
     /// Scenario: A recovery formula reaches exactly its ceiling, then exceeds it by one byte.
     /// Guarantees: Equality is accepted and excess has a distinct, value-bearing error.
