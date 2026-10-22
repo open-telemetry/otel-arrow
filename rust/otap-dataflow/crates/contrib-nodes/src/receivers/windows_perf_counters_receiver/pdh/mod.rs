@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Native PDH access, query-owned sampling state, discovery, and retries.
+//! Native PDH access, query-owned sampling state, discovery, and worker-thread lifecycle.
 //!
-//! Windows handles remain on the synchronous thread that owns the query.
+//! Windows handles remain on the synchronous worker thread that owns them.
 
 use super::model::{InstanceIdentity, Number};
 pub(super) use expansion::DiscoveryBudget;
@@ -13,8 +13,10 @@ mod expansion;
 mod native;
 mod query;
 mod timing;
+mod worker;
 
 pub(super) use error::{Error, PdhOperation};
+pub(super) use worker::{QueryCadence, Worker};
 
 #[cfg(test)]
 static QUERY_OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

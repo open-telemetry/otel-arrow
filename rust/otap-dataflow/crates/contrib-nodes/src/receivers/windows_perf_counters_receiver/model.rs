@@ -306,6 +306,17 @@ pub(super) struct Sample {
     pub(super) metadata: PendingMetadata,
 }
 
+impl Sample {
+    pub(super) fn empty(timestamp_unix_nano: i64) -> Self {
+        Self {
+            timestamp_unix_nano,
+            members: Vec::new(),
+            points: Vec::new(),
+            metadata: PendingMetadata::default(),
+        }
+    }
+}
+
 pub(super) fn merge_diagnostics(target: &mut SampleDiagnostics, delta: SampleDiagnostics) {
     target.any_query_collected |= delta.any_query_collected;
     target.discovery_refreshes += delta.discovery_refreshes;

@@ -2,18 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::super::config::{CounterConfig, InstanceConfig, MetricKind};
-use super::super::model::{ExpansionOverflow, InstanceIdentity, Number, SampleValue};
-use super::super::{config::Config, otap_builder::into_otap, test_utils::decode};
+use super::super::model::{
+    ExpansionOverflow, InstanceIdentity, Number, PendingMetadata, Sample, SampleDiagnostics,
+    SampleFailure, SampleValue, merge_diagnostics,
+};
+use super::super::{
+    config::Config,
+    otap_builder::{into_otap, project_sample},
+    test_utils::decode,
+};
 use super::expansion::*;
 use super::native::NativePdh;
 use super::query::*;
+use super::worker::*;
 use super::*;
-use std::cell::RefCell;
+use super::{QueryCadence, Worker};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
 pub(super) fn counter(path: &str, name: &str) -> CounterConfig {
     CounterConfig {
@@ -382,6 +392,83 @@ impl PdhApi for FakePdh {
     }
 }
 
+struct CalculatedPdh {
+    fail_collect: Arc<AtomicBool>,
+    collect_calls: usize,
+    fail_first_collect: bool,
+}
+
+impl PdhApi for CalculatedPdh {
+    type Counter = ();
+
+    fn add(&mut self, _path: &str, _language: CounterLanguage) -> Result<Self::Counter, Error> {
+        Ok(())
+    }
+
+    fn remove(&mut self, _counter: &Self::Counter, _path: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn counter_type(&mut self, _counter: &Self::Counter, _path: &str) -> Result<u32, Error> {
+        Ok(0x2041_0500)
+    }
+
+    fn full_path(&mut self, _counter: &Self::Counter, path: &str) -> Result<String, Error> {
+        Ok(path.to_owned())
+    }
+
+    fn comparison_path(&mut self, path: &str) -> Result<String, Error> {
+        NativePdh::comparison_path_fixture(path)
+    }
+
+    fn collect(&mut self) -> Result<bool, Error> {
+        if std::mem::take(&mut self.fail_first_collect) || self.fail_collect.load(Ordering::Relaxed)
+        {
+            return Err(Error::Pdh {
+                operation: PdhOperation::CollectQueryData,
+                path: "<query>".to_owned(),
+                status: 1,
+            });
+        }
+        self.collect_calls += 1;
+        Ok(true)
+    }
+
+    fn raw(&mut self, _counter: &Self::Counter, _path: &str) -> Result<Option<RawSample>, Error> {
+        Ok(Some(RawSample {
+            second_value: i64::try_from(self.collect_calls).unwrap_or(i64::MAX) * 10,
+            multi_count: 1,
+        }))
+    }
+
+    fn formatted(
+        &mut self,
+        _counter: &Self::Counter,
+        _path: &str,
+        _format: ValueFormat,
+    ) -> Result<Option<Number>, Error> {
+        Ok(Some(Number::Double(self.collect_calls as f64)))
+    }
+
+    fn timestamp(&mut self) -> Result<i64, Error> {
+        Ok(100 + i64::try_from(self.collect_calls).unwrap_or(i64::MAX) * 10)
+    }
+
+    fn refresh_objects(&mut self) -> Result<usize, Error> {
+        Ok(0)
+    }
+
+    fn expand(&mut self, _path: &str, _budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn parse_instance(&mut self, path: &str) -> Result<InstanceIdentity, Error> {
+        Err(Error::InvalidCounterToken {
+            path: path.to_owned(),
+        })
+    }
+}
+
 fn fake_query(
     configs: Vec<CounterConfig>,
     counters: Vec<FakeCounter>,
@@ -541,3 +628,4 @@ fn temporary_template_cleanup_is_bounded_and_stop_safe() {
 
 mod query;
 mod timing;
+mod worker;

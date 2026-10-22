@@ -400,6 +400,116 @@ fn handle_for_path(state: &InvalidHandleState, path: &str) -> usize {
         .unwrap()
 }
 
+/// Scenario: An admitted wildcard fails retirement beside a healthy peer, then the query itself becomes invalid.
+/// Guarantees: Maintenance never inherits scheduled-success evidence, while the retained seed restores membership without rediscovery and preserves the logical Sum start.
+#[test]
+fn failed_wildcard_retirement_preserves_rebuild_seed() {
+    let template = r"\Process(worker*)\Operations Delta";
+    let path = r"\Process(worker)\Operations Delta";
+    let healthy = r"\Memory\Available Bytes";
+    for fail_replacement_open in [false, true] {
+        let state = invalid_handle_state(BTreeMap::from([(
+            template.to_owned(),
+            vec![path.to_owned()],
+        )]));
+        let mut config = cumulative_sum(template, "operations", "{operation}");
+        config.instance_config = InstanceConfig::Wildcard {
+            excluded_aggregation: None,
+        };
+        let opens = Cell::new(0);
+        let mut open = |configs, limit, seed: Option<&QueryRecreationSeed>| {
+            let attempt = opens.get();
+            opens.set(attempt + 1);
+            // This adapter does not model query destruction; emulate release before replacement.
+            state.borrow_mut().active.clear();
+            if fail_replacement_open && attempt == 1 {
+                return Err(Error::Pdh {
+                    operation: PdhOperation::OpenQuery,
+                    path: "<query>".to_owned(),
+                    status: 1,
+                });
+            }
+            Query::open_with_seed(
+                InvalidHandlePdh(Rc::clone(&state)),
+                configs,
+                Duration::ZERO,
+                Duration::from_secs(3600),
+                256,
+                limit,
+                seed,
+            )
+        };
+        let retry_cap = Duration::from_secs(60);
+        let mut slot = QuerySlot::open_initial(
+            vec![config, counter(healthy, "memory")],
+            retry_cap,
+            2,
+            &mut open,
+        )
+        .unwrap();
+        let handle = handle_for_path(&state.borrow(), path);
+        {
+            let mut state = state.borrow_mut();
+            let _ = state.invalid_handles.insert(handle);
+            state.cleanup_fails = true;
+            state.timestamp = 110;
+        }
+        let failed_at = Instant::now();
+        let failed_cleanup = collect_query(&mut slot, &mut open, failed_at).unwrap();
+        assert_eq!(failed_cleanup.points.len(), 1);
+        assert_eq!(failed_cleanup.points[0].path.as_ref(), healthy);
+        assert!(slot.query.is_some());
+        state.borrow_mut().collect_status = Some(PDH_INVALID_HANDLE);
+        assert!(
+            collect_query(&mut slot, &mut open, failed_at)
+                .unwrap_err()
+                .is_invalid_query()
+        );
+        state.borrow_mut().collect_status = None;
+        assert!(slot.query.is_none());
+        let backoff = collect_query(&mut slot, &mut open, failed_at).unwrap();
+        assert!(!backoff.metadata.diagnostics.any_query_collected);
+        assert!(backoff.points.is_empty());
+        assert_eq!(backoff.members.len(), 2);
+        assert!(!backoff.metadata.failures.is_empty());
+        assert_eq!(opens.get(), 1);
+        state.borrow_mut().cleanup_fails = false;
+        let mut rebuild_at = failed_at + Duration::from_secs(1);
+        if fail_replacement_open {
+            let failed = collect_query(&mut slot, &mut open, rebuild_at).unwrap();
+            assert!(!failed.metadata.diagnostics.any_query_collected);
+            assert!(failed.points.is_empty());
+            assert!(
+                failed.metadata.failures.iter().any(|failure| {
+                    failure.reason == "PdhOpenQueryW" && failure.diagnostic_only
+                })
+            );
+            rebuild_at += Duration::from_secs(1);
+        }
+        let rebuilt = collect_query(&mut slot, &mut open, rebuild_at).unwrap();
+        assert!(!rebuilt.metadata.diagnostics.any_query_collected);
+        assert!(rebuilt.points.is_empty());
+        assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_recoveries, 1);
+        state.borrow_mut().timestamp = 120;
+        let ready = collect_query(&mut slot, &mut open, rebuild_at).unwrap();
+        assert_eq!(ready.points.len(), 2);
+        assert_eq!(ready.points[0].path.as_ref(), path);
+        assert_eq!(ready.points[0].start_time_unix_nano, Some(100));
+        assert!(matches!(ready.points[0].value, SampleValue::Value(_)));
+        assert_eq!(state.borrow().expand_calls, 1);
+        assert_eq!(
+            state.borrow().add_attempts,
+            [
+                healthy.to_owned(),
+                path.to_owned(),
+                healthy.to_owned(),
+                path.to_owned()
+            ]
+        );
+        assert_eq!(state.borrow().max_active, 2);
+    }
+}
+
 /// Scenario: A wildcard lookup succeeds or fails before temporary-handle cleanup also fails.
 /// Guarantees: Healthy members survive and warnings remain once per episode; only a genuine lookup failure counts discovery failure and enables object refresh.
 #[test]
@@ -454,6 +564,66 @@ fn lookup_failure_with_pending_cleanup_preserves_discovery_classification() {
             );
         }
         assert!(state.borrow().removed.is_empty());
+    }
+}
+
+/// Scenario: Replacement priming fails either before collection or after successful collection during invalid-handle cleanup.
+/// Guarantees: Both failures produce diagnostic-only maintenance, no points or scheduled success, and no duplicated failures on the following request.
+#[test]
+fn failed_rebuild_prime_is_diagnostic_only() {
+    let path = r"\Memory\Available Bytes";
+    for fail_after_collection in [false, true] {
+        let state = invalid_handle_state(BTreeMap::new());
+        let opens = Cell::new(0);
+        let mut open = |configs, limit, seed: Option<&QueryRecreationSeed>| {
+            let attempt = opens.get();
+            opens.set(attempt + 1);
+            {
+                let mut state = state.borrow_mut();
+                state.active.clear();
+                state.collect_status = (attempt == 1 && !fail_after_collection).then_some(1);
+                state.invalidate_on_collect = attempt == 1 && fail_after_collection;
+                state.cleanup_fails = attempt == 1 && fail_after_collection;
+            }
+            Query::open_with_seed(
+                InvalidHandlePdh(Rc::clone(&state)),
+                configs,
+                Duration::ZERO,
+                Duration::from_secs(3600),
+                256,
+                limit,
+                seed,
+            )
+        };
+        let mut slot =
+            QuerySlot::open_initial(vec![counter(path, "memory")], Duration::ZERO, 1, &mut open)
+                .unwrap();
+        state.borrow_mut().collect_status = Some(PDH_INVALID_HANDLE);
+        assert!(
+            collect_query(&mut slot, &mut open, Instant::now())
+                .unwrap_err()
+                .is_invalid_query()
+        );
+        let failed_prime = collect_query(&mut slot, &mut open, Instant::now()).unwrap();
+        assert!(failed_prime.points.is_empty());
+        assert!(!failed_prime.metadata.diagnostics.any_query_collected);
+        assert!(failed_prime.metadata.diagnostics.query_pending);
+        assert!(!failed_prime.metadata.failures.is_empty());
+        assert!(
+            failed_prime
+                .metadata
+                .failures
+                .iter()
+                .all(|failure| failure.diagnostic_only)
+        );
+        state.borrow_mut().collect_status = None;
+        state.borrow_mut().invalidate_on_collect = false;
+        state.borrow_mut().cleanup_fails = false;
+        state.borrow_mut().timestamp = 120;
+        let ready = collect_query(&mut slot, &mut open, Instant::now()).unwrap();
+        assert!(ready.metadata.diagnostics.any_query_collected);
+        assert!(ready.metadata.failures.is_empty());
+        assert_eq!(ready.points.len(), 1);
     }
 }
 
@@ -2275,7 +2445,7 @@ fn exact_instance_parse_failure_preserves_value() {
     assert_eq!(sample.metadata.diagnostics.counter_add_failures, 0);
 }
 
-/// Scenario: One wildcard expands to the F6 limit of 256 direct counters and produces one sample.
+/// Scenario: One wildcard expands to the fixed limit of 256 direct counters and produces one sample.
 /// Guarantees: Sharing point identity changes no PDH work: discovery, setup, collection, reads, and timestamps remain one-for-one with native entries.
 #[test]
 fn high_cardinality_collection_preserves_native_call_counts() {
