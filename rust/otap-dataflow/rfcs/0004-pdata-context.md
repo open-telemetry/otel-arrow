@@ -121,13 +121,9 @@ I have the desires as A/B/C/G, in addition I may wish to:
 - Batch by properties of the OpenTelemetry resource
 - Partition by property of the items (e.g., metric_name) to ensure consistency.
 
-While these partitioning steps are orthogonal from context, the
-partition function must support configuration that preserves context
-entries in its output. For example, the partition processor
-configuration will support partitioning by metric name, TraceID, and
-other aspects including context entry values, so that the partition
-function produces the necessary context for the next node in the
-pipeline.
+While some of these partitioning steps are orthogonal from context, the
+partition function creates a new context for each output and preserves
+only its explicitly selected context entries from the input context.
 
 ## Configuration model
 
@@ -267,22 +263,42 @@ no presence requirement, so referenced fields and conditions still determine
 whether the composite entry is present.
 
 Each selected random value is generated once when its context is materialized
-at the receiver boundary and retained for that context's lifetime. Materialized
-values are preserved by detached context clones together with their originating
-declaration. Split or partitioned outputs therefore inherit the same random
-value; it identifies their shared context lineage and is not a unique
-per-output idempotency key.
+and retained for that context's lifetime. Materialized values are preserved
+by context clones together with the associated declarations.
 
-Materialization runs at receiver boundaries. Source changes made later within
-the same pipeline do not update an existing snapshot or make an absent
-composite present. After a topic hop, the destination receiver may materialize
-an absent composite from the source state carried into that pipeline. A
-destination plan retains an existing composite only when that declaration is
-identical. A same-named composite with different provenance is treated as
-absent, so the destination presence gate is evaluated before its value is
-materialized. Runtime projection reads use the existing logical projection
-model; general consumer bindings, optimized lookups, projector transforms, and
-propagation remain separate integration work.
+#### Context materialization
+
+Materialization is performed through new-context bindings. Several different
+forms of new-context binding will be built:
+
+- Receiver bindings build new context in stages, gathering transport
+  headers authorized identity, and network-info fields before
+  constructing the new context object. The context is materialized
+  (e.g., randomness generated) while creating the new context.
+- Processorbindings build new context by projecting the input contexts
+  into output contexts. The binding first projects one or more input
+  contexts, then materializes a single new output context.
+  
+  
+
+
+Changing source state does not mutate an existing materialized snapshot;
+constructing a new output context evaluates composite presence and values
+from the sources supplied to that constructor. After a topic hop, the
+destination receiver may materialize an absent composite from the source state
+carried into that pipeline. A destination plan retains an existing composite
+only when that declaration is identical. A same-named composite with different
+provenance is treated as absent, so the destination presence gate is evaluated
+before its value is materialized. General consumer bindings, optimized
+lookups, projector constructors, and propagation remain separate integration
+work; these construction semantics are requirements of the design, not a
+claim that every processor currently implements them.
+
+A random value can serve as a delivery idempotency key when it is generated
+for the final delivery unit and persisted with that unit. Retries and replay
+must retain that value rather than construct a new delivery context. Any
+subsequent split or regrouping creates new delivery units and must not reuse
+the old delivery key for different payloads.
 
 UUID v7 values expose their generation time and are not secrets. They must not
 be used as authentication tokens, secret values, or cryptographic anti-replay
@@ -541,9 +557,72 @@ impl PartitionProcessor {
 ```
 
 Projector bindings fall into categories such as 1:1, 1:N, N:1, N:M,
-etc. Specific binding features will dictate which context entries
-survive into the output context and which are dropped during
-processing.
+etc. Their construction contract must explicitly identify the input
+entries preserved as output sources. Splitting, partitioning, and
+batching construct new contexts; they must not implement this contract
+by cloning an input context wholesale. For partitioned output, only
+the partition keys are preserved. The bound constructor evaluates the
+required output composites from those sources, rather than copying
+input composite snapshots.
+
+#### Example: constructing batch output context
+
+Consider a batch processor partitioned by `xyz`, with an output
+composite containing `xyz` and randomness. The following proposed
+configuration uses the same partition selector form as above:
+
+```yaml
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: [x-xyz]
+          store_as: xyz
+  context:
+    entries:
+      delivery:
+        - type: transport_header
+          name: xyz
+        - type: randomness
+          name: id
+          value: uuid7
+    required_out:
+      - node: batch
+        entry: delivery
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          batch:
+            type: processor:batch
+            config:
+              partition_by:
+                - source:
+                    entry: xyz
+                  with:
+                    otap:
+                      min_size: 1000
+                      sizer: items
+```
+
+The batch processor must bind a context constructor whose preserved
+source is the partition key `xyz`. The engine binds the required
+`delivery` composite to that constructor. For each emitted batch, the
+processor supplies the partition's typed `xyz` value and constructs a
+new output context. This evaluates `delivery` from `xyz` and generates
+a new `delivery:id`; it does not copy an incoming `delivery` snapshot
+or its randomness. Other incoming entries are absent unless they are
+also partition keys. If an output composite requires an unavailable
+source or its conditions do not match, it is absent; construction must
+not bypass its presence requirements.
+
+For example, two batches emitted for `xyz=acme` each retain `xyz=acme`,
+but receive independently generated `delivery:id` values. This holds
+whether they combine multiple inputs or split one input into multiple
+output batches. The processor constructs the context once per emitted
+batch, not once per long-lived partition. Persisting and retrying one
+of those batches preserves its already constructed identifier.
 
 Projector binding users must coordinate with the engine memory
 controller when they retain work base on Pdata context, and nodes that

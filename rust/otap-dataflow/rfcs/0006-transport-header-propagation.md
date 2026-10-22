@@ -36,7 +36,7 @@ We will extend propagation as follows:
 
 - Outbound HTTP and gRPC transport propagation will be extended to
   support composite entries as a whole or by list of members.
-- Topic exporter and receiver will be extended with fine control 
+- Topic exporter and receiver will be extended with fine control
   over contexts as they cross between pipelines.
 - The durable buffer processor will be extended with control over
   contexts that are stored and retrieved on the disk.
@@ -44,7 +44,7 @@ We will extend propagation as follows:
 ### Baseline
 
 The current state this document reflects is defined by existing
-transport headers policy for capture and propagation. Here is an 
+transport headers policy for capture and propagation. Here is an
 example:
 
 ```yaml
@@ -78,12 +78,12 @@ controls cover `sensitive` and value kind, binary or text.
 Header propagation consists of `default` settings and a list of
 `overrides`. The default settings include the selector:
 
-- `selector`: what to select 
+- `selector`: what to select
   - `type`: type of selection including `all_captured`, `none`, or `named`
   - `named`: list of transport header names, only the `named` selector type
 - `action`: whether to `propagate` or `drop`
 - `name`: can be `preserve` for the original header name (including
-  capitaliztaion) or `stored_name` for the name configured by `store_as`.
+  capitalization) or `stored_name` for the name configured by `store_as`.
 
 The overrides section features the same `action` and `name`
 clauses. Unlike defaults, overrides include a `match` section with a
@@ -143,92 +143,136 @@ policies:
           value: primary
 ```
 
-### Propagation limited to one selector
+### Extending defaults and overrides
 
-Propagation rules `default` and `override` apply to each captured
-header, the first matching override wins. By design, current propagation
-policies apply only to transport header names. 
+This proposal retains the existing `default` and ordered `overrides`
+form. It extends source selection and output naming without introducing
+a separate `rules` form or requiring existing configurations to migrate.
 
-This document proposes to leave the existing `default` and `override`
-policies in place while migrating to a new form of rule-based selector
-list, `rules`:
+The existing `match.stored_names` continues to match primitive transport
+headers by stored name, case-insensitively. Overrides may instead use
+`match.selector`, with the same selector syntax as `default.selector`,
+to select other domains, composites, or composite members. An override
+must specify exactly one of `match.stored_names` and `match.selector`.
 
+For each selected source entry or composite member, the first matching
+override determines the action and naming. Both `propagate` and `drop`
+stop further evaluation for that source, not for unrelated sources.
+When no override matches, `default.action` applies only if
+`default.selector` selects the source; otherwise it is not propagated.
+An override may propagate a source even when the default selector is
+`none`. An omitted override action remains `propagate`; omitted naming
+and `on_error` settings inherit from the default.
+
+The existing `name: preserve` and `name: stored_name` remain unchanged.
+Two additional naming strategies are proposed, usable in defaults and
+overrides:
+
+- `name: literal`, with a sibling `literal` field specifying the output
+  header name.
+- `name: fields`, with a sibling `fields` mapping from composite member
+  names to output header names.
+
+The `literal` and `fields` settings are valid only with their respective
+strategies. Inheriting a naming strategy also inherits its associated
+settings. `preserve` requires an original transport header name; sources
+without one must use another strategy. For composite members,
+`stored_name` uses the configured member name.
+
+For example, preserve captured headers by default, rename two captured
+headers using the existing match form, and explicitly propagate an
+identity field and a randomness member:
 
 ```yaml
 header_propagation:
-  rules:
-    # propagate transport headers by stored_name 
-    # workspace_id and environment.
-    - selector:
-        type: named
-        named:
-          - workspace_id
-          - environment
+  default:
+    selector:
+      type: all_captured
+    action: propagate
+    name: preserve
+  overrides:
+    - match:
+        stored_names: [workspace_id, environment]
       action: propagate
-      header: 
-        name: stored_name
+      name: stored_name
 
-    # propagate authorized identity using x-customer-id
-    - selector:
-        type: authorized_identity
-        named:
-          - customer_id
+    - match:
+        selector:
+          type: authorized_identity
+          named: [customer_id]
       action: propagate
-      header:
-        name: literal
-        literal: x-customer-id
+      name: literal
+      literal: x-customer-id
 
-    # propagate a randomness value as x-idempotency
-    - selector:
-        type: named
-        named:
-          - delivery:id
+    - match:
+        selector:
+          type: named
+          named: ["delivery:id"]
       action: propagate
-      header:
-        name: literal
-        literal: x-idempotency
-
-    # propagate all captured headers
-    - selector:
-        type: all_captured
-      action: propagate
-      header: 
-        name: preserve
+      name: literal
+      literal: x-idempotency
 ```
+
+Here, `workspace_id` and `environment` are emitted using stored names,
+not also their original names. Other captured headers use the default.
+A matching `drop` override would exclude its source even though the
+default selects all captured headers.
 
 ### Proposed selectors
 
 New selectors support the missing operations:
 
 <!-- markdownlint-disable MD013 -->
-| Selector                                            | Meaning                                                                                       |
-|-----------------------------------------------------|-----------------------------------------------------------------------------------------------|
-| `{type: all_captured}`                              | _Existing:_ All captured transport headers are propagated.                                    |
-| `{type: named, named: [workspace_id]}`              | _Existing:_ Select specific transport headers by unqualified name.                            |
-| `{type: named, named: ["product_user:workspace"]}`  | _Extend:_ Only the transport header domain is supported, extend to match any composite entry. |
-| `{type: authorized_identity, named: [customer_id]}` | _New:_ Export an authorized-identity field.                                                   |
+| Selector | Meaning |
+| --- | --- |
+| `{type: all_captured}` | _Existing:_ Select all captured transport headers. |
+| `{type: none}` | _Existing:_ Select no sources; overrides may still select sources. |
+| `{type: named, named: [workspace_id]}` | _Existing:_ Select transport headers by stored name. |
+| `{type: named, named: ["product_user:workspace"]}` | _Extend:_ Select a composite member from any domain. |
+| `{type: named, named: [product_user]}` | _Extend:_ Select a whole composite. |
+| `{type: authorized_identity, named: [customer_id]}` | _New:_ Select an authorized-identity field. |
 
-The selection logic is: 
+These selectors are available in both `default.selector` and
+`overrides[].match.selector`. The selection logic is:
 
 - `all_captured` applies only to transport headers
-- `named` applies to transport headers or whole composites (unqualified name) or composite entries (qualified names). This uses the stored name (all varieties) or preserved name (transport headers only).
-- Other names refer to non-transport-header primtive domains, e.g., `authorized_identity` or `network_info`.
+- `named` applies to transport headers or whole composites (unqualified name) or composite members (qualified names). Transport headers are selected by stored name; original wire names are used by `name: preserve`, not as an additional matching namespace.
+- Other types select primitive domains explicitly, e.g., `authorized_identity` or `network_info`.
 
 ### Whole composite and selected fields
 
-The whole-composite rule emits multiple n headers, only when `product_user` is present:
+The whole-composite override emits multiple headers, only when
+`product_user` is present. It uses the same `named` selector and
+`name` field as other propagation settings:
 
 ```yaml
 header_propagation:
-  rules:
-    - selector:
-        type: composite
-        name: product_user
-      header_name:
-        fields:
-          customer: x-customer-id
-          workspace: x-workspace-id
+  default:
+    selector:
+      type: none
+  overrides:
+    - match:
+        selector:
+          type: named
+          named: [product_user]
+      action: propagate
+      name: fields
+      fields:
+        customer: x-customer-id
+        workspace: x-workspace-id
 ```
+
+The `fields` strategy selects the listed value-bearing members of the
+selected composite; unlisted members are not selected by that override.
+Listing only `customer` would propagate only that member. Field names
+must exist in the selected composite; invalid mappings are configuration
+errors. Selecting a member never bypasses the enclosing composite's
+presence conditions.
+
+A whole-composite selection and a qualified selection of one of its
+members overlap for that member, so the first matching override wins.
+A primitive source and a member referencing it remain distinct context
+references; selecting one does not implicitly select the other.
 
 ## Context transfer
 
@@ -238,11 +282,11 @@ and the durable buffer processor. These cases will declare Pdata Context
 transfer bindings during registration:
 
 - Export transfer: these bindings define a function from Pdata Context
-  to a flat namespace of Context entry. Each entry is associated with 
+  to a flat namespace of Context entry. Each entry is associated with
   the a primitive kind. Composite entries are not exportable.
 - Import transfer: these bindings define a function from the flat list
   of name and domain values.
-  
+
 As an example, the following topic declares a Pdata Context transfer
 with one entry from each of the five current domains.
 
@@ -286,7 +330,7 @@ config:
       workspace:
         selector: {type: named, named: ["product_user:workspace"]}
       source_addr:
-        selector: {type: named, named: ["source_addr"]}
+        selector: {type: network_info, named: [peer_socket_addr]}
       route:
         selector: {type: named, named: ["delivery:route"]}
 ```
@@ -302,18 +346,18 @@ different types. For example:
 ```yaml
 # export a constant or authorized identity into a transport header
 dest_name:
-  selector: 
+  selector:
     type: named
     named:
       - "product:dest_name"               # authorized_identity
       - "internal_normal:destination"     # constant
-      - "internal_alternate:destination"  # constant 
+      - "internal_alternate:destination"  # constant
 ```
 
 ### Context import
 
 Consumers of the transfer context declare a mapping from transfer
-names to name using `store_as` clauses. 
+names to name using `store_as` clauses.
 
 ```yaml
 type: receiver:topic
@@ -400,7 +444,6 @@ config:
 
 They can be imported
 
-
 ```yaml
 type: receiver:topic
 config:
@@ -414,13 +457,11 @@ and propagated:
 
 ```yaml
 header_propagation:
-  rules:
-    # proagate all transport headers in the context
-    - selector:
-        type: all_captured
-      action: propagate
-      header: 
-        name: preserve
+  default:
+    selector:
+      type: all_captured
+    action: propagate
+    name: preserve
 ```
 
 ## Related context
