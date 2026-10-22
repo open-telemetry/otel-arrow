@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Reduce CPU usage when converting RFC 3164 syslog messages, including wrapped CEF, to telemetry records.
+note: Reduce CPU usage when receiving syslog messages and converting RFC 3164 timestamps, including wrapped CEF.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3452]
@@ -18,4 +18,4 @@ issues: [3452]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Common timestamps use a fixed-format parser without timestamp caching. A fallback preserves previously accepted forms; receipt-year, timezone, and DST behavior are unchanged.
+subtext: Use fixed-format timestamp parsing and avoid unnecessary local-time conversion when capturing receipt years, without timestamp caching. Existing timestamp, receipt-year, timezone, and DST behavior is preserved.
