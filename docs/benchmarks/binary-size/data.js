@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792649106902,
+  "lastUpdate": 1792691110882,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -69819,6 +69819,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 105.83,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "03bbb0215d89c25111fafc9c70c7119c7209726f",
+          "message": "feat(query-engine): referenced fields are validated for the signal type (#4346)\n\n# Change summary\n\nAdds validation into OTAP query-engine planner to check that the field\nreferenced in some location in the OPL query is valid for the signal\ntype of the pipeline.\n```kql\nlogs | where name == \"hello\" // <-- invalid, no field called \"name\" for logs\nmetrics | set event_name = \"hello\" // <-- invalid, no field \"event_name\" on metrics\n```\n\nWhen a pipeline processes mixed signal types, the fields that are\nallowed to be referenced is the _intersection_ of the fields that are\nvalid for the various signal type (e.g. attributes, schema_url,\nresource/scope, etc.)\n\n```kql\nsignals \n| where attributes[\"x\"] == \"y\" or instrumentation_scope.name = \"z\" // valid\n| set event_name = \"foo\" // invalid, this field only exists on Logs\n```\n\nThe case of \"smart casts\" in the conditional predicate are also handled.\n```kql\nsignals |\nif (is Log) {\n   // here we can reference Log fields\n   set event_name = \"hello\"\n}\n```\n\nThis also handles metric data point types - For example:\n\n```kql\nmetrics | apply data_points {\n  // only fields referenced must be present on all data point types\n  where flags == 0  | // <- valid\n  where max == 10 | // <- invalid - this field only exists on \"histogram\"\n}\n```\n\nThis also takes into account the source when referencing a specific type\nof metric:\n```kql\nhistograms |\n // here only Metric fields are valid\n set unit = \"cm\"\n apply data_points {\n   // here we know the type is histogram data point\n   where max == 5 // valid field\n }\n ```\n \nNote: we don't yet support \"smart cast\" on data point types, but in the future we will support this for field validation in situations like:\n```kql\nmetrics | apply data_points {\n  if (is HistogramDataPoint) {\n   // allow use of histogram data point fields here\n   where max > 0\n  }\n}\n``` \n**Important breaking changes:** \n\n1. In both transform processor and partition processor, the fields for the signal type are now validated. This means programs referencing a field invalid for the type, which were previously accepted, are now considered invalid and produce an error.\n\n2. Partition Processor accepts signal type config\n\nBecause the OPL expression now validates the field for the signal type, this means that the partition processor, in order to correctly validate the configured OPL expression, the signal type must be known. The processor now accepts the `signal_type`optional config param which must be `Logs`, `Traces`, or `Metrics`. \n\nIf this is not passed, fields specific to only one signal type (example: `event_name`, which is valid only for Logs), cannot be used and only fields valid for all signal types are allowed in the OPL expression.\n\nWhen this is passed, all batches containing signals of type not of the configured signal_type will be treated as passthrough (forwarded unmodified).\n\nI understand this might be controversial, so open to suggestions if this isn't how this processor should work!\n \n **Inventory of code changes**\n\n - consolidates the duplicate SUM/COUNT field name constants in in pdata::schema::const\n - adds the aforementioned signal_type config parameter and some tests for its' functionality and deserialization\n - adds logic in the expression and pipeline planners and the assign pipeline stage to validate the field for the signal type\n   - including logic to keep track of smart cast\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4070\n\n## Validation\n\nunit tests\n\n<!--How did you confirm your change has the intended effect?-->\n\n## User-facing changes\n\nYes there are breaking changes to what OPL/KQL programs/expressions transform processor and partition processor accept as valid. There is also a new config option for partition processor which for the signal type which changes the behaviour.\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is needed,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-10-22T16:40:13Z",
+          "tree_id": "a164dfc5ccda029e33dacff3ea0bb10252a496c1",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/03bbb0215d89c25111fafc9c70c7119c7209726f"
+        },
+        "date": 1792691095106,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
             "unit": "MB"
           }
         ]
