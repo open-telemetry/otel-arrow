@@ -7,9 +7,9 @@ use crate::{
     FramingProfileParams, FramingResume, Locator, MaxLogSizeBehavior, MultilineMode, RegisterFile,
     UpdateProgress,
 };
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
@@ -39,11 +39,11 @@ fn config() -> StoreConfig {
     }
 }
 
-fn root() -> (tempfile::TempDir, File) {
+fn root() -> (tempfile::TempDir, StateRoot) {
     let dir = tempfile::tempdir().unwrap();
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let file = File::open(dir.path()).unwrap();
-    (dir, file)
+    (dir, StateRoot::from_borrowed_fd(file.as_fd()).unwrap())
 }
 
 fn namespace(root: &Path) -> PathBuf {
@@ -51,8 +51,8 @@ fn namespace(root: &Path) -> PathBuf {
         .join(filesystem::namespace_component(ID).unwrap())
 }
 
-fn store(root: &File) -> CheckpointStore {
-    CheckpointStore::open(root.as_fd(), ID, config()).unwrap()
+fn store(root: &StateRoot) -> CheckpointStore {
+    CheckpointStore::open(root, ID, config()).unwrap()
 }
 
 fn registration() -> Operation {
@@ -172,10 +172,10 @@ fn same_process_lock_and_namespace_isolation() {
     let (_dir, root) = root();
     let first = store(&root);
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::Locked)
     ));
-    let other = CheckpointStore::open(root.as_fd(), "applogs", config()).unwrap();
+    let other = CheckpointStore::open(&root, "applogs", config()).unwrap();
     drop(other);
     drop(first);
     let _reopened = store(&root);
@@ -216,9 +216,10 @@ fn lock_child() {
     let Some(path) = std::env::var_os("FILELOG_LOCK_TEST_ROOT") else {
         return;
     };
-    let root = File::open(path).unwrap();
+    let file = File::open(path).unwrap();
+    let root = StateRoot::from_borrowed_fd(file.as_fd()).unwrap();
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::Locked)
     ));
 }
@@ -288,7 +289,7 @@ fn complete_corruption_is_unchanged() {
         append_bytes(&path, &frame);
         let before = fs::read(&path).unwrap();
         assert!(matches!(
-            CheckpointStore::open(root.as_fd(), ID, config()),
+            CheckpointStore::open(&root, ID, config()),
             Err(StoreError::Decode(_) | StoreError::Replay(ReplayError::Decode(_)))
         ));
         assert_eq!(fs::read(&path).unwrap(), before);
@@ -306,7 +307,7 @@ fn incomplete_snapshot_is_not_tail_repair() {
     for cut in [0, 23, 24, 80, 107] {
         fs::write(&path, &prefix[..cut]).unwrap();
         assert!(matches!(
-            CheckpointStore::open(root.as_fd(), ID, config()),
+            CheckpointStore::open(&root, ID, config()),
             Err(StoreError::AuthoritativeGenerationIncomplete)
         ));
         assert_eq!(fs::read(&path).unwrap(), prefix[..cut]);
@@ -329,7 +330,7 @@ fn recovery_barrier_precedes_mutations() {
         ..Io::default()
     };
     assert!(matches!(
-        CheckpointStore::open_with_io(root.as_fd(), ID, config(), fault),
+        CheckpointStore::open_with_io(&root, ID, config(), fault),
         Err(StoreError::SyncFailed {
             operation: "recovery directory sync",
             ..
@@ -356,7 +357,7 @@ fn publication_barrier_errors_are_terminal() {
             ..Io::default()
         };
         assert!(matches!(
-            CheckpointStore::open_with_io(root.as_fd(), ID, config(), fault),
+            CheckpointStore::open_with_io(&root, ID, config(), fault),
             Err(StoreError::SyncFailed { operation: failed, .. }) if failed == operation
         ));
     }
@@ -372,7 +373,7 @@ fn missing_authority_with_compaction_fails_closed() {
     fs::remove_file(path.join(DB)).unwrap();
     artifact(&path.join(COMPACT), &encode_checkpoint(8, ID, &[]).unwrap());
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::AuthoritativeGenerationMissing)
     ));
     assert!(!path.join(DB).exists());
@@ -388,7 +389,7 @@ fn interrupted_creation_write() {
         fail_write_after: Some(40),
         ..Io::default()
     };
-    assert!(CheckpointStore::open_with_io(root.as_fd(), ID, config(), fault).is_err());
+    assert!(CheckpointStore::open_with_io(&root, ID, config(), fault).is_err());
     let recovered = store(&root);
     assert!(recovered.recovery_report().interrupted_creation);
     assert!(recovered.recovery_report().cleaned_temporary);
@@ -414,7 +415,7 @@ fn failed_writes_resolve_without_duplicate_frames() {
             Err(StoreError::RecoveryRequired)
         ));
         assert!(matches!(
-            CheckpointStore::open(root.as_fd(), ID, config()),
+            CheckpointStore::open(&root, ID, config()),
             Err(StoreError::Locked)
         ));
         assert_eq!(
@@ -480,7 +481,7 @@ fn append_sync_failure_permanently_poisons_store() {
     assert_sync_poisoned(&mut store, 0);
     assert_eq!(fs::read(&path).unwrap(), bytes);
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::Locked)
     ));
 }
@@ -564,7 +565,7 @@ fn wal_count_admission() {
         max_wal_transactions: 1,
         ..config()
     };
-    let mut store = CheckpointStore::open(root.as_fd(), ID, config).unwrap();
+    let mut store = CheckpointStore::open(&root, ID, config).unwrap();
     let _ = store
         .append(vec![registration()], Durability::Sync)
         .unwrap();
@@ -584,7 +585,7 @@ fn wal_count_admission() {
         })
         .unwrap(),
     );
-    let mut recovered = CheckpointStore::open(root.as_fd(), ID, config).unwrap();
+    let mut recovered = CheckpointStore::open(&root, ID, config).unwrap();
     assert_eq!(recovered.state().unwrap().last_sequence(), 2);
     assert!(matches!(
         recovered.append(vec![progress(10, 20)], Durability::Sync),
@@ -600,7 +601,7 @@ fn checked_resource_admission() {
     let mut config = config();
     config.replay.max_snapshot_bytes = u64::MAX;
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config),
+        CheckpointStore::open(&root, ID, config),
         Err(StoreError::InvalidLimits {
             max_snapshot_bytes: u64::MAX,
             ..
@@ -632,7 +633,7 @@ fn untrusted_artifacts_fail_closed() {
             _ => unreachable!(),
         }
         assert!(
-            CheckpointStore::open(root.as_fd(), ID, config()).is_err(),
+            CheckpointStore::open(&root, ID, config()).is_err(),
             "{kind}"
         );
         assert!(path.join(DB).exists());
@@ -646,7 +647,7 @@ fn symlink_ancestor_rejected() {
     let (dir, root) = root();
     let other = tempfile::tempdir().unwrap();
     symlink(other.path(), dir.path().join("filelog")).unwrap();
-    assert!(CheckpointStore::open(root.as_fd(), ID, config()).is_err());
+    assert!(CheckpointStore::open(&root, ID, config()).is_err());
     assert_eq!(fs::read_dir(other.path()).unwrap().count(), 0);
 }
 
@@ -683,7 +684,7 @@ fn namespace_digest_mismatch_is_preserved() {
     let wrong = encode_checkpoint(0, "other", &[]).unwrap();
     fs::write(&path, &wrong).unwrap();
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::Replay(ReplayError::Decode(
             DecodeError::NamespaceMismatch { .. }
         )))
@@ -733,7 +734,7 @@ fn initial_publication_never_replaces_authority() {
     let path = namespace(dir.path());
     let original = fs::read(path.join(DB)).unwrap();
     artifact(&path.join(CREATE), &encode_checkpoint(99, ID, &[]).unwrap());
-    assert!(store.namespace.publish_initial().is_err());
+    assert!(store.namespace.publish_no_replace().is_err());
     assert_eq!(fs::read(path.join(DB)).unwrap(), original);
     assert!(path.join(CREATE).exists());
 }
@@ -819,7 +820,7 @@ fn snapshot_header_budget_precedes_allocation() {
     bytes[20..24].copy_from_slice(&crc.to_be_bytes());
     fs::write(&path, &bytes).unwrap();
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::Decode(DecodeError::LengthExceedsMaximum { .. }))
     ));
     assert_eq!(fs::read(path).unwrap(), bytes);
@@ -839,7 +840,7 @@ fn cleanup_sync_failure_is_terminal() {
     };
     let before = fs::read(path.join(DB)).unwrap();
     assert!(matches!(
-        CheckpointStore::open_with_io(root.as_fd(), ID, config(), fault),
+        CheckpointStore::open_with_io(&root, ID, config(), fault),
         Err(StoreError::SyncFailed {
             operation: "cleanup directory sync",
             ..
@@ -896,7 +897,7 @@ fn recovery_enforces_hard_file_ceiling() {
         .set_len(MAX_BYTES + 1)
         .unwrap();
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::RecoveryLimit(_))
     ));
     assert_eq!(fs::metadata(path).unwrap().len(), MAX_BYTES + 1);
@@ -1002,7 +1003,7 @@ fn regular_artifact_special_bits_still_rejected() {
     )
     .unwrap();
     assert!(matches!(
-        CheckpointStore::open(root.as_fd(), ID, config()),
+        CheckpointStore::open(&root, ID, config()),
         Err(StoreError::Untrusted(_))
     ));
 }
@@ -1014,14 +1015,14 @@ fn interrupted_publication_without_sync_error_recovers() {
     for published in [false, true] {
         let (_dir, root) = root();
         let mut io = Io::default();
-        let namespace = Namespace::open(root.as_fd(), ID, &mut io).unwrap();
+        let namespace = Namespace::open(&root, ID, &mut io).unwrap();
         let prefix = encode_checkpoint(0, ID, &[]).unwrap();
         let mut file = namespace.create(CREATE).unwrap();
         file.write_all(&prefix).unwrap();
         if published {
             file.sync_all().unwrap();
             drop(file);
-            namespace.publish_initial().unwrap();
+            namespace.publish_no_replace().unwrap();
             // Stop before the directory barrier, without manufacturing SyncFailed.
         } else {
             // Stop before the creation-file barrier, also without a reported error.
@@ -1182,7 +1183,7 @@ fn transaction_threshold_bounds_admitted_wal_bytes() {
         max_wal_transactions: 1,
         ..config()
     };
-    let mut store = CheckpointStore::open(root.as_fd(), ID, limits).unwrap();
+    let mut store = CheckpointStore::open(&root, ID, limits).unwrap();
     assert_eq!(store.config.max_wal_bytes, MAX_BYTES);
     assert_eq!(store.config.max_wal_transactions, 1);
     let _ = store
@@ -1327,7 +1328,7 @@ fn repeated_pending_write_failures_retain_attempt_and_lock() {
         ));
         assert!(matches!(store.sync(), Err(StoreError::RecoveryRequired)));
         assert!(matches!(
-            CheckpointStore::open(root.as_fd(), ID, config()),
+            CheckpointStore::open(&root, ID, config()),
             Err(StoreError::Locked)
         ));
         let mut partial = prefix.clone();
@@ -1438,4 +1439,143 @@ fn pending_recovery_rejects_incomplete_accepted_prefix() {
     assert_eq!(store.synced_sequence(), 2);
     assert_eq!(fs::read(path).unwrap(), bytes);
     assert!(matches!(store.state(), Err(StoreError::AuthorityChanged)));
+}
+
+/// Scenario: The caller closes its descriptor, drops the root capability, and renames the opened root.
+/// Guarantees: The capability and store each retain ownership without reopening the root pathname.
+#[test]
+fn root_and_store_own_their_handles() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_path = dir.path().join("root");
+    fs::create_dir(&root_path).unwrap();
+    fs::set_permissions(&root_path, fs::Permissions::from_mode(0o700)).unwrap();
+    let original = File::open(&root_path).unwrap();
+    let root = StateRoot::from_borrowed_fd(original.as_fd()).unwrap();
+    drop(original);
+    let mut store = store(&root);
+    drop(root);
+    fs::rename(&root_path, dir.path().join("moved-root")).unwrap();
+    assert!(!root_path.exists());
+    let _ = store
+        .append(vec![registration()], Durability::Sync)
+        .unwrap();
+    assert_eq!(store.state().unwrap().last_sequence(), 1);
+    store.sync().unwrap();
+}
+
+/// Scenario: A root capability is constructed from a regular file or an overly permissive directory.
+/// Guarantees: Invalid roots are rejected before namespace creation, without repairing permissions.
+#[test]
+fn root_capability_rejects_untrusted_handles() {
+    let file = tempfile::tempfile().unwrap();
+    assert!(matches!(
+        StateRoot::from_borrowed_fd(file.as_fd()),
+        Err(StoreError::Untrusted(_))
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o750)).unwrap();
+    let file = File::open(dir.path()).unwrap();
+    assert!(matches!(
+        StateRoot::from_borrowed_fd(file.as_fd()),
+        Err(StoreError::Untrusted(_))
+    ));
+    assert!(!dir.path().join("filelog").exists());
+    assert_eq!(
+        fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
+}
+
+/// Scenario: Root permissions change after capability construction but before namespace opening.
+/// Guarantees: Each open revalidates the held root and rejects the change before creating artifacts.
+#[test]
+fn root_capability_is_revalidated_on_open() {
+    let (dir, root) = root();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o750)).unwrap();
+    assert!(matches!(
+        CheckpointStore::open(&root, ID, config()),
+        Err(StoreError::Untrusted(_))
+    ));
+    assert!(!dir.path().join("filelog").exists());
+}
+
+/// Scenario: Recovery-style reads and seeks leave the active handle inside the immutable prefix.
+/// Guarantees: Subsequent WAL writes append at EOF, preserve accepted bytes, and replay exactly once.
+#[test]
+fn append_is_independent_of_recovery_read_cursor() {
+    let (dir, root) = root();
+    let mut store = store(&root);
+    let _ = store
+        .append(vec![registration()], Durability::Sync)
+        .unwrap();
+    let path = namespace(dir.path()).join(DB);
+    let accepted = fs::read(&path).unwrap();
+    let _ = store.recovered.file.seek(SeekFrom::Start(0)).unwrap();
+    let mut header = [0; CHECKPOINT_HEADER_BYTES];
+    store.recovered.file.read_exact(&mut header).unwrap();
+    assert_eq!(header, accepted[..CHECKPOINT_HEADER_BYTES]);
+    let _ = store
+        .append(vec![progress(0, 10)], Durability::Sync)
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap()[..accepted.len()], accepted);
+    drop(store);
+    let reopened = self::store(&root);
+    assert_eq!(reopened.state().unwrap().last_sequence(), 2);
+    assert_eq!(
+        reopened
+            .state()
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .committed_offset,
+        10
+    );
+}
+
+/// Scenario: A trusted directory is supplied through a Linux O_PATH descriptor.
+/// Guarantees: Construction reports caller misconfiguration before creating artifacts or attempting a sync.
+#[test]
+fn root_capability_rejects_path_only_handles() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let descriptor = nix::fcntl::open(
+        dir.path(),
+        nix::fcntl::OFlag::O_PATH | nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )
+    .unwrap();
+    assert!(matches!(
+        StateRoot::from_borrowed_fd(descriptor.as_fd()),
+        Err(StoreError::InvalidConfig(_))
+    ));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+/// Scenario: Discovery requests the store's namespace identity, then its directory is renamed.
+/// Guarantees: The getter identifies only the opened namespace, exposes no handle, and rejects stale ancestry.
+#[test]
+fn namespace_locator_is_narrow_and_revalidated() {
+    use std::os::unix::fs::MetadataExt;
+    let (dir, root) = root();
+    let store = store(&root);
+    let path = namespace(dir.path());
+    let metadata = fs::metadata(&path).unwrap();
+    assert_eq!(
+        store.namespace_locator().unwrap(),
+        Locator::PosixDevIno {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }
+    );
+    let root_metadata = fs::metadata(dir.path()).unwrap();
+    assert_ne!(
+        store.namespace_locator().unwrap(),
+        Locator::PosixDevIno {
+            dev: root_metadata.dev(),
+            ino: root_metadata.ino(),
+        }
+    );
+    fs::rename(&path, path.with_extension("moved")).unwrap();
+    assert!(store.namespace_locator().is_err());
 }

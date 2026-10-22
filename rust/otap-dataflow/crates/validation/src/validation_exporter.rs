@@ -27,10 +27,10 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::TryFromWithOptions;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, PdataEncoding};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry::otel_error;
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -251,8 +251,10 @@ impl Exporter<OtapPdata> for ValidationExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: ExporterInbox<OtapPdata>,
-        _effect_handler: EffectHandler<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let encoding_plan =
+            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?;
         let mut time = Instant::now();
         let mut last_message_time = Instant::now();
         loop {
@@ -280,14 +282,22 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     last_message_time = Instant::now();
                     self.metrics.finished.set(0);
                     let time_elapsed = time.elapsed();
-                    let (context, payload) = pdata.into_parts();
+                    let (context, mut payload) = pdata.into_parts();
                     let source_node = context.source_node();
                     let transport_headers = context
                         .transport_headers()
                         .map(|headers| headers.to_transport_headers());
-                    let msg = OtlpProtoBytes::try_from_with_default(payload)
+                    let signal = payload.signal_type();
+                    let msg = effect_handler
+                        .encode_owned(&mut payload, &encoding_plan)
+                        .await
                         .ok()
-                        .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
+                        .and_then(|bytes| {
+                            OtlpProtoMessage::try_from(OtlpProtoBytes::new_from_bytes(
+                                signal, bytes,
+                            ))
+                            .ok()
+                        });
 
                     if let Some(msg) = msg {
                         if let Some(node_index) = source_node {

@@ -44,7 +44,8 @@ the version 1 byte format remains compatible.
 This crate handles checkpoint values, bytes, in-memory replay, and Linux
 namespace storage. The [Linux store](docs/store.md) adds exclusive ownership,
 first publication, bounded recovery, WAL append, and synchronization. It accepts
-a borrowed engine-provisioned directory handle without depending on the engine.
+a crate-owned `StateRoot` capability constructed from a borrowed, provisioned
+Linux directory descriptor, without depending on the engine.
 
 Compaction, retention, receiver integration, and administrative workflows are
 outside this implementation. Reaching a WAL limit returns

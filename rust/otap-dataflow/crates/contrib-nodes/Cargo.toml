@@ -45,7 +45,11 @@ base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
+tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
@@ -86,6 +90,7 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
@@ -146,10 +151,13 @@ kafka = [
 ]
 
 # Receivers.
-# Plaintext PostgreSQL is development-only and explicitly opt-in.
+# PostgreSQL is explicitly opt-in.
 postgresql = [
     "dep:otel-arrow-dfe-scraper",
     "dep:tokio-postgres",
+    "dep:tokio-postgres-rustls",
+    "dep:rustls",
+    "dep:rustls-pki-types",
     "dep:sqlparser",
     "dep:chrono",
     "dep:secrecy",
@@ -166,7 +174,7 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
-# Independently opt-in preparation only; no SQL Server runtime is registered yet.
+# Independently opt-in adapter; the production connector and factory are deferred.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
     "dep:sqlparser",
@@ -174,6 +182,7 @@ sql-server = [
     "dep:chrono",
     "dep:humantime-serde",
     "dep:secrecy",
+    "dep:tiberius",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
@@ -186,6 +195,7 @@ windows-event-forwarding = [
     "uuid/v5",
     "dep:url",
     "dep:humantime-serde",
+    "dep:x509-parser",
 ]
 user-events = [
     "dep:base64",
@@ -280,14 +290,17 @@ otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-test-tls-certs.workspace = true
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["core-nodes"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
+rcgen.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::transport_headers::{TransportHeaders, TransportHeadersData};
-use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
+use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
 use otel_arrow_dfe_engine::context_declaration::{
@@ -1196,12 +1196,6 @@ impl OtapPdata {
         self.payload.signal_type()
     }
 
-    /// Returns the format of signal represented by this `OtapPdata` instance.
-    #[must_use]
-    pub const fn signal_format(&self) -> SignalFormat {
-        self.payload.signal_format()
-    }
-
     /// True if the payload is empty. By definition, we can skip sending an
     /// empty request.
     #[must_use]
@@ -2192,7 +2186,7 @@ mod test {
     }
 
     fn delivery_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
-        let legacy = create_test_pdata().payload();
+        let adapted = create_test_pdata().payload();
         let codec = handler
             .codec_service()
             .registry()
@@ -2200,14 +2194,14 @@ mod test {
             .unwrap();
         let encoded = codec
             .admit(
-                legacy.signal_type(),
-                legacy.encoded_bytes().unwrap().clone(),
+                adapted.signal_type(),
+                adapted.encoded_bytes().unwrap().clone(),
             )
             .unwrap();
-        [legacy, encoded.into(), create_test_otap_pdata().payload()]
+        [adapted, encoded.into(), create_test_otap_pdata().payload()]
     }
 
-    /// Scenario: legacy, generalized encoded, and native inputs prepare work or delivery ownership.
+    /// Scenario: OTLP adapters, admitted encoded, and native inputs prepare work or delivery ownership.
     /// Guarantees: only RETURN_DATA retains input, context and measurement caches survive,
     /// and encoded snapshots share the original byte buffer without codec creation.
     #[test]
@@ -2367,7 +2361,7 @@ mod test {
         }
     }
 
-    /// Scenario: malformed legacy or generalized OTLP enters an update without RETURN_DATA.
+    /// Scenario: malformed OTLP from an adapter or admission enters an update without RETURN_DATA.
     /// Guarantees: decoding never calls the updater and recovers exact bytes, cached count,
     /// signal and context; the shared decoder remains usable for the next valid batch.
     #[tokio::test]
@@ -2382,13 +2376,13 @@ mod test {
             .unwrap();
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
-            let legacy = match signal {
+            let adapted = match signal {
                 SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes.clone()),
                 SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes.clone()),
                 SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
             };
             for payload in [
-                OtapPayload::from(legacy),
+                OtapPayload::from(adapted),
                 codec.admit(signal, bytes.clone()).unwrap().into(),
             ] {
                 let pdata = OtapPdata::new_default(
@@ -2435,10 +2429,12 @@ mod test {
     }
 
     fn create_test_otap_pdata() -> OtapPdata {
-        use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+        use otel_arrow_dfe_pdata_codec::CodecService;
 
         let payload = create_test_pdata().into_parts().1;
-        let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
+        let records = payload
+            .try_into_otap(&CodecService::new().expect("valid codec registry"))
+            .expect("OTAP conversion");
         OtapPdata::new_default(records.into())
     }
 

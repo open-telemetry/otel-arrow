@@ -8,6 +8,11 @@ This directory contains the repository's main CI workflows:
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
+- [`owner-coverage.yml`](owner-coverage.yml): Advisory contrib-owner coverage
+  through owner-authorship or approval; red when missing, but not required.
+  Snapshots refresh on PR updates or write-access manual dispatch, not reviews.
+  Keeping branches current with `main` is good practice; pushing the resulting
+  commits also refreshes coverage. See [owner coverage](../../CODE_REVIEW.md#advisory-owner-coverage).
 - [`post-merge-actions.yml`](post-merge-actions.yml): Shared Rust cache warming.
 
 ## Event model

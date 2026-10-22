@@ -62,8 +62,12 @@ queries:
         "resource_attributes.service.name" AS component_name,
         start_timestamp, timestamp, value
       FROM this_test
-      WHERE "scope_attributes.scope_name" = 'receiver.traffic_generator'
-        AND metric_name = 'logs.produced'
+      WHERE "resource_attributes.service.name" = 'load-generator'
+        AND "scope_attributes.scope_name" = 'node.output'
+        AND "scope_attributes.node.urn" = 'urn:otel:receiver:traffic_generator'
+        AND metric_name = 'items'
+        AND "metric_attributes.signal" = 'logs'
+        AND "metric_attributes.outcome" = 'success'
 
       UNION ALL
 
@@ -72,8 +76,12 @@ queries:
         "resource_attributes.service.name" AS component_name,
         start_timestamp, timestamp, value
       FROM this_test
-      WHERE "scope_attributes.scope_name" = 'receiver.traffic_generator'
-        AND metric_name = 'logs.bytes.produced'
+      WHERE "resource_attributes.service.name" = 'load-generator'
+        AND "scope_attributes.scope_name" = 'node.output'
+        AND "scope_attributes.node.urn" = 'urn:otel:receiver:traffic_generator'
+        AND metric_name = 'size'
+        AND "metric_attributes.signal" = 'logs'
+        AND "metric_attributes.outcome" = 'success'
 
       UNION ALL
 
