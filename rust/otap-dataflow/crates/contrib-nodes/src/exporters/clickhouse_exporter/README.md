@@ -118,6 +118,7 @@ Top-level config fields:
 - `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
 - `max_in_flight` (positive integer, defaults to `10`)
+- `tls` (optional, see [TLS / mTLS](#tls--mtls))
 - `table_defaults`
 - `tables`
 
@@ -137,6 +138,49 @@ Table config supports:
 - per-table TTL
 - engine override
 - `create_schema`
+
+## TLS / mTLS
+
+The exporter supports TLS and mutual TLS (mTLS) for the ClickHouse HTTP
+connection. Without a `tls` block, basic `https://` endpoints work
+automatically through the built-in rustls features. Add a `tls` block to
+configure custom CA certificates and/or client certificates for mTLS.
+
+```yaml
+exporters:
+  clickhouse:
+    endpoint: https://clickhouse.example.com:8443
+    database: otap
+    username: clickhouse
+    password: "${env:CLICKHOUSE_PASSWORD}"
+    tls:
+      ca_file: /certs/ca.crt
+      cert_file: /certs/client.crt
+      key_file: /certs/client.key
+```
+
+Available `tls` fields:
+
+<!-- markdownlint-disable MD013 -->
+
+| Field | Description |
+| --- | --- |
+| `ca_file` | Path to a PEM-encoded CA certificate bundle for server verification |
+| `ca_pem` | Inline PEM-encoded CA certificate (alternative to `ca_file`) |
+| `cert_file` | Path to a PEM-encoded client certificate for mTLS |
+| `cert_pem` | Inline PEM-encoded client certificate (alternative to `cert_file`) |
+| `key_file` | Path to a PEM-encoded client private key for mTLS |
+| `key_pem` | Inline PEM-encoded client private key (alternative to `key_file`) |
+| `insecure` | When `true`, disables TLS even if a `tls` block is present (default `false`) |
+| `include_system_ca_certs_pool` | Whether to include the system CA trust store (default `true`) |
+| `server_name_override` | Override the TLS server name used for certificate verification |
+
+<!-- markdownlint-enable MD013 -->
+
+For mTLS, both a client certificate and key must be provided. The `tls`
+configuration uses the same shared `TlsClientConfig` struct as other
+exporters (e.g. the OTLP gRPC exporter), so the field names and behavior
+are consistent across the data plane.
 
 ## Schema Shape
 

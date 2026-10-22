@@ -12,6 +12,10 @@ pub enum ClickhouseExporterError {
     #[error("Pdata error: {0}")]
     Child(#[from] otel_arrow_dfe_pdata::error::Error),
 
+    // TLS configuration errors
+    #[error("TLS configuration error: {error}")]
+    TlsConfigError { error: String },
+
     // Clickhouse client related errors
     #[error("Table creation error: {error}")]
     TableCreationError { error: String },

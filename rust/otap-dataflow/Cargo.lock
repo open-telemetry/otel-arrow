@@ -7563,6 +7563,8 @@ dependencies = [
  "http",
  "humantime",
  "humantime-serde",
+ "hyper-rustls",
+ "hyper-util",
  "insta",
  "itoa",
  "linkme",

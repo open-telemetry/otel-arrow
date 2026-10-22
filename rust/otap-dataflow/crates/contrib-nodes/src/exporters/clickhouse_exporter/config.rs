@@ -26,6 +26,7 @@
 //! The merge helpers (`from_patch` and `merge_table`) apply patch overrides on top of defaults so
 //! downstream code can generate schemas and write data without needing to reason about missing
 //! configuration fields.
+use otel_arrow_dfe_config::tls::TlsClientConfig;
 use secrecy::SecretString;
 use serde::Deserialize;
 use std::num::NonZeroUsize;
@@ -45,6 +46,10 @@ pub struct ConfigPatch {
 
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
     pub max_in_flight: Option<NonZeroUsize>,
+
+    /// Client-side TLS/mTLS configuration for the ClickHouse HTTP connection.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
 
     #[serde(default)]
     pub table_defaults: DefaultTableConfig,
@@ -68,6 +73,8 @@ pub struct Config {
     pub async_insert: bool,
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
     pub max_in_flight: NonZeroUsize,
+    /// Client-side TLS/mTLS configuration for the ClickHouse HTTP connection.
+    pub tls: Option<TlsClientConfig>,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,
 }
@@ -86,6 +93,7 @@ impl Config {
             password: p.password,
             async_insert,
             max_in_flight,
+            tls: p.tls,
             table_defaults: p.table_defaults,
             tables,
         }
@@ -417,6 +425,56 @@ mod tests {
 
         let err = serde_json::from_value::<ConfigPatch>(json).unwrap_err();
         assert!(err.to_string().contains("unknown field `unknown_field`"));
+    }
+
+    /// Scenario: a ClickHouse exporter config includes a TLS block with mTLS fields.
+    /// Guarantees: the TLS configuration is deserialized and propagated to the runtime config.
+    #[test]
+    fn tls_config_deserializes_mtls_fields() {
+        let json = serde_json::json!({
+            "endpoint": "https://clickhouse.example.com:8443",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "tls": {
+                "ca_file": "/certs/ca.crt",
+                "cert_file": "/certs/client.crt",
+                "key_file": "/certs/client.key"
+            }
+        });
+
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+
+        let tls = config.tls.expect("tls config must be present");
+        assert_eq!(
+            tls.ca_file.as_ref().unwrap().to_str().unwrap(),
+            "/certs/ca.crt"
+        );
+        assert_eq!(
+            tls.config.cert_file.as_ref().unwrap().to_str().unwrap(),
+            "/certs/client.crt"
+        );
+        assert_eq!(
+            tls.config.key_file.as_ref().unwrap().to_str().unwrap(),
+            "/certs/client.key"
+        );
+    }
+
+    /// Scenario: a ClickHouse exporter config omits the TLS block.
+    /// Guarantees: the runtime config has no TLS configuration.
+    #[test]
+    fn tls_config_absent_when_not_specified() {
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret"
+        });
+
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+        assert!(config.tls.is_none());
     }
 
     /// Scenario: only the required connection fields are configured.

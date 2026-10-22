@@ -637,6 +637,76 @@ pub(crate) async fn build_tonic_client_tls(
     Ok(tls)
 }
 
+/// Builds a [`rustls::ClientConfig`] from a validated material snapshot.
+///
+/// This is the rustls counterpart to [`build_tonic_client_tls`], intended for
+/// HTTP clients (hyper, reqwest) and other transports that accept a raw
+/// `ClientConfig` rather than tonic's transport-level wrapper.
+///
+/// Returns `Ok(None)` when TLS settings are empty and the endpoint URI does not
+/// use `https://`, meaning the connection should remain plaintext.
+pub async fn build_rustls_client_config(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+) -> Result<Option<rustls::ClientConfig>, io::Error> {
+    let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        build_rustls_client_config_from_material(&material).await?,
+    ))
+}
+
+/// Builds a [`rustls::ClientConfig`] from already-loaded client TLS material.
+///
+/// Consumes only the captured bytes in `material`; it does not read any files.
+pub(crate) async fn build_rustls_client_config_from_material(
+    material: &LoadedClientTlsMaterial,
+) -> Result<rustls::ClientConfig, io::Error> {
+    let mut root_store = RootCertStore::empty();
+
+    if material.include_system_ca {
+        add_system_trust_anchors_to_root_cert_store(&mut root_store).await?;
+    }
+
+    for ca_pem in &material.ca_pems {
+        let _ = add_pem_certificates_to_root_store(&mut root_store, ca_pem, "ca_file/ca_pem")?;
+    }
+
+    let builder = rustls::ClientConfig::builder().with_root_certificates(root_store);
+
+    let client_config = if let Some(identity) = &material.client_identity {
+        let cert_chain = CertificateDer::pem_slice_iter(&identity.cert_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to parse client certificate PEM: {e}"),
+                )
+            })?;
+
+        let key_der = PrivateKeyDer::from_pem_slice(&identity.key_pem).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse client private key PEM: {e}"),
+            )
+        })?;
+
+        builder
+            .with_client_auth_cert(cert_chain, key_der)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to build mTLS client config: {e}"),
+                )
+            })?
+    } else {
+        builder.with_no_client_auth()
+    };
+
+    Ok(client_config)
+}
+
 /// Validates that a client certificate and private key form a matching pair.
 ///
 /// The check first uses rustls's direct public-key comparison. For providers

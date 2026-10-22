@@ -54,12 +54,12 @@ impl ClickHouseWriter {
         // Bootstrap DB/schema with a client bound to the `default` database, since the configured
         // database may not exist yet. DDL is fully qualified (`db.table`) so the bound database is
         // irrelevant for it.
-        let bootstrap_client = build_client(config, "default");
+        let bootstrap_client = build_client(config, "default").await?;
         init_db(&bootstrap_client, config).await?;
         // Inserts use `insert_arrow(table)`, which binds the table's database from the client (the
         // generated `INSERT INTO \`table\` FORMAT ArrowStream` is unqualified), so the runtime
         // client must point at the configured database.
-        let client = build_client(config, &config.database);
+        let client = build_client(config, &config.database).await?;
         Ok(Self {
             client,
             payload_destination_tables,
@@ -116,20 +116,62 @@ impl ClickHouseWriter {
 
 /// Build a ClickHouse HTTP client bound to `database` from the exporter config.
 ///
-/// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can build one per
-/// target database without concern.
-pub fn build_client(config: &Config, database: &str) -> Client {
-    let mut client = Client::default()
+/// When a `tls` block is present in the configuration, a custom `hyper` HTTP
+/// client is constructed with the configured CA trust anchors and optional
+/// client certificate (mTLS), and injected via
+/// [`clickhouse::Client::with_http_client`]. Without a `tls` block the default
+/// client is used, which already handles basic `https://` endpoints through the
+/// crate's built-in rustls features.
+///
+/// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can
+/// build one per target database without concern.
+pub async fn build_client(
+    config: &Config,
+    database: &str,
+) -> Result<Client, ClickhouseExporterError> {
+    let mut client = if let Some(tls_config) = &config.tls {
+        let rustls_config = otel_arrow_dfe_otap::tls_utils::build_rustls_client_config(
+            Some(tls_config),
+            &config.endpoint,
+        )
+        .await
+        .map_err(|e| ClickhouseExporterError::TlsConfigError {
+            error: format!("{e}"),
+        })?
+        .ok_or_else(|| ClickhouseExporterError::TlsConfigError {
+            error: "TLS config block provided but TLS is disabled (insecure=true \
+                    with no custom CA on a non-https endpoint)"
+                .into(),
+        })?;
+
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(rustls_config)
+            .https_or_http()
+            .enable_http1()
+            .build();
+
+        let hyper_client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .pool_idle_timeout(std::time::Duration::from_secs(2))
+                .build(https_connector);
+
+        Client::with_http_client(hyper_client)
+    } else {
+        Client::default()
+    };
+
+    client = client
         .with_url(config.endpoint.clone())
         .with_database(database)
         .with_user(config.username.clone())
         .with_password(config.password.expose_secret());
+
     if config.async_insert {
         client = client
             .with_setting("async_insert", "1")
             .with_setting("wait_for_async_insert", "1");
     }
-    client
+    Ok(client)
 }
 
 /// Ensure db and all tables are initialized if required.
