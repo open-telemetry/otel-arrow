@@ -43,7 +43,7 @@
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = MICROSOFT_JSON_RECEIVER_URN,
-    target = "otel.receiver.microsoft_json",
+    target = "microsoft.receiver.json",
 );
 
 use async_trait::async_trait;
@@ -71,7 +71,7 @@ pub use config::Config;
 pub use error::Error;
 
 /// URN identifying the Microsoft JSON receiver in pipeline configuration.
-pub const MICROSOFT_JSON_RECEIVER_URN: &str = "urn:otel:receiver:microsoft_json";
+pub const MICROSOFT_JSON_RECEIVER_URN: &str = "urn:microsoft:receiver:json";
 
 // ---------------------------------------------------------------------------
 // Receiver struct + factory

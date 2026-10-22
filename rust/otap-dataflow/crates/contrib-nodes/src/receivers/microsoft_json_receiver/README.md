@@ -2,8 +2,8 @@
 
 ## Metadata
 
-- Type: `receiver:microsoft_json`
-- Full URN: `urn:otel:receiver:microsoft_json`
+- Type: `urn:microsoft:receiver:json`
+- Full URN: `urn:microsoft:receiver:json`
 - Feature: `microsoft-json`
 - Stability: In progress; not operational
 - Signals: Logs
@@ -73,7 +73,7 @@ file names.
 ## Example
 
 ```yaml
-type: receiver:microsoft_json
+type: urn:microsoft:receiver:json
 config:
   listening_addr: "0.0.0.0:4319"
   allowed_origins:

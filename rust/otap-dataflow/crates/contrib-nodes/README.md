@@ -58,7 +58,7 @@ Receivers ingest data into a pipeline.
 | --- | --- | --- | --- |
 | `receiver:etw` | `etw` | Experimental | Ingests Event Tracing for Windows events as logs. |
 | [`receiver:kafka`](src/receivers/kafka_receiver/README.md) | `kafka` | Experimental | Consumes traces, metrics, and logs from Kafka. |
-| [`receiver:microsoft_json`](src/receivers/microsoft_json_receiver/README.md) | `microsoft-json` | In-Progress; Not Operational; logs | Browser-focused, unauthenticated ingestion of Microsoft Common Schema JSON over HTTP. |
+| [`urn:microsoft:receiver:json`](src/receivers/microsoft_json_receiver/README.md) | `microsoft-json` | In-Progress; Not Operational; logs | Browser-focused, unauthenticated ingestion of Microsoft Common Schema JSON over HTTP. |
 | [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
 | [`urn:otel:receiver:postgresql`](src/receivers/postgresql_receiver/README.md) | `postgresql` | Experimental | Development-only PostgreSQL polling over unencrypted TCP; explicitly opt-in. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |

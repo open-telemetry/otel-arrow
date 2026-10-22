@@ -30,6 +30,15 @@
     "attributes": {}
   },
   {
+    "id": "urn:microsoft:receiver:json",
+    "category": "Receiver",
+    "description": "Browser-focused HTTP receiver for unauthenticated Microsoft Common Schema JSON telemetry",
+    "attributes": {
+      "auth": "NONE",
+      "protocol": "HTTP"
+    }
+  },
+  {
     "id": "urn:otel:controller:main",
     "category": "Controller",
     "description": "Pipeline controller managing pipeline lifecycle, dynamic re-configuration, and health monitoring",
@@ -280,15 +289,6 @@
     "category": "Receiver",
     "description": null,
     "attributes": {}
-  },
-  {
-    "id": "urn:otel:receiver:microsoft_json",
-    "category": "Receiver",
-    "description": "Browser-focused HTTP receiver for unauthenticated Microsoft Common Schema JSON telemetry",
-    "attributes": {
-      "auth": "NONE",
-      "protocol": "HTTP"
-    }
   },
   {
     "id": "urn:otel:receiver:oracle",

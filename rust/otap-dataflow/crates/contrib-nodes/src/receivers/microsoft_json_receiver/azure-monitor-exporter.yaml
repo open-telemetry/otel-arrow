@@ -45,7 +45,7 @@ groups:
 
         nodes:
           receiver:
-            type: urn:otel:receiver:microsoft_json
+            type: urn:microsoft:receiver:json
             config:
               listening_addr: "127.0.0.1:9090"
               allowed_origins: ["https://example.com"]

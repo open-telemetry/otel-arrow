@@ -1577,6 +1577,10 @@ mod tests {
         let pipeline: serde_json::Value =
             serde_yaml::from_str(include_str!("pipeline-local-console.yaml"))
                 .expect("pipeline example");
+        assert_eq!(
+            pipeline["groups"]["default"]["pipelines"]["main"]["nodes"]["receiver"]["type"],
+            super::super::MICROSOFT_JSON_RECEIVER_URN
+        );
         let config: Config = serde_json::from_value(
             pipeline["groups"]["default"]["pipelines"]["main"]["nodes"]["receiver"]["config"]
                 .clone(),
@@ -1591,6 +1595,10 @@ mod tests {
         let pipeline: serde_json::Value =
             serde_yaml::from_str(yaml).expect("Azure Monitor pipeline example");
         let main = &pipeline["groups"]["default"]["pipelines"]["main"];
+        assert_eq!(
+            main["nodes"]["receiver"]["type"],
+            super::super::MICROSOFT_JSON_RECEIVER_URN
+        );
         let config: Config = serde_json::from_value(main["nodes"]["receiver"]["config"].clone())
             .expect("Azure Monitor receiver config");
         config.validate().expect("valid Azure Monitor receiver");
