@@ -4,6 +4,7 @@
 //! Errors for the telemetry system.
 
 use crate::descriptor::MetricsDescriptor;
+use otel_arrow_dfe_pdata::otlp::EncodeFailure;
 
 /// All errors that can occur in the telemetry system.
 #[derive(thiserror::Error, Debug)]
@@ -35,4 +36,21 @@ pub enum Error {
     /// Error during configuration of a component.
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+
+    /// Invalid data during encoding.
+    #[error("invalid data encountered during OTLP encoding")]
+    InvalidOtlpEncoding,
+
+    /// Internal telemetry buffer is full.
+    #[error("internal telemetry buffer full")]
+    InternalBufferFull,
+}
+
+impl From<EncodeFailure> for Error {
+    fn from(f: EncodeFailure) -> Self {
+        match f {
+            EncodeFailure::Dropped => Error::InternalBufferFull,
+            EncodeFailure::Invalid => Error::InvalidOtlpEncoding,
+        }
+    }
 }

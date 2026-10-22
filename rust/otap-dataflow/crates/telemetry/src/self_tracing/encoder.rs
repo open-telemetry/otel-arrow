@@ -567,17 +567,17 @@ pub const fn level_to_severity_number(level: &Level) -> u8 {
 #[must_use]
 pub(crate) fn encode_config_resource_field(
     resource_attributes: &HashMap<String, ConfigAttributeValue>,
-) -> Bytes {
+) -> Result<Bytes, EncodeFailure> {
     let mut buf = ProtoBuffer::with_capacity(256);
-    let _: EncodeResult = buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
+    buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
         for (key, value) in resource_attributes {
             encode_scope_or_resource_attribute(buf, RESOURCE_ATTRIBUTES, key, |w| {
                 encode_config_value(w, value)
             })?;
         }
-        Ok(())
-    });
-    buf.into_bytes()
+        Ok::<_, EncodeFailure>(())
+    })?;
+    Ok(buf.into_bytes())
 }
 
 fn no_trunc(_: ()) -> Truncation {
@@ -894,7 +894,7 @@ mod tests {
     /// Guarantees: the reusable OTLP resource fragment preserves every supported value type.
     #[test]
     fn encode_config_resource_field_preserves_supported_values() {
-        let empty = ResourceLogs::decode(encode_config_resource_field(&HashMap::new()))
+        let empty = ResourceLogs::decode(encode_config_resource_field(&HashMap::new()).unwrap())
             .expect("empty resource fragment should decode");
         assert_eq!(
             empty
@@ -932,7 +932,7 @@ mod tests {
                 ConfigAttributeValue::Array(ConfigAttributeValueArray::F64(vec![0.25, 0.75])),
             ),
         ]);
-        let bytes = encode_config_resource_field(&resource);
+        let bytes = encode_config_resource_field(&resource).unwrap();
         let decoded = ResourceLogs::decode(bytes).expect("resource fragment should decode");
         let actual = decoded
             .resource
