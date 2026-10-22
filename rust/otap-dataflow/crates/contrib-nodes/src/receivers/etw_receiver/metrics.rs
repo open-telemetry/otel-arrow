@@ -524,28 +524,94 @@ mod tests {
             .buffers_lost
             .add(4);
 
-        // Channel capacity is 2; remaining items are deferred
-        _ = metrics.report(&mut reporter);
+        // Channel capacity is 2; initial report succeeds and defers overflow items
+        assert!(metrics.report(&mut reporter).is_ok());
+
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+        struct KeyedObservation {
+            scope: &'static str,
+            instrument: &'static str,
+            attr: Option<(&'static str, &'static str)>,
+            value: u64,
+        }
+
+        let mut initial_snapshots = Vec::new();
+        while let Ok(snap) = rx.try_recv() {
+            initial_snapshots.push(snap);
+        }
+        assert_eq!(
+            initial_snapshots.len(),
+            2,
+            "initial report should fill channel capacity"
+        );
+
+        let terminal_snapshots = metrics.terminal_snapshots();
+        assert!(
+            !terminal_snapshots.is_empty(),
+            "remaining items should be deferred"
+        );
 
         let mut delivered = Vec::new();
-        while let Ok(snap) = rx.try_recv() {
-            for m in snap.get_metrics() {
-                delivered.push(m.to_u64_lossy());
+        for snap in initial_snapshots.into_iter().chain(terminal_snapshots) {
+            let attr = snap.measurement_attributes().next();
+            for (field, val) in snap.descriptor().metrics.iter().zip(snap.get_metrics()) {
+                delivered.push(KeyedObservation {
+                    scope: snap.descriptor().name,
+                    instrument: field.name,
+                    attr,
+                    value: val.to_u64_lossy(),
+                });
             }
         }
-        assert!(!delivered.is_empty());
+        delivered.sort();
 
-        // Collect deferred items
-        for snap in metrics.terminal_snapshots() {
-            for m in snap.get_metrics() {
-                delivered.push(m.to_u64_lossy());
-            }
-        }
+        let mut expected = vec![
+            KeyedObservation {
+                scope: "receiver.etw.events",
+                instrument: "received",
+                attr: None,
+                value: 10,
+            },
+            KeyedObservation {
+                scope: "receiver.etw.events",
+                instrument: "forwarded",
+                attr: None,
+                value: 0,
+            },
+            KeyedObservation {
+                scope: "receiver.etw.drops",
+                instrument: "events",
+                attr: Some(("reason", "slow_worker")),
+                value: 3,
+            },
+            KeyedObservation {
+                scope: "receiver.etw.decode",
+                instrument: "errors",
+                attr: None,
+                value: 2,
+            },
+            KeyedObservation {
+                scope: "receiver.etw.session",
+                instrument: "events.lost",
+                attr: None,
+                value: 5,
+            },
+            KeyedObservation {
+                scope: "receiver.etw.session",
+                instrument: "buffers.written",
+                attr: None,
+                value: 0,
+            },
+            KeyedObservation {
+                scope: "receiver.etw.session",
+                instrument: "buffers.lost",
+                attr: Some(("delivery", "real_time")),
+                value: 4,
+            },
+        ];
+        expected.sort();
 
-        for expected in [10, 3, 2, 5, 4] {
-            assert!(delivered.contains(&expected), "missing value {expected}");
-        }
-
+        assert_eq!(delivered, expected);
         assert!(metrics.terminal_snapshots().is_empty());
     }
 }
