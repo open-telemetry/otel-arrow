@@ -624,19 +624,19 @@ fn encode_array_elements<B: BoundedBuf, T>(
     Ok(Truncation::None)
 }
 
-/// Encodes a `KeyValue` as `field`, with the value written by `f`.
-///
-/// TODO(4453): This function suppresses truncation.
+/// Encodes a complete `KeyValue` as `field`, rolling back on failure or truncation.
 fn encode_scope_or_resource_attribute(
     buf: &mut ProtoBuffer,
     field: u64,
     key: &str,
     mut f: impl FnMut(&mut ValueEncoder<'_, ProtoBuffer>) -> TruncateResult,
 ) -> EncodeResult {
-    let _ = bounded::key_value_encoder(buf, field, key, &mut f)?;
-    // TODO(4453) This function ignores truncation because we are
-    // in the wrong place to handle it.
-    Ok(())
+    // TODO(4453): Revisit resource/scope truncation handling at the owning layer.
+    // For now, preserve the existing all-or-nothing attribute policy.
+    buf.try_atomic(|buf| match bounded::key_value_encoder(buf, field, key, &mut f)? {
+        Truncation::None => Ok(()),
+        Truncation::Some => Err(EncodeFailure::Dropped),
+    })
 }
 
 // Field numbers for ExportLogsServiceRequest and related messages
@@ -1267,6 +1267,30 @@ mod tests {
         )]);
 
         assert_eq!(expected, decoded);
+    }
+
+    /// Scenario: a resource or scope attribute truncates or cannot fit within its output budget.
+    /// Guarantees: either failure returns Dropped and leaves previously encoded bytes unchanged.
+    #[test]
+    fn scope_or_resource_attribute_rolls_back_incomplete_values() {
+        let value = "x".repeat(64);
+        for remaining in [32, 4] {
+            let mut buf = ProtoBuffer::with_capacity_and_limit(64, 64);
+            buf.encode_string(RESOURCE_ATTRIBUTES, "before").unwrap();
+            let before = buf.as_slice().to_vec();
+
+            let result = buf.with_max_remaining(remaining, |buf| {
+                encode_scope_or_resource_attribute(buf, RESOURCE_ATTRIBUTES, "key", |w| {
+                    w.encode_str(&value)
+                })
+            });
+
+            assert!(
+                matches!(result, Err(EncodeFailure::Dropped)),
+                "remaining={remaining}: {result:?}"
+            );
+            assert_eq!(buf.as_slice(), before, "remaining={remaining}");
+        }
     }
 
     /// Scenario: one value callback writes two AnyValue variants.
