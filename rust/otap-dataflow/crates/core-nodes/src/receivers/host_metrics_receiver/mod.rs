@@ -539,11 +539,23 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.drain_ingress");
+                            if let Some(in_flight_scrape) = in_flight.take() {
+                                if let Some(metrics) = metrics.as_mut() {
+                                    metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
+                                    metrics.general.scrape_duration_ns.record(elapsed_nanos(in_flight_scrape.started));
+                                }
+                            }
                             effect_handler.notify_receiver_drained().await?;
                             return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.shutdown");
+                            if let Some(in_flight_scrape) = in_flight.take() {
+                                if let Some(metrics) = metrics.as_mut() {
+                                    metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
+                                    metrics.general.scrape_duration_ns.record(elapsed_nanos(in_flight_scrape.started));
+                                }
+                            }
                             return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Err(e) => return Err(Error::ChannelRecvError(e)),
@@ -581,7 +593,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                             // Treat this due tick as skipped so the scheduler does not spin.
                             scheduler.advance_due(now);
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Overrun);
+                                metrics.general.scrapes_skipped.add(1);
                             }
                             otel_warn!(
                                 "host_metrics.scraper_busy",
@@ -591,7 +603,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Err(StartScrapeError::Stopped) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.record_error(metrics::HostMetricsErrorType::ScraperFailure);
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
                             }
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
@@ -648,6 +659,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 Err(TypedError::ChannelSendError(_)) => {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.record_error(metrics::HostMetricsErrorType::SendFailure);
+                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Dropped);
                                         metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     otel_warn!(
@@ -702,7 +714,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Err(_) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Overrun);
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Timeout);
                                 metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(

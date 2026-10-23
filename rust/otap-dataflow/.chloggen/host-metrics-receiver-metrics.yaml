@@ -3,4 +3,4 @@ component: pipeline
 note: "Migrate `receiver:host_metrics` internal telemetry to enum-dimensioned metric sets."
 issues: [3530]
 subtext: >-
-  Migration: Update queries to use dimensioned receiver.host_metrics.scrapes (outcome), receiver.host_metrics.errors (error.type), and receiver.host_metrics (operational dot metrics).
+  See the Old-to-New mapping table in the host_metrics_receiver README for the full migration guide from flat counters to dimensioned metric sets.

@@ -143,7 +143,7 @@ Attributes:
 
 | Attribute | Values | Description |
 | --- | --- | --- |
-| `outcome` | `completed`, `failed`, `overrun` | Outcome of the scrape tick. |
+| `outcome` | `completed`, `failed`, `timeout`, `dropped`, `cancelled` | Terminal outcome of an accepted scrape. |
 
 #### `receiver.host_metrics.errors`
 
@@ -165,11 +165,32 @@ Non-dimensioned operational and timing metrics.
 
 | Scope | Instrument | Unit | Description |
 | --- | --- | --- | --- |
-| `receiver.host_metrics` | `scrapes.started` | `{scrape}` | Number of scrape ticks started. |
+| `receiver.host_metrics` | `scrapes.started` | `{scrape}` | Number of scrape ticks started (accepted by worker). |
+| `receiver.host_metrics` | `scrapes.skipped` | `{scrape}` | Scheduled ticks skipped because the worker was busy. |
 | `receiver.host_metrics` | `families.scraped` | `{family}` | Number of due metric families processed. |
 | `receiver.host_metrics` | `batches.sent` | `{batch}` | Number of batches sent downstream. |
 | `receiver.host_metrics` | `scrape.duration.ns` | `ns` | Wall-clock scrape duration. |
 | `receiver.host_metrics` | `scrape.lag.ns` | `ns` | Delay between scheduled and actual scrape start. |
+
+### Telemetry Migration (Old to New)
+
+| Old Counter | New Metric | Attribute |
+| --- | --- | --- |
+| `scrapes_started` | `receiver.host_metrics` / `scrapes.started` | -- |
+| `scrapes_completed` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=completed` |
+| `scrapes_failed` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=failed` |
+| `scrapes_timeout` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=timeout` |
+| `scrapes_dropped` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=dropped` |
+| *(new)* | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=cancelled` |
+| `scrapes_overrun` | `receiver.host_metrics` / `scrapes.skipped` | -- |
+| `families_scraped` | `receiver.host_metrics` / `families.scraped` | -- |
+| `batches_sent` | `receiver.host_metrics` / `batches.sent` | -- |
+| `scrape_duration_ns` | `receiver.host_metrics` / `scrape.duration.ns` | -- |
+| `scrape_lag_ns` | `receiver.host_metrics` / `scrape.lag.ns` | -- |
+| `errors_scraper_failure` | `receiver.host_metrics.errors` / `errors` | `error.type=scraper_failure` |
+| `errors_partial` | `receiver.host_metrics.errors` / `errors` | `error.type=partial_error` |
+| `errors_source_read` | `receiver.host_metrics.errors` / `errors` | `error.type=source_read_error` |
+| `errors_send_failure` | `receiver.host_metrics.errors` / `errors` | `error.type=send_failure` |
 
 ### Events
 
