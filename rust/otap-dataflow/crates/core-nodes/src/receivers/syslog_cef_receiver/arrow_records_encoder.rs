@@ -74,9 +74,8 @@ impl ArrowRecordsBuilder {
 
         let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
 
-        for _ in 0..attributes_added {
-            self.log_attrs.append_parent_id(&self.curr_log_id);
-        }
+        self.log_attrs
+            .append_parent_id_n(&self.curr_log_id, usize::from(attributes_added));
 
         self.logs.append_id(Some(self.curr_log_id));
 

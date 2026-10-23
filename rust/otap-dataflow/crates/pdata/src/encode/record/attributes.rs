@@ -154,6 +154,18 @@ where
         self.parent_id.append_value(val);
     }
 
+    /// Append the same parent ID for `n` consecutive attribute rows.
+    ///
+    /// This avoids repeating adaptive dispatch and dictionary lookup for every
+    /// attribute belonging to the same record. A zero count appends nothing.
+    pub fn append_parent_id_n(
+        &mut self,
+        val: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+        n: usize,
+    ) {
+        self.parent_id.append_value_n(val, n);
+    }
+
     /// Append the attribute key to the builder for this array
     pub fn append_key(&mut self, val: &str) {
         self.keys.append_str(val);
@@ -548,5 +560,40 @@ impl AttributesRecordBatchBuilderConstructorHelper for u32 {
             dictionary_options: Some(DictionaryOptions::dict8()),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compare_bulk_parent_ids<T>()
+    where
+        T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+        <T::ArrayType as ArrowPrimitiveType>::Native: From<u16>,
+    {
+        let mut bulk = StrKeysAttributesRecordBatchBuilder::<T>::new();
+        let mut scalar = StrKeysAttributesRecordBatchBuilder::<T>::new();
+        for id in 0..1000u16 {
+            let parent = id.into();
+            let count = usize::from(id % 4);
+            bulk.append_parent_id_n(&parent, count);
+            for _ in 0..count {
+                scalar.append_parent_id(&parent);
+                bulk.append_key("key");
+                scalar.append_key("key");
+                bulk.any_values_builder.append_int(i64::from(id));
+                scalar.any_values_builder.append_int(i64::from(id));
+            }
+        }
+        assert_eq!(bulk.finish().unwrap(), scalar.finish().unwrap());
+    }
+
+    /// Scenario: Parent IDs repeat zero or more times across native and dictionary columns.
+    /// Guarantees: Bulk appends preserve rows and schema across capacity growth and 8-bit dictionary overflow.
+    #[test]
+    fn bulk_parent_ids_match_scalar_appends() {
+        compare_bulk_parent_ids::<u16>();
+        compare_bulk_parent_ids::<u32>();
     }
 }

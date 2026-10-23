@@ -18,4 +18,4 @@ issues: [3452]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "The receiver still defaults to 100 messages. Large batches yield during decoding; Arrow finalization remains synchronous. Batch buffers retain less excess memory, and TCP ingestion uses less CPU for buffered messages. Review queue capacities when increasing batch sizes."
+subtext: "The receiver still defaults to 100 messages. Large batches yield during decoding; Arrow finalization remains synchronous. Batch buffers retain less excess memory; TCP ingestion and Arrow conversion use less CPU. Review queue capacities when increasing batch sizes."
