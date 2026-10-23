@@ -48,6 +48,7 @@ otel-arrow-dfe-filelog-checkpoint.workspace = true
 hex.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
+memchr.workspace = true
 object_store = { workspace = true, features = ["fs"], optional = true }
 parquet = { workspace = true, optional = true }
 prost.workspace = true

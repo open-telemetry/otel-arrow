@@ -104,7 +104,7 @@ fn predicted_frame_capacity(max_items: usize, message_len: usize) -> usize {
 // days 1 and 365/366 through the timezone (including December 30 in leap years).
 // This caches neither timestamps nor offsets and handles each clock sample
 // independently, including wall-clock corrections and local timezone changes.
-fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
+pub(super) fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
     if (2..365).contains(&now.ordinal()) {
         now.year()
     } else {
@@ -204,10 +204,10 @@ impl SyslogBatchBuilder {
         self.append_with_year(message, receipt_local_year(Utc::now(), &Local))
     }
 
-    // Keep the clock at the admission boundary; decoding must never infer the
-    // year from its own clock or the later batch-seal timestamp. A per-message
-    // year also handles receiver batches spanning midnight on New Year.
-    fn append_with_year(
+    // Retain the transport receipt context; decoding must never infer the year
+    // from its own clock or the later batch-seal timestamp. TCP supplies the
+    // completing read's year; UDP captures it independently for each message.
+    pub(super) fn append_with_year(
         &mut self,
         message: &[u8],
         received_local_year: i32,

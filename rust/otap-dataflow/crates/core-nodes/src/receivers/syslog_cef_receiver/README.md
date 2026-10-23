@@ -140,6 +140,9 @@ Format detection and parsing remain lazy until a downstream component requests
 native OTAP records. This keeps transparent forwarding and codec-native
 batching on the original message bytes. Each message retains the local year at
 receipt for RFC 3164 timestamp inference, including CEF wrapped in RFC 3164.
+TCP captures the year once per nonempty buffer refill; messages completed from
+that refill share its context. A fragmented message uses the refill supplying its
+last bytes. UDP captures the year independently for each datagram.
 Delayed decoding and batching across New Year do not change that year; local
 timezone and DST resolution still use the event date. Observed timestamps remain
 those recorded when the receiver seals each batch.
