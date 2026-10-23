@@ -35,11 +35,8 @@ use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 #[cfg(target_os = "linux")]
 use otel_arrow_dfe_otap::pdata::Context;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
-use otel_arrow_dfe_telemetry_macros::metric_set;
 #[cfg(target_os = "linux")]
 use serde_json::Value;
 use std::collections::HashSet;
@@ -58,6 +55,7 @@ use tokio::sync::oneshot;
 use tokio::time::{Instant, Timeout, sleep_until, timeout};
 
 mod config;
+pub mod metrics;
 #[cfg(target_os = "linux")]
 mod otap_builder;
 #[cfg(target_os = "linux")]
@@ -86,55 +84,13 @@ use config::{RuntimeFamily, effective_root_path, normalized_root_path};
 /// The URN for the host metrics receiver.
 pub const HOST_METRICS_RECEIVER_URN: &str = "urn:otel:receiver:host_metrics";
 
-/// Telemetry metrics for the host metrics receiver.
-#[metric_set(name = "receiver.host_metrics")]
-#[derive(Debug, Default, Clone)]
-pub struct HostMetricsReceiverMetrics {
-    /// Number of scrape ticks started.
-    #[metric(unit = "{scrape}")]
-    pub scrapes_started: Counter<u64>,
-    /// Number of scrape ticks that built and sent a metrics batch.
-    #[metric(unit = "{scrape}")]
-    pub scrapes_completed: Counter<u64>,
-    /// Number of fatal scrape failures.
-    #[metric(unit = "{scrape}")]
-    pub scrapes_failed: Counter<u64>,
-    /// Number of scrape ticks skipped or timed out before completion.
-    #[metric(unit = "{scrape}")]
-    pub scrapes_overrun: Counter<u64>,
-    /// Number of scraper worker failures.
-    #[metric(unit = "{error}")]
-    pub scraper_failures: Counter<u64>,
-    // TODO: Decide whether fixed per-family error counters are needed here.
-    // Metric-level attributes are not supported by the internal telemetry API today.
-    /// Number of source read errors skipped because other families succeeded.
-    #[metric(unit = "{error}")]
-    pub partial_errors: Counter<u64>,
-    /// Number of source read errors seen during scrapes.
-    #[metric(unit = "{error}")]
-    pub source_read_errors: Counter<u64>,
-    /// Number of due metric families processed.
-    #[metric(unit = "{family}")]
-    pub families_scraped: Counter<u64>,
-    /// Wall-clock scrape duration.
-    #[metric(unit = "ns")]
-    pub scrape_duration_ns: Mmsc,
-    /// Delay between scheduled and actual scrape start.
-    #[metric(unit = "ns")]
-    pub scrape_lag_ns: Mmsc,
-    /// Number of batches sent downstream.
-    #[metric(unit = "{batch}")]
-    pub batches_sent: Counter<u64>,
-    /// Number of downstream send failures.
-    #[metric(unit = "{error}")]
-    pub send_failures: Counter<u64>,
-}
+pub use metrics::HostMetricsReceiverMetrics;
 
 /// Host metrics receiver.
 pub struct HostMetricsReceiver {
     config: RuntimeConfig,
     _lease: HostMetricsLease,
-    metrics: Option<MetricSet<HostMetricsReceiverMetrics>>,
+    metrics: Option<HostMetricsReceiverMetrics>,
 }
 
 #[allow(unsafe_code)]
@@ -251,10 +207,10 @@ fn elapsed_nanos(start: StdInstant) -> f64 {
 #[cfg(target_os = "linux")]
 fn terminal_state(
     deadline: StdInstant,
-    metrics: &Option<MetricSet<HostMetricsReceiverMetrics>>,
+    metrics: &mut Option<HostMetricsReceiverMetrics>,
 ) -> TerminalState {
     if let Some(metrics) = metrics {
-        TerminalState::new(deadline, [metrics.snapshot()])
+        TerminalState::new(deadline, metrics.terminal_snapshots())
     } else {
         TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, [])
     }
@@ -578,17 +534,35 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     match msg {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                let _ = metrics_reporter.report(metrics);
+                                let _ = metrics.report(&mut metrics_reporter);
                             }
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.drain_ingress");
+                            if let (Some(in_flight_scrape), Some(metrics)) =
+                                (in_flight.take(), metrics.as_mut())
+                            {
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
+                                metrics
+                                    .general
+                                    .scrape_duration_ns
+                                    .record(elapsed_nanos(in_flight_scrape.started));
+                            }
                             effect_handler.notify_receiver_drained().await?;
-                            return Ok(terminal_state(deadline, &metrics));
+                            return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.shutdown");
-                            return Ok(terminal_state(deadline, &metrics));
+                            if let (Some(in_flight_scrape), Some(metrics)) =
+                                (in_flight.take(), metrics.as_mut())
+                            {
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
+                                metrics
+                                    .general
+                                    .scrape_duration_ns
+                                    .record(elapsed_nanos(in_flight_scrape.started));
+                            }
+                            return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Err(e) => return Err(Error::ChannelRecvError(e)),
                         _ => {}
@@ -601,15 +575,18 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     let due = scheduler.due_at(now);
                     let scrape_start = StdInstant::now();
                     if let Some(metrics) = metrics.as_mut() {
-                        metrics.scrape_lag_ns.record(duration_nanos(now.saturating_duration_since(scheduled_due)));
+                        metrics
+                            .general
+                            .scrape_lag_ns
+                            .record(duration_nanos(now.saturating_duration_since(scheduled_due)));
                     }
                     match scrape_worker.try_start_scrape(due) {
                         Ok(scrape) => {
                             let scrape_timeout = scheduler.timeout_for(due);
                             scheduler.advance_due(now);
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.scrapes_started.add(1);
-                                metrics.families_scraped.add(due_family_count(due));
+                                metrics.general.scrapes_started.add(1);
+                                metrics.general.families_scraped.add(due_family_count(due));
                             }
                             in_flight = Some(InFlightScrape {
                                 result: Box::pin(timeout(scrape_timeout, scrape)),
@@ -622,7 +599,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                             // Treat this due tick as skipped so the scheduler does not spin.
                             scheduler.advance_due(now);
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.scrapes_overrun.add(1);
+                                metrics.general.scrapes_skipped.add(1);
                             }
                             otel_warn!(
                                 "host_metrics.scraper_busy",
@@ -631,8 +608,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Err(StartScrapeError::Stopped) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.scraper_failures.add(1);
-                                metrics.scrapes_failed.add(1);
+                                metrics.record_error(metrics::HostMetricsErrorType::ScraperFailure);
                             }
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
@@ -656,16 +632,18 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     match scrape_result.expect("pending scrape result should be present") {
                         Ok(Ok(Ok(scrape))) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.partial_errors.add(scrape.partial_errors);
-                                metrics.source_read_errors.add(scrape.partial_errors);
+                                metrics.record_error_count(
+                                    metrics::HostMetricsErrorType::PartialError,
+                                    scrape.partial_errors,
+                                );
                             }
                             tokio::task::consume_budget().await;
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
                                 Err(err) => {
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.scrapes_failed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
+                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
@@ -679,15 +657,16 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                             match effect_handler.try_send_message_with_source_node(pdata) {
                                 Ok(()) => {
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.batches_sent.add(1);
-                                        metrics.scrapes_completed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                        metrics.general.batches_sent.add(1);
+                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Completed);
+                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                 }
                                 Err(TypedError::ChannelSendError(_)) => {
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.send_failures.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                        metrics.record_error(metrics::HostMetricsErrorType::SendFailure);
+                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Dropped);
+                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     otel_warn!(
                                         "host_metrics.dropped_backpressure",
@@ -696,9 +675,9 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 }
                                 Err(other) => {
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.send_failures.add(1);
-                                        metrics.scrapes_failed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                        metrics.record_error(metrics::HostMetricsErrorType::SendFailure);
+                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
+                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
@@ -711,9 +690,9 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Ok(Ok(Err(err))) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.scrapes_failed.add(1);
-                                metrics.source_read_errors.add(1);
-                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
+                                metrics.record_error(metrics::HostMetricsErrorType::SourceReadError);
+                                metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(
                                 "host_metrics.scrape_failed",
@@ -723,9 +702,9 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Ok(Err(_)) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.scraper_failures.add(1);
-                                metrics.scrapes_failed.add(1);
-                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                metrics.record_error(metrics::HostMetricsErrorType::ScraperFailure);
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
+                                metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(
                                 "host_metrics.scraper_stopped",
@@ -741,9 +720,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Err(_) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.scrapes_failed.add(1);
-                                metrics.scrapes_overrun.add(1);
-                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Timeout);
+                                metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(
                                 "host_metrics.scrape_timeout",

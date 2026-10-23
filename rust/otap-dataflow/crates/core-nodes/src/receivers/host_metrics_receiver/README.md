@@ -125,24 +125,72 @@ config:
 These tables list telemetry emitted directly by this node. Common engine
 runtime metric sets may also be attached by the pipeline telemetry policy.
 
+Operational notes:
+
+- `<scope>.<instrument>` is used as shorthand for metric names.
+
 ### Metric Sets
+
+#### `receiver.host_metrics.scrapes`
+
+Scrape outcome counters dimensioned by `outcome`.
+
+| Scope | Instrument | Unit | Attributes | Description |
+| --- | --- | --- | --- | --- |
+| `receiver.host_metrics.scrapes` | `scrapes` | `{scrape}` | `outcome` | Number of scrape ticks recorded by outcome. |
+
+Attributes:
+
+| Attribute | Values | Description |
+| --- | --- | --- |
+| `outcome` | `completed`, `failed`, `timeout`, `dropped`, `cancelled` | Terminal outcome of an accepted scrape. |
+
+#### `receiver.host_metrics.errors`
+
+Error counters dimensioned by `error.type`.
+
+| Scope | Instrument | Unit | Attributes | Description |
+| --- | --- | --- | --- | --- |
+| `receiver.host_metrics.errors` | `errors` | `{error}` | `error.type` | Number of errors encountered during scrape ticks and delivery. |
+
+Attributes:
+
+| Attribute | Values | Description |
+| --- | --- | --- |
+| `error.type` | `scraper_failure`, `partial_error`, `source_read_error`, `send_failure` | Classification of the error encountered. |
 
 #### `receiver.host_metrics`
 
-| Metric | Unit | Description |
+Non-dimensioned operational and timing metrics.
+
+| Scope | Instrument | Unit | Description |
+| --- | --- | --- | --- |
+| `receiver.host_metrics` | `scrapes.started` | `{scrape}` | Number of scrape ticks started (accepted by worker). |
+| `receiver.host_metrics` | `scrapes.skipped` | `{scrape}` | Scheduled ticks skipped because the worker was busy. |
+| `receiver.host_metrics` | `families.scraped` | `{family}` | Number of due metric families processed. |
+| `receiver.host_metrics` | `batches.sent` | `{batch}` | Number of batches sent downstream. |
+| `receiver.host_metrics` | `scrape.duration.ns` | `ns` | Wall-clock scrape duration. |
+| `receiver.host_metrics` | `scrape.lag.ns` | `ns` | Delay between scheduled and actual scrape start. |
+
+### Telemetry Migration (Old to New)
+
+| Old Counter | New Metric | Attribute |
 | --- | --- | --- |
-| `receiver.host_metrics.scrapes_started` | `{scrape}` | Number of scrape ticks started. |
-| `receiver.host_metrics.scrapes_completed` | `{scrape}` | Number of scrape ticks that built and sent a metrics batch. |
-| `receiver.host_metrics.scrapes_failed` | `{scrape}` | Number of fatal scrape failures. |
-| `receiver.host_metrics.scrapes_overrun` | `{scrape}` | Number of scrape ticks skipped or timed out before completion. |
-| `receiver.host_metrics.scraper_failures` | `{error}` | Number of scraper worker failures. |
-| `receiver.host_metrics.partial_errors` | `{error}` | Number of source read errors skipped because other families succeeded. |
-| `receiver.host_metrics.source_read_errors` | `{error}` | Number of source read errors seen during scrapes. |
-| `receiver.host_metrics.families_scraped` | `{family}` | Number of due metric families processed. |
-| `receiver.host_metrics.scrape_duration_ns` | `ns` | Wall-clock scrape duration. |
-| `receiver.host_metrics.scrape_lag_ns` | `ns` | Delay between scheduled and actual scrape start. |
-| `receiver.host_metrics.batches_sent` | `{batch}` | Number of batches sent downstream. |
-| `receiver.host_metrics.send_failures` | `{error}` | Number of downstream send failures. |
+| `scrapes_started` | `receiver.host_metrics` / `scrapes.started` | -- |
+| `scrapes_completed` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=completed` |
+| `scrapes_failed` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=failed` |
+| `scrapes_timeout` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=timeout` |
+| `scrapes_dropped` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=dropped` |
+| *(new)* | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=cancelled` |
+| `scrapes_overrun` | `receiver.host_metrics` / `scrapes.skipped` | -- |
+| `families_scraped` | `receiver.host_metrics` / `families.scraped` | -- |
+| `batches_sent` | `receiver.host_metrics` / `batches.sent` | -- |
+| `scrape_duration_ns` | `receiver.host_metrics` / `scrape.duration.ns` | -- |
+| `scrape_lag_ns` | `receiver.host_metrics` / `scrape.lag.ns` | -- |
+| `errors_scraper_failure` | `receiver.host_metrics.errors` / `errors` | `error.type=scraper_failure` |
+| `errors_partial` | `receiver.host_metrics.errors` / `errors` | `error.type=partial_error` |
+| `errors_source_read` | `receiver.host_metrics.errors` / `errors` | `error.type=source_read_error` |
+| `errors_send_failure` | `receiver.host_metrics.errors` / `errors` | `error.type=send_failure` |
 
 ### Events
 
