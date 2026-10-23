@@ -60,7 +60,11 @@ tracked bindings, and conflicts against retained candidate paths emit
 Consumers must process that evidence even if the pass never finishes. Both
 traversal and targeted checks identify changed roots. Parent
 changes remain latched, including for inactive retained records, until the
-expected environment returns or the receiver is recreated.
+expected environment returns or the receiver is recreated. Explicit `Unstable`
+outcomes also invalidate matching retained candidate, binding and selected-alias
+work, even when the failed probe supplies no locator. A retained rebound connects
+the failure to its candidate if that candidate has since selected another alias;
+unrelated stable candidates remain usable during the incomplete pass.
 
 Only an effectively complete pass emits `Disappeared`. This starts the lifecycle
 owner's pending-disappearance work; it does not establish permanent EOF.
@@ -79,7 +83,13 @@ to prevent exclusion. A definitive miss or a fresh different locator expires
 that hint; busy or inaccessible checks retain it. Unknown binding checks require
 the complete-pass fallback. Required alias-check coverage failures block prompt
 exclusion for the rest of that pass, even if a later binding check is locally
-conclusive. Exclusion never changes offsets or durable records.
+conclusive. Detected root, environment and required-policy failures block prompt
+exclusion receiver-wide for the rest of the pass, including after a successful
+check retry. A parent-change latch carried from an earlier pass also blocks
+prompt exclusion; the final complete-pass check still requires every retained
+parent latch to be clear. Ordinary unrelated traversal incompleteness alone does
+not prevent a contextual binding miss from authorizing exclusion.
+Exclusion never changes offsets or durable records.
 
 Targeted checks share traversal's ancestor subtree policy, root validation,
 pin-bound source probes and transient descriptor budget. They recheck parents
@@ -92,6 +102,12 @@ stack depth is a resource bound, not an exclusion rule.
 
 An eligible established binding wins over a smaller alias. New proposals use
 minimum complete native path bytes; observations never overwrite bindings.
+Publishing an alias removes it from the alias index before clearing the hint,
+so the next check uses the distinguished binding's parent context. New bindings
+reuse an established parent baseline from the existing parent index, including
+the old binding when rebinding within one directory. A directory with no retained
+baseline establishes its identity on first validation; discovery does not retain
+an unbounded history of previously visited directories.
 
 `Replacement::Possible(predecessor)` carries context to identity resolution,
 including during incomplete scans and after the predecessor is retired or its

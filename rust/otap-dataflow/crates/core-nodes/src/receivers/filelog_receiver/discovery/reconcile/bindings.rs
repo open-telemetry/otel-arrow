@@ -51,13 +51,17 @@ impl Reconciler {
             tracked.successor = None;
             return Ok(true);
         }
+        let (parent, parent_changed) = self.parent_baseline(Some(&path));
+        self.aliases.remove(id, &self.tracked);
         self.bindings.remove(id, &self.tracked);
         self.parents.remove(id, &self.tracked);
         let tracked = self.tracked.get_mut(&id).expect("validated identity");
         tracked.file.binding = Some(path);
         tracked.file.role = BindingRole::Live;
-        tracked.parent = None;
-        tracked.parent_changed = false;
+        tracked.parent = parent;
+        tracked.parent_changed = parent_changed;
+        // The published alias is now the binding, not a context-free hint.
+        tracked.minimum.clear();
         tracked.successor = None;
         if tracked.previous_alias.as_os_str()
             == tracked

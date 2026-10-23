@@ -296,6 +296,7 @@ struct Pass {
     count: u64,
     complete: bool,
     overflow: bool,
+    environment_failed: bool,
     observed_at: Duration,
 }
 
@@ -409,9 +410,27 @@ impl Reconciler {
         Ok(())
     }
 
+    fn parent_baseline(&self, path: Option<&Path>) -> (Option<FileLocator>, bool) {
+        let Some(parent) = path.and_then(Path::parent) else {
+            return (None, false);
+        };
+        // Before the first pass no record can have a runtime parent baseline.
+        if self.last.is_none() {
+            return (None, false);
+        }
+        let mut baseline = None;
+        let mut changed = false;
+        for tracked in self.parents.records(parent.as_os_str(), &self.tracked) {
+            baseline = baseline.or(tracked.parent);
+            changed |= tracked.parent_changed;
+        }
+        (baseline, changed)
+    }
+
     // Called only after preflight under an exclusive borrow. No fallible protocol
     // validation remains after the owner's durable commit.
     fn insert_tracked(&mut self, file: TrackedFile) {
+        let (parent, parent_changed) = self.parent_baseline(file.binding.as_deref());
         let id = file.id;
         self.tracked.insert(
             id,
@@ -420,8 +439,8 @@ impl Reconciler {
                 pass: TrackedPass::default(),
                 minimum: PathBuf::new(),
                 previous_alias: PathBuf::new(),
-                parent: None,
-                parent_changed: false,
+                parent,
+                parent_changed,
                 successor: None,
             },
         );
@@ -513,9 +532,40 @@ impl Reconciler {
             count: 0,
             complete: true,
             overflow: false,
+            // A previous pass may have seen a replaced parent that this traversal
+            // never reaches. Do not allow prompt negatives while that latch exists.
+            environment_failed: self.tracked.values().any(|t| t.parent_changed),
             observed_at: started,
         });
         Ok(())
+    }
+
+    // Invalidate only evidence connected by retained native paths or locators.
+    // This preserves independent candidates on an otherwise incomplete pass.
+    fn invalidate_unstable(&mut self, observation: &Observation) {
+        self.candidates.invalidate(observation);
+        // The indexes borrow stored keys; only evidence flags change here.
+        for index in [&self.bindings, &self.aliases] {
+            for id in index.candidates(observation.path.as_os_str()) {
+                let tracked = self.tracked.get_mut(&id).expect("path index");
+                if index.matches(tracked, observation.path.as_os_str()) {
+                    if let Some(replacement) = tracked.pass.rebound {
+                        self.candidates.invalidate_locator(replacement);
+                    }
+                    tracked.pass.conflict = true;
+                    tracked.pass.exclusion_blocked = true;
+                }
+            }
+        }
+        if let Some(locator) = observation.locator {
+            for id in self.locators.candidates(&locator) {
+                let tracked = self.tracked.get_mut(&id).expect("locator index");
+                if tracked.file.locator == locator {
+                    tracked.pass.conflict = true;
+                    tracked.pass.exclusion_blocked = true;
+                }
+            }
+        }
     }
 
     /// Consumes one borrowed scanner observation. Callback delivery is immediate and
@@ -568,12 +618,28 @@ impl Reconciler {
                 .filter(|reason| reason.invalidates_coverage())
             {
                 pass.complete = false;
+                pass.environment_failed |= matches!(
+                    reason,
+                    ScanReason::RootChanged
+                        | ScanReason::RootUnavailable
+                        | ScanReason::ExclusionUnavailable
+                        | ScanReason::VerificationUnavailable
+                        | ScanReason::Policy
+                );
                 if reason == ScanReason::RootChanged {
                     emit(Evidence::RootChanged(&observation.path));
                 }
                 emit(Evidence::CoverageLost(reason));
             }
         }
+        if observation.reason == Some(ScanReason::Unstable) {
+            pass.complete = false;
+            self.invalidate_unstable(observation);
+            if origin == Origin::Binding {
+                emit(Evidence::CoverageLost(ScanReason::Unstable));
+            }
+        }
+        let pass = self.pass.as_mut().expect("validated active pass");
         if observation.reason == Some(ScanReason::Directory) {
             {
                 for id in self.parents.candidates(observation.path.as_os_str()) {
@@ -586,6 +652,7 @@ impl Reconciler {
                     if let Some(expected) = tracked.parent {
                         if expected != locator {
                             tracked.parent_changed = true;
+                            pass.environment_failed = true;
                             pass.complete = false;
                             emit(Evidence::ParentChanged(id));
                         } else {
@@ -606,9 +673,9 @@ impl Reconciler {
                 if !self.bindings.matches(tracked, observation.path.as_os_str()) {
                     continue;
                 }
-                if tracked.pass.parent_seen && !tracked.parent_changed && pass.complete {
+                if tracked.pass.parent_seen && !tracked.parent_changed && !pass.environment_failed {
                     tracked.pass.binding_ineligible = true;
-                    emit_exclusion(tracked, &mut emit);
+                    emit_exclusion(tracked, pass.environment_failed, &mut emit);
                 }
             }
         }
@@ -663,7 +730,7 @@ impl Reconciler {
                     {
                         tracked.pass.binding_ineligible = true;
                     }
-                    emit_exclusion(tracked, &mut emit);
+                    emit_exclusion(tracked, pass.environment_failed, &mut emit);
                 }
                 if eligible {
                     tracked.pass.conflict |= path_conflict;
@@ -730,11 +797,7 @@ impl Reconciler {
                     tracked.pass.binding_ineligible = true;
                     // Historical paths retain replacement context but do not create
                     // competing live claims after repeated incomplete rotations.
-                    replacement = match (replacement, tracked.file.role) {
-                        (Replacement::Unrelated, _) => Replacement::Possible(id),
-                        (_, BindingRole::Live) => Replacement::Possible(id),
-                        (current, _) => current,
-                    };
+                    replacement = replacement.merge(Replacement::Possible(id));
                     if new_rebound
                         && pass.complete
                         && Self::detect_new_rebound(
@@ -747,7 +810,11 @@ impl Reconciler {
                         pass.complete = false;
                         emit(Evidence::CoverageLost(ScanReason::Unstable));
                     }
-                    emit_exclusion(self.tracked.get_mut(&id).expect("binding index"), &mut emit);
+                    emit_exclusion(
+                        self.tracked.get_mut(&id).expect("binding index"),
+                        pass.environment_failed,
+                        &mut emit,
+                    );
                 }
             }
             if !resident {
@@ -865,6 +932,7 @@ impl Reconciler {
             return Err(ReconcileError::Generation);
         }
         pass.complete = false;
+        pass.environment_failed = true;
         if error.reason == ScanReason::RootChanged
             && let Some(root) = error.root
         {
@@ -916,6 +984,7 @@ impl Reconciler {
         if check.scope == BindingScope::Coverage {
             tracked.pass.exclusion_blocked = true;
             pass.complete = false;
+            pass.environment_failed = true;
             let reason = check.observation.reason.unwrap_or(ScanReason::Coverage);
             if reason == ScanReason::RootChanged {
                 emit(Evidence::RootChanged(check.diagnostic_path));
@@ -938,6 +1007,7 @@ impl Reconciler {
                     .is_some_and(|parent| tracked.parent.is_some_and(|expected| expected != parent))
             {
                 tracked.parent_changed = true;
+                pass.environment_failed = true;
                 pass.complete = false;
                 emit(Evidence::ParentChanged(id));
                 emit(Evidence::CoverageLost(ScanReason::RootChanged));
@@ -956,6 +1026,7 @@ impl Reconciler {
             Origin::Binding,
             &mut emit,
         )?;
+        let environment_failed = self.pass.as_ref().expect("active pass").environment_failed;
         let tracked = self
             .tracked
             .get_mut(&id)
@@ -970,13 +1041,14 @@ impl Reconciler {
         }
         if binding
             && (check.observation.reason == Some(ScanReason::Excluded)
-                || (check.context_valid
+                || (!environment_failed
+                    && check.context_valid
                     && unchanged
                     && check.observation.reason == Some(ScanReason::Missing)))
         {
             tracked.pass.binding_ineligible = true;
         }
-        emit_exclusion(tracked, &mut emit);
+        emit_exclusion(tracked, environment_failed, &mut emit);
         Ok(())
     }
 
@@ -1263,7 +1335,14 @@ impl Reconciler {
     }
 }
 
-fn emit_exclusion(tracked: &mut Tracked, emit: &mut impl FnMut(Evidence<'_>)) {
+fn emit_exclusion(
+    tracked: &mut Tracked,
+    environment_failed: bool,
+    emit: &mut impl FnMut(Evidence<'_>),
+) {
+    if environment_failed {
+        return;
+    }
     if tracked.file.active
         && tracked.pass.excluded
         && tracked.pass.binding_ineligible
@@ -1357,5 +1436,8 @@ pub fn reconcile_delay(
         .checked_mul(2)
         .and_then(|n| n.checked_add(1))
         .ok_or(ReconcileError::Delay)?;
-    Ok(Duration::from_nanos(base - spread + sample % width))
+    let delay = (base - spread)
+        .checked_add(sample % width)
+        .ok_or(ReconcileError::Delay)?;
+    Ok(Duration::from_nanos(delay))
 }

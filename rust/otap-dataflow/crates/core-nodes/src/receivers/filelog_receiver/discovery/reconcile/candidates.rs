@@ -18,6 +18,18 @@ pub enum Replacement {
     Possible(TrackedId),
 }
 
+impl Replacement {
+    // Historical start policy uses the smallest retained runtime ID, independently
+    // of the Live owner used by admission's supersession preflight.
+    pub(super) fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Possible(a), Self::Possible(b)) => Self::Possible(TrackedId(a.0.min(b.0))),
+            (Self::Unrelated, current) => current,
+            (historical, Self::Unrelated) => historical,
+        }
+    }
+}
+
 /// Bounded fresh candidate evidence, with no descriptors or durable identity.
 #[derive(Debug)]
 pub struct Candidate {
@@ -206,13 +218,7 @@ impl Candidates {
             slot.conflict |= conflict;
             self.conflict_seen |= conflict;
             refresh(slot, observation, first_in_pass);
-            slot.candidate.replacement = match (slot.candidate.replacement, replacement) {
-                (Replacement::Possible(old), Replacement::Possible(new)) => {
-                    Replacement::Possible(TrackedId(old.0.min(new.0)))
-                }
-                (Replacement::Unrelated, current) => current,
-                (historical, Replacement::Unrelated) => historical,
-            };
+            slot.candidate.replacement = slot.candidate.replacement.merge(replacement);
             if path_changed {
                 self.insert_path(index);
             }
@@ -291,6 +297,31 @@ impl Candidates {
             self.conflict_seen = true;
         }
         other.is_some()
+    }
+
+    // Explicit instability revokes retained evidence by path even if the failed
+    // probe could not retain a locator. Keep the latch through sample eviction.
+    pub(super) fn invalidate(&mut self, observation: &Observation) {
+        self.conflict_seen = true;
+        for &index in self
+            .paths
+            .iter_hash(self.path_hash.hash_one(observation.path.as_os_str()))
+        {
+            let slot = &mut self.slots[index];
+            if slot.candidate.path.as_os_str() == observation.path.as_os_str() {
+                slot.conflict = true;
+            }
+        }
+        if let Some(locator) = observation.locator {
+            self.invalidate_locator(locator);
+        }
+    }
+
+    pub(super) fn invalidate_locator(&mut self, locator: FileLocator) {
+        if let Some(&index) = self.index.get(&locator) {
+            self.slots[index].conflict = true;
+            self.conflict_seen = true;
+        }
     }
 
     fn insert_path(&mut self, index: usize) {

@@ -2792,3 +2792,247 @@ fn growing_rebound_chain_reports_only_cycle_closure() {
         assert!(!finish(&mut r, true, &mut events).complete);
     }
 }
+
+/// Scenario: A retained replacement is followed by explicit instability, with or without locator evidence.
+/// Guarantees: Affected admissions are withheld, predecessors stay Live, and unrelated candidates remain usable.
+#[test]
+fn explicit_instability_revokes_retained_replacement_evidence() {
+    for failed_locator in [None, Some(2)] {
+        for targeted in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/a")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(&mut r, &observation(2, "/a"), &mut events);
+            if targeted {
+                // The rebound must also revoke a candidate whose selected path moved.
+                feed(&mut r, &observation(2, "/0"), &mut events);
+            }
+            feed(&mut r, &observation(3, "/unrelated"), &mut events);
+            let failure = evidence(failed_locator, "/a", ScanReason::Unstable);
+            events.clear();
+            if targeted {
+                apply_test_check(&mut r, 1, &failure, None, false, &mut events);
+            } else {
+                feed(&mut r, &failure, &mut events);
+            }
+            assert_eq!(events.first().map(String::as_str), Some("coverage"));
+            assert!(r.tracked[&TrackedId(1)].pass.conflict);
+            assert!(!finish(&mut r, true, &mut events).complete);
+            let offered: Vec<_> = r
+                .offers()
+                .unwrap()
+                .map(|offer| offer.candidate.locator)
+                .collect();
+            assert_eq!(offered, [locator(3)]);
+            assert_eq!(r.tracked(TrackedId(1)).unwrap().role, BindingRole::Live);
+        }
+    }
+}
+
+fn apply_test_check(
+    r: &mut Reconciler,
+    id: u64,
+    observation: &Observation,
+    parent: Option<FileLocator>,
+    context_valid: bool,
+    events: &mut Vec<String>,
+) {
+    let pass = r.pass.as_ref().unwrap();
+    r.apply_binding_check(
+        pass.generation,
+        TrackedId(id),
+        super::super::BindingCheck {
+            observation,
+            parent,
+            context_valid,
+            scope: super::super::BindingScope::Binding,
+            diagnostic_path: &observation.path,
+        },
+        pass.observed_at,
+        |e| record(e, events),
+    )
+    .unwrap();
+}
+
+/// Scenario: A persistent parent change, root change, or failed batch precedes a contextual binding miss.
+/// Guarantees: Traversal and targeted misses cannot revoke another reader during an environment block or successful retry.
+#[test]
+fn environment_failure_blocks_contextual_misses() {
+    for failure in 0..3 {
+        for targeted in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/logs/a")).unwrap();
+            r.track(file(2, "/other/b")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(20), "/other", ScanReason::Directory),
+                &mut events,
+            );
+            if failure == 0 {
+                feed(
+                    &mut r,
+                    &evidence(Some(21), "/other", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            assert!(!finish(&mut r, false, &mut events).complete);
+            start(&mut r, 2);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            feed(
+                &mut r,
+                &evidence(Some(1), "/logs/hidden", ScanReason::Excluded),
+                &mut events,
+            );
+            match failure {
+                0 => {}
+                1 => feed(
+                    &mut r,
+                    &evidence(None, "/", ScanReason::RootChanged),
+                    &mut events,
+                ),
+                _ => r
+                    .apply_binding_batch_error(
+                        2,
+                        &super::super::BindingBatchError {
+                            reason: ScanReason::RootUnavailable,
+                            errno: None,
+                            root: Some(Path::new("/")),
+                        },
+                        |e| record(e, &mut events),
+                    )
+                    .unwrap(),
+            }
+            let missing = evidence(None, "/logs/a", ScanReason::Missing);
+            if targeted {
+                apply_test_check(&mut r, 1, &missing, Some(locator(10)), true, &mut events);
+            } else {
+                feed(&mut r, &missing, &mut events);
+            }
+            assert!(
+                !events.contains(&"excluded:1".into()),
+                "failure={failure}, targeted={targeted}"
+            );
+            assert!(!finish(&mut r, true, &mut events).complete);
+        }
+    }
+}
+
+/// Scenario: A smaller alias is published, then disappears while an excluded name and unrelated coverage failure are observed.
+/// Guarantees: The next request uses the retained binding-parent context and permits prompt exclusion without complete coverage.
+#[test]
+fn rebind_preserves_parent_context_without_duplicate_alias_hint() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/logs/z")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(1, "/logs/a"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(r.rebind(1, TrackedId(1), |_| true).unwrap());
+    start(&mut r, 2);
+    feed(
+        &mut r,
+        &evidence(Some(1), "/logs/hidden", ScanReason::Excluded),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(None, "/unrelated", ScanReason::Coverage),
+        &mut events,
+    );
+    let request = r.binding_request(TrackedId(1)).unwrap();
+    assert_eq!(request.path, Path::new("/logs/a"));
+    assert_eq!(request.parent, Some(locator(10)));
+    assert!(
+        r.tracked[&TrackedId(1)]
+            .previous_alias
+            .as_os_str()
+            .is_empty()
+    );
+    let missing = evidence(None, "/logs/a", ScanReason::Missing);
+    apply_test_check(&mut r, 1, &missing, Some(locator(10)), true, &mut events);
+    assert!(events.contains(&"excluded:1".into()));
+    assert!(!finish(&mut r, false, &mut events).complete);
+}
+
+/// Scenario: A new tracked binding shares an established parent, whose previous owner is retired.
+/// Guarantees: The known baseline survives ownership changes and detects directory replacement on the next pass.
+#[test]
+fn new_binding_inherits_known_parent_baseline() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/logs/a")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert!(finish(&mut r, true, &mut events).complete);
+    r.track(file(2, "/logs/b")).unwrap();
+    drop(r.untrack(TrackedId(1)).unwrap());
+    assert_eq!(r.tracked[&TrackedId(2)].parent, Some(locator(10)));
+    start(&mut r, 2);
+    feed(
+        &mut r,
+        &evidence(Some(11), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert!(events.contains(&"parent:2".into()));
+    assert!(!finish(&mut r, true, &mut events).complete);
+}
+
+/// Scenario: Historical and Live owners share replacement paths visited in either order.
+/// Guarantees: Start-policy hints choose the smallest runtime ID independently of hash order and Live ownership.
+#[test]
+fn replacement_hints_use_one_deterministic_rule() {
+    for reverse in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        for id in [4, 2, 6] {
+            let mut owner = file(id, "/a");
+            if id != 6 {
+                owner.role = BindingRole::Superseded;
+            }
+            r.track(owner).unwrap();
+        }
+        r.track(file(1, "/b")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        let paths = if reverse { ["/b", "/a"] } else { ["/a", "/b"] };
+        for path in paths {
+            feed(&mut r, &observation(8, path), &mut events);
+        }
+        assert!(!finish(&mut r, false, &mut events).complete);
+        assert_eq!(
+            r.offers().unwrap().next().unwrap().candidate.replacement,
+            Replacement::Possible(TrackedId(1))
+        );
+    }
+}
+
+/// Scenario: Jitter passes conversion and width validation but the final sampled sum exceeds u64 nanoseconds.
+/// Guarantees: Overflow returns Delay while the adjacent representable endpoint succeeds.
+#[test]
+fn jitter_final_sum_is_checked() {
+    let base = u64::MAX;
+    let spread = base / 100;
+    assert_eq!(
+        reconcile_delay(Duration::from_nanos(base), 1, 2 * spread),
+        Err(ReconcileError::Delay)
+    );
+    assert_eq!(
+        reconcile_delay(Duration::from_nanos(base), 1, spread),
+        Ok(Duration::from_nanos(base))
+    );
+}
