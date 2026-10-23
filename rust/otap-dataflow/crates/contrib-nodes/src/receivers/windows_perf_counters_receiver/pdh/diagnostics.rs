@@ -4,8 +4,9 @@
 //! Collection diagnostics extracted from the MVP runtime, without receiver activation.
 
 use super::super::config::CounterConfig;
-use super::super::model::{Sample, SampleValue};
+use super::super::model::{PendingMetadata, Sample, SampleFailure, SampleValue};
 use super::Error;
+use super::query::record_query_failure;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -28,11 +29,21 @@ impl SampleLogState {
         }
     }
 
-    pub(super) fn log(&mut self, sample: &Sample) -> Result<(), Error> {
+    /// Returns the number of counter warnings selected by episode suppression.
+    pub(super) fn log(&mut self, sample: &Sample) -> Result<usize, Error> {
+        let mut warnings = 0;
         let retained = sample
             .members
             .iter()
             .map(|member| (member.counter_index, member.path.as_ref()))
+            .chain(
+                sample
+                    .metadata
+                    .pending_cleanup
+                    .iter()
+                    .flatten()
+                    .map(|(index, path)| (*index, path.as_ref())),
+            )
             .chain(
                 sample
                     .metadata
@@ -65,34 +76,7 @@ impl SampleLogState {
             }
         }
         for failure in &sample.metadata.failures {
-            let counter = self
-                .configs
-                .get(failure.counter_index)
-                .ok_or(Error::InvalidSample(
-                    "diagnostic failure references missing configured counter",
-                ))?;
-            // Selector episodes are owned by Query and survive retained values and seeded rebuilds.
-            let selector_failure = matches!(
-                failure.reason,
-                "selector_unresolved" | "native_identity_unavailable"
-            );
-            let key = (
-                failure.counter_index,
-                Arc::clone(&failure.path),
-                failure.reason,
-            );
-            if selector_failure || !self.active_counter_failures.contains(&key) {
-                otel_arrow_dfe_telemetry::otel_warn!(
-                    "windows_perf_counters_receiver.counter.fail",
-                    node = self.node.as_str(),
-                    path_template = counter.path.as_str(),
-                    reason = failure.reason,
-                    error = failure.error.as_str()
-                );
-            }
-            if !selector_failure {
-                let _ = self.active_counter_failures.insert(key);
-            }
+            warnings += usize::from(self.log_failure(failure)?);
         }
         for overflow in &sample.metadata.overflows {
             let counter = self
@@ -139,6 +123,49 @@ impl SampleLogState {
                 query_rebuild_recoveries = diagnostics.query_rebuild_recoveries
             );
         }
-        Ok(())
+        Ok(warnings)
+    }
+
+    pub(super) fn log_error(&mut self, error: &Error) -> Result<usize, Error> {
+        let mut metadata = PendingMetadata::default();
+        record_query_failure(&mut metadata, &self.configs, error);
+        let mut warnings = 0;
+        for failure in &metadata.failures {
+            warnings += usize::from(self.log_failure(failure)?);
+        }
+        Ok(warnings)
+    }
+
+    fn log_failure(&mut self, failure: &SampleFailure) -> Result<bool, Error> {
+        let counter = self
+            .configs
+            .get(failure.counter_index)
+            .ok_or(Error::InvalidSample(
+                "diagnostic failure references missing configured counter",
+            ))?;
+        // Query owns selector and comparison-identity warning episodes.
+        let query_owned = matches!(
+            failure.reason,
+            "selector_unresolved" | "native_identity_unavailable"
+        );
+        let key = (
+            failure.counter_index,
+            Arc::clone(&failure.path),
+            failure.reason,
+        );
+        let emitted = query_owned || !self.active_counter_failures.contains(&key);
+        if emitted {
+            otel_arrow_dfe_telemetry::otel_warn!(
+                "windows_perf_counters_receiver.counter.fail",
+                node = self.node.as_str(),
+                path_template = counter.path.as_str(),
+                reason = failure.reason,
+                error = failure.error.as_str()
+            );
+        }
+        if !query_owned {
+            let _ = self.active_counter_failures.insert(key);
+        }
+        Ok(emitted)
     }
 }

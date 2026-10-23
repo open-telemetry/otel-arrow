@@ -3,11 +3,184 @@
 
 use super::*;
 
+/// Scenario: Shutdown is cancelled while an accepted native collection remains blocked.
+/// Guarantees: Repeated shutdown retains the join until release, closes native ownership, and observes a subsequent panic.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_shutdown_retains_blocked_worker_join() {
+    for panic_on_release in [false, true] {
+        let (mut worker, ownership, started, release) =
+            blocked_collect_worker(Duration::from_secs(30)).await;
+        {
+            let collect = worker.collect();
+            tokio::pin!(collect);
+            tokio::select! {
+                result = &mut collect => panic!("collection completed before release: {result:?}"),
+                result = started => result.unwrap(),
+            }
+        }
+        {
+            let shutdown = worker.shutdown(Instant::now() + Duration::from_secs(5));
+            tokio::pin!(shutdown);
+            std::future::poll_fn(|cx| {
+                assert!(Future::poll(shutdown.as_mut(), cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        assert!(worker.join.is_some());
+        assert!(!worker.shutdown(Instant::now()).await.unwrap());
+        assert_eq!(ownership.current.load(Ordering::Acquire), 1);
+        ownership
+            .panic_on_release
+            .store(panic_on_release, Ordering::Release);
+        release.send(()).unwrap();
+        let result = worker
+            .shutdown(Instant::now() + Duration::from_secs(5))
+            .await;
+        if panic_on_release {
+            assert!(matches!(result, Err(Error::WorkerPanicked)));
+        } else {
+            assert!(result.unwrap());
+        }
+        assert!(worker.join.is_none());
+        assert_eq!(ownership.current.load(Ordering::Acquire), 0);
+        assert_eq!(ownership.closed_queries.load(Ordering::Acquire), 1);
+    }
+}
+
+/// Scenario: Shutdown is cancelled after completion notification but before the native thread finishes joining.
+/// Guarantees: The in-progress join stays owned across cancellation and timeout, and its eventual panic is returned.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_shutdown_retains_in_progress_join() {
+    let (tx, _commands) = mpsc::sync_channel(1);
+    let (completion_tx, completion) = oneshot::channel();
+    let (ready_tx, ready) = oneshot::channel();
+    let (release, blocked) = mpsc::sync_channel(1);
+    let join = std::thread::spawn(move || {
+        completion_tx.send(()).unwrap();
+        ready_tx.send(()).unwrap();
+        blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+        panic!("injected panic after completion notification");
+    });
+    ready.await.unwrap();
+    let mut worker = Worker {
+        tx,
+        accepted: Arc::new(AtomicBool::new(false)),
+        shutdown_requested: Arc::new(AtomicBool::new(false)),
+        join: Some(WorkerJoin::Thread(join)),
+        completion: Some(completion),
+        startup: StartupState::default(),
+    };
+    {
+        let shutdown = worker.shutdown(Instant::now() + Duration::from_secs(5));
+        tokio::pin!(shutdown);
+        std::future::poll_fn(|cx| {
+            assert!(Future::poll(shutdown.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    assert!(matches!(worker.join, Some(WorkerJoin::Joining(_))));
+    assert!(!worker.shutdown(Instant::now()).await.unwrap());
+    release.send(()).unwrap();
+    assert!(matches!(
+        worker
+            .shutdown(Instant::now() + Duration::from_secs(5))
+            .await,
+        Err(Error::WorkerPanicked)
+    ));
+    assert!(worker.join.is_none());
+}
+
+/// Scenario: An abandoned collection later fails natively, repeats, recovers, and fails again.
+/// Guarantees: The worker logs the original status before releasing the request, suppresses repeats, and rearms after recovery.
+#[test]
+fn cancelled_collection_logs_native_failure_once_per_episode() {
+    assert_isolated_tracing(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let warnings = CounterWarnings::default();
+                // This global subscriber exists only in this test's isolated child process.
+                tracing::dispatcher::set_global_default(warnings.dispatch()).unwrap();
+                let (mut worker, ownership, started, release) =
+                    blocked_collect_worker(Duration::ZERO).await;
+                {
+                    let collect = worker.collect();
+                    tokio::pin!(collect);
+                    tokio::select! {
+                        result = &mut collect => panic!("collection completed before release: {result:?}"),
+                        result = started => result.unwrap(),
+                    }
+                }
+                ownership.collect_status.store(1, Ordering::Release);
+                release.send(()).unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while worker.accepted.load(Ordering::Acquire) {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                {
+                    let warnings = warnings.0.lock().unwrap();
+                    assert_eq!(warnings.len(), 1);
+                    assert!(warnings[0].contains("0x00000001"), "{warnings:?}");
+                }
+                assert!(worker.collect().await.is_err());
+                assert_eq!(warnings.0.lock().unwrap().len(), 1);
+                ownership.collect_status.store(0, Ordering::Release);
+                assert_eq!(worker.collect().await.unwrap().points.len(), 1);
+                ownership.collect_status.store(1, Ordering::Release);
+                assert!(worker.collect().await.is_err());
+                assert_eq!(warnings.0.lock().unwrap().len(), 2);
+                assert!(
+                    worker
+                        .shutdown(Instant::now() + Duration::from_secs(5))
+                        .await
+                        .unwrap()
+                );
+                assert_eq!(ownership.current.load(Ordering::Acquire), 0);
+            });
+    });
+}
+
+/// Scenario: A recoverable fake-PDH query-open failure completes worker startup without a usable native query.
+/// Guarantees: Worker::start_with exposes pending readiness with zero expanded counters and still shuts down cleanly.
+#[tokio::test(flavor = "current_thread")]
+async fn recoverable_open_exposes_pending_worker_startup() {
+    let mut worker = Worker::start_with(
+        vec![counter(r"\Memory\Available Bytes", "memory")],
+        Duration::from_secs(30),
+        4096,
+        |_configs, _limit, _seed| {
+            Err::<Query<PeakPdh>, Error>(Error::Pdh {
+                operation: PdhOperation::OpenQuery,
+                path: "<query>".to_owned(),
+                status: 1,
+            })
+        },
+    )
+    .await
+    .unwrap();
+    assert!(worker.startup.pending);
+    assert_eq!(worker.startup.active_expanded, 0);
+    assert!(
+        worker
+            .shutdown(Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap()
+    );
+}
+
 /// Scenario: An owned worker join temporarily has no completion receiver.
 /// Guarantees: Shutdown returns WorkerStopped without panicking or losing join ownership, and cleanup can still complete.
 #[tokio::test(flavor = "current_thread")]
 async fn missing_shutdown_completion_preserves_join_ownership() {
-    let (mut worker, ownership, _started, _release) = blocked_collect_worker().await;
+    let (mut worker, ownership, _started, _release) =
+        blocked_collect_worker(Duration::from_secs(30)).await;
     assert_eq!(worker.startup.active_expanded, 0);
     let completion = worker.completion.take();
     assert!(matches!(
@@ -70,19 +243,18 @@ fn permanently_rejected_exact_startup_is_fatal() {
 
 /// Scenario: Initial and replacement open or setup cleanup fail recoverably before a later successful open.
 /// Guarantees: Pending readiness and bounded retry preserve contextual diagnostic-only warnings, and successful rebuild primes before publication.
-#[tokio::test(flavor = "current_thread")]
-async fn recoverable_startup_errors_become_pending_and_rebuild() {
+#[test]
+fn recoverable_startup_errors_become_pending_and_rebuild() {
     for cleanup_failed in [false, true] {
         let configs = vec![counter(r"\Memory\Available Bytes", "memory")];
         let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory_opens = Arc::clone(&opens);
         let dropped = Arc::new(AtomicBool::new(false));
         let factory_dropped = Arc::clone(&dropped);
-        let mut worker = Worker::start_with(
-            configs.clone(),
-            Duration::from_millis(20),
-            4096,
-            move |configs, limit, _seed| {
+        let retry_cap = Duration::from_millis(20);
+        let now = Instant::now();
+        let mut open =
+            move |configs: Vec<CounterConfig>, limit, _seed: Option<&QueryRecreationSeed>| {
                 if factory_opens.fetch_add(1, Ordering::AcqRel) < 2 {
                     return Err(if cleanup_failed {
                         Error::CounterSetup {
@@ -110,12 +282,16 @@ async fn recoverable_startup_errors_become_pending_and_rebuild() {
                     limit,
                     None,
                 )
-            },
+            };
+        let mut slot =
+            QuerySlot::open_initial_at(configs.clone(), retry_cap, 4096, &mut open, now).unwrap();
+        assert!(slot.query.is_none());
+        let pending = collect_query(
+            &mut slot,
+            &mut open,
+            now + retry_cap - Duration::from_nanos(1),
         )
-        .await
         .unwrap();
-        assert!(worker.startup.pending);
-        let pending = worker.collect().await.unwrap();
         assert!(pending.metadata.diagnostics.query_pending);
         assert!(!pending.metadata.diagnostics.any_query_collected);
         assert!(pending.points.is_empty());
@@ -131,8 +307,7 @@ async fn recoverable_startup_errors_become_pending_and_rebuild() {
                 }
                 && failure.diagnostic_only
         }));
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        let failed_rebuild = worker.collect().await.unwrap();
+        let failed_rebuild = collect_query(&mut slot, &mut open, now + retry_cap).unwrap();
         assert!(failed_rebuild.points.is_empty());
         assert!(failed_rebuild.timestamp_unix_nano > 0);
         assert!(project_sample(&configs, &failed_rebuild).unwrap().is_none());
@@ -154,24 +329,23 @@ async fn recoverable_startup_errors_become_pending_and_rebuild() {
                 && !failure.error.is_empty()
         }));
         assert_eq!(opens.load(Ordering::Acquire), 2);
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        let rebuilt = worker.collect().await.unwrap();
+        let retry_at = now + retry_cap * 2;
+        let backoff =
+            collect_query(&mut slot, &mut open, retry_at - Duration::from_nanos(1)).unwrap();
+        assert_eq!(backoff.metadata.diagnostics.query_rebuild_attempts, 0);
+        assert_eq!(opens.load(Ordering::Acquire), 2);
+        let rebuilt = collect_query(&mut slot, &mut open, retry_at).unwrap();
         assert!(!rebuilt.metadata.diagnostics.any_query_collected);
         assert!(!rebuilt.metadata.diagnostics.query_pending);
         assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_attempts, 1);
         assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_recoveries, 1);
         assert!(rebuilt.points.is_empty());
         assert!(project_sample(&configs, &rebuilt).unwrap().is_none());
-        let ready = worker.collect().await.unwrap();
+        let ready = collect_query(&mut slot, &mut open, retry_at).unwrap();
         assert!(ready.metadata.diagnostics.any_query_collected);
         assert_eq!(ready.points.len(), 1);
         assert_eq!(opens.load(Ordering::Acquire), 3);
-        assert!(
-            worker
-                .shutdown(Instant::now() + Duration::from_secs(1))
-                .await
-                .unwrap()
-        );
+        drop(slot);
         assert!(dropped.load(Ordering::Acquire));
     }
 }
@@ -514,6 +688,7 @@ struct PeakOwnership {
     expansions: std::sync::atomic::AtomicUsize,
     collect_calls: std::sync::atomic::AtomicUsize,
     collect_status: std::sync::atomic::AtomicU32,
+    panic_on_release: AtomicBool,
     closed_queries: std::sync::atomic::AtomicUsize,
     collect_gate: std::sync::Mutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
 }
@@ -584,6 +759,10 @@ impl PdhApi for PeakPdh {
         if let Some((entered, release)) = gate {
             entered.send(()).unwrap();
             release.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(
+                !self.ownership.panic_on_release.load(Ordering::Acquire),
+                "injected worker panic after cancellation"
+            );
             self.check_running()?;
         }
         let status = self.ownership.collect_status.load(Ordering::Acquire);
@@ -734,7 +913,8 @@ fn recovery_only_sample_reports_no_query_collected() {
         QuerySlot::open_initial(plan, Duration::from_secs(30), 4_096, &mut open).unwrap();
     state.borrow_mut().collect_error = true;
 
-    let failure = collect_query(&mut query, &mut open, Instant::now()).unwrap_err();
+    let now = Instant::now();
+    let failure = collect_query(&mut query, &mut open, now).unwrap_err();
     assert!(matches!(
         failure,
         Error::Pdh {
@@ -743,7 +923,8 @@ fn recovery_only_sample_reports_no_query_collected() {
         }
     ));
 
-    let recovery_only = collect_query(&mut query, &mut open, Instant::now()).unwrap();
+    let recovery_only =
+        collect_query(&mut query, &mut open, now + Duration::from_millis(999)).unwrap();
     assert!(recovery_only.points.is_empty());
     assert!(!recovery_only.metadata.diagnostics.any_query_collected);
     assert_eq!(recovery_only.metadata.failures.len(), 1);
@@ -1067,14 +1248,14 @@ fn query_backoff_preserves_active_expanded_count() {
         .expansions
         .insert(path.to_owned(), vec![concrete.to_owned()]);
 
-    let healthy = collect_query(&mut queries, &mut open, Instant::now()).unwrap();
+    let now = Instant::now();
+    let healthy = collect_query(&mut queries, &mut open, now).unwrap();
     assert_eq!(healthy.metadata.diagnostics.active_expanded_counters, 1);
     states.borrow()[0].borrow_mut().collect_error = true;
-    let now = Instant::now();
     let failure = queries.collect(now, &mut open);
     assert!(failure.is_err_and(|error| error.is_query_collection_failure()));
     let native_collects = states.borrow()[0].borrow().calls.collect;
-    let pending = collect_query(&mut queries, &mut open, Instant::now()).unwrap();
+    let pending = collect_query(&mut queries, &mut open, now + Duration::from_millis(999)).unwrap();
     assert!(pending.points.is_empty());
     assert!(!pending.metadata.diagnostics.any_query_collected);
     assert_eq!(states.borrow()[0].borrow().calls.collect, native_collects);
@@ -1089,7 +1270,7 @@ fn query_backoff_preserves_active_expanded_count() {
     assert!(queries.query.is_none());
     assert_eq!(queries.active_expanded_count(), 0);
 
-    let pending = collect_query(&mut queries, &mut open, Instant::now()).unwrap();
+    let pending = collect_query(&mut queries, &mut open, now + Duration::from_secs(6)).unwrap();
 
     assert!(pending.points.is_empty());
     assert_eq!(pending.metadata.diagnostics.active_expanded_counters, 0);
@@ -1347,8 +1528,8 @@ async fn startup_longer_than_thirty_seconds_eventually_succeeds() {
 
 /// Scenario: The initial wildcard refresh hits a recoverable native cleanup failure before succeeding after the configured retry cap.
 /// Guarantees: Startup remains ready, the backoff scrape reports diagnostics without failing, and recovery waits for the bounded retry.
-#[tokio::test(flavor = "current_thread")]
-async fn startup_wildcard_refresh_failure_retries_after_cap() {
+#[test]
+fn startup_wildcard_refresh_failure_retries_after_cap() {
     let template = r"\Process(*)\Private Bytes";
     let mut config = counter(template, "process.private");
     config.instance_config = InstanceConfig::Wildcard {
@@ -1356,30 +1537,32 @@ async fn startup_wildcard_refresh_failure_retries_after_cap() {
     };
     let add_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let factory_add_calls = Arc::clone(&add_calls);
-    let retry_cap = Duration::from_secs(1);
-    let mut worker = Worker::start_with(
-        vec![config],
-        retry_cap,
-        4_096,
-        move |configs, max_native_counters, seed| {
-            Query::open_with_seed(
-                RecoveringRefreshPdh {
-                    add_calls: Arc::clone(&factory_add_calls),
-                    timestamp: 100,
-                },
-                configs,
-                retry_cap,
-                Duration::ZERO,
-                256,
-                max_native_counters,
-                seed,
-            )
-        },
-    )
-    .await
-    .unwrap();
+    let retry_cap = Duration::from_millis(20);
+    let now = Instant::now();
+    let mut open = move |configs, max_native_counters, seed: Option<&QueryRecreationSeed>| {
+        Query::open_with_seed(
+            RecoveringRefreshPdh {
+                add_calls: Arc::clone(&factory_add_calls),
+                timestamp: 100,
+            },
+            configs,
+            retry_cap,
+            Duration::ZERO,
+            256,
+            max_native_counters,
+            seed,
+        )
+    };
+    let mut slot =
+        QuerySlot::open_initial_at(vec![config], retry_cap, 4_096, &mut open, now).unwrap();
+    assert!(slot.query.is_none());
 
-    let deferred = worker.collect().await.unwrap();
+    let deferred = collect_query(
+        &mut slot,
+        &mut open,
+        now + retry_cap - Duration::from_nanos(1),
+    )
+    .unwrap();
     assert!(deferred.points.is_empty());
     assert!(
         deferred
@@ -1397,9 +1580,8 @@ async fn startup_wildcard_refresh_failure_retries_after_cap() {
     );
     assert_eq!(add_calls.load(Ordering::Acquire), 1);
 
-    tokio::time::sleep(retry_cap + Duration::from_millis(50)).await;
-    let rebuilt = worker.collect().await.unwrap();
-    let recovered = worker.collect().await.unwrap();
+    let rebuilt = collect_query(&mut slot, &mut open, now + retry_cap).unwrap();
+    let recovered = collect_query(&mut slot, &mut open, now + retry_cap).unwrap();
 
     assert!(rebuilt.points.is_empty());
     assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_attempts, 1);
@@ -1407,12 +1589,6 @@ async fn startup_wildcard_refresh_failure_retries_after_cap() {
     assert!(rebuilt.metadata.failures.is_empty());
     assert_eq!(add_calls.load(Ordering::Acquire), 2);
     assert_eq!(recovered.points.len(), 1);
-    assert!(
-        worker
-            .shutdown(Instant::now() + Duration::from_secs(1))
-            .await
-            .unwrap()
-    );
 }
 
 /// Scenario: Control abandons startup while the first of multiple native initialization units is blocked.
@@ -2061,7 +2237,8 @@ fn rebuilt_query_defers_values_until_the_next_scrape() {
 /// Guarantees: Later requests fail fast as busy and collection resumes after the call returns.
 #[tokio::test(flavor = "current_thread")]
 async fn bounds_timed_out_collection_and_recovers() {
-    let (mut worker, ownership, started, release) = blocked_collect_worker().await;
+    let (mut worker, ownership, started, release) =
+        blocked_collect_worker(Duration::from_secs(30)).await;
     {
         let first = worker.collect();
         tokio::pin!(first);
@@ -2142,6 +2319,7 @@ fn sample_metadata_merge_preserves_pending_evidence() {
             total_omitted: 0,
             examples: vec![Arc::from(r"\Initial\Omitted")],
         }],
+        ..Default::default()
     };
 
     metadata.merge(PendingMetadata {
@@ -2166,6 +2344,7 @@ fn sample_metadata_merge_preserves_pending_evidence() {
             total_omitted: 1,
             examples: vec![Arc::from(r"\Recovery\Omitted")],
         }],
+        ..Default::default()
     });
 
     assert_eq!(metadata.diagnostics.counter_add_failures, 1);
@@ -2204,6 +2383,7 @@ fn sample_metadata_merge_preserves_pending_evidence() {
             total_omitted: 1,
             examples: vec![Arc::from(r"\Initial\Latest")],
         }],
+        ..Default::default()
     });
 
     assert_eq!(metadata.failures.len(), 2);
@@ -2286,7 +2466,9 @@ fn query_recovery_cap_is_independent_of_membership_refresh() {
     assert_eq!(open_calls.load(Ordering::Acquire), 2);
 }
 
-async fn blocked_collect_worker() -> (
+async fn blocked_collect_worker(
+    retry_cap: Duration,
+) -> (
     Worker,
     Arc<PeakOwnership>,
     oneshot::Receiver<()>,
@@ -2296,7 +2478,7 @@ async fn blocked_collect_worker() -> (
     let worker_ownership = Arc::clone(&ownership);
     let worker = Worker::start_controlled(
         vec![counter(r"\Memory\Available Bytes", "available")],
-        Duration::from_secs(30),
+        retry_cap,
         4_096,
         "test".to_owned(),
         move |configs, limit, seed, shutdown| {
@@ -2309,7 +2491,7 @@ async fn blocked_collect_worker() -> (
                     collect_gate: None,
                 },
                 configs,
-                Duration::from_secs(30),
+                retry_cap,
                 Duration::from_secs(30),
                 256,
                 limit,

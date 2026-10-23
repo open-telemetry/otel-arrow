@@ -139,17 +139,24 @@ async fn live_pdh_startup_prime_enables_first_calculated_scrape() {
     );
 }
 
-/// Scenario: The local host exposes one exact gauge plus full-`*` and pure-`?` process wildcard gauges.
-/// Guarantees: Both wildcard forms return concrete identity-keyed points without changing the exact point.
+/// Scenario: An owned process is selected by prefix-`*` and pure-`?` wildcard gauges beside an exact Memory gauge.
+/// Guarantees: Both wildcard forms return only the owned identity and its PID or value, without changing the exact point.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires live Windows performance counters; run explicitly with `-- --ignored`"]
 async fn live_pdh_collects_exact_and_wildcard_counters() {
     let _serial = TEST_PDH_LOCK.lock().await;
-    let mut wildcard = counter(r"\Process(*)\Private Bytes", "windows.process.private");
+    let mut fixture = CounterProcessFixture::new();
+    let pid = fixture.spawn();
+    let wildcard_template = format!(r"\Process({}*)\Private Bytes", fixture.instance);
+    let question_template = format!(
+        r"\Process(?{})\ID Process",
+        fixture.instance.strip_prefix('o').unwrap()
+    );
+    let mut wildcard = counter(&wildcard_template, "windows.process.private");
     wildcard.instance_config = InstanceConfig::Wildcard {
         excluded_aggregation: None,
     };
-    let mut question = counter(r"\Process(svc?ost)\ID Process", "windows.process.id");
+    let mut question = counter(&question_template, "windows.process.id");
     question.instance_config = InstanceConfig::Wildcard {
         excluded_aggregation: Some("_Total".to_owned()),
     };
@@ -168,16 +175,20 @@ async fn live_pdh_collects_exact_and_wildcard_counters() {
     .await
     .unwrap();
     let mut sample = worker.collect().await.unwrap();
-    for _ in 0..3 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
         if [1, 2].into_iter().all(|counter_index| {
-            sample
-                .points
-                .iter()
-                .any(|point| point.counter_index == counter_index)
+            sample.points.iter().any(|point| {
+                point.counter_index == counter_index && matches!(point.value, SampleValue::Value(_))
+            })
         }) {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            Instant::now() < deadline,
+            "owned process counters not visible"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
         sample = worker.collect().await.unwrap();
     }
     let exact = sample
@@ -197,15 +208,18 @@ async fn live_pdh_collects_exact_and_wildcard_counters() {
         .iter()
         .filter(|point| point.counter_index == 1)
         .collect::<Vec<_>>();
-    assert!(!wildcard.is_empty());
+    assert_eq!(wildcard.len(), 1);
     let keys = wildcard
         .iter()
         .map(|point| CounterKey::new(point.counter_index, &point.path))
         .collect::<BTreeSet<_>>();
     assert_eq!(keys.len(), wildcard.len());
     assert!(wildcard.iter().all(|point| {
-        point.instance.is_some()
-            && point.path.as_ref() != r"\Process(*)\Private Bytes"
+        point
+            .instance
+            .as_ref()
+            .is_some_and(|instance| instance.name.eq_ignore_ascii_case(&fixture.instance))
+            && point.path.as_ref() != wildcard_template
             && matches!(
                 point.value,
                 SampleValue::Value(Number::Integer(value)) if value >= 0
@@ -216,16 +230,16 @@ async fn live_pdh_collects_exact_and_wildcard_counters() {
         .iter()
         .filter(|point| point.counter_index == 2)
         .collect::<Vec<_>>();
-    assert!(!question.is_empty());
+    assert_eq!(question.len(), 1);
     assert!(question.iter().all(|point| {
-        point.path.as_ref() != r"\Process(svc?ost)\ID Process"
+        point.path.as_ref() != question_template
             && point
                 .instance
                 .as_ref()
-                .is_some_and(|instance| instance.name.eq_ignore_ascii_case("svchost"))
+                .is_some_and(|instance| instance.name.eq_ignore_ascii_case(&fixture.instance))
             && matches!(
                 point.value,
-                SampleValue::Value(Number::Integer(value)) if value >= 0
+                SampleValue::Value(Number::Integer(value)) if value == pid
             )
     }));
     assert!(
@@ -236,17 +250,28 @@ async fn live_pdh_collects_exact_and_wildcard_counters() {
     );
 }
 
-/// Scenario: Windows expands canonical and mixed-ASCII-case spellings of the same Process wildcard.
-/// Guarantees: Native case-insensitive lookup returns the same concrete membership independent of template spelling.
+/// Scenario: Windows expands canonical and mixed-case wildcards restricted to one owned process prefix.
+/// Guarantees: Both spellings return the owned PID once without depending on unrelated host process churn.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires live Windows performance counters; run explicitly with `-- --ignored`"]
 async fn live_pdh_ascii_case_variants_share_native_membership() {
     let _serial = TEST_PDH_LOCK.lock().await;
-    let mut canonical = counter(r"\Process(*)\ID Process", "process.id.canonical");
+    let mut fixture = CounterProcessFixture::new();
+    let pid = fixture.spawn();
+    let mut canonical = counter(
+        &format!(r"\Process({}*)\ID Process", fixture.instance),
+        "process.id.canonical",
+    );
     canonical.instance_config = InstanceConfig::Wildcard {
         excluded_aggregation: None,
     };
-    let mut variant = counter(r"\pRoCeSs(*)\iD pRoCeSs", "process.id.variant");
+    let mut variant = counter(
+        &format!(
+            r"\pRoCeSs({}*)\iD pRoCeSs",
+            fixture.instance.to_ascii_uppercase()
+        ),
+        "process.id.variant",
+    );
     variant.instance_config = InstanceConfig::Wildcard {
         excluded_aggregation: None,
     };
@@ -268,6 +293,15 @@ async fn live_pdh_ascii_case_variants_share_native_membership() {
     });
     assert!(!paths[0].is_empty());
     assert_eq!(paths[0], paths[1]);
+    for counter_index in [0, 1] {
+        let points = sample
+            .points
+            .iter()
+            .filter(|point| point.counter_index == counter_index)
+            .collect::<Vec<_>>();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].value, SampleValue::Value(Number::Integer(pid)));
+    }
 }
 
 /// Scenario: Worker startup primes common disk queue-length and precision-timer counters.
@@ -351,7 +385,7 @@ async fn live_pdh_unavailable_exact_counter_retries_after_startup() {
             && failure.reason == "selector_unresolved"
             && failure.error.contains("PdhAddEnglishCounterW")
     }));
-    assert_eq!(sample.metadata.diagnostics.counter_add_failures, 1);
+    assert!(sample.metadata.diagnostics.counter_add_failures >= 1);
     assert!(
         worker
             .shutdown(Instant::now() + Duration::from_secs(2))

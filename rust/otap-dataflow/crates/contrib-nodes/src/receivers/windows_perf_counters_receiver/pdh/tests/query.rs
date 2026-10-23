@@ -201,82 +201,84 @@ use windows_sys::Win32::System::Performance::PDH_INVALID_HANDLE;
 /// Guarantees: The worker's diagnostic consumer emits one warning per episode and no recovery events on steady collection.
 #[test]
 fn collection_diagnostics_log_selector_episodes_without_reminders() {
-    use tracing_subscriber::layer::SubscriberExt;
-    // The test subscriber shares captured event names; production log state stays worker-local.
-    #[derive(Clone, Default)]
-    struct Events(Arc<std::sync::Mutex<Vec<&'static str>>>);
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _context: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            self.0.lock().unwrap().push(event.metadata().name());
+    assert_isolated_tracing(|| {
+        use tracing_subscriber::layer::SubscriberExt;
+        // The test subscriber shares captured event names; production log state stays worker-local.
+        #[derive(Clone, Default)]
+        struct Events(Arc<std::sync::Mutex<Vec<&'static str>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _context: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                self.0.lock().unwrap().push(event.metadata().name());
+            }
         }
-    }
-    let output = Events::default();
-    let subscriber = tracing_subscriber::registry().with(output.clone());
-    tracing::subscriber::with_default(subscriber, || {
-        let healthy = r"\Memory\Available Bytes";
-        let missing = r"\Memory\Late Counter";
-        let template = r"\Process(worker*)\ID Process";
-        let member = r"\Prozess(worker)\Prozesskennung";
-        let wildcard = CounterConfig {
-            instance_config: InstanceConfig::Wildcard {
-                excluded_aggregation: None,
-            },
-            ..counter(template, "process")
-        };
-        let configs = vec![
-            counter(healthy, "healthy"),
-            counter(missing, "late"),
-            wildcard,
-        ];
-        let (state, mut query) = fake_query_with_cadences(
-            configs.clone(),
-            vec![fake_counter(healthy, Number::Integer(42))],
-            Duration::ZERO,
-            Duration::ZERO,
+        let output = Events::default();
+        let subscriber = tracing_subscriber::registry().with(output.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let healthy = r"\Memory\Available Bytes";
+            let missing = r"\Memory\Late Counter";
+            let template = r"\Process(worker*)\ID Process";
+            let member = r"\Prozess(worker)\Prozesskennung";
+            let wildcard = CounterConfig {
+                instance_config: InstanceConfig::Wildcard {
+                    excluded_aggregation: None,
+                },
+                ..counter(template, "process")
+            };
+            let configs = vec![
+                counter(healthy, "healthy"),
+                counter(missing, "late"),
+                wildcard,
+            ];
+            let (state, mut query) = fake_query_with_cadences(
+                configs.clone(),
+                vec![fake_counter(healthy, Number::Integer(42))],
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+            state.borrow_mut().expand_error = true;
+            let mut logs = diagnostics::SampleLogState::new("diagnostics-test".to_owned(), configs);
+            for _ in 0..3 {
+                let _ = logs.log(&query.collect().unwrap()).unwrap();
+            }
+            {
+                let mut state = state.borrow_mut();
+                state.expand_error = false;
+                state
+                    .counters
+                    .push(fake_counter(missing, Number::Integer(7)));
+                state
+                    .counters
+                    .push(fake_counter(member, Number::Integer(99)));
+                let _ = state
+                    .expansions
+                    .insert(template.to_owned(), vec![member.to_owned()]);
+            }
+            let _ = logs.log(&query.collect().unwrap()).unwrap();
+            let before_steady = output.0.lock().unwrap().len();
+            let _ = logs.log(&query.collect().unwrap()).unwrap();
+            assert_eq!(output.0.lock().unwrap().len(), before_steady);
+            state.borrow_mut().expand_error = true;
+            for _ in 0..3 {
+                let sample = query.collect().unwrap();
+                assert_eq!(sample.points.len(), 3);
+                let _ = logs.log(&sample).unwrap();
+            }
+        });
+        let captured = output.0.lock().unwrap();
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|name| **name == "windows_perf_counters_receiver.counter.fail")
+                .count(),
+            3
         );
-        state.borrow_mut().expand_error = true;
-        let mut logs = diagnostics::SampleLogState::new("diagnostics-test".to_owned(), configs);
-        for _ in 0..3 {
-            logs.log(&query.collect().unwrap()).unwrap();
-        }
-        {
-            let mut state = state.borrow_mut();
-            state.expand_error = false;
-            state
-                .counters
-                .push(fake_counter(missing, Number::Integer(7)));
-            state
-                .counters
-                .push(fake_counter(member, Number::Integer(99)));
-            let _ = state
-                .expansions
-                .insert(template.to_owned(), vec![member.to_owned()]);
-        }
-        logs.log(&query.collect().unwrap()).unwrap();
-        let before_steady = output.0.lock().unwrap().len();
-        logs.log(&query.collect().unwrap()).unwrap();
-        assert_eq!(output.0.lock().unwrap().len(), before_steady);
-        state.borrow_mut().expand_error = true;
-        for _ in 0..3 {
-            let sample = query.collect().unwrap();
-            assert_eq!(sample.points.len(), 3);
-            logs.log(&sample).unwrap();
-        }
+        assert!(captured.contains(&"windows_perf_counters_receiver.instances.change"));
+        assert!(captured.contains(&"windows_perf_counters_receiver.recovery.change"));
     });
-    let captured = output.0.lock().unwrap();
-    assert_eq!(
-        captured
-            .iter()
-            .filter(|name| **name == "windows_perf_counters_receiver.counter.fail")
-            .count(),
-        3
-    );
-    assert!(captured.contains(&"windows_perf_counters_receiver.instances.change"));
-    assert!(captured.contains(&"windows_perf_counters_receiver.recovery.change"));
 }
 
 struct InvalidHandleState {
@@ -1416,10 +1418,11 @@ fn pending_replacement_handoff_preserves_owner_and_pattern_quota() {
     assert_eq!(replacement.value, SampleValue::Warming);
 }
 
-/// Scenario: A departed member's removal fails twice and collection crosses each controlled cleanup deadline.
-/// Guarantees: No removal or failure repeats before a deadline; cleanup retries exactly at the deadline and eventually releases ownership.
+/// Scenario: A departed member's cleanup fails across controlled retry deadlines, succeeds, and later fails after reappearance.
+/// Guarantees: Cleanup retries only at deadlines, warns once across backoff, releases ownership, and rearms the warning for the new episode.
 #[test]
 fn pending_removal_waits_for_cleanup_backoff() {
+    let mut warnings = 0;
     let template = r"\Process(*)\Private Bytes";
     let expanded = r"\Process(worker)\Private Bytes";
     let mut config = counter(template, "private");
@@ -1427,13 +1430,14 @@ fn pending_removal_waits_for_cleanup_backoff() {
         excluded_aggregation: None,
     };
     let (state, mut query) = fake_query_with_seed(
-        vec![config],
+        vec![config.clone()],
         vec![fake_counter(expanded, Number::Integer(1))],
         Duration::from_secs(60),
         Duration::ZERO,
         1,
         None,
     );
+    let mut logs = diagnostics::SampleLogState::new("cleanup-test".to_owned(), vec![config]);
     let _ = state
         .borrow_mut()
         .expansions
@@ -1446,16 +1450,24 @@ fn pending_removal_waits_for_cleanup_backoff() {
         state.remove_error = true;
     }
     let first = query.collect_at(now).unwrap();
+    warnings += logs.log(&first).unwrap();
     let deadline = now + Duration::from_secs(1);
     let second = query
         .collect_at(deadline - Duration::from_nanos(1))
         .unwrap();
+    warnings += logs.log(&second).unwrap();
+    assert_eq!(
+        second.metadata.pending_cleanup,
+        Some(vec![(0, Arc::from(expanded))])
+    );
     assert_eq!(state.borrow().removed, [0]);
     assert_eq!(first.metadata.diagnostics.discovery_failures, 0);
     assert_eq!(first.metadata.failures.len(), 1);
     assert_eq!(second.metadata.diagnostics.discovery_failures, 0);
     assert!(second.metadata.failures.is_empty());
     let retry = query.collect_at(deadline).unwrap();
+    warnings += logs.log(&retry).unwrap();
+    assert_eq!(warnings, 1);
     assert_eq!(state.borrow().removed, [0, 0]);
     assert_eq!(retry.metadata.failures.len(), 1);
     state.borrow_mut().remove_error = false;
@@ -1463,12 +1475,28 @@ fn pending_removal_waits_for_cleanup_backoff() {
     let waiting = query
         .collect_at(next_deadline - Duration::from_nanos(1))
         .unwrap();
+    warnings += logs.log(&waiting).unwrap();
     assert_eq!(state.borrow().removed, [0, 0]);
     assert!(waiting.metadata.failures.is_empty());
     let cleaned = query.collect_at(next_deadline).unwrap();
+    warnings += logs.log(&cleaned).unwrap();
+    assert_eq!(cleaned.metadata.pending_cleanup, Some(Vec::new()));
     assert_eq!(state.borrow().removed, [0, 0, 0]);
     assert!(cleaned.metadata.failures.is_empty());
     assert!(query.admitted_members().is_empty());
+    assert_eq!(warnings, 1);
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template.to_owned(), vec![expanded.to_owned()]);
+    warnings += logs.log(&query.collect_at(next_deadline).unwrap()).unwrap();
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.expansions.insert(template.to_owned(), Vec::new());
+        state.remove_error = true;
+    }
+    warnings += logs.log(&query.collect_at(next_deadline).unwrap()).unwrap();
+    assert_eq!(warnings, 2);
 }
 
 /// Scenario: Seventeen startup patterns each discover 257 available members under the fixed MVP bounds.

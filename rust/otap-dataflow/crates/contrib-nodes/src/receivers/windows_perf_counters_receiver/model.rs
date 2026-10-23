@@ -177,10 +177,15 @@ pub(super) struct PendingMetadata {
     pub(super) diagnostics: SampleDiagnostics,
     pub(super) failures: Vec<SampleFailure>,
     pub(super) overflows: Vec<ExpansionOverflow>,
+    /// Current cleanup identities; None means this delta contains no cleanup snapshot.
+    pub(super) pending_cleanup: Option<Vec<(usize, Arc<str>)>>,
 }
 
 impl PendingMetadata {
     pub(super) fn merge(&mut self, delta: Self) {
+        if delta.pending_cleanup.is_some() {
+            self.pending_cleanup = delta.pending_cleanup;
+        }
         merge_diagnostics(&mut self.diagnostics, delta.diagnostics);
         merge_latest_by_key(&mut self.failures, delta.failures, |failure| {
             (
@@ -195,6 +200,9 @@ impl PendingMetadata {
     }
 
     pub(super) fn merge_older(&mut self, older: Self) {
+        if self.pending_cleanup.is_none() {
+            self.pending_cleanup = older.pending_cleanup;
+        }
         merge_diagnostics(&mut self.diagnostics, older.diagnostics);
         merge_older_by_key(&mut self.failures, older.failures, |failure| {
             (
@@ -411,6 +419,26 @@ mod tests {
             failures: (0..size).map(|index| failure(index, detail)).collect(),
             ..Default::default()
         }
+    }
+
+    /// Scenario: Cleanup snapshots cross metadata-only deltas, recovery handoffs, and successful removal.
+    /// Guarantees: Deltas retain the outstanding episode, while a newer empty snapshot clears it without resurrection by older evidence.
+    #[test]
+    fn cleanup_snapshot_merge_preserves_freshness() {
+        let pending = PendingMetadata {
+            pending_cleanup: Some(vec![(0, Arc::from(r"\Process(worker)\Private Bytes"))]),
+            ..Default::default()
+        };
+        let mut current = PendingMetadata::default();
+        current.merge_older(pending.clone());
+        current.merge(PendingMetadata::default());
+        assert_eq!(current.pending_cleanup, pending.pending_cleanup);
+        current.merge(PendingMetadata {
+            pending_cleanup: Some(Vec::new()),
+            ..Default::default()
+        });
+        current.merge_older(pending);
+        assert_eq!(current.pending_cleanup, Some(Vec::new()));
     }
 
     /// Scenario: A high-cardinality merge updates every existing key, repeats one key, and appends one new key.

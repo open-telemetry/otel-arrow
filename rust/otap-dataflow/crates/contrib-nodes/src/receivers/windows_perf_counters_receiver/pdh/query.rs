@@ -1288,6 +1288,19 @@ impl<A: PdhApi> Query<A> {
 
     pub(super) fn move_pending_metadata_to(&mut self, target: &mut PendingMetadata) {
         target.merge(std::mem::take(&mut self.pending));
+        target.pending_cleanup = Some(self.pending_cleanup());
+    }
+
+    fn pending_cleanup(&self) -> Vec<(usize, Arc<str>)> {
+        self.pending_removals
+            .values()
+            .map(|removal| {
+                (
+                    removal.counter.config_index,
+                    Arc::clone(&removal.counter.path),
+                )
+            })
+            .collect()
     }
 
     pub(super) fn active_counter_count(&self) -> usize {
@@ -1404,6 +1417,7 @@ impl<A: PdhApi> Query<A> {
                 &mut self.previous_timestamp_unix_nano,
                 timestamp_unix_nano,
             );
+            metadata.pending_cleanup = Some(self.pending_cleanup());
             return Ok(Sample {
                 timestamp_unix_nano,
                 members: self.admitted_members(),
@@ -1437,6 +1451,7 @@ impl<A: PdhApi> Query<A> {
             Err(error) => return Err(self.restore_collection_error(metadata, error)),
         };
         metadata.diagnostics.active_expanded_counters = self.active_expanded_count();
+        metadata.pending_cleanup = Some(self.pending_cleanup());
         Ok(Sample {
             timestamp_unix_nano,
             members: self.admitted_members(),

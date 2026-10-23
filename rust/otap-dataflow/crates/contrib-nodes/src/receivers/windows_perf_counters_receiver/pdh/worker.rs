@@ -48,9 +48,15 @@ pub(in super::super) struct Worker {
     pub(super) tx: mpsc::SyncSender<Command>,
     pub(super) accepted: Arc<AtomicBool>,
     pub(super) shutdown_requested: Arc<AtomicBool>,
-    pub(super) join: Option<JoinHandle<()>>,
+    pub(super) join: Option<WorkerJoin>,
     pub(super) completion: Option<oneshot::Receiver<()>>,
     pub(in super::super) startup: StartupState,
+}
+
+// Both join phases stay owned across cancellation of shutdown().
+pub(super) enum WorkerJoin {
+    Thread(JoinHandle<()>),
+    Joining(tokio::task::JoinHandle<Result<(), Error>>),
 }
 
 impl Worker {
@@ -136,7 +142,7 @@ impl Worker {
                     tx,
                     accepted,
                     shutdown_requested,
-                    join: Some(join),
+                    join: Some(WorkerJoin::Thread(join)),
                     completion: Some(completion_rx),
                     startup,
                 })
@@ -180,23 +186,31 @@ impl Worker {
     /// Request shutdown and return `false` if the worker outlives the deadline.
     pub(in super::super) async fn shutdown(&mut self, deadline: Instant) -> Result<bool, Error> {
         request_stop(&self.tx, &self.shutdown_requested);
-        let Some(join) = self.join.take() else {
+        if self.join.is_none() {
             return Ok(true);
-        };
-        let Some(completion) = self.completion.as_mut() else {
-            self.join = Some(join);
+        }
+        let deadline = tokio::time::Instant::from_std(deadline);
+        if matches!(self.join, Some(WorkerJoin::Thread(_))) {
+            let completion = self.completion.as_mut().ok_or(Error::WorkerStopped)?;
+            if tokio::time::timeout_at(deadline, completion).await.is_err() {
+                return Ok(false);
+            }
+            self.completion = None;
+            let Some(WorkerJoin::Thread(join)) = self.join.take() else {
+                return Err(Error::WorkerStopped);
+            };
+            self.join = Some(WorkerJoin::Joining(join_worker(join)));
+        }
+        let Some(WorkerJoin::Joining(join)) = self.join.as_mut() else {
             return Err(Error::WorkerStopped);
         };
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), completion).await {
-            Ok(_) => {
-                self.completion = None;
-                join_worker(join).await?;
+        match tokio::time::timeout_at(deadline, join).await {
+            Ok(result) => {
+                self.join = None;
+                result.map_err(|_| Error::WorkerPanicked)??;
                 Ok(true)
             }
-            Err(_) => {
-                self.join = Some(join);
-                Ok(false)
-            }
+            Err(_) => Ok(false),
         }
     }
 }
@@ -238,15 +252,14 @@ async fn await_worker_completion(
     completion: oneshot::Receiver<()>,
 ) -> Result<(), Error> {
     let completion_result = completion.await;
-    join_worker(join).await?;
+    join_worker(join)
+        .await
+        .map_err(|_| Error::WorkerPanicked)??;
     completion_result.map_err(|_| Error::WorkerStopped)
 }
 
-async fn join_worker(join: JoinHandle<()>) -> Result<(), Error> {
-    tokio::task::spawn_blocking(move || join.join())
-        .await
-        .map_err(|_| Error::WorkerPanicked)?
-        .map_err(|_| Error::WorkerPanicked)
+fn join_worker(join: JoinHandle<()>) -> tokio::task::JoinHandle<Result<(), Error>> {
+    tokio::task::spawn_blocking(move || join.join().map_err(|_| Error::WorkerPanicked))
 }
 
 struct CompletionSignal(Option<oneshot::Sender<()>>);
@@ -307,10 +320,13 @@ fn run_worker_thread<A, F>(
         match rx.recv() {
             Ok(Command::Collect(response)) => {
                 let accepted = AcceptedCollectGuard::new(Arc::clone(&accepted));
-                let result = collect_query(&mut slot, open, Instant::now()).and_then(|sample| {
-                    logs.log(&sample)?;
-                    Ok(sample)
-                });
+                let result = collect_query(&mut slot, open, Instant::now());
+                let logged = match &result {
+                    Ok(sample) => logs.log(sample).map(|_| ()),
+                    Err(error) if !error.is_stop() => logs.log_error(error).map(|_| ()),
+                    Err(_) => Ok(()),
+                };
+                let result = logged.and(result);
                 drop(accepted);
                 let _ = response.send(result);
             }
@@ -330,10 +346,33 @@ where
     A: PdhApi,
     F: QueryFactory<A>,
 {
+    open_initial_query_with_clock(
+        configs,
+        query_retry_cap,
+        max_native_counters,
+        open,
+        shutdown,
+        Instant::now,
+    )
+}
+
+fn open_initial_query_with_clock<A, F>(
+    configs: Vec<CounterConfig>,
+    query_retry_cap: Duration,
+    max_native_counters: usize,
+    open: &mut F,
+    shutdown: &AtomicBool,
+    mut now: impl FnMut() -> Instant,
+) -> Result<Option<QuerySlot<A>>, Error>
+where
+    A: PdhApi,
+    F: QueryFactory<A>,
+{
     if shutdown.load(Ordering::Acquire) {
         return Ok(None);
     }
-    let mut slot = QuerySlot::open_unprepared(configs, query_retry_cap, max_native_counters, open)?;
+    let mut slot =
+        QuerySlot::open_unprepared(configs, query_retry_cap, max_native_counters, open, now())?;
     if shutdown.load(Ordering::Acquire) {
         return Ok(None);
     }
@@ -350,7 +389,7 @@ where
                 query.record_prime_failure(&error);
                 let retry_installed =
                     error.is_query_collection_failure() && !error.is_invalid_query();
-                let now = Instant::now();
+                let now = now();
                 slot.update_recovery_state(now, false, &Err(error));
                 if retry_installed {
                     slot.next_query_retry = now;
@@ -459,11 +498,11 @@ impl<A: PdhApi> QuerySlot<A> {
         retry_cap: Duration,
         limit: usize,
         open: &mut F,
+        now: Instant,
     ) -> Result<Self, Error>
     where
         F: QueryFactory<A>,
     {
-        let now = Instant::now();
         let mut slot = Self {
             configs,
             retry_cap,
@@ -677,6 +716,9 @@ where
         || slot.last_admitted_members.clone(),
         Query::admitted_members,
     );
+    if slot.query.is_none() {
+        sample.metadata.pending_cleanup = Some(Vec::new());
+    }
     sample.metadata.diagnostics.active_expanded_counters = slot.active_expanded_count();
     sample.metadata.diagnostics.query_pending = slot.is_pending();
     sample

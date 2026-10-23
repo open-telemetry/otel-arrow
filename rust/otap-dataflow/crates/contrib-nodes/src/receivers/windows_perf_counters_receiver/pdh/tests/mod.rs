@@ -29,6 +29,86 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
+// Scoped tracing subscribers can race through process-wide callsite caches.
+pub(super) fn assert_isolated_tracing(test: impl FnOnce()) {
+    const CHILD: &str = "OTEL_ARROW_PERF_COUNTER_TRACING_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("named test thread");
+    if std::env::var_os(CHILD) == Some(std::ffi::OsString::from(name)) {
+        test();
+        return;
+    }
+    let mut child = ProcessCommand::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD, name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("isolated tracing subprocess");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if child
+            .try_wait()
+            .expect("tracing subprocess status")
+            .is_some()
+        {
+            let output = child.wait_with_output().expect("tracing subprocess output");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{name}:\n{stdout}\n{stderr}");
+            assert!(
+                stdout.contains("1 passed;"),
+                "no isolated test ran: {stdout}"
+            );
+            return;
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("kill timed-out tracing subprocess");
+            let _ = child.wait().expect("reap tracing subprocess");
+            panic!("isolated tracing test timed out: {name}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[derive(Clone, Default)]
+struct CounterWarnings(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl CounterWarnings {
+    fn dispatch(&self) -> tracing::Dispatch {
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing::Dispatch::new(tracing_subscriber::registry().with(self.clone()))
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CounterWarnings {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().name() != "windows_perf_counters_receiver.counter.fail" {
+            return;
+        }
+        #[derive(Default)]
+        struct Detail(Option<String>);
+        impl tracing::field::Visit for Detail {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "error" {
+                    self.0 = Some(format!("{value:?}"));
+                }
+            }
+
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "error" {
+                    self.0 = Some(value.to_owned());
+                }
+            }
+        }
+        let mut detail = Detail::default();
+        event.record(&mut detail);
+        if let Some(detail) = detail.0 {
+            self.0.lock().unwrap().push(detail);
+        }
+    }
+}
+
 pub(super) fn counter(path: &str, name: &str) -> CounterConfig {
     CounterConfig {
         path: path.to_owned(),

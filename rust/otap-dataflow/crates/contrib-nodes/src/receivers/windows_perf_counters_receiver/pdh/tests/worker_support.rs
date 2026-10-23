@@ -32,6 +32,27 @@ impl Worker {
 }
 
 impl<A: PdhApi> QuerySlot<A> {
+    pub(in super::super) fn open_initial_at<F>(
+        configs: Vec<CounterConfig>,
+        retry_cap: Duration,
+        max_native_counters: usize,
+        open: &mut F,
+        now: Instant,
+    ) -> Result<Self, Error>
+    where
+        F: QueryFactory<A>,
+    {
+        open_initial_query_with_clock(
+            configs,
+            retry_cap,
+            max_native_counters,
+            open,
+            &AtomicBool::new(false),
+            || now,
+        )?
+        .ok_or(Error::WorkerStopRequested)
+    }
+
     pub(in super::super) fn open_initial<F>(
         configs: Vec<CounterConfig>,
         retry_cap: Duration,
