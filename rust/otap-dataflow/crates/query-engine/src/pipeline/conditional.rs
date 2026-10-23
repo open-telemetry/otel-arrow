@@ -504,9 +504,8 @@ impl PipelineStage for ConditionalPipelineStage {
         task_context: Arc<TaskContext>,
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        // Track which data point rows have been claimed by previous branches, per data point
-        // type. Indexed by MetricDataPointType::index(); None means the dp type is absent or
-        // has zero rows.
+        // Track which data point rows been selected by previous branches, per data point type
+        // None means the dp type is absent/empty.
         let mut already_selected: [Option<BooleanArray>; 4] = [const { None }; 4];
         let mut any_present = false;
         for dp_type in MetricDataPointType::all() {
@@ -529,12 +528,12 @@ impl PipelineStage for ConditionalPipelineStage {
             Vec::with_capacity(self.branches.len() + usize::from(self.default_branch.is_some()));
 
         for branch in &mut self.branches {
-            // Check if all present data point types have already been processed by previous
+            // Check if all present data point types have already been selected by previous
             // branches. If so, we can skip processing current and subsequent branches
-            let all_claimed = already_selected
+            let all_selected = already_selected
                 .iter()
                 .all(|sel| sel.as_ref().map_or(true, |s| s.true_count() == s.len()));
-            if all_claimed {
+            if all_selected {
                 break;
             }
 
@@ -607,7 +606,7 @@ impl PipelineStage for ConditionalPipelineStage {
             }
         }
 
-        // Handle the default (else) branch for any data points that were not selected by
+        // handle the default (else) branch for any data points that were not selected by
         // some previous if/else if branch:
         let has_remaining = MetricDataPointType::all().any(|dp_type| {
             already_selected[dp_type as usize]
@@ -667,8 +666,9 @@ impl PipelineStage for ConditionalPipelineStage {
             return Ok(otap_batch);
         }
 
-        // concatenate the data-point sub-batches from all branches back into the original OTAP batch.
-        // The root metric batch, resource/scope attrs, and metric attrs are preserved from the original.
+        // concatenate the data-point batches from all branches back into the original OTAP batch
+        // while preserving all non-dp batches from original (e.g. preserving dp parents: metrics,
+        // resource/scope attrs and metric attrs).
         remove_data_point_parent_payloads(&mut branch_results);
         let concatenated = concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())?;
         remove_data_point_payloads(&mut otap_batch);
