@@ -3708,3 +3708,90 @@ fn blocked_historical_predecessor_does_not_veto_live_reconnection() {
         }
     }
 }
+
+/// Scenario: Recovered or superseded records reconnect with eligible binding evidence under persistent or same-pass parent blocks.
+/// Guarantees: Promotion to Live is refused before durability, same-role reconnection remains possible, and a fresh recovered pass permits promotion.
+#[test]
+fn blocked_reconnection_cannot_promote_a_binding_to_live() {
+    for role in [BindingRole::Unverified, BindingRole::Superseded] {
+        for restore_in_pass in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            let mut tracked = file(1, "/logs/app");
+            tracked.role = role;
+            tracked.resident = false;
+            r.track(tracked).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            assert!(finish(&mut r, true, &mut events).complete);
+            start(&mut r, 2);
+            feed(
+                &mut r,
+                &evidence(Some(11), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            feed(&mut r, &observation(1, "/logs/app"), &mut events);
+            if restore_in_pass {
+                feed(
+                    &mut r,
+                    &evidence(Some(10), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            assert!(!finish(&mut r, true, &mut events).complete);
+            let token = r
+                .offers()
+                .unwrap()
+                .next()
+                .expect("same-role reconnection offer")
+                .token;
+            assert_eq!(
+                r.admit(token, file(1, "/logs/app"), |_| panic!(
+                    "blocked promotion reached durable owner"
+                )),
+                Err(ReconcileError::Tracked)
+            );
+            assert_eq!(r.tracked[&TrackedId(1)].file.role, role);
+            let mut reconnect = file(1, "/logs/app");
+            reconnect.role = role;
+            assert!(
+                r.admit(token, reconnect, |_| Some(Duration::from_secs(22)))
+                    .unwrap()
+            );
+            assert_eq!(r.tracked[&TrackedId(1)].file.role, role);
+            assert!(r.tracked[&TrackedId(1)].binding_blocked());
+            assert_eq!(r.tracked[&TrackedId(1)].parent_changed, !restore_in_pass);
+            r.update_reader_state(2, TrackedId(1), true, false).unwrap();
+            start(&mut r, 3);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            feed(&mut r, &observation(1, "/logs/app"), &mut events);
+            assert!(finish(&mut r, true, &mut events).complete);
+            let token = r
+                .offers()
+                .unwrap()
+                .next()
+                .expect("fresh eligible offer")
+                .token;
+            assert!(
+                r.admit(token, file(1, "/logs/app"), |_| Some(Duration::from_secs(
+                    32
+                )))
+                .unwrap()
+            );
+            assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Live);
+            assert!(!r.tracked[&TrackedId(1)].binding_blocked());
+            assert_eq!(
+                r.tracked[&TrackedId(1)].file.binding.as_deref(),
+                Some(Path::new("/logs/app"))
+            );
+        }
+    }
+}

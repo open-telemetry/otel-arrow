@@ -390,7 +390,9 @@ impl Reconciler {
                 || old.file.binding.as_ref().map(|p| p.as_os_str())
                     != file.binding.as_ref().map(|p| p.as_os_str())
                 || (file.role != old.file.role
-                    && !(file.role == BindingRole::Live && old.pass.binding_eligible))
+                    && !(file.role == BindingRole::Live
+                        && old.pass.binding_eligible
+                        && !old.binding_blocked()))
             {
                 return Err(ReconcileError::Tracked);
             }

@@ -104,6 +104,9 @@ An active historical record sharing the candidate path cannot veto reconnection
 solely because its parent is blocked. New-identity publication at that path is
 still rejected for every active blocked binding, including Superseded and
 Unverified records; locator equality alone does not prove continuity.
+Same-ID reconnection preserves the role while its binding is blocked. Promotion
+from Unverified or Superseded to Live is binding publication and requires fresh
+eligible evidence with no binding block.
 The final complete-pass check requires both persistent parent latches and per-pass
 binding blocks to be clear.
 Ordinary unrelated traversal incompleteness alone does not prevent a contextual
@@ -116,6 +119,14 @@ and close handles before returning evidence. A missing parent with valid roots
 is binding-local uncertainty; it permits the complete-pass fallback. Root,
 environment and required-policy failures still invalidate coverage. Traversal
 stack depth is a resource bound, not an exclusion rule.
+
+For a current, unacknowledged offer, `admit` may reject new-identity publication
+with `Feedback` because the candidate path is blocked. Its callback has not run
+and the token remains usable: the owner can acknowledge `Deferred` and retry in
+a later pass. This does not make every `Feedback` retryable; stale or previously
+acknowledged tokens remain protocol errors and cannot be acknowledged again.
+An offer resolved as blocked new-identity work may consume a bounded offer slot
+again in later passes while the block persists.
 
 ## Bindings and identity feedback
 
