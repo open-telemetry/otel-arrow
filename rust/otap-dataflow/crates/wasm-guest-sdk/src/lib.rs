@@ -3,13 +3,15 @@
 
 //! Guest-side SDK for the experimental OTAP dataflow WASM plugin contract.
 //!
-//! Bindings for the embedded WIT contract are generated here. Plugins should
-//! implement [`Plugin`] and [`Lifecycle`], then invoke [`export_plugin!`].
+//! The default `guest` feature generates bindings for the embedded WIT contract.
+//! Plugins should implement `Plugin` and `Lifecycle`, then invoke `export_plugin!`.
+//! Hosts can disable default features to use only the ABI version constant.
 
 #![allow(unexpected_cfgs)]
 
 /// Generated bindings for the SDK's embedded plugin WIT contract.
 #[doc(hidden)]
+#[cfg(feature = "guest")]
 pub mod bindings {
     wit_bindgen::generate!({
         world: "kernel-processor",
@@ -21,20 +23,51 @@ pub mod bindings {
     });
 }
 
-pub use bindings::exports::otel::otap_dataflow_plugin::lifecycle::InitError;
-pub use bindings::otel::otap_dataflow_plugin::host_services::LogLevel;
-pub use bindings::otel::otap_dataflow_plugin::otel_kernels::{
-    AttrScope, Pdata, filter_by_attribute_eq, pdata_num_rows,
+#[cfg(feature = "guest")]
+pub use bindings::{
+    exports::otel::otap_dataflow_plugin::lifecycle::InitError,
+    otel::otap_dataflow_plugin::{
+        host_services::LogLevel,
+        otel_kernels::{AttrScope, Pdata, filter_by_attribute_eq, pdata_num_rows},
+    },
 };
 
 /// Exact host-services ABI version supported by this SDK.
 pub const HOST_SERVICES_ABI_VERSION: u32 = 2;
 
-/// Error returned when plugin configuration cannot be deserialized.
-pub type ConfigError = serde_json::Error;
+/// Error returned when plugin configuration cannot be fetched or deserialized.
+#[cfg(feature = "guest")]
+#[derive(Debug)]
+pub enum ConfigError {
+    /// The host's shared host-service call budget is exhausted.
+    Throttled,
+    /// The configuration is invalid JSON or does not match the requested type.
+    Deserialize(serde_json::Error),
+}
+
+#[cfg(feature = "guest")]
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Throttled => f.write_str("plugin configuration fetch throttled by the host"),
+            Self::Deserialize(error) => write!(f, "invalid plugin configuration: {error}"),
+        }
+    }
+}
+
+#[cfg(feature = "guest")]
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Throttled => None,
+            Self::Deserialize(error) => Some(error),
+        }
+    }
+}
 
 /// Processor behavior implemented by a guest plugin.
 #[allow(async_fn_in_trait)]
+#[cfg(feature = "guest")]
 pub trait Plugin {
     /// Process one host-managed pdata resource, or return `None` to drop it.
     async fn process(data: Pdata) -> Option<Pdata>;
@@ -42,32 +75,47 @@ pub trait Plugin {
 
 /// One-time initialization behavior implemented by a guest plugin.
 #[allow(async_fn_in_trait)]
+#[cfg(feature = "guest")]
 pub trait Lifecycle {
     /// Initialize the plugin after the SDK confirms the exact host ABI version.
     async fn initialize() -> Result<(), InitError>;
 }
 
 /// Emit a log message through the host telemetry pipeline.
+#[cfg(feature = "guest")]
 pub async fn log(level: LogLevel, message: String) {
     bindings::otel::otap_dataflow_plugin::host_services::log(level, message).await;
 }
 
 /// Add to a bounded, plugin-instance-scoped host counter.
+#[cfg(feature = "guest")]
 pub async fn counter_add(name: String, value: u64) {
     bindings::otel::otap_dataflow_plugin::host_services::counter_add(name, value).await;
 }
 
 /// Fetch and deserialize the plugin-specific JSON configuration.
+///
+/// Call once during [`Lifecycle::initialize`] and keep the typed result: the
+/// configuration is fixed for the instance's lifetime. This call shares a rate
+/// limit with [`log`] and [`counter_add`]; exhaustion returns [`ConfigError::Throttled`].
+/// An unset configuration is JSON `null`, which can be read as `Option<T>`.
+/// Copy-byte budget exhaustion traps rather than returning a configuration error.
+#[cfg(feature = "guest")]
 pub async fn get_config<T: serde::de::DeserializeOwned>() -> Result<T, ConfigError> {
     let raw = bindings::otel::otap_dataflow_plugin::host_services::get_config().await;
     decode_config(&raw)
 }
 
+#[cfg(feature = "guest")]
 fn decode_config<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, ConfigError> {
-    serde_json::from_str(raw)
+    if raw.is_empty() {
+        return Err(ConfigError::Throttled);
+    }
+    serde_json::from_str(raw).map_err(ConfigError::Deserialize)
 }
 
 #[doc(hidden)]
+#[cfg(feature = "guest")]
 pub mod __private {
     use crate::{HOST_SERVICES_ABI_VERSION, InitError, Lifecycle};
 
@@ -94,6 +142,7 @@ pub mod __private {
 /// The generated lifecycle export checks that the host ABI is exactly
 /// [`HOST_SERVICES_ABI_VERSION`] before calling the plugin's initializer.
 #[macro_export]
+#[cfg(feature = "guest")]
 macro_rules! export_plugin {
     ($plugin:ident) => {
         impl $crate::bindings::exports::otel::otap_dataflow_plugin::processor::Guest
@@ -123,7 +172,7 @@ macro_rules! export_plugin {
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "guest"))]
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
@@ -173,7 +222,32 @@ mod tests {
     /// Guarantees: The SDK returns the serde JSON error instead of silently constructing partial configuration.
     #[test]
     fn config_json_returns_error_for_mismatched_type() {
-        assert!(decode_config::<TestConfig>(r#"{"enabled":"yes"}"#).is_err());
+        assert!(matches!(
+            decode_config::<TestConfig>(r#"{"enabled":"yes"}"#),
+            Err(ConfigError::Deserialize(_))
+        ));
+    }
+
+    /// Scenario: The host returns its empty-string sentinel after throttling a config read.
+    /// Guarantees: Even optional config reports throttling rather than a JSON error or absent config.
+    #[test]
+    fn empty_config_reports_throttling() {
+        assert!(matches!(
+            decode_config::<Option<TestConfig>>(""),
+            Err(ConfigError::Throttled)
+        ));
+    }
+
+    /// Scenario: The host returns nonempty input that is not a valid JSON value.
+    /// Guarantees: Malformed and whitespace-only config remain deserialization errors, not throttling.
+    #[test]
+    fn malformed_config_reports_deserialization_error() {
+        for raw in ["{", " \n", r#""""#] {
+            assert!(matches!(
+                decode_config::<TestConfig>(raw),
+                Err(ConfigError::Deserialize(_))
+            ));
+        }
     }
 
     /// Scenario: The host reports a version adjacent to the SDK's required ABI version.

@@ -113,8 +113,8 @@ impl Lifecycle for TestPlugin {
     async fn initialize() -> Result<(), InitError> {
         let config = get_config::<Option<PluginConfig>>()
             .await
-            .map_err(|_| InitError {
-                message: String::from("test-plugin: invalid plugin config"),
+            .map_err(|error| InitError {
+                message: format!("test-plugin: {error}"),
             })?
             .unwrap_or_default();
         log(
