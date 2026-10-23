@@ -1,9 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Batch-local syslog attribute keys with direct appends for the fixed vocabulary.
-//! Dynamic CEF keys share Arrow's interner, so duplicate keys and first-seen
-//! ordering are identical to ordinary string dictionary construction.
+//! Attribute-key construction optimized for syslog's repeated vocabulary.
+//!
+//! Most logs reuse the same attribute names. Intern each known key once per
+//! batch, cache its dictionary ID, and append that ID directly on later uses,
+//! avoiding repeated string hashing and dictionary lookups. Dynamic CEF keys
+//! still use the same Arrow interner, preserving deduplication and first-seen
+//! ordering even when an extension name matches a known key.
+//!
+//! Dictionary values and row indices are stored separately to retain compact
+//! u8/u16 indices and the ordinary builder's plain-string fallback. All cached
+//! IDs belong to one batch; values and parent IDs use the common builders.
 
 use std::sync::Arc;
 
@@ -23,7 +31,9 @@ use otel_arrow_dfe_pdata::{
     schema::{FieldExt, consts},
 };
 
-/// The fixed syslog and CEF-header vocabulary; dynamic extensions use strings.
+/// Slots for the fixed syslog and CEF-header vocabulary; extensions use strings.
+/// Discriminants index the ID cache, not the Arrow dictionary: dictionary IDs
+/// follow the order in which keys first occur within each batch.
 #[derive(Clone, Copy)]
 pub(crate) enum KnownAttributeKey {
     Facility,
@@ -77,6 +87,9 @@ impl KnownAttributeKey {
     }
 }
 
+/// Per-attribute row references into the shared key dictionary.
+/// Starts with u8 indices and widens to u16 when necessary without renumbering
+/// dictionary values, so already cached known-key IDs remain valid.
 enum KeyIndices {
     U8(Vec<u8>),
     U16(Vec<u16>),
@@ -127,14 +140,21 @@ impl KeyIndices {
     }
 }
 
+/// Physical key-column representation for the current batch.
+/// Uses dictionary encoding until the ordinary builder's cardinality limit,
+/// then expands existing rows into plain UTF-8 strings for the rest of the batch.
 enum KeyStorage {
     Dictionary {
+        // Stores unique strings only; append_n(key, 0) does not add row indices.
         interner: StringDictionaryBuilder<UInt16Type>,
+        // Actual row indices, independently sized as u8 or u16.
         indices: KeyIndices,
     },
     Native(StringBuilder),
 }
 
+/// Owns the key column and the batch-local cache of known-key dictionary IDs.
+/// Cached IDs are used only while storage remains dictionary encoded.
 struct AttributeKeys {
     storage: KeyStorage,
     // IDs never escape this batch, and the dictionary only grows. Native
@@ -217,7 +237,7 @@ impl AttributeKeys {
     }
 }
 
-/// Syslog's attribute builder; values and parent IDs retain the common builders.
+/// Combines optimized keys with the common value and parent-ID builders.
 /// Consuming finish prevents dictionary IDs from leaking into a later batch.
 pub(crate) struct SyslogAttributesBuilder {
     keys: AttributeKeys,
