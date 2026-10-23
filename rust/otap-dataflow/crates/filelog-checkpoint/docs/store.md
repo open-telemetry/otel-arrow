@@ -123,10 +123,12 @@ Allocation failure may abort the process; allocation is not fallibly reserved.
 The capped product uses saturating multiplication; subsequent file and
 recovery sums use checked arithmetic and must fit 1 GiB. Raw thresholds remain
 unchanged, and the byte threshold must fit one maximum-size frame.
-`InvalidLimits` reports all four configured record, snapshot, WAL-byte, and
-transaction limits. Some parameter checks share a reason, and budget errors
-do not distinguish overflow from exceeding the ceiling. Receiver configuration
-validation must provide those distinctions to satisfy the
+`InvalidLimits` reports invalid structural parameters. `StoreError::Admission`
+wraps the portable `AdmissionError` and retains the configured population,
+snapshot, WAL-byte and transaction limits. It distinguishes arithmetic overflow
+from a calculated value above its ceiling and names the failed formula.
+Receiver configuration uses the same portable bounds and additionally reports
+the contributing receiver settings, including the fingerprint window. See the
 [diagnostic contract](../../../docs/filelog-receiver-phase1-conformance.md#checkpoint-recovery).
 
 WAL limits exclude the immutable prefix and allow equality. Recovery accepts

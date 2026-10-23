@@ -5,11 +5,13 @@
 
 use super::{
     adapter::{Error, Result},
-    query::{Plan, ResolvedSchema},
+    query::{CursorColumns, Plan, ResolvedSchema, ScalarKind},
 };
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
-use otel_arrow_dfe_scraper::database::{CellValue, CompositeCursor, CursorRow, Row};
-use tokio_postgres::types::{FromSql, Type};
+use otel_arrow_dfe_scraper::database::{
+    CellValue, CompositeCursor, Cursor, CursorRow, Row, ScalarValue,
+};
+use tokio_postgres::types::{FromSql, ToSql, Type};
 
 const MAX_NUMERIC_CHARS: usize = 16_384;
 
@@ -103,6 +105,69 @@ pub(crate) fn check_tie(value: i64, ty: &str) -> Result<()> {
         _ => false,
     };
     if valid { Ok(()) } else { Err(Error::Value) }
+}
+
+pub(crate) fn validate_scalar(value: &ScalarValue) -> Result<()> {
+    value.validate().map_err(|_| Error::Value)?;
+    match value {
+        ScalarValue::Timestamp(text) => {
+            let _ = cursor_time(text, 6)?;
+        }
+        ScalarValue::Int64(_) => {}
+        ScalarValue::UInt64(_) | ScalarValue::String(_) => return Err(Error::Value),
+    }
+    Ok(())
+}
+
+fn integer_parameter(value: i64, ty: &Type) -> Result<Box<dyn ToSql + Sync>> {
+    check_tie(value, ty.name())?;
+    Ok(match *ty {
+        Type::INT2 => Box::new(i16::try_from(value).map_err(|_| Error::Value)?),
+        Type::INT4 => Box::new(i32::try_from(value).map_err(|_| Error::Value)?),
+        Type::INT8 => Box::new(value),
+        _ => return Err(Error::Metadata),
+    })
+}
+
+fn timestamp_parameter(text: &str, ty: &Type, modifier: i32) -> Result<Box<dyn ToSql + Sync>> {
+    let timestamp = cursor_time(text, modifier)?;
+    Ok(match *ty {
+        Type::TIMESTAMP => Box::new(timestamp.naive_utc()),
+        Type::TIMESTAMPTZ => Box::new(timestamp),
+        _ => return Err(Error::Metadata),
+    })
+}
+
+pub(crate) fn parameters(
+    cursor: &Cursor,
+    plan: &Plan,
+    schema: &ResolvedSchema,
+) -> Result<Vec<Box<dyn ToSql + Sync>>> {
+    match (plan.cursor, cursor) {
+        (CursorColumns::Snapshot, Cursor::Snapshot) => Ok(vec![]),
+        (CursorColumns::Composite { timestamp, tie }, Cursor::Composite(value)) => Ok(vec![
+            timestamp_parameter(
+                &value.timestamp,
+                &schema.native_types[timestamp],
+                schema.columns[timestamp].type_modifier,
+            )?,
+            integer_parameter(value.tie_breaker, &schema.native_types[tie])?,
+        ]),
+        (CursorColumns::Scalar { index, kind }, Cursor::Scalar(value)) => {
+            validate_scalar(value)?;
+            let ty = &schema.native_types[index];
+            let modifier = schema.columns[index].type_modifier;
+            let parameter: Box<dyn ToSql + Sync> = match (kind, value) {
+                (ScalarKind::Int64, ScalarValue::Int64(value)) => integer_parameter(*value, ty)?,
+                (ScalarKind::Timestamp, ScalarValue::Timestamp(value)) => {
+                    timestamp_parameter(value, ty, modifier)?
+                }
+                _ => return Err(Error::Value),
+            };
+            Ok(vec![parameter])
+        }
+        _ => Err(Error::Value),
+    }
 }
 
 struct Raw<'a>(&'a [u8]);
@@ -383,7 +448,59 @@ pub(crate) fn decode(ty: &Type, bytes: &[u8]) -> Result<CellValue> {
     })
 }
 
-pub(crate) type CursorPosition = (NaiveDateTime, i64);
+#[derive(PartialEq)]
+pub(crate) enum CursorPosition {
+    Snapshot,
+    Composite(NaiveDateTime, i64),
+    Int64(i64),
+    Timestamp(NaiveDateTime),
+}
+
+impl CursorPosition {
+    pub(crate) fn strictly_precedes(&self, next: &Self) -> Result<bool> {
+        Ok(match (self, next) {
+            (Self::Composite(left_time, left_tie), Self::Composite(right_time, right_tie)) => {
+                (left_time, left_tie) < (right_time, right_tie)
+            }
+            (Self::Int64(left), Self::Int64(right)) => left < right,
+            (Self::Timestamp(left), Self::Timestamp(right)) => left < right,
+            (Self::Snapshot, Self::Snapshot) => false,
+            _ => return Err(Error::Value),
+        })
+    }
+}
+
+pub(crate) fn cursor_position(cursor: &Cursor) -> Result<CursorPosition> {
+    Ok(match cursor {
+        Cursor::Snapshot => CursorPosition::Snapshot,
+        Cursor::Composite(value) => CursorPosition::Composite(
+            cursor_time(&value.timestamp, 6)?.naive_utc(),
+            value.tie_breaker,
+        ),
+        Cursor::Scalar(value) => {
+            validate_scalar(value)?;
+            match value {
+                ScalarValue::Int64(v) => CursorPosition::Int64(*v),
+                ScalarValue::Timestamp(v) => {
+                    CursorPosition::Timestamp(cursor_time(v, 6)?.naive_utc())
+                }
+                ScalarValue::UInt64(_) | ScalarValue::String(_) => return Err(Error::Value),
+            }
+        }
+    })
+}
+
+pub(crate) fn scalar_cell(value: &CellValue, kind: ScalarKind) -> Result<ScalarValue> {
+    let scalar = match (kind, value) {
+        (ScalarKind::Int64, CellValue::Int64(value)) => ScalarValue::Int64(*value),
+        (ScalarKind::Timestamp, CellValue::Timestamp(value) | CellValue::TimestampTz(value)) => {
+            ScalarValue::Timestamp(value.clone())
+        }
+        _ => return Err(Error::Value),
+    };
+    validate_scalar(&scalar)?;
+    Ok(scalar)
+}
 
 pub(crate) struct DecodedRow {
     pub row: CursorRow,
@@ -417,7 +534,7 @@ pub(crate) fn row(
                 }
                 CellValue::Null
             }
-            Some(raw) if i == plan.timestamp => {
+            Some(raw) if Some(i) == plan.cursor.timestamp() => {
                 let (dt, text) = timestamp_cache.decode(raw.0, col.type_modifier)?;
                 cursor_timestamp = Some(dt);
                 match *native_type {
@@ -430,18 +547,46 @@ pub(crate) fn row(
         };
         values.push(value);
     }
-    let timestamp = match &values[plan.timestamp] {
-        CellValue::Timestamp(v) | CellValue::TimestampTz(v) => v.clone(),
-        _ => return Err(Error::Value),
-    };
-    let CellValue::Int64(tie) = values[plan.tie] else {
-        return Err(Error::Value);
+    let (cursor, position) = match plan.cursor {
+        CursorColumns::Snapshot => (Cursor::Snapshot, CursorPosition::Snapshot),
+        CursorColumns::Composite { timestamp, tie } => {
+            let timestamp = match &values[timestamp] {
+                CellValue::Timestamp(v) | CellValue::TimestampTz(v) => v.clone(),
+                _ => return Err(Error::Value),
+            };
+            let CellValue::Int64(tie) = values[tie] else {
+                return Err(Error::Value);
+            };
+            (
+                CompositeCursor::new(timestamp, tie).into(),
+                CursorPosition::Composite(cursor_timestamp.ok_or(Error::Value)?, tie),
+            )
+        }
+        CursorColumns::Scalar { index, kind } => {
+            let scalar = if kind == ScalarKind::Timestamp {
+                match &values[index] {
+                    CellValue::Timestamp(value) | CellValue::TimestampTz(value) => {
+                        ScalarValue::Timestamp(value.clone())
+                    }
+                    _ => return Err(Error::Value),
+                }
+            } else {
+                scalar_cell(&values[index], kind)?
+            };
+            let cursor = Cursor::Scalar(scalar);
+            let position = if kind == ScalarKind::Timestamp {
+                CursorPosition::Timestamp(cursor_timestamp.ok_or(Error::Value)?)
+            } else {
+                cursor_position(&cursor)?
+            };
+            (cursor, position)
+        }
     };
     Ok(DecodedRow {
         row: CursorRow {
             row: Row { values },
-            cursor: CompositeCursor::new(timestamp, tie).into(),
+            cursor,
         },
-        position: (cursor_timestamp.ok_or(Error::Value)?, tie),
+        position,
     })
 }
