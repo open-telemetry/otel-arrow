@@ -126,7 +126,8 @@ These tables list telemetry emitted directly by this node. Common engine
 runtime metric sets may also be attached by the pipeline telemetry policy.
 
 Operational notes:
-* `<scope>.<instrument>` is used as shorthand for metric names.
+
+- `<scope>.<instrument>` is used as shorthand for metric names.
 
 ### Metric Sets
 

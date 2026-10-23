@@ -2,8 +2,5 @@ change_type: breaking
 component: pipeline
 note: "Migrate `receiver:host_metrics` internal telemetry to enum-dimensioned metric sets."
 issues: [3530]
-subtext: |
-  Migration: Update queries to use the dimensioned metric sets:
-  - Scrape outcomes: `receiver.host_metrics.scrapes` (instrument `scrapes`) with the `outcome` attribute (`completed`, `failed`, `overrun`).
-  - Scraper errors: `receiver.host_metrics.errors` (instrument `errors`) with the `error.type` attribute (`scraper_failure`, `partial_error`, `source_read_error`, `send_failure`).
-  - Operational metrics: `receiver.host_metrics` instruments retain their derived dot-delimited names (`scrapes.started`, `families.scraped`, `batches.sent`, `scrape.duration.ns`, `scrape.lag.ns`).
+subtext: >-
+  Migration: Update queries to use dimensioned receiver.host_metrics.scrapes (outcome), receiver.host_metrics.errors (error.type), and receiver.host_metrics (operational dot metrics).
