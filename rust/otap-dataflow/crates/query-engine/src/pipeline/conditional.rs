@@ -505,18 +505,16 @@ impl PipelineStage for ConditionalPipelineStage {
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         // Track which data point rows been selected by previous branches, per data point type
-        // None means the dp type is absent/empty.
+        // None means the dp type is absent
         let mut already_selected: [Option<BooleanArray>; 4] = [const { None }; 4];
         let mut any_present = false;
         for dp_type in MetricDataPointType::all() {
             if let Some(rb) = otap_batch.get(dp_type.payload_type()) {
-                if rb.num_rows() > 0 {
-                    already_selected[dp_type as usize] = Some(BooleanArray::new(
-                        BooleanBuffer::new_unset(rb.num_rows()),
-                        None,
-                    ));
-                    any_present = true;
-                }
+                already_selected[dp_type as usize] = Some(BooleanArray::new(
+                    BooleanBuffer::new_unset(rb.num_rows()),
+                    None,
+                ));
+                any_present = true;
             }
         }
 
@@ -532,7 +530,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // branches. If so, we can skip processing current and subsequent branches
             let all_selected = already_selected
                 .iter()
-                .all(|sel| sel.as_ref().map_or(true, |s| s.true_count() == s.len()));
+                .all(|sel| sel.as_ref().is_none_or(|s| s.true_count() == s.len()));
             if all_selected {
                 break;
             }
