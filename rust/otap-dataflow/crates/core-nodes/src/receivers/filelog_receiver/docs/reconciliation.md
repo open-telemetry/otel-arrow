@@ -92,8 +92,13 @@ conclusions. Missing-path evidence retained before the failure cannot authorize
 a later exclusion. Fresh positive policy or replacement evidence for an unaffected
 binding remains usable; unrelated candidate-local policy failures do not revoke
 that authority. A changed binding parent blocks that binding's prompt exclusion
-and replacement publication until its expected identity returns. The final
-complete-pass check still requires every retained parent latch to be clear.
+and replacement publication. Observing the change, or collecting binding evidence
+while the change is latched, blocks that binding work for the rest of the pass;
+restoration cannot revive evidence collected under the replacement directory.
+A later pass with the expected parent and fresh evidence can recover. Exact-locator
+reconnection through an independently validated eligible alias remains available,
+even while the distinguished parent is blocked. The final complete-pass check
+requires both persistent parent latches and per-pass binding blocks to be clear.
 Ordinary unrelated traversal incompleteness alone does not prevent a contextual
 binding miss from authorizing exclusion.
 Exclusion never changes offsets or durable records.

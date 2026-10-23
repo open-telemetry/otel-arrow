@@ -132,7 +132,7 @@ impl Reconciler {
             .get(&predecessor)
             .ok_or(ReconcileError::Tracked)?;
         if tracked.pass.conflict
-            || tracked.parent_changed
+            || tracked.binding_blocked()
             || tracked.pass.rebound != Some(replacement)
             || self.locators.get(&replacement, &self.tracked).any(|id| {
                 self.tracked[&id].file.active && self.tracked[&id].file.role == BindingRole::Live
@@ -397,7 +397,7 @@ impl Reconciler {
         if let Some(id) = replacing {
             let old = self.tracked.get(&id).ok_or(ReconcileError::Tracked)?;
             if old.pass.conflict
-                || old.parent_changed
+                || old.binding_blocked()
                 || old.pass.rebound != Some(candidate.locator)
             {
                 return Err(ReconcileError::Feedback);

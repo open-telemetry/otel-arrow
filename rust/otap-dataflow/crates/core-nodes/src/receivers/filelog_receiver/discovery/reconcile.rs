@@ -215,6 +215,8 @@ struct TrackedPass {
     exclusion_sent: bool,
     conflict: bool,
     parent_seen: bool,
+    // Binding evidence from a changed parent cannot recover within this pass.
+    parent_unstable: bool,
     binding_checked: bool,
     alias_checked: bool,
     exclusion_blocked: bool,
@@ -233,6 +235,12 @@ struct Tracked {
     parent: Option<FileLocator>,
     parent_changed: bool,
     successor: Option<(TrackedId, FileLocator)>,
+}
+
+impl Tracked {
+    fn binding_blocked(&self) -> bool {
+        self.parent_changed || self.pass.parent_unstable
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -694,6 +702,7 @@ impl Reconciler {
                     if let Some(expected) = tracked.parent {
                         if expected != locator {
                             tracked.parent_changed = true;
+                            tracked.pass.parent_unstable = true;
                             pass.environment_failed = true;
                             pass.complete = false;
                             emit(Evidence::ParentChanged(id));
@@ -770,6 +779,7 @@ impl Reconciler {
                         .as_ref()
                         .is_some_and(|path| path.as_os_str() == observation.path.as_os_str())
                     {
+                        tracked.pass.parent_unstable |= tracked.parent_changed;
                         tracked.pass.binding_ineligible = BindingIneligibility::Positive;
                     }
                     emit_exclusion(tracked, pass.environment_failed, &mut emit);
@@ -803,6 +813,7 @@ impl Reconciler {
                         .as_ref()
                         .is_some_and(|path| path.as_os_str() == observation.path.as_os_str())
                     {
+                        tracked.pass.parent_unstable |= tracked.parent_changed;
                         tracked.pass.binding_eligible = true;
                         if tracked.pass.rebound.is_some() {
                             tracked.pass.conflict = true;
@@ -832,6 +843,7 @@ impl Reconciler {
                         pass.complete = false;
                         emit(Evidence::CoverageLost(ScanReason::Unstable));
                     }
+                    tracked.pass.parent_unstable |= tracked.parent_changed;
                     let new_rebound = tracked.pass.rebound != Some(locator);
                     tracked.pass.rebound = Some(locator);
                     tracked.pass.rebound_resolved = tracked.file.role == BindingRole::Superseded
@@ -1080,6 +1092,7 @@ impl Reconciler {
                     .is_some_and(|parent| tracked.parent.is_some_and(|expected| expected != parent))
             {
                 tracked.parent_changed = true;
+                tracked.pass.parent_unstable = true;
                 pass.environment_failed = true;
                 pass.complete = false;
                 emit(Evidence::ParentChanged(id));
@@ -1150,6 +1163,7 @@ impl Reconciler {
             return Err(ReconcileError::Feedback);
         }
         self.candidates.associate(candidate, predecessor)?;
+        tracked.pass.parent_unstable |= tracked.parent_changed;
         if tracked.pass.rebound.is_some_and(|prior| prior != candidate) {
             tracked.pass.conflict = true;
             pass.complete = false;
@@ -1201,14 +1215,12 @@ impl Reconciler {
         self.candidates.block_conflicts(|candidate| {
             self.locators
                 .records(&candidate.locator, &self.tracked)
-                .any(|tracked| {
-                    tracked.file.active && (tracked.pass.conflict || tracked.parent_changed)
-                })
+                .any(|tracked| tracked.file.active && tracked.pass.conflict)
                 || self
                     .bindings
                     .records(candidate.path.as_os_str(), &self.tracked)
                     .any(|tracked| {
-                        tracked.file.active && (tracked.pass.conflict || tracked.parent_changed)
+                        tracked.file.active && (tracked.pass.conflict || tracked.binding_blocked())
                     })
         });
         self.unresolved_rebounds = self
@@ -1223,7 +1235,7 @@ impl Reconciler {
             && self
                 .tracked
                 .values()
-                .all(|tracked| !tracked.pass.conflict && !tracked.parent_changed);
+                .all(|tracked| !tracked.pass.conflict && !tracked.binding_blocked());
         if !complete {
             emit(Evidence::CoverageLost(ScanReason::Coverage));
         }
@@ -1427,7 +1439,7 @@ fn emit_exclusion(
             .allows_exclusion(environment_failed)
         && !tracked.pass.eligible
         && !tracked.pass.conflict
-        && !tracked.parent_changed
+        && !tracked.binding_blocked()
         && !tracked.pass.exclusion_sent
         && !tracked.pass.exclusion_blocked
         && (tracked.previous_alias.as_os_str().is_empty() || tracked.pass.alias_checked)

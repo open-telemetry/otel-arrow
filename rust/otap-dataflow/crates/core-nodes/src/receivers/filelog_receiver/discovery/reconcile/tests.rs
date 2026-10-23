@@ -3320,3 +3320,183 @@ fn policy_failure_invalidates_only_dependent_binding_evidence() {
         }
     }
 }
+
+/// Scenario: A nonresident file is found through an eligible alias after its distinguished parent is replaced.
+/// Guarantees: Exact-locator reconnection remains offered and admissible without changing the binding or clearing the parent latch.
+#[test]
+fn changed_parent_does_not_block_reconnection_through_another_alias() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    let mut tracked = file(1, "/logs/app");
+    tracked.resident = false;
+    r.track(tracked).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert!(finish(&mut r, true, &mut events).complete);
+    for generation in [2, 3] {
+        start(&mut r, generation);
+        if generation == 2 {
+            feed(
+                &mut r,
+                &evidence(Some(11), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+        }
+        feed(&mut r, &observation(1, "/logs.old/app"), &mut events);
+        feed(&mut r, &observation(2, "/logs/app"), &mut events);
+        assert!(!finish(&mut r, true, &mut events).complete);
+        let offers: Vec<_> = r
+            .offers()
+            .unwrap()
+            .map(|o| (o.token, o.candidate.locator))
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].1, locator(1));
+        assert!(
+            r.admit(offers[0].0, file(1, "/logs/app"), |_| Some(
+                Duration::from_secs(generation * 10 + 2)
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            r.tracked(TrackedId(1)).unwrap().binding.as_deref(),
+            Some(Path::new("/logs/app"))
+        );
+        assert!(r.tracked[&TrackedId(1)].parent_changed);
+        r.update_reader_state(generation, TrackedId(1), true, false)
+            .unwrap();
+    }
+}
+
+/// Scenario: Replacement evidence is collected under a changed parent, then the expected parent returns in the same pass.
+/// Guarantees: Neither traversal nor targeted restoration revives stale exclusion or replacement authority; a later fresh pass recovers.
+#[test]
+fn same_pass_parent_recovery_does_not_revive_binding_evidence() {
+    for targeted in [false, true] {
+        for inherited in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/logs/app")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            if inherited {
+                feed(
+                    &mut r,
+                    &evidence(Some(11), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            let _ = finish(&mut r, !inherited, &mut events);
+            start(&mut r, 2);
+            if !inherited {
+                feed(
+                    &mut r,
+                    &evidence(Some(11), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            feed(&mut r, &observation(2, "/logs/app"), &mut events);
+            if targeted {
+                apply_test_check(
+                    &mut r,
+                    1,
+                    &evidence(None, "/logs/app", ScanReason::Missing),
+                    Some(locator(10)),
+                    true,
+                    &mut events,
+                );
+            } else {
+                feed(
+                    &mut r,
+                    &evidence(Some(10), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            assert!(!r.tracked[&TrackedId(1)].parent_changed);
+            feed(
+                &mut r,
+                &evidence(Some(1), "/hidden", ScanReason::Excluded),
+                &mut events,
+            );
+            feed(&mut r, &observation(3, "/independent"), &mut events);
+            assert!(!events.contains(&"excluded:1".into()));
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert_eq!(
+                r.offers()
+                    .unwrap()
+                    .map(|o| o.candidate.locator)
+                    .collect::<Vec<_>>(),
+                [locator(3)]
+            );
+            assert_eq!(
+                r.supersede(2, TrackedId(1), locator(2)),
+                Err(ReconcileError::Feedback)
+            );
+            start(&mut r, 3);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            feed(&mut r, &observation(2, "/logs/app"), &mut events);
+            assert!(!finish(&mut r, false, &mut events).complete);
+            let token = r.offers().unwrap().next().unwrap().token;
+            assert!(
+                r.admit(token, file(2, "/logs/app"), |_| Some(Duration::from_secs(
+                    32
+                )))
+                .unwrap()
+            );
+        }
+    }
+}
+
+/// Scenario: The owner associates replacement evidence while a carried-over parent change is latched, before same-pass restoration.
+/// Guarantees: The association cannot authorize supersession after restoration, but its independently validated candidate remains available.
+#[test]
+fn parent_recovery_does_not_revive_owner_associated_binding_work() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/logs/app")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(Some(11), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert!(!finish(&mut r, true, &mut events).complete);
+    start(&mut r, 2);
+    feed(&mut r, &observation(2, "/independent"), &mut events);
+    r.associate_replacement(2, TrackedId(1), locator(2), |e| record(e, &mut events))
+        .unwrap();
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert!(!finish(&mut r, true, &mut events).complete);
+    assert_eq!(
+        r.supersede(2, TrackedId(1), locator(2)),
+        Err(ReconcileError::Feedback)
+    );
+    assert_eq!(
+        r.offers()
+            .unwrap()
+            .map(|o| o.candidate.locator)
+            .collect::<Vec<_>>(),
+        [locator(2)]
+    );
+}
