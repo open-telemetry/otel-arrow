@@ -72,9 +72,18 @@ def live(artifacts):
         directory.rmdir()
         raise ValueError("Fixture credentials must be outside uploaded artifacts")
     project = "otel-pg-ci-" + uuid.uuid4().hex
-    (artifacts / "fixture.json").write_text(
-        json.dumps({"project": project, "directory": str(directory)}), encoding="utf-8",
-    )
+    state = artifacts / "fixture.json"
+    try:
+        state.write_text(
+            json.dumps({"project": project, "directory": str(directory)}), encoding="utf-8",
+        )
+    except OSError as error:
+        try:
+            directory.rmdir()
+            state.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            error.add_note(f"Failed to remove unprovisioned fixture state: {cleanup_error}")
+        raise
     environment = dict(
         os.environ, POSTGRESQL_FIXTURE_PORT="0",
         POSTGRESQL_FIXTURE_EXPORT_DIR=str(directory),

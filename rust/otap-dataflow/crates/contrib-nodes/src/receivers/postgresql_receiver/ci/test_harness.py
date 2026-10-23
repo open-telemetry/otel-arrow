@@ -105,6 +105,23 @@ class HarnessTests(unittest.TestCase):
         self.assert_cleaned()
         run.cleanup(self.artifacts)
 
+    # Scenario: Persisting fixture ownership fails before any Docker command starts.
+    # Guarantees: Empty owned directories and partial state are removed; the original error propagates.
+    def test_state_write_failure(self):
+        error = OSError("fixture state write failed")
+
+        def fail_write(path, *_args, **_kwargs):
+            path.write_bytes(b"{")
+            raise error
+
+        with patch.object(Path, "write_text", fail_write):
+            with self.assertRaises(OSError) as raised:
+                run.live(self.artifacts)
+        self.assertIs(raised.exception, error)
+        self.assertEqual(self.commands, [])
+        self.assertFalse((self.artifacts / "fixture.json").exists())
+        self.assertEqual(list(self.directory.iterdir()), [self.artifacts])
+
     # Scenario: Database initialization or native test execution fails.
     # Guarantees: The original failure propagates and owned resources are still removed.
     def test_failure_cleanup(self):
