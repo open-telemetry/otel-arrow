@@ -1,0 +1,9 @@
+
+change_type: breaking
+component: query-engine
+note: OTAP query-engine now validates fields in expressions are valid for signal type
+issues: [4070]
+subtext: |
+   Transform/partition OPL/KQL now rejects fields invalid for the signal type. Partition processor
+   accepts `signal_type` for validation and batch selection.
+   Migration: Fix invalid field references and set `signal_type` for signal-specific partitions.

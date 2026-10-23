@@ -1,0 +1,4 @@
+change_type: enhancement 
+component: query-engine
+note: OTAP query-engine now supports metric data point fields as target (LHS) of assignment operations.
+issues: [4070]

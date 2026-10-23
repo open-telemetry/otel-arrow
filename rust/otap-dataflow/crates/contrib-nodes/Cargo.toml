@@ -63,6 +63,7 @@ otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true 
 otel-arrow-contrib-data-engine-recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
 tokio-util = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -90,6 +91,7 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
@@ -99,7 +101,10 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 # which is not a valid Win32 executable (os error 193).
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
-windows-sys = { workspace = true, optional = true, features = ["Win32_System_Performance"] }
+windows-sys = { workspace = true, optional = true, features = [
+    "Win32_Globalization",
+    "Win32_System_Performance",
+] }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -194,6 +199,9 @@ windows-event-forwarding = [
     "uuid/v5",
     "dep:url",
     "dep:humantime-serde",
+    "dep:x509-parser",
+    "dep:rustls",
+    "dep:tokio-rustls",
 ]
 user-events = [
     "dep:base64",
@@ -295,6 +303,7 @@ otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-state.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
+rcgen.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls.workspace = true

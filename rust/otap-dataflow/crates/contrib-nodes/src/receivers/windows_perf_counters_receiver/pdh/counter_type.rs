@@ -104,10 +104,10 @@ pub(super) enum CounterKind {
     Direct,
     /// A PDH-formatted calculation requiring only the current sample.
     FormattedSingleSample,
-    /// A fraction requiring the current numerator and a positive current base.
-    RawFraction,
     /// A PDH formula requiring successive samples (including private-clock timers).
     CalculatedTwoSample,
+    /// A PDH-provided raw difference requiring two samples and reset readiness after errors.
+    Delta,
     /// A fraction or average requiring successive samples and advancing base values.
     CalculatedTwoSampleWithBase,
     /// A successive-sample timer requiring a positive current multi-counter base.
@@ -140,7 +140,9 @@ pub(super) fn classify_native_type(
         | PERF_COUNTER_LARGE_RAWCOUNT
         | PERF_COUNTER_RAWCOUNT_HEX
         | PERF_COUNTER_LARGE_RAWCOUNT_HEX => Ok(CounterKind::Direct),
-        PERF_ELAPSED_TIME => Ok(CounterKind::FormattedSingleSample),
+        PERF_ELAPSED_TIME | PERF_RAW_FRACTION | PERF_LARGE_RAW_FRACTION => {
+            Ok(CounterKind::FormattedSingleSample)
+        }
         PERF_COUNTER_COUNTER
         | PERF_COUNTER_BULK_COUNT
         | PERF_COUNTER_QUEUELEN_TYPE
@@ -155,17 +157,15 @@ pub(super) fn classify_native_type(
         | PERF_PRECISION_SYSTEM_TIMER
         | PERF_PRECISION_100NS_TIMER
         | PERF_PRECISION_OBJECT_TIMER
-        | PERF_COUNTER_DELTA
-        | PERF_COUNTER_LARGE_DELTA
         | PERF_SAMPLE_COUNTER => Ok(CounterKind::CalculatedTwoSample),
         PERF_COUNTER_MULTI_TIMER
         | PERF_COUNTER_MULTI_TIMER_INV
         | PERF_100NSEC_MULTI_TIMER
         | PERF_100NSEC_MULTI_TIMER_INV => Ok(CounterKind::CalculatedTwoSampleWithMultiBase),
+        PERF_COUNTER_DELTA | PERF_COUNTER_LARGE_DELTA => Ok(CounterKind::Delta),
         PERF_SAMPLE_FRACTION | PERF_AVERAGE_TIMER | PERF_AVERAGE_BULK => {
             Ok(CounterKind::CalculatedTwoSampleWithBase)
         }
-        PERF_RAW_FRACTION | PERF_LARGE_RAW_FRACTION => Ok(CounterKind::RawFraction),
         _ => Err(UnsupportedNativeType {
             path: path.to_owned(),
             native_type,
@@ -181,12 +181,7 @@ mod tests {
     /// Guarantees: All four types are direct values, including the valid zero-valued type code.
     #[test]
     fn classifies_direct_counts() {
-        for native_type in [
-            0x0001_0000, // PERF_COUNTER_RAWCOUNT
-            0x0001_0100, // PERF_COUNTER_LARGE_RAWCOUNT
-            0x0000_0000, // PERF_COUNTER_RAWCOUNT_HEX
-            0x0000_0100, // PERF_COUNTER_LARGE_RAWCOUNT_HEX
-        ] {
+        for native_type in [0x0001_0000, 0x0001_0100, 0x0000_0000, 0x0000_0100] {
             assert_eq!(
                 classify_native_type("direct", native_type).unwrap(),
                 CounterKind::Direct,
@@ -195,8 +190,8 @@ mod tests {
         }
     }
 
-    /// Scenario: SDK metadata describes rates, queues, ordinary/private-clock timers and deltas.
-    /// Guarantees: Every supported type requires two samples, including inverse and object timers.
+    /// Scenario: SDK metadata describes rates, queues, and ordinary or private-clock timers.
+    /// Guarantees: Supported calculated types remain distinct from delta-count Sum eligibility.
     #[test]
     fn classifies_two_sample_counters() {
         for native_type in [
@@ -214,8 +209,6 @@ mod tests {
             0x2047_0500, // PERF_PRECISION_SYSTEM_TIMER
             0x2057_0500, // PERF_PRECISION_100NS_TIMER
             0x2067_0500, // PERF_PRECISION_OBJECT_TIMER
-            0x0040_0400, // PERF_COUNTER_DELTA
-            0x0040_0500, // PERF_COUNTER_LARGE_DELTA
             0x0041_0400, // PERF_SAMPLE_COUNTER
         ] {
             assert_eq!(
@@ -226,25 +219,56 @@ mod tests {
         }
     }
 
-    /// Scenario: SDK metadata describes raw fractions, sample fractions and timer/bulk averages.
-    /// Guarantees: Current-sample fractions remain distinct from formulas needing advancing bases.
+    /// Scenario: SDK metadata describes elapsed time, raw fractions, and normal or inverse multi-timers.
+    /// Guarantees: Elapsed time and raw fractions format from one sample while every multi-timer requires two samples and a native base.
     #[test]
-    fn classifies_fractions_and_averages() {
-        for native_type in [
-            0x2002_0400, // PERF_RAW_FRACTION
-            0x2002_0500, // PERF_LARGE_RAW_FRACTION
-        ] {
+    fn classifies_elapsed_and_multi_timers() {
+        assert_eq!(
+            classify_native_type("elapsed", 0x3024_0500).unwrap(),
+            CounterKind::FormattedSingleSample
+        );
+        for native_type in [0x2002_0400, 0x2002_0500] {
             assert_eq!(
                 classify_native_type("raw fraction", native_type).unwrap(),
-                CounterKind::RawFraction,
+                CounterKind::FormattedSingleSample,
                 "native type 0x{native_type:08X}"
             );
         }
         for native_type in [
-            0x20C2_0400, // PERF_SAMPLE_FRACTION
-            0x3002_0400, // PERF_AVERAGE_TIMER
-            0x4002_0500, // PERF_AVERAGE_BULK
+            0x2241_0500, // PERF_COUNTER_MULTI_TIMER
+            0x2341_0500, // PERF_COUNTER_MULTI_TIMER_INV
+            0x2251_0500, // PERF_100NSEC_MULTI_TIMER
+            0x2351_0500, // PERF_100NSEC_MULTI_TIMER_INV
         ] {
+            assert_eq!(
+                classify_native_type("multi timer", native_type).unwrap(),
+                CounterKind::CalculatedTwoSampleWithMultiBase,
+                "native type 0x{native_type:08X}"
+            );
+        }
+    }
+
+    /// Scenario: SDK metadata describes DWORD and LARGE delta-count counters.
+    /// Guarantees: Only the two SDK raw-difference types are classified as native Delta counters.
+    #[test]
+    fn classifies_delta_counts() {
+        for native_type in [
+            0x0040_0400, // PERF_COUNTER_DELTA
+            0x0040_0500, // PERF_COUNTER_LARGE_DELTA
+        ] {
+            assert_eq!(
+                classify_native_type("delta", native_type).unwrap(),
+                CounterKind::Delta,
+                "native type 0x{native_type:08X}"
+            );
+        }
+    }
+
+    /// Scenario: SDK metadata describes sample fractions and timer/bulk averages.
+    /// Guarantees: Every supported advancing-base formula uses the two-sample base kind.
+    #[test]
+    fn classifies_fractions_and_averages() {
+        for native_type in [0x20C2_0400, 0x3002_0400, 0x4002_0500] {
             assert_eq!(
                 classify_native_type("delta/base", native_type).unwrap(),
                 CounterKind::CalculatedTwoSampleWithBase,
@@ -278,28 +302,6 @@ mod tests {
         }
     }
 
-    /// Scenario: SDK metadata describes elapsed time and normal or inverse multi-timers.
-    /// Guarantees: Elapsed time needs one sample; all four multi-timers need successive samples and a current native base.
-    #[test]
-    fn classifies_elapsed_and_multi_timers() {
-        assert_eq!(
-            classify_native_type("elapsed", 0x3024_0500).unwrap(), // PERF_ELAPSED_TIME
-            CounterKind::FormattedSingleSample
-        );
-        for native_type in [
-            0x2241_0500, // PERF_COUNTER_MULTI_TIMER
-            0x2341_0500, // PERF_COUNTER_MULTI_TIMER_INV
-            0x2251_0500, // PERF_100NSEC_MULTI_TIMER
-            0x2351_0500, // PERF_100NSEC_MULTI_TIMER_INV
-        ] {
-            assert_eq!(
-                classify_native_type("multi timer", native_type).unwrap(),
-                CounterKind::CalculatedTwoSampleWithMultiBase,
-                "native type 0x{native_type:08X}"
-            );
-        }
-    }
-
     /// Scenario: Metadata describes nonnumeric or histogram counter types.
     /// Guarantees: No-data, text and histogram types do not become observations.
     #[test]
@@ -320,15 +322,12 @@ mod tests {
     fn rejects_unknown_types_and_flag_combinations() {
         for native_type in [
             0xFFFF_FFFF,
-            0x0001_0001, // PERF_COUNTER_RAWCOUNT with a reserved low bit
-            0x1041_0401, // PERF_COUNTER_COUNTER with a reserved low bit
-            0x2041_0501, // PERF_COUNTER_TIMER with a reserved low bit
-            0x2002_0401, // PERF_RAW_FRACTION with a reserved low bit
-            0x3002_0401, // PERF_AVERAGE_TIMER with a reserved low bit
-            0x3024_0501, // PERF_ELAPSED_TIME with a reserved low bit
-            0x2241_0501, // PERF_COUNTER_MULTI_TIMER with a reserved low bit
-            0x2361_0500, // PERF_COUNTER_MULTI_TIMER_INV with an unsupported object clock
-            0x0001_0200, // PERF_COUNTER_RAWCOUNT with zero-length size
+            0x0001_0001, // raw count with a reserved low bit
+            0x1041_0401, // rate with a reserved low bit
+            0x2041_0501, // timer with a reserved low bit
+            0x2002_0401, // fraction with a reserved low bit
+            0x3002_0401, // average with a reserved low bit
+            0x0001_0200, // number with zero-length size
         ] {
             let error = classify_native_type("unknown", native_type).unwrap_err();
             assert_eq!(error.native_type, native_type);

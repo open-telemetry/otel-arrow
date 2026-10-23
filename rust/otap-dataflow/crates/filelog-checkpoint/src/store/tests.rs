@@ -602,7 +602,7 @@ fn checked_resource_admission() {
     config.replay.max_snapshot_bytes = u64::MAX;
     assert!(matches!(
         CheckpointStore::open(&root, ID, config),
-        Err(StoreError::InvalidLimits {
+        Err(StoreError::Admission {
             max_snapshot_bytes: u64::MAX,
             ..
         })
@@ -1227,7 +1227,7 @@ fn interacting_wal_bound_preserves_combined_limits() {
     for limits in [file_limit, snapshot_limit, replay_limit] {
         assert!(matches!(
             limits.validate(),
-            Err(StoreError::InvalidLimits { .. })
+            Err(StoreError::Admission { .. })
         ));
     }
     let too_small = StoreConfig {
@@ -1550,4 +1550,44 @@ fn root_capability_rejects_path_only_handles() {
         Err(StoreError::InvalidConfig(_))
     ));
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+/// Scenario: Namespace encoding rejects a caller-supplied invalid checkpoint ID.
+/// Guarantees: Invalid configuration remains distinguishable from transaction-encoding failure.
+#[test]
+fn invalid_namespace_error_category() {
+    for id in ["", "a/b", "white space"] {
+        assert!(matches!(
+            filesystem::namespace_component(id),
+            Err(StoreError::InvalidConfig(_))
+        ));
+    }
+}
+
+/// Scenario: Discovery requests the store's namespace identity, then its directory is renamed.
+/// Guarantees: The getter identifies only the opened namespace, exposes no handle, and rejects stale ancestry.
+#[test]
+fn namespace_locator_is_narrow_and_revalidated() {
+    use std::os::unix::fs::MetadataExt;
+    let (dir, root) = root();
+    let store = store(&root);
+    let path = namespace(dir.path());
+    let metadata = fs::metadata(&path).unwrap();
+    assert_eq!(
+        store.namespace_locator().unwrap(),
+        Locator::PosixDevIno {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }
+    );
+    let root_metadata = fs::metadata(dir.path()).unwrap();
+    assert_ne!(
+        store.namespace_locator().unwrap(),
+        Locator::PosixDevIno {
+            dev: root_metadata.dev(),
+            ino: root_metadata.ino(),
+        }
+    );
+    fs::rename(&path, path.with_extension("moved")).unwrap();
+    assert!(store.namespace_locator().is_err());
 }

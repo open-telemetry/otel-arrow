@@ -81,7 +81,10 @@ impl ConsumerCase {
             },
             vec![],
         );
-        Some(HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles"))
+        Some(
+            HeaderPropagationPolicy::compile_standalone(policy, &[])
+                .expect("propagation policy compiles"),
+        )
     }
 
     const fn preserves_original_names(self) -> bool {
