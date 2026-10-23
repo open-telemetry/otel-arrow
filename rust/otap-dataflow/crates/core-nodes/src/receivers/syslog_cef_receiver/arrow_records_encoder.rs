@@ -36,7 +36,7 @@ impl ArrowRecordsBuilder {
         Self {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
-            log_attrs: SyslogAttributesBuilder::new(),
+            log_attrs: attributes::new_builder(),
         }
     }
 
