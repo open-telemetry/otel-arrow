@@ -20,9 +20,11 @@
 //! adjacent runs only when both observed timestamp and receipt year match,
 //! without parsing syslog contents.
 //!
-//! Synchronous materialization is capped at 256 messages and 256 KiB of framing
-//! (16 KiB per message). Receiver admission and native batching enforce these
-//! same limits until cooperative codec execution is available.
+//! Receiver admission, native batching, and materialization share hard limits
+//! of 8,192 messages and 2 MiB of framing (16 KiB per message). Small inputs
+//! decode synchronously; larger inputs use an owned incremental job that yields
+//! between bounded parsing steps and produces one complete Arrow batch. Arrow
+//! finalization remains synchronous, so step budgets are not latency guarantees.
 
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
@@ -47,17 +49,13 @@ const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
 const RUN_HEADER_LEN: usize = 16;
 const FRAME_HEADER_LEN: usize = 4;
-// Production bounds remain conservative. The development-only feature admits
-// larger inputs for synchronous/cooperative comparisons, not a default rollout.
-// These are hard admission limits, independent of configurable batch targets.
-#[cfg(not(feature = "experimental-cooperative-syslog"))]
-pub(super) const MAX_BATCH_ITEMS: usize = 256;
-#[cfg(feature = "experimental-cooperative-syslog")]
+// Hard admission limits bound each complete input independently of configurable
+// batch targets and the per-step cooperative decode budget.
 pub(super) const MAX_BATCH_ITEMS: usize = 8192;
-#[cfg(not(feature = "experimental-cooperative-syslog"))]
-pub(super) const MAX_BATCH_BYTES: usize = 256 * 1024;
-#[cfg(feature = "experimental-cooperative-syslog")]
 pub(super) const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024;
+// Small inputs avoid allocating a resumable decode job.
+const MAX_SYNC_BATCH_ITEMS: usize = 256;
+const MAX_SYNC_BATCH_BYTES: usize = 256 * 1024;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
 
 const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
@@ -446,7 +444,7 @@ const fn read_i64(bytes: &[u8]) -> i64 {
 
 // Reject oversized materialization before allocating Arrow builders. Batching may
 // split larger framed inputs, but neither configuration nor a budget fallback may
-// emit one that the decoder cannot safely process in a single synchronous call.
+// emit one that exceeds the decoder's per-input resource bounds.
 fn validate_decode_limits(count: usize, bytes: usize) -> Result<(), SyslogFramingError> {
     if count > MAX_BATCH_ITEMS {
         return Err(framing_error(format!(
@@ -471,8 +469,6 @@ impl PdataDecoder for SyslogDecoder {
         signal: SignalType,
         bytes: &Bytes,
     ) -> Result<OtapArrowRecords, CodecError> {
-        #[cfg(feature = "experimental-cooperative-syslog")]
-        let _segment = super::experiment::SegmentTimer::new(false);
         if signal != SignalType::Logs {
             return Err(CodecError::Unsupported {
                 encoding: SYSLOG_CEF_ENCODING,
@@ -496,21 +492,6 @@ impl PdataDecoder for SyslogDecoder {
             .build()
             .map_err(|error| operation_error(CodecOperation::Decode, error))
     }
-}
-
-/// Experimental decoder that yields without constructing intermediate Arrow batches.
-#[cfg(feature = "experimental-cooperative-syslog")]
-struct CooperativeSyslogDecoder;
-
-#[cfg(feature = "experimental-cooperative-syslog")]
-impl PdataDecoder for CooperativeSyslogDecoder {
-    fn decode(
-        &mut self,
-        signal: SignalType,
-        bytes: &Bytes,
-    ) -> Result<OtapArrowRecords, CodecError> {
-        SyslogDecoder.decode(signal, bytes)
-    }
 
     fn start_decode(
         &mut self,
@@ -526,7 +507,7 @@ impl PdataDecoder for CooperativeSyslogDecoder {
         validate_decode_limits(count, bytes.len())
             .map_err(|error| operation_error(CodecOperation::Decode, error))?;
         // Small inputs retain the synchronous path, with no job allocation.
-        if count <= 256 && bytes.len() <= 256 * 1024 {
+        if count <= MAX_SYNC_BATCH_ITEMS && bytes.len() <= MAX_SYNC_BATCH_BYTES {
             return self.decode(signal, bytes).map(DecodeTask::Ready);
         }
         Ok(DecodeTask::Incremental(Box::new(SyslogDecodeJob {
@@ -537,20 +518,17 @@ impl PdataDecoder for CooperativeSyslogDecoder {
     }
 }
 
-#[cfg(feature = "experimental-cooperative-syslog")]
 struct SyslogDecodeJob {
     bytes: Bytes,
     frames: FrameState,
     builder: Option<ReceivedArrowRecordsBuilder>,
 }
 
-#[cfg(feature = "experimental-cooperative-syslog")]
 impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
     fn step(
         &mut self,
         budget: otel_arrow_dfe_pdata_codec::DecodeBudget,
     ) -> Result<Option<OtapArrowRecords>, CodecError> {
-        let _segment = super::experiment::SegmentTimer::new(false);
         let started = std::time::Instant::now();
         let mut records = 0;
         let mut bytes = 0;
@@ -562,9 +540,8 @@ impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
                         framing_error("decode job already finished"),
                     )
                 })?;
-                // Finalization is still one synchronous operation. Measure it
-                // separately; parse-loop yields do not prove it meets a budget.
-                let _finalization = super::experiment::SegmentTimer::new(true);
+                // Finalization is synchronous. The parse-loop budget does not
+                // bound this operation or the cost of an indivisible record.
                 return builder
                     .build()
                     .map(Some)
@@ -594,12 +571,6 @@ impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
 }
 
 fn create_decoder(_: otel_arrow_dfe_pdata_codec::DecodePolicy) -> Box<dyn PdataDecoder> {
-    #[cfg(feature = "experimental-cooperative-syslog")]
-    if std::env::var_os("OTEL_DFE_EXPERIMENT_CODEC_EXECUTION").as_deref()
-        != Some(std::ffi::OsStr::new("sync"))
-    {
-        return Box::new(CooperativeSyslogDecoder);
-    }
     Box::<SyslogDecoder>::default()
 }
 
@@ -626,7 +597,7 @@ impl PdataBatcher for SyslogBatcher {
             ));
         }
         let max_items = settings.max_size.map_or(MAX_BATCH_ITEMS, |size| {
-            // Configuration may lower, but never raise, the synchronous work limit.
+            // Configuration may lower, but never raise, the per-input item limit.
             usize::try_from(size.get())
                 .unwrap_or(MAX_BATCH_ITEMS)
                 .min(MAX_BATCH_ITEMS)
@@ -1400,8 +1371,8 @@ mod tests {
         }
     }
 
-    /// Scenario: A timer shares one runtime thread with a maximum-sized synchronous decode.
-    /// Guarantees: The measured parse/build/finalize section and timer lateness stay below 50 ms on an idle CPU.
+    /// Scenario: A timer shares one runtime thread with maximum-sized cooperative syslog decoding.
+    /// Guarantees: The opt-in release check covers complete conversion and timer lateness for item- and byte-limited batches.
     #[tokio::test(flavor = "current_thread")]
     #[ignore = "wall-clock check: run in release mode on an otherwise idle pinned CPU"]
     async fn bounded_decode_scheduling_latency() {
@@ -1420,7 +1391,10 @@ mod tests {
                 "rfc3164_item_limit",
                 unchecked_batch(&vec![small.as_slice(); MAX_BATCH_ITEMS]),
             ),
-            ("raw_byte_limit", unchecked_batch(&vec![raw.as_slice(); 15])),
+            (
+                "raw_byte_limit",
+                unchecked_batch(&vec![raw.as_slice(); full_sized_test_message_capacity()]),
+            ),
             (
                 "cef_byte_limit",
                 unchecked_batch(&vec![
@@ -1445,9 +1419,12 @@ mod tests {
                 };
                 let decode = async {
                     let start = Instant::now();
-                    // No synthetic yield inside the operation: measure the actual
-                    // synchronous codec path, including Arrow finalization.
-                    let records = payload.try_into_otap(&service).unwrap();
+                    // Exercise the same scheduler-aware boundary as effect handlers,
+                    // including the final synchronous Arrow finalization.
+                    let records = payload
+                        .try_into_otap_cooperative(&service, tokio::task::yield_now)
+                        .await
+                        .unwrap();
                     let elapsed = start.elapsed();
                     let _ = std::hint::black_box(&records);
                     elapsed
@@ -2216,7 +2193,7 @@ mod tests {
     }
 
     /// Scenario: A budget fallback encounters malformed framing or more than the hard item limit.
-    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the synchronous decode limit.
+    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the per-input decode limits.
     #[test]
     fn native_batching_budget_fallback_validates_framing_and_decode_limits() {
         let mut settings = BatchSettings {
@@ -2283,7 +2260,7 @@ mod tests {
         );
         assert!(split.batches.iter().all(|(_, range)| range == &(0..=0)));
     }
-    #[cfg(feature = "experimental-cooperative-syslog")]
+
     mod cooperative_tests {
         use std::future::Future;
         use std::task::{Context as TaskContext, Poll, Waker};
@@ -2307,6 +2284,62 @@ mod tests {
             )
         }
 
+        /// Scenario: The registered decoder receives inputs around its synchronous item and byte thresholds.
+        /// Guarantees: Both decode policies select immediate small-batch conversion or owned cooperative work without feature flags or runtime switches.
+        #[test]
+        fn registered_decoder_selects_work_by_input_size() {
+            let raw = vec![b'x'; MAX_MESSAGE_SIZE];
+            let mut at_byte_limit = SyslogBatchBuilder::new();
+            while at_byte_limit.bytes.len() + FRAME_HEADER_LEN + raw.len() <= MAX_SYNC_BATCH_BYTES {
+                at_byte_limit.append_with_year(&raw, 2024).unwrap();
+            }
+            let remaining = MAX_SYNC_BATCH_BYTES - at_byte_limit.bytes.len() - FRAME_HEADER_LEN;
+            at_byte_limit
+                .append_with_year(&raw[..remaining], 2024)
+                .unwrap();
+            let at_byte_limit = at_byte_limit.finish(42).unwrap().bytes;
+            assert_eq!(at_byte_limit.len(), MAX_SYNC_BATCH_BYTES);
+            for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+                let mut decoder = create_decoder(DecodePolicy::new(validation));
+                for (bytes, incremental) in [
+                    (
+                        unchecked_batch(&vec![b"message".as_slice(); MAX_SYNC_BATCH_ITEMS]),
+                        false,
+                    ),
+                    (
+                        unchecked_batch(&vec![b"message".as_slice(); MAX_SYNC_BATCH_ITEMS + 1]),
+                        true,
+                    ),
+                    (at_byte_limit.clone(), false),
+                    (
+                        unchecked_batch(&vec![
+                            raw.as_slice();
+                            MAX_SYNC_BATCH_BYTES / MAX_MESSAGE_SIZE
+                        ]),
+                        true,
+                    ),
+                ] {
+                    let count = validated_item_count(&bytes).unwrap();
+                    let task = decoder.start_decode(SignalType::Logs, &bytes).unwrap();
+                    let records = match task {
+                        DecodeTask::Ready(records) => {
+                            assert!(!incremental, "large input must yield through an owned job");
+                            records
+                        }
+                        DecodeTask::Incremental(mut job) => {
+                            assert!(incremental, "small input must avoid job allocation");
+                            loop {
+                                if let Some(records) = job.step(DecodeBudget::default()).unwrap() {
+                                    break records;
+                                }
+                            }
+                        }
+                    };
+                    assert_eq!(records.num_items(), count);
+                }
+            }
+        }
+
         /// Scenario: Mixed formats and receipt years are decoded across multiple work segments.
         /// Guarantees: One final batch preserves every Arrow column, timestamp and row order; each parse step obeys its record budget.
         #[test]
@@ -2325,7 +2358,7 @@ mod tests {
             }
             let bytes = builder.finish(-7).unwrap().bytes;
             let expected = SyslogDecoder.decode(SignalType::Logs, &bytes).unwrap();
-            let DecodeTask::Incremental(mut job) = CooperativeSyslogDecoder
+            let DecodeTask::Incremental(mut job) = SyslogDecoder
                 .start_decode(SignalType::Logs, &bytes)
                 .unwrap()
             else {
@@ -2354,7 +2387,7 @@ mod tests {
             let message = vec![b'x'; MAX_MESSAGE_SIZE];
             let bytes = unchecked_batch(&vec![message.as_slice(); 32]);
             assert!(matches!(
-                CooperativeSyslogDecoder
+                SyslogDecoder
                     .start_decode(SignalType::Logs, &bytes)
                     .unwrap(),
                 DecodeTask::Incremental(_)

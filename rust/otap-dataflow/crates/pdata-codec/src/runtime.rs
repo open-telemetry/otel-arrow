@@ -24,7 +24,7 @@
 //! job. The engine supplies scheduler-aware yielding between work segments.
 //! There is no worker thread, spawned conversion task, or hidden pending queue.
 //! Ordinary decoders still execute synchronously; bounded offloading for work
-//! that cannot cooperate remains outside this prototype.
+//! that cannot cooperate requires a separate execution policy.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};

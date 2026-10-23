@@ -58,8 +58,6 @@ use otel_arrow_dfe_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 pub mod arrow_records_encoder;
 /// Independently decodable syslog batch codec and framing.
 mod codec;
-#[cfg(feature = "experimental-cooperative-syslog")]
-mod experiment;
 /// Benchmark-only access to syslog framing and lazy materialization.
 #[cfg(feature = "bench")]
 pub use codec::bench_support;
@@ -632,8 +630,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        #[cfg(feature = "experimental-cooperative-syslog")]
-        let _scheduling_probe = experiment::SchedulingProbe::start();
         let syslog_codec = resolve_syslog().map_err(|error| Error::ReceiverError {
             receiver: effect_handler.receiver_id(),
             kind: ReceiverErrorKind::Configuration,

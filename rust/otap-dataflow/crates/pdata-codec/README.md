@@ -165,7 +165,9 @@ Decoder implementations must:
 - Treat the input as untrusted and return `CodecError` instead of panicking.
 - Preserve the signal supplied by the caller.
 - Recover after an error so the same instance can decode a later valid batch.
-- Avoid retaining the input `Bytes`; the engine preserves it for Nack or retry.
+- Avoid retaining input `Bytes` in the decoder instance. An owned incremental
+  job may share them until completion or cancellation; the engine preserves the
+  original message for Nack or retry.
 
 Encoder implementations must produce complete, independently decodable output.
 The basic `encode` method returns owned `Bytes`. An encoder with reusable scratch
@@ -177,7 +179,7 @@ before `.await` to detach ownership from codec state.
 
 Ordinary codec decoder and encoder methods execute synchronously while the
 pipeline-local codec service has exclusive access to the selected instance.
-The experimental incremental decode path releases that access before yielding:
+The incremental decode path releases that access before yielding:
 `start_decode` returns completed records or an owned `PdataDecodeJob`, which
 retains one builder until the entire batch succeeds. The effect handler supplies
 Tokio-aware scheduling; a self-waking future alone may delay I/O under
@@ -469,28 +471,32 @@ is a decode-only example. Its receiver emits independently decodable framed
 batches, its decoder materializes native log records only when required, and
 its native batcher merges frames without parsing their syslog contents.
 
-## Cooperative syslog experiment
+## Cooperative syslog decoding
 
-The core-node development feature `experimental-cooperative-syslog` enables an
-8,192-item / 2 MiB admission ceiling for comparison only. Production defaults
-remain 256 items / 256 KiB. Both synchronous and cooperative 8K cases use the
-same feature-enabled binary: `OTEL_DFE_EXPERIMENT_CODEC_EXECUTION=sync` selects
-the synchronous decoder once at lazy instance creation; otherwise it selects
-the incremental decoder. Small inputs still decode synchronously.
+The syslog codec materializes up to 8,192 messages or 2 MiB of encoded framing
+per input, with a 16 KiB per-message limit. The receiver still defaults to
+100 messages per batch. Inputs with at most 256 messages and 256 KiB decode
+synchronously without allocating a decode job; larger inputs use incremental
+work automatically through the effect-handler APIs.
 
-The incremental decoder retains one Arrow builder, yields after at most 128
-records or 64 KiB of message bytes, and checks a 1 ms time target periodically.
-A single message can exceed a segment target. Arrow finalization, framing,
-native batching, output encoding, and compression still contain synchronous
-work; this experiment does not claim a hard scheduling deadline.
+An incremental job retains one Arrow builder and shared input bytes. Each step
+processes at most 128 records, stops after reaching 64 KiB of message bytes,
+and checks a 1 ms time target every 16 records. The last record can exceed the
+byte target, and an indivisible record can exceed the time target. The job emits
+one complete Arrow batch only after all framing has been validated.
 
-Setting `OTEL_DFE_EXPERIMENT_CODEC_PROBE_PATH` enables a 1 ms timer on the
-receiver's pipeline runtime and writes bounded timing samples when the receiver
-exits. The probe contains no telemetry data. Benchmark results must include
-actual I/O latency, not just codec segment durations. The probe and environment
-variables are development instrumentation, not supported codec configuration.
+Jobs do not spawn or enqueue background work. Mutable codec-service access is
+released before the first scheduling point, so other nodes can use the service
+while conversion is pending. Dropping a conversion future releases its partial
+builder and input references; delivery cancellation remains the caller's
+responsibility and no acknowledgement is sent automatically.
 
-Jobs do not spawn or enqueue background work. Existing node concurrency and
-channel backpressure bound active callers. Dropping a conversion future drops
-its partial builder and input references; delivery cancellation remains the
-caller's responsibility and no acknowledgement is sent automatically.
+Larger batches retain more memory in existing count-bounded channels. Review
+channel capacities when raising batch targets; cooperative scheduling does not
+provide a queue-byte or process-memory budget.
+
+Arrow finalization, native batching, output encoding, and compression still
+contain synchronous work. Direct synchronous codec APIs also remain available;
+callers that require scheduling opportunities must use effect-handler
+materialization, views, or output preparation. Cooperative decoding is not a
+hard scheduling deadline or support for codecs awaiting external I/O.
