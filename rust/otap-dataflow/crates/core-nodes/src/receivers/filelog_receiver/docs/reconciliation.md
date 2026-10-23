@@ -64,7 +64,9 @@ expected environment returns or the receiver is recreated. Explicit `Unstable`
 outcomes also invalidate matching retained candidate, binding and selected-alias
 work, even when the failed probe supplies no locator. A retained rebound connects
 the failure to its candidate if that candidate has since selected another alias;
-unrelated stable candidates remain usable during the incomplete pass.
+unrelated stable candidates remain usable during the incomplete pass. Candidate-local
+policy and verification failures likewise invalidate their dependent retained
+evidence without blocking unrelated positive exclusion.
 
 Only an effectively complete pass emits `Disappeared`. This starts the lifecycle
 owner's pending-disappearance work; it does not establish permanent EOF.
@@ -83,12 +85,17 @@ to prevent exclusion. A definitive miss or a fresh different locator expires
 that hint; busy or inaccessible checks retain it. Unknown binding checks require
 the complete-pass fallback. Required alias-check coverage failures block prompt
 exclusion for the rest of that pass, even if a later binding check is locally
-conclusive. Detected root, environment and required-policy failures block prompt
-exclusion receiver-wide for the rest of the pass, including after a successful
-check retry. A parent-change latch carried from an earlier pass also blocks
-prompt exclusion; the final complete-pass check still requires every retained
-parent latch to be clear. Ordinary unrelated traversal incompleteness alone does
-not prevent a contextual binding miss from authorizing exclusion.
+conclusive. Detected root and exclusion-root failures block missing-path
+conclusions receiver-wide for the rest of the pass, including after a successful
+check retry. A parent-change latch carried from an earlier pass also blocks those
+conclusions. Missing-path evidence retained before the failure cannot authorize
+a later exclusion. Fresh positive policy or replacement evidence for an unaffected
+binding remains usable; unrelated candidate-local policy failures do not revoke
+that authority. A changed binding parent blocks that binding's prompt exclusion
+and replacement publication until its expected identity returns. The final
+complete-pass check still requires every retained parent latch to be clear.
+Ordinary unrelated traversal incompleteness alone does not prevent a contextual
+binding miss from authorizing exclusion.
 Exclusion never changes offsets or durable records.
 
 Targeted checks share traversal's ancestor subtree policy, root validation,
@@ -103,9 +110,16 @@ stack depth is a resource bound, not an exclusion rule.
 An eligible established binding wins over a smaller alias. New proposals use
 minimum complete native path bytes; observations never overwrite bindings.
 Publishing an alias removes it from the alias index before clearing the hint,
-so the next check uses the distinguished binding's parent context. New bindings
+so the next check uses the distinguished binding's parent context. Successful
+publication marks the binding eligible; another proposal or rebind in the same
+generation returns that published path. Invalid or empty proposals are rejected
+before calling the durable owner. New bindings
 reuse an established parent baseline from the existing parent index, including
-the old binding when rebinding within one directory. A directory with no retained
+the old binding when rebinding within one directory. A latched expected identity
+wins over an unlatched neighbour, with runtime ID as the deterministic tie-breaker.
+Unknown neighbours share that expected baseline rather than adopting a replacement
+directory independently. A first targeted validation seeds unknown neighbours
+together to avoid repeatedly scanning the group. A directory with no retained
 baseline establishes its identity on first validation; discovery does not retain
 an unbounded history of previously visited directories.
 
@@ -113,7 +127,8 @@ an unbounded history of previously visited directories.
 including during incomplete scans and after the predecessor is retired or its
 path changes again. This historical hint is not supersession authority. When
 several predecessors contribute hints, the smallest runtime ID is retained as
-a deterministic representative, not as the owner of the selected path.
+a deterministic representative, not as the owner of the selected path. This rule
+also applies to owner-supplied associations, independent of their order.
 A candidate's own existing durable state wins. Reconnection leaves the
 predecessor Live and its rebound unresolved; a
 competing live binding is rejected before the identity callback. Only admission

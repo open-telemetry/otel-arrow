@@ -2925,7 +2925,7 @@ fn environment_failure_blocks_contextual_misses() {
 }
 
 /// Scenario: A smaller alias is published, then disappears while an excluded name and unrelated coverage failure are observed.
-/// Guarantees: The next request uses the retained binding-parent context and permits prompt exclusion without complete coverage.
+/// Guarantees: Repeat publication stays nonempty and idempotent; the next pass retains parent context for prompt exclusion.
 #[test]
 fn rebind_preserves_parent_context_without_duplicate_alias_hint() {
     let mut r = Reconciler::new(limits()).unwrap();
@@ -2940,6 +2940,20 @@ fn rebind_preserves_parent_context_without_duplicate_alias_hint() {
     feed(&mut r, &observation(1, "/logs/a"), &mut events);
     assert!(finish(&mut r, true, &mut events).complete);
     assert!(r.rebind(1, TrackedId(1), |_| true).unwrap());
+    assert_eq!(
+        r.binding_proposal(1, TrackedId(1)).unwrap(),
+        Path::new("/logs/a")
+    );
+    let mut publications = 0;
+    assert!(
+        r.rebind(1, TrackedId(1), |path| {
+            assert_eq!(path, Path::new("/logs/a"));
+            publications += 1;
+            true
+        })
+        .unwrap()
+    );
+    assert_eq!(publications, 1);
     start(&mut r, 2);
     feed(
         &mut r,
@@ -3035,4 +3049,274 @@ fn jitter_final_sum_is_checked() {
         reconcile_delay(Duration::from_nanos(base), 1, spread),
         Ok(Duration::from_nanos(base))
     );
+}
+
+/// Scenario: Identity-owner associations arrive in either order for one fresh candidate.
+/// Guarantees: Both orders retain the smallest predecessor ID without changing supersession ownership.
+#[test]
+fn owner_associations_merge_replacement_hints() {
+    for ids in [[1, 2], [2, 1]] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/one")).unwrap();
+        r.track(file(2, "/two")).unwrap();
+        start(&mut r, 1);
+        let mut events = Vec::new();
+        feed(&mut r, &observation(3, "/candidate"), &mut events);
+        for id in ids {
+            r.associate_replacement(1, TrackedId(id), locator(3), |e| record(e, &mut events))
+                .unwrap();
+        }
+        assert!(!finish(&mut r, false, &mut events).complete);
+        assert_eq!(
+            r.offers().unwrap().next().unwrap().candidate.replacement,
+            Replacement::Possible(TrackedId(1))
+        );
+        assert_eq!(r.tracked(TrackedId(1)).unwrap().role, BindingRole::Live);
+        assert_eq!(r.tracked(TrackedId(2)).unwrap().role, BindingRole::Live);
+    }
+}
+
+/// Scenario: A replacement appears beneath a changed binding parent while another candidate remains stable.
+/// Guarantees: No affected offer or explicit supersession is allowed until the expected parent returns; unrelated work remains usable.
+#[test]
+fn changed_parent_blocks_replacement_publication_until_recovery() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/logs/app")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(1, "/logs/app"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    start(&mut r, 2);
+    feed(
+        &mut r,
+        &evidence(Some(11), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(2, "/logs/app"), &mut events);
+    feed(&mut r, &observation(3, "/other/file"), &mut events);
+    assert!(!finish(&mut r, true, &mut events).complete);
+    assert_eq!(
+        r.offers()
+            .unwrap()
+            .map(|o| o.candidate.locator)
+            .collect::<Vec<_>>(),
+        [locator(3)]
+    );
+    assert_eq!(
+        r.supersede(2, TrackedId(1), locator(2)),
+        Err(ReconcileError::Feedback)
+    );
+    assert_eq!(r.tracked(TrackedId(1)).unwrap().role, BindingRole::Live);
+    start(&mut r, 3);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(2, "/logs/app"), &mut events);
+    assert!(!finish(&mut r, false, &mut events).complete);
+    let token = r.offers().unwrap().next().unwrap().token;
+    assert!(
+        r.admit(token, file(2, "/logs/app"), |_| Some(Duration::from_secs(
+            32
+        )))
+        .unwrap()
+    );
+    assert_eq!(
+        r.tracked(TrackedId(1)).unwrap().role,
+        BindingRole::Superseded
+    );
+}
+
+/// Scenario: A neighbour's expected parent is established before a second record sees the replacement directory.
+/// Guarantees: Traversal and targeted checks preserve the old expected identity, and later tracking inherits that latched baseline deterministically.
+#[test]
+fn parent_baselines_do_not_adopt_a_neighbours_replacement() {
+    for targeted in [false, true] {
+        for ids in [[1, 2], [2, 1]] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            for id in ids {
+                r.track(file(id, &format!("/logs/{id}"))).unwrap();
+            }
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            // A targeted check establishes the expected directory identity.
+            apply_test_check(
+                &mut r,
+                1,
+                &observation(1, "/logs/1"),
+                Some(locator(10)),
+                true,
+                &mut events,
+            );
+            if targeted {
+                apply_test_check(
+                    &mut r,
+                    2,
+                    &observation(2, "/logs/2"),
+                    Some(locator(11)),
+                    true,
+                    &mut events,
+                );
+            } else {
+                feed(
+                    &mut r,
+                    &evidence(Some(11), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            assert_eq!(r.tracked[&TrackedId(2)].parent, Some(locator(10)));
+            assert!(r.tracked[&TrackedId(2)].parent_changed);
+            assert!(!finish(&mut r, true, &mut events).complete);
+            r.track(file(3, "/logs/3")).unwrap();
+            assert_eq!(r.tracked[&TrackedId(3)].parent, Some(locator(10)));
+            assert!(r.tracked[&TrackedId(3)].parent_changed);
+        }
+    }
+}
+
+/// Scenario: Unrelated policy or root failures precede fresh positive exclusion evidence.
+/// Guarantees: A positively excluded or rebound binding can revoke independently, while pass completeness remains false.
+#[test]
+fn unrelated_failures_do_not_block_positive_exclusion() {
+    for reason in [
+        ScanReason::Policy,
+        ScanReason::VerificationUnavailable,
+        ScanReason::RootUnavailable,
+    ] {
+        for replacement in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/logs/app")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(&mut r, &evidence(None, "/other", reason), &mut events);
+            feed(
+                &mut r,
+                &evidence(Some(1), "/hidden", ScanReason::Excluded),
+                &mut events,
+            );
+            if replacement {
+                feed(&mut r, &observation(2, "/logs/app"), &mut events);
+            } else {
+                feed(
+                    &mut r,
+                    &evidence(Some(1), "/logs/app", ScanReason::Excluded),
+                    &mut events,
+                );
+            }
+            assert!(events.contains(&"excluded:1".into()));
+            assert!(!finish(&mut r, true, &mut events).complete);
+        }
+    }
+}
+
+/// Scenario: A contextual miss is retained before a root failure and a later excluded-alias observation.
+/// Guarantees: Old missing-path evidence cannot bypass the environment gate, but a fresh positive exclusion can.
+#[test]
+fn environment_failure_invalidates_earlier_miss_authority() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/logs/app")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(None, "/logs/app", ScanReason::Missing),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(None, "/other", ScanReason::RootUnavailable),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(Some(1), "/hidden", ScanReason::Excluded),
+        &mut events,
+    );
+    assert!(!events.contains(&"excluded:1".into()));
+    feed(
+        &mut r,
+        &evidence(Some(1), "/logs/app", ScanReason::Excluded),
+        &mut events,
+    );
+    assert!(events.contains(&"excluded:1".into()));
+    assert!(!finish(&mut r, true, &mut events).complete);
+}
+
+/// Scenario: Retained neighbours disagree after one has latched an expected-directory change.
+/// Guarantees: New bindings inherit the latched expected identity in either insertion order, never the unlatched replacement.
+#[test]
+fn latched_parent_baseline_wins_over_unlatched_neighbour() {
+    for ids in [[1, 2], [2, 1]] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        for id in ids {
+            r.track(file(id, &format!("/logs/{id}"))).unwrap();
+        }
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        assert!(!finish(&mut r, false, &mut events).complete);
+        // Model retained disagreement explicitly; new validation must not pick
+        // the replacement just because its ID or hash-table position comes first.
+        r.tracked.get_mut(&TrackedId(1)).unwrap().parent = Some(locator(11));
+        let expected = r.tracked.get_mut(&TrackedId(2)).unwrap();
+        expected.parent = Some(locator(10));
+        expected.parent_changed = true;
+        r.track(file(3, "/logs/3")).unwrap();
+        assert_eq!(r.tracked[&TrackedId(3)].parent, Some(locator(10)));
+        assert!(r.tracked[&TrackedId(3)].parent_changed);
+    }
+}
+
+/// Scenario: A policy failure follows qualified evidence at one binding, while another binding is positively excluded.
+/// Guarantees: Dependent missing/replacement authority is revoked without withholding the unrelated exclusion.
+#[test]
+fn policy_failure_invalidates_only_dependent_binding_evidence() {
+    for reason in [ScanReason::Policy, ScanReason::VerificationUnavailable] {
+        for replacement in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/logs/app")).unwrap();
+            r.track(file(2, "/other/app")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            if replacement {
+                feed(&mut r, &observation(3, "/logs/app"), &mut events);
+            } else {
+                feed(
+                    &mut r,
+                    &evidence(None, "/logs/app", ScanReason::Missing),
+                    &mut events,
+                );
+            }
+            feed(&mut r, &evidence(None, "/logs/app", reason), &mut events);
+            feed(
+                &mut r,
+                &evidence(Some(1), "/hidden", ScanReason::Excluded),
+                &mut events,
+            );
+            feed(
+                &mut r,
+                &evidence(Some(2), "/other/app", ScanReason::Excluded),
+                &mut events,
+            );
+            assert!(!events.contains(&"excluded:1".into()));
+            assert!(events.contains(&"excluded:2".into()));
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert!(r.offers().unwrap().next().is_none());
+        }
+    }
 }

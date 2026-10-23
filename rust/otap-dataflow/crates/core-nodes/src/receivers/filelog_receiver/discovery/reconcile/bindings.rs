@@ -62,6 +62,7 @@ impl Reconciler {
         tracked.parent_changed = parent_changed;
         // The published alias is now the binding, not a context-free hint.
         tracked.minimum.clear();
+        tracked.pass.binding_eligible = true;
         tracked.successor = None;
         if tracked.previous_alias.as_os_str()
             == tracked
@@ -102,6 +103,9 @@ impl Reconciler {
         } else {
             &tracked.minimum
         };
+        if !super::super::native_path::valid_binding_path(path, self.limits.path_bytes) {
+            return Err(ReconcileError::Feedback);
+        }
         if self
             .bindings
             .records(path.as_os_str(), &self.tracked)
@@ -128,6 +132,7 @@ impl Reconciler {
             .get(&predecessor)
             .ok_or(ReconcileError::Tracked)?;
         if tracked.pass.conflict
+            || tracked.parent_changed
             || tracked.pass.rebound != Some(replacement)
             || self.locators.get(&replacement, &self.tracked).any(|id| {
                 self.tracked[&id].file.active && self.tracked[&id].file.role == BindingRole::Live
@@ -391,7 +396,10 @@ impl Reconciler {
         }
         if let Some(id) = replacing {
             let old = self.tracked.get(&id).ok_or(ReconcileError::Tracked)?;
-            if old.pass.conflict || old.pass.rebound != Some(candidate.locator) {
+            if old.pass.conflict
+                || old.parent_changed
+                || old.pass.rebound != Some(candidate.locator)
+            {
                 return Err(ReconcileError::Feedback);
             }
         }

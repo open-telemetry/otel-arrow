@@ -181,6 +181,28 @@ enum Visit {
     Blocked,
 }
 
+// Missing names require valid environment context; positive policy/locator
+// evidence does not depend on an unrelated name being discoverable.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum BindingIneligibility {
+    #[default]
+    Unknown,
+    Missing,
+    Positive,
+}
+
+impl BindingIneligibility {
+    fn allows_exclusion(self, environment_failed: bool) -> bool {
+        self == Self::Positive || (self == Self::Missing && !environment_failed)
+    }
+
+    fn record_miss(&mut self) {
+        if *self == Self::Unknown {
+            *self = Self::Missing;
+        }
+    }
+}
+
 #[derive(Default)]
 struct TrackedPass {
     present: bool,
@@ -189,7 +211,7 @@ struct TrackedPass {
     binding_eligible: bool,
     rebound: Option<FileLocator>,
     rebound_resolved: bool,
-    binding_ineligible: bool,
+    binding_ineligible: BindingIneligibility,
     exclusion_sent: bool,
     conflict: bool,
     parent_seen: bool,
@@ -418,13 +440,22 @@ impl Reconciler {
         if self.last.is_none() {
             return (None, false);
         }
-        let mut baseline = None;
-        let mut changed = false;
-        for tracked in self.parents.records(parent.as_os_str(), &self.tracked) {
-            baseline = baseline.or(tracked.parent);
-            changed |= tracked.parent_changed;
-        }
-        (baseline, changed)
+        Self::directory_baseline(&self.tracked, &self.parents, parent.as_os_str())
+    }
+
+    // Prefer a latched expected identity over a newly validated neighbour. The
+    // runtime ID breaks ties deterministically; never choose by hash order.
+    fn directory_baseline(
+        records: &Records,
+        parents: &RecordIndex<OsStr>,
+        path: &OsStr,
+    ) -> (Option<FileLocator>, bool) {
+        parents
+            .records(path, records)
+            .filter(|tracked| tracked.parent.is_some())
+            .min_by_key(|tracked| (!tracked.parent_changed, tracked.file.id.0))
+            .map(|tracked| (tracked.parent, tracked.parent_changed))
+            .unwrap_or((None, false))
     }
 
     // Called only after preflight under an exclusive borrow. No fallible protocol
@@ -542,7 +573,7 @@ impl Reconciler {
 
     // Invalidate only evidence connected by retained native paths or locators.
     // This preserves independent candidates on an otherwise incomplete pass.
-    fn invalidate_unstable(&mut self, observation: &Observation) {
+    fn invalidate_dependent_evidence(&mut self, observation: &Observation) {
         self.candidates.invalidate(observation);
         // The indexes borrow stored keys; only evidence flags change here.
         for index in [&self.bindings, &self.aliases] {
@@ -623,8 +654,6 @@ impl Reconciler {
                     ScanReason::RootChanged
                         | ScanReason::RootUnavailable
                         | ScanReason::ExclusionUnavailable
-                        | ScanReason::VerificationUnavailable
-                        | ScanReason::Policy
                 );
                 if reason == ScanReason::RootChanged {
                     emit(Evidence::RootChanged(&observation.path));
@@ -632,15 +661,25 @@ impl Reconciler {
                 emit(Evidence::CoverageLost(reason));
             }
         }
-        if observation.reason == Some(ScanReason::Unstable) {
+        if let Some(
+            reason @ (ScanReason::Unstable
+            | ScanReason::Policy
+            | ScanReason::VerificationUnavailable),
+        ) = observation.reason
+        {
             pass.complete = false;
-            self.invalidate_unstable(observation);
+            self.invalidate_dependent_evidence(observation);
             if origin == Origin::Binding {
-                emit(Evidence::CoverageLost(ScanReason::Unstable));
+                emit(Evidence::CoverageLost(reason));
             }
         }
         let pass = self.pass.as_mut().expect("validated active pass");
         if observation.reason == Some(ScanReason::Directory) {
+            let (expected, _) = Self::directory_baseline(
+                &self.tracked,
+                &self.parents,
+                observation.path.as_os_str(),
+            );
             {
                 for id in self.parents.candidates(observation.path.as_os_str()) {
                     let tracked = self.tracked.get_mut(&id).expect("parent index");
@@ -649,6 +688,9 @@ impl Reconciler {
                     }
                     let locator = observation.locator.expect("validated directory shape");
                     tracked.pass.parent_seen = true;
+                    // A first sighting for this record must respect an expected
+                    // identity already retained by a neighbour in this directory.
+                    tracked.parent = tracked.parent.or(expected);
                     if let Some(expected) = tracked.parent {
                         if expected != locator {
                             tracked.parent_changed = true;
@@ -674,7 +716,7 @@ impl Reconciler {
                     continue;
                 }
                 if tracked.pass.parent_seen && !tracked.parent_changed && !pass.environment_failed {
-                    tracked.pass.binding_ineligible = true;
+                    tracked.pass.binding_ineligible.record_miss();
                     emit_exclusion(tracked, pass.environment_failed, &mut emit);
                 }
             }
@@ -728,7 +770,7 @@ impl Reconciler {
                         .as_ref()
                         .is_some_and(|path| path.as_os_str() == observation.path.as_os_str())
                     {
-                        tracked.pass.binding_ineligible = true;
+                        tracked.pass.binding_ineligible = BindingIneligibility::Positive;
                     }
                     emit_exclusion(tracked, pass.environment_failed, &mut emit);
                 }
@@ -794,7 +836,7 @@ impl Reconciler {
                     tracked.pass.rebound = Some(locator);
                     tracked.pass.rebound_resolved = tracked.file.role == BindingRole::Superseded
                         && live_owner.is_some_and(|id| tracked.successor == Some((id, locator)));
-                    tracked.pass.binding_ineligible = true;
+                    tracked.pass.binding_ineligible = BindingIneligibility::Positive;
                     // Historical paths retain replacement context but do not create
                     // competing live claims after repeated incomplete rotations.
                     replacement = replacement.merge(Replacement::Possible(id));
@@ -910,7 +952,7 @@ impl Reconciler {
                 parent: None,
             });
         }
-        if !t.pass.binding_checked && !t.pass.binding_ineligible {
+        if !t.pass.binding_checked && t.pass.binding_ineligible == BindingIneligibility::Unknown {
             return t.file.binding.as_deref().map(|path| BindingRequest {
                 path,
                 parent: t.parent,
@@ -984,8 +1026,13 @@ impl Reconciler {
         if check.scope == BindingScope::Coverage {
             tracked.pass.exclusion_blocked = true;
             pass.complete = false;
-            pass.environment_failed = true;
             let reason = check.observation.reason.unwrap_or(ScanReason::Coverage);
+            pass.environment_failed |= matches!(
+                reason,
+                ScanReason::RootChanged
+                    | ScanReason::RootUnavailable
+                    | ScanReason::ExclusionUnavailable
+            );
             if reason == ScanReason::RootChanged {
                 emit(Evidence::RootChanged(check.diagnostic_path));
             }
@@ -999,6 +1046,32 @@ impl Reconciler {
                 emit,
             );
         }
+        if binding
+            && tracked.parent.is_none()
+            && check.scope == BindingScope::Binding
+            && let Some(observed_parent) = check.parent
+        {
+            let path = check
+                .observation
+                .path
+                .parent()
+                .expect("validated binding parent")
+                .as_os_str();
+            let (expected, changed) = Self::directory_baseline(&self.tracked, &self.parents, path);
+            // Seed unknown peers together. Otherwise N initial targeted checks in
+            // one directory would each scan N records to discover this baseline.
+            for peer in self.parents.candidates(path) {
+                let tracked = self.tracked.get_mut(&peer).expect("parent index");
+                if self.parents.matches(tracked, path) && tracked.parent.is_none() {
+                    tracked.parent = Some(expected.unwrap_or(observed_parent));
+                    tracked.parent_changed |= changed;
+                }
+            }
+        }
+        let tracked = self
+            .tracked
+            .get_mut(&id)
+            .expect("validated binding identity");
         let unchanged = check.parent.is_some() && check.parent == tracked.parent;
         if binding {
             if check.scope == BindingScope::ParentChanged
@@ -1039,14 +1112,16 @@ impl Reconciler {
         {
             tracked.previous_alias.clear();
         }
-        if binding
-            && (check.observation.reason == Some(ScanReason::Excluded)
-                || (!environment_failed
-                    && check.context_valid
-                    && unchanged
-                    && check.observation.reason == Some(ScanReason::Missing)))
-        {
-            tracked.pass.binding_ineligible = true;
+        if binding {
+            if check.observation.reason == Some(ScanReason::Excluded) {
+                tracked.pass.binding_ineligible = BindingIneligibility::Positive;
+            } else if !environment_failed
+                && check.context_valid
+                && unchanged
+                && check.observation.reason == Some(ScanReason::Missing)
+            {
+                tracked.pass.binding_ineligible.record_miss();
+            }
         }
         emit_exclusion(tracked, environment_failed, &mut emit);
         Ok(())
@@ -1126,11 +1201,15 @@ impl Reconciler {
         self.candidates.block_conflicts(|candidate| {
             self.locators
                 .records(&candidate.locator, &self.tracked)
-                .any(|tracked| tracked.file.active && tracked.pass.conflict)
+                .any(|tracked| {
+                    tracked.file.active && (tracked.pass.conflict || tracked.parent_changed)
+                })
                 || self
                     .bindings
                     .records(candidate.path.as_os_str(), &self.tracked)
-                    .any(|tracked| tracked.file.active && tracked.pass.conflict)
+                    .any(|tracked| {
+                        tracked.file.active && (tracked.pass.conflict || tracked.parent_changed)
+                    })
         });
         self.unresolved_rebounds = self
             .tracked
@@ -1340,12 +1419,12 @@ fn emit_exclusion(
     environment_failed: bool,
     emit: &mut impl FnMut(Evidence<'_>),
 ) {
-    if environment_failed {
-        return;
-    }
     if tracked.file.active
         && tracked.pass.excluded
-        && tracked.pass.binding_ineligible
+        && tracked
+            .pass
+            .binding_ineligible
+            .allows_exclusion(environment_failed)
         && !tracked.pass.eligible
         && !tracked.pass.conflict
         && !tracked.parent_changed

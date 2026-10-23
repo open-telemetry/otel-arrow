@@ -489,7 +489,10 @@ impl Candidates {
         if !slot.seen || slot.conflict {
             return Err(ReconcileError::Feedback);
         }
-        slot.candidate.replacement = Replacement::Possible(predecessor);
+        slot.candidate.replacement = slot
+            .candidate
+            .replacement
+            .merge(Replacement::Possible(predecessor));
         Ok(())
     }
 
