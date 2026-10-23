@@ -38,7 +38,7 @@ fn config_with_timing(collection_interval: &str, initial_delay: &str) -> serde_j
 }
 
 fn assert_config_error(value: serde_json::Value, expected: &str) {
-    let error = RuntimeConfig::from_json(&value).unwrap_err().to_string();
+    let error = Config::from_json(&value).unwrap_err().to_string();
     assert!(error.contains(expected), "unexpected error: {error}");
 }
 
@@ -57,7 +57,7 @@ fn gauge_config(perfcounter: serde_json::Value) -> serde_json::Value {
 /// Guarantees: Structured configuration normalizes paths and retains both metric kinds.
 #[test]
 fn normalizes_exact_configuration() {
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": metrics(),
         "perfcounters": [
             {
@@ -74,27 +74,25 @@ fn normalizes_exact_configuration() {
     .unwrap();
     assert_eq!(config.counters.len(), 3);
     assert_eq!(config.counters[0].path, r"\Memory\Available Bytes");
-    assert_eq!(config.counters[0].kind, MetricKind::Gauge);
+    assert_eq!(config.counters[0].metric_kind, MetricKind::Gauge);
     assert_eq!(config.counters[1].path, r"\Process(app)\Private Bytes");
-    assert_eq!(config.counters[1].kind, MetricKind::Sum);
-    assert_eq!(config.collection_interval, Duration::from_secs(30));
+    assert_eq!(config.counters[1].metric_kind, MetricKind::Sum);
+    assert_eq!(config.collection_interval, Duration::from_secs(60));
     assert_eq!(config.initial_delay, Duration::from_secs(1));
 }
 
-/// Scenario: Collection timing is configured at, below, and above its supported boundaries.
-/// Guarantees: Exact boundary values succeed while out-of-range values identify their field.
+/// Scenario: Collection timing uses sub-second and multi-day durations or a zero collection interval.
+/// Guarantees: Positive collection intervals and nonnegative delays are unbounded; zero collection identifies its field.
 #[test]
 fn enforces_collection_timing_bounds() {
-    let _config = RuntimeConfig::from_json(&config_with_timing("24h", "24h")).unwrap();
+    let _config = Config::from_json(&config_with_timing("24h", "24h")).unwrap();
 
-    assert_config_error(config_with_timing("500ms", "0s"), "collection_interval");
+    for (interval, delay) in [("500ms", "0s"), ("86401s", "0s"), ("1s", "86401s")] {
+        let _config = Config::from_json(&config_with_timing(interval, delay)).unwrap();
+    }
     assert_config_error(
-        config_with_timing("86401s", "0s"),
-        "collection_interval must be between",
-    );
-    assert_config_error(
-        config_with_timing("1s", "86401s"),
-        "initial_delay must be between",
+        config_with_timing("0s", "0s"),
+        "collection_interval must be greater than zero",
     );
 }
 
@@ -108,21 +106,21 @@ fn rejects_unknown_fields() {
 }
 
 /// Scenario: An object's counter list or explicit instance list is empty.
-/// Guarantees: Validation rejects objects that would produce no counter paths.
+/// Guarantees: Empty counter lists remain invalid; an empty instance list selects the object's non-instanced counter.
 #[test]
 fn rejects_empty_object_collections() {
     assert_config_error(
         gauge_config(json!({"object": "Memory", "counters": []})),
         "perfcounters[0].counters must contain at least one entry",
     );
-    assert_config_error(
-        gauge_config(json!({
-            "object": "Process",
-            "instances": [],
-            "counters": [{"name": "Private Bytes", "metric": "available"}]
-        })),
-        "perfcounters[0].instances must not be empty",
-    );
+    let config = Config::from_json(&gauge_config(json!({
+        "object": "Process",
+        "instances": [],
+        "counters": [{"name": "Private Bytes", "metric": "available"}]
+    })))
+    .unwrap();
+    assert_eq!(config.counters.len(), 1);
+    assert_eq!(config.counters[0].path, r"\Process\Private Bytes");
 }
 
 /// Scenario: A metric definition name or an attribute key is literally empty.
@@ -152,24 +150,6 @@ fn rejects_empty_required_values() {
     );
 }
 
-/// Scenario: A metric definition selects no metric kind.
-/// Guarantees: Omission selects Gauge without overriding metric metadata or collection timing.
-#[test]
-fn defaults_missing_metric_kind_to_gauge() {
-    let config = RuntimeConfig::from_json(&json!({
-        "metrics": {"value": {"description": "Value.", "unit": "1"}},
-        "perfcounters": [{
-            "object": "Memory",
-            "counters": [{"name": "Available Bytes", "metric": "value"}]
-        }]
-    }))
-    .unwrap();
-    assert_eq!(config.counters[0].kind, MetricKind::Gauge);
-    assert_eq!(config.counters[0].unit, "1");
-    assert_eq!(config.counters[0].description.as_ref(), "Value.");
-    assert_eq!(config.collection_interval, Duration::from_secs(30));
-}
-
 /// Scenario: A cumulative Sum omits monotonicity or explicitly sets it to false.
 /// Guarantees: Both forms normalize to the supported cumulative non-monotonic Sum.
 #[test]
@@ -184,8 +164,8 @@ fn defaults_sum_monotonicity_to_false() {
             .unwrap()
             .remove("gauge");
         value["metrics"]["available"]["sum"] = sum;
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(config.counters[0].kind, MetricKind::Sum);
+        let config = Config::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].metric_kind, MetricKind::Sum);
         assert_eq!(config.collection_interval, Duration::from_secs(45));
         assert_eq!(config.initial_delay, Duration::from_secs(2));
     }
@@ -197,33 +177,18 @@ fn defaults_sum_monotonicity_to_false() {
 fn accepts_null_metric_kind_shorthand() {
     for gauge in [json!(null), json!({})] {
         let mut value = config_with_timing("30s", "1s");
-        value["metrics"]["available"]["gauge"] = gauge;
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(config.counters[0].kind, MetricKind::Gauge);
-        value["metrics"]["available"]["sum"] = json!({"aggregation": "cumulative"});
-        assert_config_error(value, "must not contain both gauge and sum");
+        value["metrics"] = json!({"value": {
+            "description": "Value.", "unit": "1", "gauge": gauge
+        }});
+        value["perfcounters"][0]["counters"][0]["metric"] = json!("value");
+        let config = Config::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].metric_kind, MetricKind::Gauge);
+        value["metrics"]["value"]["sum"] = json!({"aggregation": "cumulative"});
+        assert_eq!(
+            Config::from_json(&value).unwrap_err().to_string(),
+            "An invalid user configuration occurred: metrics.value must not contain both gauge and sum"
+        );
     }
-}
-
-/// Scenario: A metric definition selects both supported metric kinds.
-/// Guarantees: Validation rejects ambiguous projection semantics.
-#[test]
-fn rejects_ambiguous_metric_kind() {
-    assert_config_error(
-        json!({
-            "metrics": {"value": {
-                "description": "Value.",
-                "unit": "1",
-                "gauge": {},
-                "sum": {"aggregation": "cumulative"}
-            }},
-            "perfcounters": [{
-                "object": "Memory",
-                "counters": [{"name": "Available Bytes", "metric": "value"}]
-            }]
-        }),
-        "metrics.value must not contain both gauge and sum",
-    );
 }
 
 /// Scenario: Sum is null, empty, lacks aggregation or selects an invalid aggregation.
@@ -269,7 +234,7 @@ fn rejects_unsupported_sum_execution() {
         value["metrics"]["available"]["sum"] = json!({
             "aggregation": aggregation, "monotonic": monotonic
         });
-        let error = RuntimeConfig::from_json(&value).unwrap_err().to_string();
+        let error = Config::from_json(&value).unwrap_err().to_string();
         assert!(error.contains(expected), "{error}");
         assert!(error.contains("metrics.available"), "{error}");
         assert!(
@@ -292,104 +257,50 @@ fn rejects_removed_metric_kind_alias() {
     assert_config_error(value, "unknown field `up_down_counter`");
 }
 
-/// Scenario: Metric metadata fields are omitted and another definition is unused.
-/// Guarantees: Referenced metadata receives defaults and unused definitions are allowed.
+/// Scenario: Referenced Gauge metadata is omitted, empty, whitespace-only or explicit, and another definition is unused.
+/// Guarantees: Missing kind/metadata receive defaults without trimming supplied text, rejecting unused definitions or changing timing.
 #[test]
 fn defaults_optional_metric_metadata_and_allows_unused_definitions() {
-    let config = RuntimeConfig::from_json(&json!({
-        "metrics": {
-            "used": {"gauge": {}},
-            "unused": {}
-        },
-        "perfcounters": [{
-            "object": "Memory",
-            "counters": [{"name": "Available Bytes", "metric": "used"}]
-        }]
-    }))
-    .unwrap();
-    assert_eq!(config.counters.len(), 1);
-    let counter = &config.counters[0];
-    assert_eq!(counter.name, "used");
-    assert_eq!(counter.unit, "1");
-    assert!(counter.description.is_empty());
-    assert_eq!(counter.kind, MetricKind::Gauge);
-}
-
-/// Scenario: A referenced metric omits its description or supplies empty or whitespace text.
-/// Guarantees: An omitted description defaults to empty; supplied descriptions remain unchanged.
-#[test]
-fn defaults_optional_metric_description() {
-    for description in [None, Some(""), Some(" \t ")] {
-        let mut value = config_with_timing("30s", "1s");
-        match description {
-            None => {
-                let _ = value["metrics"]["available"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("description");
+    for description in [
+        None,
+        Some(""),
+        Some(" \t "),
+        Some("Available physical memory."),
+    ] {
+        for unit in [None, Some(""), Some(" \t "), Some("By")] {
+            for explicit_gauge in [false, true] {
+                let mut definition = json!({});
+                if let Some(description) = description {
+                    definition["description"] = json!(description);
+                }
+                if let Some(unit) = unit {
+                    definition["unit"] = json!(unit);
+                }
+                if explicit_gauge {
+                    definition["gauge"] = json!({});
+                }
+                let config = Config::from_json(&json!({
+                    "metrics": {"used": definition, "unused": {}},
+                    "perfcounters": [{
+                        "object": "Memory",
+                        "counters": [{"name": "Available Bytes", "metric": "used"}]
+                    }]
+                }))
+                .unwrap();
+                assert_eq!(config.counters.len(), 1);
+                let counter = &config.counters[0];
+                assert_eq!(counter.name.as_ref(), "used");
+                assert_eq!(counter.description.as_ref(), description.unwrap_or(""));
+                assert_eq!(
+                    counter.unit.as_ref(),
+                    unit.filter(|unit| !unit.is_empty()).unwrap_or("1")
+                );
+                assert_eq!(counter.metric_kind, MetricKind::Gauge);
+                assert_eq!(config.collection_interval, Duration::from_secs(60));
+                assert_eq!(config.initial_delay, Duration::from_secs(1));
             }
-            Some(description) => value["metrics"]["available"]["description"] = json!(description),
         }
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(
-            config.counters[0].description.as_ref(),
-            description.unwrap_or("")
-        );
-        assert_eq!(config.counters[0].unit, "By");
     }
-}
-
-/// Scenario: A referenced metric omits its unit but provides a description.
-/// Guarantees: The unit defaults to "1" without changing the supplied description.
-#[test]
-fn defaults_omitted_metric_unit() {
-    let mut value = config_with_timing("30s", "1s");
-    let _ = value["metrics"]["available"]
-        .as_object_mut()
-        .unwrap()
-        .remove("unit");
-    let config = RuntimeConfig::from_json(&value).unwrap();
-    assert_eq!(config.counters[0].unit, "1");
-    assert_eq!(
-        config.counters[0].description.as_ref(),
-        "Available physical memory."
-    );
-}
-
-/// Scenario: A referenced metric supplies an empty or whitespace-only unit.
-/// Guarantees: Only an empty unit receives the "1" default; whitespace-only units remain unchanged.
-#[test]
-fn defaults_empty_metric_unit() {
-    for unit in ["", " \t "] {
-        let mut value = config_with_timing("30s", "1s");
-        value["metrics"]["available"]["unit"] = json!(unit);
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(
-            config.counters[0].unit,
-            if unit.is_empty() { "1" } else { unit }
-        );
-    }
-}
-
-/// Scenario: One counter mapping expands across several instances.
-/// Guarantees: Expanded counters share metadata instead of cloning it per path.
-#[test]
-fn shares_metadata_across_expanded_counters() {
-    let config = RuntimeConfig::from_json(&gauge_config(json!({
-        "object": "Process",
-        "instances": ["a", "b"],
-        "counters": [{
-            "name": "Private Bytes",
-            "metric": "available",
-            "attributes": {"state": "used"}
-        }]
-    })))
-    .unwrap();
-    let [first, second] = config.counters.as_slice() else {
-        panic!("expected two expanded counters");
-    };
-    assert!(Arc::ptr_eq(&first.attributes, &second.attributes));
-    assert!(Arc::ptr_eq(&first.description, &second.description));
 }
 
 /// Scenario: OTLP metric names do not satisfy SDK instrument-name syntax or length limits.
@@ -406,7 +317,7 @@ fn accepts_unrestricted_metric_names() {
         "system.memory_usage-1/s",
         long_name.as_str(),
     ] {
-        let config = RuntimeConfig::from_json(&json!({
+        let config = Config::from_json(&json!({
             "metrics": {name: {"unit": "By"}},
             "perfcounters": [{
                 "object": "Memory",
@@ -414,8 +325,8 @@ fn accepts_unrestricted_metric_names() {
             }]
         }))
         .unwrap();
-        assert_eq!(config.counters[0].name, name);
-        assert_eq!(config.counters[0].unit, "By");
+        assert_eq!(config.counters[0].name.as_ref(), name);
+        assert_eq!(config.counters[0].unit.as_ref(), "By");
     }
 }
 
@@ -443,8 +354,8 @@ fn accepts_unrestricted_metric_units() {
         "B y",
         long_unit.as_str(),
     ] {
-        let config = RuntimeConfig::from_json(&unit_config(unit)).unwrap();
-        assert_eq!(config.counters[0].unit, unit);
+        let config = Config::from_json(&unit_config(unit)).unwrap();
+        assert_eq!(config.counters[0].unit.as_ref(), unit);
     }
 }
 
@@ -455,15 +366,15 @@ fn accepts_unrestricted_metric_units() {
 fn preserves_control_characters_in_metric_names_references_and_units() {
     let name = "metric\nname";
     let unit = "B\0y";
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": {name: {"unit": unit}},
         "perfcounters": [{"object": "Memory", "counters": [
             {"name": "Available Bytes", "metric": name}
         ]}]
     }))
     .unwrap();
-    assert_eq!(config.counters[0].name, name);
-    assert_eq!(config.counters[0].unit, unit);
+    assert_eq!(config.counters[0].name.as_ref(), name);
+    assert_eq!(config.counters[0].unit.as_ref(), unit);
 }
 
 /// Scenario: A metric description is configured using a YAML literal block.
@@ -485,7 +396,7 @@ perfcounters:
 "#,
     )
     .unwrap();
-    let config = RuntimeConfig::from_json(&value).unwrap();
+    let config = Config::from_json(&value).unwrap();
     assert_eq!(
         config.counters[0].description.as_ref(),
         "Available memory.\n"
@@ -496,7 +407,7 @@ perfcounters:
 /// Guarantees: Unused definitions do not consume the counter-path budget or produce counters.
 #[test]
 fn accepts_metric_definitions_beyond_path_limit() {
-    let metrics = (0..=MAX_COUNTERS)
+    let metrics = (0..=DEFAULT_MAX_EXPANDED_COUNTERS)
         .map(|index| {
             (
                 format!("m{index}"),
@@ -504,7 +415,7 @@ fn accepts_metric_definitions_beyond_path_limit() {
             )
         })
         .collect::<serde_json::Map<_, _>>();
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": metrics,
         "perfcounters": [{
             "object": "Memory",
@@ -513,7 +424,7 @@ fn accepts_metric_definitions_beyond_path_limit() {
     }))
     .unwrap();
     assert_eq!(config.counters.len(), 1);
-    assert_eq!(config.counters[0].name, "m0");
+    assert_eq!(config.counters[0].name.as_ref(), "m0");
 }
 
 /// Scenario: An unused definition selects an unsupported metric kind.
@@ -541,15 +452,15 @@ fn defaults_path_metrics_without_definitions() {
             if let Some(reference) = reference {
                 value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
             }
-            let config = RuntimeConfig::from_json(&value).unwrap();
+            let config = Config::from_json(&value).unwrap();
             for (counter, expected_path) in [
                 (&config.counters[0], r"\Process(app#00)\Private Bytes"),
                 (&config.counters[1], r"\Process(worker#001)\Private Bytes"),
             ] {
-                assert_eq!(counter.name, expected_path);
+                assert_eq!(counter.name.as_ref(), expected_path);
                 assert_eq!(counter.path, expected_path);
-                assert_eq!(counter.kind, MetricKind::Gauge);
-                assert_eq!(counter.unit, "1");
+                assert_eq!(counter.metric_kind, MetricKind::Gauge);
+                assert_eq!(counter.unit.as_ref(), "1");
                 assert!(counter.description.is_empty());
                 assert!(counter.attributes.is_empty());
                 assert_eq!(counter.scale_power10, -3);
@@ -599,7 +510,7 @@ fn accepts_path_shaped_metric_definitions_and_references() {
         "\\M\u{e9}moire\\Octets disponibles",
         overlong.as_str(),
     ] {
-        let config = RuntimeConfig::from_json(&json!({
+        let config = Config::from_json(&json!({
             "metrics": {name: {}},
             "perfcounters": [{
                 "object": "Memory",
@@ -607,7 +518,7 @@ fn accepts_path_shaped_metric_definitions_and_references() {
             }]
         }))
         .unwrap();
-        assert_eq!(config.counters[0].name, name);
+        assert_eq!(config.counters[0].name.as_ref(), name);
     }
 }
 
@@ -625,16 +536,16 @@ fn matches_path_definitions_only_by_exact_spelling() {
         let mut value = json!({"metrics": {name: {"unit": "exact"}}, "perfcounters": [{
             "object": "Memory", "counters": [{"name": counter}]
         }]});
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(config.counters[0].name, path);
+        let config = Config::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].name.as_ref(), path);
         assert_eq!(
-            config.counters[0].unit,
+            config.counters[0].unit.as_ref(),
             if name == path { "exact" } else { "1" }
         );
         value["perfcounters"][0]["counters"][0]["metric"] = json!(name);
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(config.counters[0].name, name);
-        assert_eq!(config.counters[0].unit, "exact");
+        let config = Config::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].name.as_ref(), name);
+        assert_eq!(config.counters[0].unit.as_ref(), "exact");
     }
 }
 
@@ -664,12 +575,12 @@ fn warns_only_for_unselected_path_metric_definitions() {
             {"object": "Unavailable", "counters": [{"name": "Counter"}]}
         ]
     });
-    let config = RuntimeConfig::from_json(&value).unwrap();
+    let config = Config::from_json(&value).unwrap();
     assert!(
         config
             .counters
             .iter()
-            .all(|counter| counter.unit == "selected")
+            .all(|counter| counter.unit.as_ref() == "selected")
     );
     assert_eq!(
         unused_path_metric_definitions(
@@ -677,8 +588,8 @@ fn warns_only_for_unselected_path_metric_definitions() {
                 .as_object()
                 .unwrap()
                 .keys()
-                .map(String::as_str),
-            &config.counters,
+                .map(|name| (name.as_str(), is_path_metric_name(name))),
+            config.counters.iter().map(|counter| counter.name.as_ref()),
         ),
         [overlong.as_str(), r"\unavailable\counter",]
     );
@@ -686,15 +597,15 @@ fn warns_only_for_unselected_path_metric_definitions() {
         .as_array_mut()
         .unwrap()
         .push(json!({"name": "Committed Bytes", "metric": overlong}));
-    let config = RuntimeConfig::from_json(&value).unwrap();
+    let config = Config::from_json(&value).unwrap();
     assert_eq!(
         unused_path_metric_definitions(
             value["metrics"]
                 .as_object()
                 .unwrap()
                 .keys()
-                .map(String::as_str),
-            &config.counters,
+                .map(|name| (name.as_str(), is_path_metric_name(name))),
+            config.counters.iter().map(|counter| counter.name.as_ref()),
         ),
         [r"\unavailable\counter"]
     );
@@ -707,7 +618,9 @@ fn warns_only_for_unselected_path_metric_definitions() {
 fn warns_once_per_case_distinct_group() {
     let names = ["cpu", "CPU", "\u{c9}", "\u{e9}", "unique", " cpu"];
     assert_eq!(
-        case_distinct_metric_definitions(names),
+        case_distinct_metric_definitions(names)
+            .into_values()
+            .collect::<Vec<_>>(),
         [vec!["cpu", "CPU"], vec!["\u{c9}", "\u{e9}"],]
     );
 }
@@ -735,7 +648,7 @@ fn resolves_case_distinct_definitions_exactly() {
             {"object": "MEMORY", "counters": [{"name": "CACHE BYTES"}]}
         ]
     });
-    let config = RuntimeConfig::from_json(&value).unwrap();
+    let config = Config::from_json(&value).unwrap();
     for (counter, name, unit, kind) in [
         (&config.counters[0], "cpu", "lower", MetricKind::Gauge),
         (&config.counters[1], "CPU", "upper", MetricKind::Gauge),
@@ -758,9 +671,9 @@ fn resolves_case_distinct_definitions_exactly() {
             MetricKind::Gauge,
         ),
     ] {
-        assert_eq!(counter.name, name);
-        assert_eq!(counter.unit, unit);
-        assert_eq!(counter.kind, kind);
+        assert_eq!(counter.name.as_ref(), name);
+        assert_eq!(counter.unit.as_ref(), unit);
+        assert_eq!(counter.metric_kind, kind);
     }
     value["perfcounters"][0]["counters"][0]["metric"] = json!("Cpu");
     assert_config_error(value, "references undefined metric \"Cpu\"");
@@ -822,17 +735,10 @@ fn rejects_undefined_metric_reference() {
     );
 }
 
-/// Scenario: An explicit reference has no definition, or no performance counters are configured.
-/// Guarantees: Empty definitions do not satisfy explicit references and counters remain required.
+/// Scenario: No performance counters are configured.
+/// Guarantees: Metric definitions cannot satisfy the required nonempty counter configuration.
 #[test]
-fn rejects_undefined_references_and_empty_perfcounters() {
-    assert_config_error(
-        json!({"metrics": {}, "perfcounters": [{
-            "object": "Memory",
-            "counters": [{"name": "Available Bytes", "metric": "available"}]
-        }]}),
-        "references undefined metric \"available\"",
-    );
+fn rejects_empty_perfcounters() {
     assert_config_error(
         json!({"metrics": {"available": {
             "description": "Available physical memory.",
@@ -871,24 +777,24 @@ fn rejects_null_metric_forms() {
 /// Go accepts null metric maps; no definitions are required for implicit collection.
 #[test]
 fn accepts_null_metric_definitions_with_implicit_names() {
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": null,
         "perfcounters": [{"object": "Memory", "counters": [{"name": "Available Bytes"}]}]
     }))
     .unwrap();
     assert_eq!(config.counters.len(), 1);
     let counter = &config.counters[0];
-    assert_eq!(counter.name, r"\Memory\Available Bytes");
-    assert_eq!(counter.unit, "1");
+    assert_eq!(counter.name.as_ref(), r"\Memory\Available Bytes");
+    assert_eq!(counter.unit.as_ref(), "1");
     assert!(counter.description.is_empty());
-    assert_eq!(counter.kind, MetricKind::Gauge);
+    assert_eq!(counter.metric_kind, MetricKind::Gauge);
 }
 
 /// Scenario: An object specifies one exact instance as a scalar string.
 /// Guarantees: The shorthand normalizes to the same exact instance path as a one-item list.
 #[test]
 fn normalizes_single_instance_string() {
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": {"private": {
             "description": "Committed private memory.",
             "unit": "By",
@@ -918,33 +824,32 @@ fn rejects_invalid_instances_type() {
     );
 }
 
-/// Scenario: An object, instance or counter component is a literal wildcard in this exact-only receiver.
-/// Guarantees: Preserving spelling never admits object patterns, instance discovery or counter expansion.
+/// Scenario: An object, instance or counter component contains a literal wildcard.
+/// Guarantees: Only instance operators select discovery; other components remain verbatim native selectors, not config-layer expansions.
 #[test]
-fn rejects_wildcard_components() {
+fn normalizes_instance_wildcards_and_preserves_other_components() {
     for pattern in ["*", "?"] {
-        for (object, instance, counter, field) in [
-            (pattern, "app", "Value", "perfcounters[0].object"),
-            ("Process", pattern, "Value", "perfcounters[0].instances"),
-            (
-                "Process",
-                "app",
-                pattern,
-                "perfcounters[0].counters[0].name",
-            ),
+        for (object, instance, counter, wildcard) in [
+            (pattern, "app", "Value", false),
+            ("Process", pattern, "Value", true),
+            ("Process", "app", pattern, false),
         ] {
-            assert_config_error(
-                json!({"perfcounters": [{
-                    "object": object, "instances": instance, "counters": [{"name": counter}]
-                }]}),
-                &format!("{field} contains a reserved"),
+            let config = Config::from_json(&json!({"perfcounters": [{
+                "object": object, "instances": instance, "counters": [{"name": counter}]
+            }]}))
+            .unwrap();
+            assert_eq!(config.counters.len(), 1);
+            assert_eq!(
+                config.counters[0].path,
+                format!(r"\{object}({instance})\{counter}")
             );
+            assert_eq!(config.counters[0].instance_config.is_wildcard(), wildcard);
         }
     }
 }
 
-/// Scenario: Instance indexes use omitted, zero, or leading-zero spellings.
-/// Guarantees: Each spelling is accepted individually and retained in native paths and exact implicit lookup.
+/// Scenario: Instance indexes and an excluded aggregation use omitted, zero or leading-zero spellings.
+/// Guarantees: Native paths, implicit lookup and aggregation exclusion preserve each configured spelling.
 #[test]
 fn preserves_instance_indexes_in_paths_and_lookup() {
     for (instance, unit) in [
@@ -954,15 +859,17 @@ fn preserves_instance_indexes_in_paths_and_lookup() {
         ("app#1", "GiBy"),
         ("app#01", "TiBy"),
         ("app#001", "PiBy"),
+        ("_Total#00", "By"),
     ] {
-        let config = RuntimeConfig::from_json(&json!({
+        let config = Config::from_json(&json!({
             "metrics": {
                 r"\Process(app)\Private Bytes": {"unit": "By"},
                 r"\Process(app#0)\Private Bytes": {"unit": "KiBy"},
                 r"\Process(app#00)\Private Bytes": {"unit": "MiBy"},
                 r"\Process(app#1)\Private Bytes": {"unit": "GiBy"},
                 r"\Process(app#01)\Private Bytes": {"unit": "TiBy"},
-                r"\Process(app#001)\Private Bytes": {"unit": "PiBy"}
+                r"\Process(app#001)\Private Bytes": {"unit": "PiBy"},
+                r"\Process(_Total#00)\Private Bytes": {"unit": "By"}
             },
             "perfcounters": [{
                 "object": "Process",
@@ -974,8 +881,8 @@ fn preserves_instance_indexes_in_paths_and_lookup() {
         assert_eq!(config.counters.len(), 1);
         let counter = &config.counters[0];
         assert_eq!(counter.path, format!(r"\Process({instance})\Private Bytes"));
-        assert_eq!(counter.name, counter.path);
-        assert_eq!(counter.unit, unit);
+        assert_eq!(counter.name.as_ref(), counter.path);
+        assert_eq!(counter.unit.as_ref(), unit);
     }
 
     // Keep the existing exact-only grammar restriction.
@@ -989,6 +896,17 @@ fn preserves_instance_indexes_in_paths_and_lookup() {
             "must include an instance name before its index",
         );
     }
+    let wildcard = Config::from_json(&json!({"perfcounters": [{
+        "object": "Process",
+        "instances": "worker*",
+        "aggregation_name": "_Total#00",
+        "counters": [{"name": "Private Bytes"}]
+    }]}))
+    .unwrap();
+    assert_eq!(
+        wildcard.counters[0].instance_config.excluded_aggregation(),
+        Some("_Total#00")
+    );
 }
 
 /// Scenario: A single instance list contains case-insensitive numeric-suffix aliases.
@@ -1030,7 +948,7 @@ fn preserves_distinct_instance_suffix_text() {
         "app#\u{0660}",
         "app#0#0",
     ];
-    let config = RuntimeConfig::from_json(&json!({"perfcounters": [{
+    let config = Config::from_json(&json!({"perfcounters": [{
         "object": "Process",
         "instances": instances,
         "counters": [{"name": "Private Bytes"}]
@@ -1039,7 +957,7 @@ fn preserves_distinct_instance_suffix_text() {
     assert_eq!(config.counters.len(), instances.len());
     for (counter, instance) in config.counters.iter().zip(instances) {
         assert_eq!(counter.path, format!(r"\Process({instance})\Private Bytes"));
-        assert_eq!(counter.name, counter.path);
+        assert_eq!(counter.name.as_ref(), counter.path);
     }
 }
 
@@ -1064,90 +982,102 @@ fn rejects_duplicate_instances_case_insensitively() {
     );
 }
 
-/// Scenario: Object and counter fields contain path delimiters or wildcard characters.
-/// Guarantees: Structural characters are rejected while parentheses remain valid in counter names.
+/// Scenario: Object, instance and counter components contain delimiters, wildcard characters or NUL.
+/// Guarantees: NUL and remote-shaped object/counter components are rejected; other native spelling remains verbatim.
 #[test]
-fn validates_reserved_path_characters_by_field_role() {
-    assert_config_error(
-        json!({
-            "metrics": {"available": {
-                "description": "Available physical memory.",
-                "unit": "By",
-                "gauge": {}
-            }},
-            "perfcounters": [{
-                "object": "Memory(test)",
-                "counters": [{"name": "Available Bytes", "metric": "available"}]
-            }]
-        }),
-        "perfcounters[0].object contains a reserved",
-    );
-    assert_config_error(
-        json!({
-            "metrics": {"available": {
-                "description": "Available physical memory.",
-                "unit": "By",
-                "gauge": {}
-            }},
-            "perfcounters": [{
-                "object": "Memory",
-                "counters": [{"name": "Available *", "metric": "available"}]
-            }]
-        }),
-        "perfcounters[0].counters[0].name contains a reserved",
-    );
-    let config = RuntimeConfig::from_json(&json!({
-        "metrics": {"available": {
-            "description": "Available physical memory.",
-            "unit": "By",
-            "gauge": {}
-        }},
-        "perfcounters": [{
+fn preserves_non_nul_reserved_components_and_rejects_nul() {
+    for reserved in ['\\', '(', ')', '*', '?', '\0'] {
+        let object = gauge_config(json!({
+            "object": format!("Mem{reserved}ory"),
+            "counters": [{"name": "Available Bytes", "metric": "available"}]
+        }));
+        let instance = gauge_config(json!({
+            "object": "Process",
+            "instances": format!("app{reserved}"),
+            "counters": [{"name": "Private Bytes", "metric": "available"}]
+        }));
+        if reserved == '\0' {
+            assert_config_error(object, "perfcounters[0].object must not contain NUL");
+            assert_config_error(instance, "perfcounters[0].instances must not contain NUL");
+        } else {
+            if reserved == '\\' {
+                assert_config_error(object, "remote collection is not supported");
+            } else {
+                let object = Config::from_json(&object).unwrap();
+                assert_eq!(
+                    object.counters[0].path,
+                    format!(r"\Mem{reserved}ory\Available Bytes")
+                );
+            }
+            let instance = Config::from_json(&instance).unwrap();
+            assert_eq!(
+                instance.counters[0].path,
+                format!(r"\Process(app{reserved})\Private Bytes")
+            );
+            assert_eq!(
+                instance.counters[0].instance_config.is_wildcard(),
+                matches!(reserved, '*' | '?')
+            );
+        }
+    }
+    for reserved in ['\\', '(', ')', '*', '?', '\0'] {
+        let counter = gauge_config(json!({
             "object": "Memory",
-            "counters": [{"name": "Available (Bytes)", "metric": "available"}]
-        }]
-    }))
-    .unwrap();
-    assert_eq!(config.counters[0].path, r"\Memory\Available (Bytes)");
+            "counters": [{"name": format!("Available{reserved}"), "metric": "available"}]
+        }));
+        if reserved == '\0' {
+            assert_config_error(
+                counter,
+                "perfcounters[0].counters[0].name must not contain NUL",
+            );
+        } else if reserved == '\\' {
+            assert_config_error(counter, "remote collection is not supported");
+        } else {
+            let counter = Config::from_json(&counter).unwrap();
+            assert_eq!(
+                counter.counters[0].path,
+                format!(r"\Memory\Available{reserved}")
+            );
+            assert!(!counter.counters[0].instance_config.is_wildcard());
+        }
+    }
 }
 
-/// Scenario: Object and instance names contain each reserved path character.
-/// Guarantees: Every structural, wildcard, or NUL character is rejected in those segments.
+/// Scenario: Object or counter configuration can construct a machine-prefixed path.
+/// Guarantees: Remote-shaped components fail explicitly while valid local selectors retain their paths.
 #[test]
-fn rejects_each_reserved_object_and_instance_character() {
-    for reserved in ['\\', '(', ')', '*', '?', '\0'] {
+fn rejects_remote_shaped_native_components() {
+    for object in [r"\REMOTE\Process", r"\\REMOTE\Process", r"Process\child"] {
         assert_config_error(
             gauge_config(json!({
-                "object": format!("Mem{reserved}ory"),
-                "counters": [{"name": "Available Bytes", "metric": "available"}]
+                "object": object,
+                "instances": "worker",
+                "counters": [{"name": "ID Process", "metric": "available"}]
             })),
-            "perfcounters[0].object contains a reserved",
-        );
-        assert_config_error(
-            gauge_config(json!({
-                "object": "Process",
-                "instances": format!("app{reserved}"),
-                "counters": [{"name": "Private Bytes", "metric": "available"}]
-            })),
-            "perfcounters[0].instances contains a reserved",
+            "perfcounters[0].object must not contain backslash: remote collection is not supported",
         );
     }
-    for reserved in ['\\', '?', '\0'] {
-        assert_config_error(
-            gauge_config(json!({
-                "object": "Memory",
-                "counters": [{"name": format!("Available{reserved}"), "metric": "available"}]
-            })),
-            "perfcounters[0].counters[0].name contains a reserved",
-        );
-    }
+    assert_config_error(
+        gauge_config(json!({
+            "object": "Process",
+            "counters": [{"name": r"ID\Process", "metric": "available"}]
+        })),
+        "perfcounters[0].counters[0].name must not contain backslash: remote collection is not supported",
+    );
+    let config = Config::from_json(&gauge_config(json!({
+        "object": "Process",
+        "instances": "worker",
+        "counters": [{"name": "ID Process", "metric": "available"}]
+    })))
+    .unwrap();
+    assert_eq!(config.counters[0].path, r"\Process(worker)\ID Process");
 }
 
 /// Scenario: Path segments have leading or trailing whitespace.
 /// Guarantees: Padding is retained in paths and remains distinct during duplicate detection.
 #[test]
 fn preserves_surrounding_whitespace_in_path_segments() {
-    let config = RuntimeConfig::from_json(&gauge_config(json!({
+    let config = Config::from_json(&gauge_config(json!({
         "object": " Process ",
         "instances": [" app "],
         "counters": [{"name": " Private Bytes ", "metric": "available"}]
@@ -1158,7 +1088,7 @@ fn preserves_surrounding_whitespace_in_path_segments() {
         r"\ Process ( app )\ Private Bytes "
     );
 
-    let config = RuntimeConfig::from_json(&gauge_config(json!({
+    let config = Config::from_json(&gauge_config(json!({
         "object": "Process",
         "instances": ["app", "app "],
         "counters": [{"name": "Private Bytes", "metric": "available"}]
@@ -1166,7 +1096,7 @@ fn preserves_surrounding_whitespace_in_path_segments() {
     .unwrap();
     assert_eq!(config.counters[0].path, r"\Process(app)\Private Bytes");
     assert_eq!(config.counters[1].path, r"\Process(app )\Private Bytes");
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": {"available": {
             "description": "Available physical memory.",
             "unit": "By",
@@ -1196,13 +1126,13 @@ fn preserves_nonempty_native_component_text() {
         (" ", "\t", "\r\n"),
         ("Mem\tory", "work\ner", "Private\rBytes"),
     ] {
-        let config = RuntimeConfig::from_json(&json!({"perfcounters": [{
+        let config = Config::from_json(&json!({"perfcounters": [{
             "object": object, "instances": instance, "counters": [{"name": counter}]
         }]}))
         .unwrap();
         let path = format!("\\{object}({instance})\\{counter}");
         assert_eq!(config.counters[0].path, path);
-        assert_eq!(config.counters[0].name, path);
+        assert_eq!(config.counters[0].name.as_ref(), path);
     }
     for (object, instance, counter, field) in [
         ("", "app", "Value", "perfcounters[0].object"),
@@ -1224,7 +1154,7 @@ fn preserves_nonempty_native_component_text() {
 fn enforces_counter_path_length_in_utf16_units() {
     // `\Memory\` is 8 code units.
     let at_limit = "a".repeat(MAX_COUNTER_PATH_LEN - 8);
-    let _config = RuntimeConfig::from_json(&gauge_config(json!({
+    let _config = Config::from_json(&gauge_config(json!({
         "object": "Memory",
         "counters": [{"name": &at_limit, "metric": "available"}]
     })))
@@ -1251,7 +1181,7 @@ fn enforces_counter_path_length_in_utf16_units() {
 
     // `\Process(` + `)\X` is 12 code units; each U+1F600 is 2 code units, 1 char, 4 bytes.
     let at_limit_non_bmp = "\u{1F600}".repeat((MAX_COUNTER_PATH_LEN - 12) / 2);
-    let _config = RuntimeConfig::from_json(&gauge_config(json!({
+    let _config = Config::from_json(&gauge_config(json!({
         "object": "Process",
         "instances": at_limit_non_bmp,
         "counters": [{"name": "X", "metric": "available"}]
@@ -1301,7 +1231,7 @@ fn rejects_duplicate_counter_paths_case_insensitively() {
 /// The receiver must not rewrite user-supplied metric metadata.
 #[test]
 fn preserves_metric_identities_and_metadata() {
-    let config = RuntimeConfig::from_json(&json!({
+    let config = Config::from_json(&json!({
         "metrics": {" available ": {
             "description": " Available\tmemory. ",
             "unit": "\r By \t",
@@ -1318,9 +1248,9 @@ fn preserves_metric_identities_and_metadata() {
     }))
     .unwrap();
     let counter = &config.counters[0];
-    assert_eq!(counter.name, " available ");
+    assert_eq!(counter.name.as_ref(), " available ");
     assert_eq!(&*counter.description, " Available\tmemory. ");
-    assert_eq!(counter.unit, "\r By \t");
+    assert_eq!(counter.unit.as_ref(), "\r By \t");
     assert_eq!(
         *counter.attributes,
         BTreeMap::from([(" host ".to_owned(), " free ".to_owned())])
@@ -1333,7 +1263,7 @@ fn preserves_metric_identities_and_metadata() {
 #[test]
 fn allows_whitespace_distinct_metric_names() {
     for (first, second) in [("foo", " foo"), ("foo", "foo ")] {
-        let config = RuntimeConfig::from_json(&json!({
+        let config = Config::from_json(&json!({
             "metrics": {first: {"unit": "By"}, second: {"unit": "KiBy"}},
             "perfcounters": [{
                 "object": "Memory",
@@ -1349,8 +1279,8 @@ fn allows_whitespace_distinct_metric_names() {
             (&config.counters[0], first, "By"),
             (&config.counters[1], second, "KiBy"),
         ] {
-            assert_eq!(counter.name, name);
-            assert_eq!(counter.unit, unit);
+            assert_eq!(counter.name.as_ref(), name);
+            assert_eq!(counter.unit.as_ref(), unit);
         }
     }
 }
@@ -1379,9 +1309,9 @@ fn resolves_metric_references_exactly() {
         (" \t ", " \t ", "whitespace"),
     ] {
         value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
-        let config = RuntimeConfig::from_json(&value).unwrap();
-        assert_eq!(config.counters[0].name, name);
-        assert_eq!(config.counters[0].unit, unit);
+        let config = Config::from_json(&value).unwrap();
+        assert_eq!(config.counters[0].name.as_ref(), name);
+        assert_eq!(config.counters[0].unit.as_ref(), unit);
     }
     for reference in ["  ", "foo ", " foo "] {
         value["perfcounters"][0]["counters"][0]["metric"] = json!(reference);
@@ -1424,7 +1354,7 @@ fn rejects_reserved_attribute_prefix() {
 #[test]
 fn accepts_scaling_bounds() {
     for scale_power10 in [MIN_SCALE_POWER10, MAX_SCALE_POWER10] {
-        let config = RuntimeConfig::from_json(&gauge_config(json!({
+        let config = Config::from_json(&gauge_config(json!({
             "object": "Memory",
             "counters": [{
                 "name": "Available Bytes",
@@ -1464,7 +1394,7 @@ fn rejects_out_of_range_scaling() {
 }
 
 /// Scenario: Instance and counter lists multiply into many expanded counter paths.
-/// Guarantees: The expanded total is bounded before any paths are materialized.
+/// Guarantees: The configured selector budget is enforced incrementally without materializing the full product.
 #[test]
 fn bounds_expanded_counter_paths() {
     let object = |instances: usize, counters: usize| {
@@ -1477,16 +1407,17 @@ fn bounds_expanded_counter_paths() {
         })
     };
 
-    let config = RuntimeConfig::from_json(&gauge_config(object(16, 16))).unwrap();
-    assert_eq!(config.counters.len(), MAX_COUNTERS);
+    let limited = |object| {
+        let mut config = gauge_config(object);
+        config["max_expanded_counters"] = json!(256);
+        config
+    };
+    let config = Config::from_json(&limited(object(16, 16))).unwrap();
+    assert_eq!(config.counters.len(), 256);
 
     assert_config_error(
-        gauge_config(object(17, 16)),
-        "perfcounters must expand to at most 256 counter paths",
-    );
-    assert_config_error(
-        gauge_config(object(10_000, 10_000)),
-        "perfcounters must expand to at most 256 counter paths",
+        limited(object(17, 16)),
+        "exceeding max_expanded_counters 256",
     );
 }
 
@@ -1497,6 +1428,7 @@ fn bounds_expanded_counter_paths_across_objects() {
     let objects = |count: usize| {
         json!({
             "metrics": {"available": {"description": "Value.", "unit": "By", "gauge": {}}},
+            "max_expanded_counters": 256,
             "perfcounters": (0..2)
                 .map(|o| json!({
                     "object": format!("Object{o}"),
@@ -1507,10 +1439,803 @@ fn bounds_expanded_counter_paths_across_objects() {
                 .collect::<Vec<_>>()
         })
     };
-    let config = RuntimeConfig::from_json(&objects(MAX_COUNTERS / 2)).unwrap();
-    assert_eq!(config.counters.len(), MAX_COUNTERS);
+    let config = Config::from_json(&objects(128)).unwrap();
+    assert_eq!(config.counters.len(), 256);
+    assert_config_error(objects(129), "exceeding max_expanded_counters 256");
+}
+
+fn metric() -> serde_json::Value {
+    json!({
+        "description": "Test counter.",
+        "unit": "By",
+        "gauge": {}
+    })
+}
+
+/// Scenario: Discovery limits or refresh cadence cross their supported boundaries.
+/// Guarantees: Invalid options fail pure configuration validation with the relevant field context.
+#[test]
+fn validates_discovery_option_boundaries() {
+    let base = json!({
+        "collection_interval": "5s",
+        "perfcounters": [{"object": "Memory", "counters": [{"name": "Available Bytes"}]}]
+    });
+    for (key, value, expected) in [
+        (
+            "wildcard_refresh_interval",
+            json!("0s"),
+            "at least collection_interval",
+        ),
+        (
+            "wildcard_refresh_interval",
+            json!("4s"),
+            "at least collection_interval",
+        ),
+        (
+            "max_instances_per_wildcard",
+            json!(0),
+            "between 1 and 16384",
+        ),
+        (
+            "max_instances_per_wildcard",
+            json!(16385),
+            "between 1 and 16384",
+        ),
+        ("max_instances_per_wildcard", json!(null), "invalid type"),
+        ("max_expanded_counters", json!(0), "between 1 and 16384"),
+        ("max_expanded_counters", json!(16385), "between 1 and 16384"),
+        ("max_expanded_counters", json!(null), "invalid type"),
+    ] {
+        let mut value_with_option = base.clone();
+        value_with_option[key] = value;
+        assert_config_error(value_with_option, expected);
+    }
+    let mut inverted = base;
+    inverted["max_instances_per_wildcard"] = json!(3);
+    inverted["max_expanded_counters"] = json!(2);
     assert_config_error(
-        objects(MAX_COUNTERS / 2 + 1),
-        "perfcounters must expand to at most 256 counter paths",
+        inverted,
+        "max_instances_per_wildcard must not exceed max_expanded_counters",
     );
+}
+
+/// Scenario: Explicit discovery options select minimum and maximum valid limits.
+/// Guarantees: Normalization preserves configured limits and a refresh cadence equal to collection is accepted.
+#[test]
+fn accepts_explicit_discovery_limits() {
+    for limit in [1, 256, 4096, 16384] {
+        let config = Config::from_json(&json!({
+            "collection_interval": "5s", "wildcard_refresh_interval": "5s",
+            "max_instances_per_wildcard": limit, "max_expanded_counters": limit,
+            "perfcounters": [{"object": "Process", "instances": "*", "counters": [{"name": "Private Bytes"}]}]
+        })).unwrap();
+        assert_eq!(config.max_instances_per_wildcard, limit);
+        assert_eq!(config.max_expanded_counters, limit);
+        assert_eq!(config.wildcard_refresh_interval(), Duration::from_secs(5));
+    }
+}
+
+/// Scenario: Objects with no instances, named instances, and wildcards share metric metadata.
+/// Guarantees: Public configuration normalizes to exact and wildcard paths without changing metadata.
+#[test]
+fn normalizes_structured_configuration() {
+    let config = Config::from_json(&json!({
+        "metrics": {
+            "windows.memory.available": metric(),
+            "windows.process.time": {
+                "description": "Process time.",
+                "unit": "%",
+                "gauge": {}
+            }
+        },
+        "perfcounters": [
+            {
+                "object": "Memory",
+                "counters": [{
+                    "name": "Available Bytes",
+                    "metric": "windows.memory.available"
+                }]
+            },
+            {
+                "object": "Process",
+                "instances": ["*", "_Total"],
+                "counters": [
+                    {
+                        "name": "% Processor Time",
+                        "metric": "windows.process.time",
+                        "attributes": {"state": "active"}
+                    },
+                    {
+                        "name": "% Idle Time",
+                        "metric": "windows.process.time",
+                        "attributes": {"state": "idle"}
+                    }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(config.counters.len(), 3);
+    assert_eq!(config.counters[0].path, r"\Memory\Available Bytes");
+    assert_eq!(config.counters[1].path, r"\Process(*)\% Processor Time");
+    assert_eq!(config.counters[1].name.as_ref(), "windows.process.time");
+    assert_eq!(config.counters[1].metric_kind, MetricKind::Gauge);
+    assert_eq!(config.counters[1].attributes["state"], "active");
+    assert_eq!(config.counters[2].attributes["state"], "idle");
+    assert!(!config.counters[0].instance_config.has_instance());
+    assert!(!config.counters[0].instance_config.emit_attribute());
+    assert!(config.counters[1].instance_config.has_instance());
+    assert!(config.counters[1].instance_config.emit_attribute());
+    assert_eq!(
+        config.counters[1].instance_config.excluded_aggregation(),
+        None
+    );
+    assert_eq!(config.collection_interval, Duration::from_secs(60));
+    assert_eq!(config.initial_delay, Duration::from_secs(1));
+    assert_eq!(config.timeout, None);
+    assert_eq!(config.max_instances_per_wildcard, 256);
+    assert_eq!(config.max_expanded_counters, 4096);
+    assert_eq!(config.wildcard_refresh_interval(), Duration::from_secs(60));
+    assert_eq!(config.query_retry_cap(), Duration::from_secs(60));
+}
+
+/// Scenario: Timeout is omitted, positive, zero, or negative.
+/// Guarantees: Omitted and zero values use the collection interval, a positive timeout takes precedence, and invalid negatives fail.
+#[test]
+fn normalizes_scrape_timeout() {
+    let base = json!({
+        "perfcounters": [{
+            "object": "Memory",
+            "counters": [{"name": "Available Bytes"}]
+        }],
+        "collection_interval": "45s"
+    });
+
+    let omitted = Config::from_json(&base).unwrap();
+    assert_eq!(omitted.timeout, None);
+    assert_eq!(omitted.scrape_timeout_threshold(), Duration::from_secs(45));
+
+    let mut positive = base.clone();
+    positive["timeout"] = json!("10s");
+    let positive = Config::from_json(&positive).unwrap();
+    assert_eq!(positive.timeout, Some(Duration::from_secs(10)));
+    assert_eq!(positive.scrape_timeout_threshold(), Duration::from_secs(10));
+
+    let mut disabled = base.clone();
+    disabled["timeout"] = json!("0s");
+    let zero = Config::from_json(&disabled).unwrap();
+    assert_eq!(zero.timeout, None);
+    assert_eq!(zero.scrape_timeout_threshold(), Duration::from_secs(45));
+
+    let mut negative = base;
+    negative["timeout"] = json!("-1s");
+    assert_config_error(negative, "invalid value");
+}
+
+/// Scenario: Wildcard refresh is omitted for short, default, and long collection intervals or set explicitly.
+/// Guarantees: Membership scans avoid high-frequency defaults while query recovery remains capped by scrape cadence.
+#[test]
+fn defaults_refresh_independently_of_query_retry() {
+    let config = |collection_interval: &str, refresh_interval: Option<&str>| {
+        let mut value = json!({
+            "perfcounters": [{
+                "object": "Process",
+                "instances": ["*"],
+                "counters": [{"name": "Private Bytes"}]
+            }],
+            "collection_interval": collection_interval
+        });
+        if let Some(refresh_interval) = refresh_interval {
+            value["wildcard_refresh_interval"] = json!(refresh_interval);
+        }
+        Config::from_json(&value)
+    };
+
+    let short = config("5s", None).unwrap();
+    assert_eq!(short.wildcard_refresh_interval(), Duration::from_secs(60));
+    assert_eq!(short.query_retry_cap(), Duration::from_secs(5));
+
+    let default = config("60s", None).unwrap();
+    assert_eq!(default.wildcard_refresh_interval(), Duration::from_secs(60));
+    assert_eq!(default.query_retry_cap(), Duration::from_secs(60));
+
+    let long = config("2m", None).unwrap();
+    assert_eq!(long.wildcard_refresh_interval(), Duration::from_secs(120));
+    assert_eq!(long.query_retry_cap(), Duration::from_secs(120));
+
+    assert_eq!(
+        config("5s", Some("90s"))
+            .unwrap()
+            .wildcard_refresh_interval(),
+        Duration::from_secs(90)
+    );
+}
+
+/// Scenario: Mappings explicitly disable or enable query recreation across expanded paths.
+/// Guarantees: Explicit false remains supported; true fails with the exact object/counter-indexed diagnostic.
+#[test]
+fn accepts_disabled_recreation_and_rejects_enabled_recreation() {
+    let config = json!({
+        "perfcounters": [
+            {
+                "object": "Memory",
+                "instances": ["first", "second"],
+                "counters": [
+                    {
+                        "name": "Available Bytes",
+                        "recreate_query": false
+                    },
+                    {"name": "Committed Bytes"}
+                ]
+            },
+            {"object": "System", "counters": [{"name": "Processes"}, {"name": "Threads"}]}
+        ]
+    });
+
+    let disabled = Config::from_json(&config).unwrap();
+    assert_eq!(disabled.counters.len(), 6);
+    assert_eq!(disabled.counters[0].source_mapping_index, 0);
+    assert_eq!(disabled.counters[1].source_mapping_index, 0);
+
+    for (object_index, counter_index) in [(0, 0), (1, 1)] {
+        let mut invalid = config.clone();
+        invalid["perfcounters"][object_index]["counters"][counter_index]["recreate_query"] =
+            json!(true);
+        assert_eq!(
+            Config::from_json(&invalid).unwrap_err().to_string(),
+            format!(
+                "An invalid user configuration occurred: perfcounters[{object_index}].counters[{counter_index}].recreate_query: true is not supported; query rebuilds after invalidation are automatic"
+            )
+        );
+    }
+}
+
+/// Scenario: Implicit exact and wildcard paths match definitions using configured spelling.
+/// Guarantees: Metric lookup and native exact paths preserve configured instance indexes.
+#[test]
+fn resolves_configured_path_spelling_to_metric_definitions() {
+    let config = Config::from_json(&json!({
+        "metrics": {
+            r"\Process(app#001)\Private Bytes": {"unit": "By"},
+            r"\Process(worker*)\Working Set": {"unit": "KiBy"}
+        },
+        "perfcounters": [{
+            "object": "Process",
+            "instances": ["app#001", "worker*"],
+            "counters": [
+                {"name": "Private Bytes"},
+                {"name": "Working Set"}
+            ]
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(config.counters[0].path, r"\Process(app#001)\Private Bytes");
+    assert_eq!(
+        config.counters[0].name.as_ref(),
+        r"\Process(app#001)\Private Bytes"
+    );
+    assert_eq!(config.counters[0].unit.as_ref(), "By");
+    assert_eq!(
+        config.counters[3].name.as_ref(),
+        r"\Process(worker*)\Working Set"
+    );
+    assert_eq!(config.counters[3].unit.as_ref(), "KiBy");
+}
+
+/// Scenario: A wildcard omits the default or custom aggregation instance unless selected.
+/// Guarantees: Normalization records filtering only when the aggregate was not explicitly included.
+#[test]
+fn normalizes_aggregation_selection() {
+    let excluded = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [{
+            "object": "Custom Object",
+            "instances": "*",
+            "aggregation_name": "_Global_",
+            "counters": [{"name": "Counter", "metric": "test"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        excluded.counters[0].instance_config.excluded_aggregation(),
+        Some("_Global_")
+    );
+    let included = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [{
+            "object": "Custom Object",
+            "instances": ["*", "_Global_"],
+            "aggregation_name": "_Global_",
+            "counters": [{"name": "Counter", "metric": "test"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        included.counters[0].instance_config.excluded_aggregation(),
+        None
+    );
+    assert!(included.counters[0].instance_config.emit_attribute());
+
+    let case_distinct = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [{
+            "object": "Custom Object",
+            "instances": ["*", "_GLOBAL_"],
+            "aggregation_name": "_Global_",
+            "counters": [{"name": "Counter", "metric": "test"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        case_distinct.counters[0]
+            .instance_config
+            .excluded_aggregation(),
+        Some("_Global_")
+    );
+
+    let aggregate_alone = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [{
+            "object": "Custom Object",
+            "instances": "_Global_",
+            "aggregation_name": "_Global_",
+            "counters": [{"name": "Counter", "metric": "test"}]
+        }]
+    }))
+    .unwrap();
+    assert!(aggregate_alone.counters[0].instance_config.has_instance());
+    assert!(!aggregate_alone.counters[0].instance_config.emit_attribute());
+
+    let aggregate_with_peer = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [{
+            "object": "Processor",
+            "instances": ["_Total", "worker"],
+            "counters": [{"name": "Counter", "metric": "test"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        aggregate_with_peer
+            .counters
+            .iter()
+            .map(|counter| {
+                (
+                    counter.path.as_str(),
+                    counter.instance_config.emit_attribute(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            (r"\Processor(_Total)\Counter", false),
+            (r"\Processor(worker)\Counter", true)
+        ]
+    );
+}
+
+/// Scenario: Multiple named instances are selected without a wildcard.
+/// Guarantees: Each instance becomes one exact path while retaining shared metric identity.
+#[test]
+fn normalizes_named_instances() {
+    let config = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [{
+            "object": "Processor",
+            "instances": ["0", "1"],
+            "counters": [{"name": "% Processor Time", "metric": "test"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        config
+            .counters
+            .iter()
+            .map(|counter| counter.path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            r"\Processor(0)\% Processor Time",
+            r"\Processor(1)\% Processor Time"
+        ]
+    );
+    assert!(
+        config
+            .counters
+            .iter()
+            .all(|counter| counter.name.as_ref() == "test")
+    );
+    assert!(
+        config
+            .counters
+            .iter()
+            .all(|counter| counter.instance_config.has_instance())
+    );
+    assert!(
+        config
+            .counters
+            .iter()
+            .all(|counter| counter.instance_config.emit_attribute())
+    );
+}
+
+/// Scenario: Static `instance` attributes are configured for exact, multiple, wildcard, or ignored mappings.
+/// Guarantees: Only effective overrides that can collapse multiple selected instances request a warning.
+#[test]
+fn identifies_risky_instance_overrides() {
+    let override_attributes = BTreeMap::from([("instance".to_owned(), "fixed".to_owned())]);
+    let ignored_attributes = BTreeMap::new();
+
+    assert!(!should_warn_instance_override(false, &override_attributes));
+    assert!(should_warn_instance_override(true, &override_attributes));
+    assert!(should_warn_instance_override(true, &override_attributes));
+    assert!(!should_warn_instance_override(true, &ignored_attributes));
+}
+
+/// Scenario: Path-shaped definitions are selected implicitly, by a wildcard template, or by an explicit alias.
+/// Guarantees: Only raw path-shaped definitions unused by every mapping produce one usage-warning candidate.
+#[test]
+fn identifies_unused_path_metric_definitions() {
+    let value = json!({
+        "metrics": {
+            r"\Memory\Available Bytes": {"unit": "By"},
+            r"\Process(worker*)\Private Bytes": {"unit": "By"},
+            r"\alias": {"unit": "By"},
+            r"\unused": {"unit": "1"},
+            r" \ordinary-leading-space": {"unit": "1"},
+            "ordinary": {"unit": "1"}
+        },
+        "perfcounters": [
+            {
+                "object": "Memory",
+                "counters": [
+                    {"name": "Available Bytes"},
+                    {"name": "Cache Bytes", "metric": r"\alias"}
+                ]
+            },
+            {
+                "object": "Process",
+                "instances": "worker*",
+                "counters": [{"name": "Private Bytes"}]
+            }
+        ]
+    });
+    let user: UserConfig = serde_json::from_value(value.clone()).unwrap();
+    let metrics = normalize_metrics(&user.metrics).unwrap();
+    let config = Config::from_json(&value).unwrap();
+    assert_eq!(
+        unused_path_metric_definitions(
+            metrics
+                .iter()
+                .map(|(name, metric)| (name.as_ref(), metric.path_shaped)),
+            config.counters.iter().map(|counter| counter.name.as_ref())
+        ),
+        [r"\unused"]
+    );
+}
+
+/// Scenario: A valid configuration has a case collision, an unused path definition, and a multi-instance static override.
+/// Guarantees: Parsing collects each warning exactly once for emission only after full validation succeeds.
+#[test]
+fn collects_config_warnings_after_validation() {
+    let config = Config::from_json(&json!({
+        "metrics": {
+            "cpu": {"unit": "1"},
+            "CPU": {"unit": "%"},
+            r"\Memory\Unused": {"unit": "By"}
+        },
+        "perfcounters": [{
+            "object": "Processor",
+            "instances": "*",
+            "counters": [{
+                "name": "% Processor Time",
+                "metric": "cpu",
+                "attributes": {"instance": "fixed"}
+            }]
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(config.warnings.len(), 3);
+    assert!(matches!(
+        &config.warnings[0],
+        ConfigWarning::CaseDistinctMetricDefinitions(names)
+            if names == &vec!["CPU".to_owned(), "cpu".to_owned()]
+    ));
+    assert_eq!(
+        config.warnings[1],
+        ConfigWarning::InstanceOverride {
+            object_index: 0,
+            counter_index: 0,
+        }
+    );
+    assert_eq!(
+        config.warnings[2],
+        ConfigWarning::UnusedPathMetricDefinition(r"\Memory\Unused".to_owned())
+    );
+    config.emit_warnings();
+}
+
+/// Scenario: Instances are empty, use `*` or `?` partial wildcards, or combine full wildcard with explicit names.
+/// Guarantees: Empty means no instance, partial patterns remain wildcard templates, and only literal `*` selects all instances.
+#[test]
+fn accepts_go_instance_selection_forms() {
+    let empty = Config::from_json(&json!({
+        "perfcounters": [{
+            "object": "Memory",
+            "instances": [],
+            "aggregation_name": "",
+            "counters": [{"name": "Available Bytes"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(empty.counters[0].path, r"\Memory\Available Bytes");
+
+    let partial = Config::from_json(&json!({
+        "perfcounters": [{
+            "object": "Process",
+            "instances": ["worker*", "service"],
+            "counters": [{"name": "Private Bytes"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        partial
+            .counters
+            .iter()
+            .map(|counter| counter.path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            r"\Process(worker*)\Private Bytes",
+            r"\Process(service)\Private Bytes"
+        ]
+    );
+    assert_eq!(
+        partial.counters[0].instance_config.excluded_aggregation(),
+        Some("_Total")
+    );
+
+    let question = Config::from_json(&json!({
+        "perfcounters": [{
+            "object": "Process",
+            "instances": ["svc?ost"],
+            "counters": [{"name": "ID Process"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(question.counters[0].path, r"\Process(svc?ost)\ID Process");
+    assert!(question.counters[0].instance_config.is_wildcard());
+    assert_eq!(
+        question.counters[0].instance_config.excluded_aggregation(),
+        Some("_Total")
+    );
+
+    let full = Config::from_json(&json!({
+        "perfcounters": [{
+            "object": "Process",
+            "instances": ["*", "worker"],
+            "counters": [{"name": "Private Bytes"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(full.counters.len(), 1);
+    assert_eq!(full.counters[0].path, r"\Process(*)\Private Bytes");
+}
+
+/// Scenario: Native object, instance, and counter components are empty, or aggregation names are empty or whitespace-only.
+/// Guarantees: Required literal empties fail, only an empty aggregation defaults, and whitespace-only spellings remain configured identity.
+#[test]
+fn handles_empty_native_components_and_aggregation() {
+    for value in [
+        json!({
+            "perfcounters": [{
+                "object": "",
+                "counters": [{"name": "Available Bytes"}]
+            }]
+        }),
+        json!({
+            "perfcounters": [{
+                "object": "Process",
+                "instances": "",
+                "counters": [{"name": "Private Bytes"}]
+            }]
+        }),
+        json!({
+            "perfcounters": [{
+                "object": "Memory",
+                "counters": [{"name": ""}]
+            }]
+        }),
+    ] {
+        assert_config_error(value, "must not be empty");
+    }
+
+    let defaulted = Config::from_json(&json!({
+        "perfcounters": [{
+            "object": "Process",
+            "instances": "*",
+            "aggregation_name": "",
+            "counters": [{"name": "Private Bytes"}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        defaulted.counters[0].instance_config.excluded_aggregation(),
+        Some("_Total")
+    );
+
+    let whitespace = Config::from_json(&json!({
+        "perfcounters": [{
+            "object": " ",
+            "instances": "*",
+            "aggregation_name": " ",
+            "counters": [{"name": " "}]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(whitespace.counters[0].path, r"\ (*)\ ");
+    assert_eq!(
+        whitespace.counters[0]
+            .instance_config
+            .excluded_aggregation(),
+        Some(" ")
+    );
+}
+
+/// Scenario: An empty instance list accompanies 257 exact counter mappings and an equally sized native budget.
+/// Guarantees: Larger bounded deployments are not rejected by an unrelated legacy template cap.
+#[test]
+fn allows_exact_paths_beyond_removed_template_cap() {
+    let object = |counters: usize| {
+        json!({
+            "object": "Memory",
+            "instances": [],
+            "counters": (0..counters)
+                .map(|index| json!({"name": format!("Counter {index}")}))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        Config::from_json(&json!({
+            "perfcounters": [object(257)]
+        }))
+        .unwrap()
+        .counters
+        .len(),
+        257
+    );
+}
+
+/// Scenario: Exact, wildcard and mixed selectors reach or exceed explicit limits, including more than 256 selectors.
+/// Guarantees: Every normalized selector counts once; exactly the cap succeeds and the next rejects.
+#[test]
+fn bounds_all_configured_selectors() {
+    for cap in [1, 16, 257] {
+        for kind in ["exact", "wildcard", "mixed"] {
+            for excess in [0, 1] {
+                let instances = (0..cap + excess)
+                    .map(|index| {
+                        if kind == "wildcard" || (kind == "mixed" && index % 2 == 0) {
+                            format!("worker{index}*")
+                        } else {
+                            format!("worker{index}")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mut value = json!({
+                    "max_instances_per_wildcard": 1,
+                    "perfcounters": [{
+                        "object": "Process",
+                        "instances": instances,
+                        "counters": [{"name": "ID Process"}]
+                    }]
+                });
+                value["max_expanded_counters"] = json!(cap);
+                if excess == 0 {
+                    let config = Config::from_json(&value).unwrap();
+                    assert_eq!(config.counters.len(), cap);
+                    for (index, counter) in config.counters.iter().enumerate() {
+                        assert_eq!(
+                            counter.instance_config.is_wildcard(),
+                            kind == "wildcard" || (kind == "mixed" && index % 2 == 0)
+                        );
+                    }
+                } else {
+                    assert_eq!(
+                        Config::from_json(&value).unwrap_err().to_string(),
+                        format!(
+                            "An invalid user configuration occurred: perfcounters normalize to {} counter selectors, exceeding max_expanded_counters {cap}",
+                            cap + 1
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: Many wildcard patterns and counter mappings would generate 65,536 selectors.
+/// Guarantees: Normalization rejects at the default 4097th selector instead of materializing the product.
+#[test]
+fn rejects_large_wildcard_selector_product() {
+    let error = Config::from_json(&json!({"perfcounters": [{
+        "object": "Process",
+        "instances": (0..256).map(|i| format!("worker{i}*")).collect::<Vec<_>>(),
+        "counters": (0..256).map(|i| json!({"name": format!("Counter {i}")})).collect::<Vec<_>>()
+    }]}))
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "An invalid user configuration occurred: perfcounters normalize to 4097 counter selectors, exceeding max_expanded_counters 4096",
+    );
+}
+
+/// Scenario: One definition is expanded, referenced again, and the normalized config is cloned.
+/// Guarantees: Name, unit, description, and per-mapping attributes retain their shared backing.
+#[test]
+fn shares_expanded_counter_metadata() {
+    let config = Config::from_json(&json!({
+        "metrics": {"test": metric()},
+        "perfcounters": [
+            {
+                "object": "Process",
+                "instances": ["a", "b"],
+                "counters": [{
+                    "name": "Private Bytes",
+                    "metric": "test",
+                    "attributes": {"state": "used"}
+                }]
+            },
+            {
+                "object": "Memory",
+                "counters": [{"name": "Available Bytes", "metric": "test"}]
+            }
+        ]
+    }))
+    .unwrap();
+    let [first, second, repeated] = config.counters.as_slice() else {
+        panic!("expected two expanded counters and one repeated reference");
+    };
+    assert!(Arc::ptr_eq(&first.name, &second.name));
+    assert!(Arc::ptr_eq(&first.unit, &second.unit));
+    assert!(Arc::ptr_eq(&first.description, &second.description));
+    assert!(Arc::ptr_eq(&first.attributes, &second.attributes));
+    assert!(Arc::ptr_eq(&first.name, &repeated.name));
+    assert!(Arc::ptr_eq(&first.unit, &repeated.unit));
+    assert!(Arc::ptr_eq(&first.description, &repeated.description));
+
+    let cloned = config.clone();
+    assert!(Arc::ptr_eq(&first.name, &cloned.counters[0].name));
+    assert!(Arc::ptr_eq(&first.unit, &cloned.counters[0].unit));
+    assert!(Arc::ptr_eq(
+        &first.description,
+        &cloned.counters[0].description
+    ));
+    assert!(Arc::ptr_eq(
+        &first.attributes,
+        &cloned.counters[0].attributes
+    ));
+}
+
+/// Scenario: Invalid scales belong to fixed-instance or wildcard mappings that also have an undefined metric.
+/// Guarantees: Scale validation runs before metadata lookup and reports the first configured path without changing its spelling.
+#[test]
+fn invalid_scale_identifies_the_first_configured_path() {
+    for (instances, path) in [
+        (json!(["worker ", "other"]), r"\Process(worker )\ID Process"),
+        (json!(["*"]), r"\Process(*)\ID Process"),
+        (json!(["svchos?"]), r"\Process(svchos?)\ID Process"),
+    ] {
+        let error = Config::from_json(&json!({"perfcounters": [{
+            "object": "Process",
+            "instances": instances,
+            "counters": [{"name": "ID Process", "scale_power10": 19, "metric": "missing"}]
+        }]}))
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "An invalid user configuration occurred: counter path {path:?} scale_power10 must be between -18 and 18"
+            )
+        );
+    }
 }

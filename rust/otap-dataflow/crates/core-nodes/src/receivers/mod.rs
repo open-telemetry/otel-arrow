@@ -28,5 +28,5 @@ pub mod host_metrics_receiver;
 #[cfg(feature = "journald")]
 pub mod journald_receiver;
 
-/// Filelog source primitives.
+/// Filelog configuration and source primitives.
 pub mod filelog_receiver;
