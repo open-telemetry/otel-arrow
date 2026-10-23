@@ -58,6 +58,8 @@ use otel_arrow_dfe_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 pub mod arrow_records_encoder;
 /// Independently decodable syslog batch codec and framing.
 mod codec;
+#[cfg(feature = "experimental-cooperative-syslog")]
+mod experiment;
 /// Benchmark-only access to syslog framing and lazy materialization.
 #[cfg(feature = "bench")]
 pub use codec::bench_support;
@@ -630,6 +632,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        #[cfg(feature = "experimental-cooperative-syslog")]
+        let _scheduling_probe = experiment::SchedulingProbe::start();
         let syslog_codec = resolve_syslog().map_err(|error| Error::ReceiverError {
             receiver: effect_handler.receiver_id(),
             kind: ReceiverErrorKind::Configuration,
@@ -1812,7 +1816,7 @@ mod tests {
             let message = vec![b'x'; MAX_MESSAGE_SIZE];
             let codec = resolve_syslog().unwrap();
             let mut counts = Vec::new();
-            for _ in 0..32 {
+            for _ in 0..(codec::full_sized_test_message_capacity() * 2 + 2) {
                 process_syslog_message(
                     &receiver.metrics,
                     protocol,
@@ -1825,7 +1829,10 @@ mod tests {
                 if builder.should_flush(usize::from(receiver.config.max_batch_size())) {
                     let pdata = seal_syslog_batch(&mut builder, codec).unwrap();
                     counts.push(pdata.payload_ref().known_item_count().unwrap());
-                    assert!(pdata.payload_ref().encoded_bytes().unwrap().len() <= 256 * 1024);
+                    assert!(
+                        pdata.payload_ref().encoded_bytes().unwrap().len()
+                            <= codec::MAX_BATCH_BYTES
+                    );
                 }
             }
             if !builder.is_empty() {
@@ -1837,7 +1844,14 @@ mod tests {
                         .unwrap(),
                 );
             }
-            assert_eq!(counts, [15, 15, 2]);
+            assert_eq!(
+                counts,
+                [
+                    codec::full_sized_test_message_capacity(),
+                    codec::full_sized_test_message_capacity(),
+                    2
+                ]
+            );
         }
     }
 

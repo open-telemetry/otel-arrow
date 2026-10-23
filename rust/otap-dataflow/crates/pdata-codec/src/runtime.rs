@@ -10,8 +10,8 @@
 //! admission and matching-format forwarding therefore require neither codec
 //! construction nor mutable runtime access.
 //!
-//! Codec trait calls are currently synchronous. The service holds its runtime
-//! lock for the duration of each codec operation and, for prepared output, for
+//! Synchronous codec operations hold the service runtime lock for their
+//! duration and, for prepared output, for
 //! the synchronous consumer callback. Nested access from that callback returns
 //! an error instead of blocking on the same lock. A panic while state is
 //! borrowed poisons the service; later operations report that state as
@@ -19,10 +19,14 @@
 //! codec borrow crosses an async suspension. [`EncodeOutput::into_bytes`]
 //! detaches owned bytes before an asynchronous transport send, but it does not
 //! make encoding asynchronous.
-//! A codec that performs slow or blocking work would still block its caller;
-//! bounded offloading is intentionally left to a future execution layer at the
-//! engine service boundary.
+//! [`CodecService::decode_cooperative`] starts a synchronous decode or an owned
+//! incremental job under the lock, then releases the lock before driving that
+//! job. The engine supplies scheduler-aware yielding between work segments.
+//! There is no worker thread, spawned conversion task, or hidden pending queue.
+//! Ordinary decoders still execute synchronously; bounded offloading for work
+//! that cannot cooperate remains outside this prototype.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use bytes::Bytes;
@@ -30,8 +34,8 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
     AcceptedEncodings, BatchSettings, CodecBatches, CodecError, CodecOperation, CodecRegistry,
-    DecodePolicy, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher, PdataDecoder,
-    PdataEncoder, PdataView, RegistryError, ResolvedCodec,
+    DecodeBudget, DecodePolicy, DecodeTask, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher,
+    PdataDecoder, PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
 
 struct DecoderInstance {
@@ -100,9 +104,9 @@ impl CodecServiceBuilder {
 
 /// Scoped access to mutable codec instances owned by one pipeline runtime.
 ///
-/// Codec operations are synchronous and release the runtime lock before
-/// returning. Callers must detach prepared output before awaiting asynchronous
-/// work. The module-level documentation describes the execution boundary.
+/// Synchronous operations release the runtime lock before returning. Incremental
+/// decode jobs own their state and release service access before suspension.
+/// Callers must detach prepared output before awaiting asynchronous work.
 #[derive(Clone)]
 pub struct CodecService {
     registry: Arc<CodecRegistry>,
@@ -156,6 +160,51 @@ impl CodecService {
             .map_err(|error| {
                 error.with_operation_context(codec.encoding(), CodecOperation::Decode)
             })?;
+        if records.signal_type() != signal {
+            return Err(CodecError::SignalChanged {
+                encoding: codec.encoding().clone(),
+                expected: signal,
+                actual: records.signal_type(),
+            });
+        }
+        Ok(records)
+    }
+
+    /// Decodes without keeping mutable service access across scheduling points.
+    ///
+    /// Ordinary codecs finish synchronously. Incremental jobs are driven by the
+    /// caller future: there is no spawned task, worker thread, or hidden queue.
+    /// Existing node concurrency and channel backpressure bound admitted jobs.
+    /// The engine supplies its scheduler-aware yield operation: immediately
+    /// self-waking can repeatedly poll a LocalSet without driving I/O or timers.
+    pub async fn decode_cooperative<Y: Future<Output = ()>>(
+        &self,
+        encoded: &EncodedPdata,
+        mut yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        let codec = encoded.codec();
+        let signal = encoded.signal_type();
+        codec.require_decoder(signal)?;
+        let task = {
+            let mut runtime = self.lock()?;
+            runtime
+                .decoder(codec, self.decode_policy)?
+                .start_decode(signal, encoded.bytes())
+                .map_err(|error| {
+                    error.with_operation_context(codec.encoding(), CodecOperation::Decode)
+                })?
+        };
+        let records = match task {
+            DecodeTask::Ready(records) => records,
+            DecodeTask::Incremental(mut job) => loop {
+                match job.step(DecodeBudget::default()).map_err(|error| {
+                    error.with_operation_context(codec.encoding(), CodecOperation::Decode)
+                })? {
+                    Some(records) => break records,
+                    None => yield_to_runtime().await,
+                }
+            },
+        };
         if records.signal_type() != signal {
             return Err(CodecError::SignalChanged {
                 encoding: codec.encoding().clone(),

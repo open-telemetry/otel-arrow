@@ -175,20 +175,26 @@ before `.await` to detach ownership from codec state.
 
 ## Execution and asynchronous ownership
 
-Codec decoder, encoder, and batcher methods currently execute synchronously
-while the pipeline-local codec service has exclusive access to the selected
-instance. Prepared output may borrow an encoder's scratch buffer only during a
+Ordinary codec decoder and encoder methods execute synchronously while the
+pipeline-local codec service has exclusive access to the selected instance.
+The experimental incremental decode path releases that access before yielding:
+`start_decode` returns completed records or an owned `PdataDecodeJob`, which
+retains one builder until the entire batch succeeds. The effect handler supplies
+Tokio-aware scheduling; a self-waking future alone may delay I/O under
+`LocalSet`.
+Only incremental jobs allocate a job object; native and synchronous paths do
+not. Prepared output may borrow an encoder's scratch buffer only during a
 synchronous callback. `EncodeOutput::into_bytes` detaches the output before an
 asynchronous transport send; it does not offload or make the encoder itself
 asynchronous.
 
 The node-facing `PdataEffectHandlerExtension` operations are asynchronous so a
 future execution layer can offload work without changing every node API. Their
-current implementations perform the synchronous codec call before the future
-completes. The async signature is therefore an extension seam, not a guarantee
-that codec work runs outside the pipeline runtime.
+implementations run ordinary codecs synchronously, but can drive incremental
+decoding with bounded work segments on that same runtime thread. This does not
+offload CPU work or make synchronous encoding cooperative.
 
-A slow codec would therefore block the calling pipeline runtime today. The
+A non-incremental decoder, encoder, or batcher can still block its caller. The
 engine service boundary is the intended integration point for a future bounded
 executor: fast codecs can remain inline, while codecs explicitly classified as
 blocking can receive owned inputs and return owned outputs through offloaded
@@ -462,3 +468,29 @@ The
 is a decode-only example. Its receiver emits independently decodable framed
 batches, its decoder materializes native log records only when required, and
 its native batcher merges frames without parsing their syslog contents.
+
+## Cooperative syslog experiment
+
+The core-node development feature `experimental-cooperative-syslog` enables an
+8,192-item / 2 MiB admission ceiling for comparison only. Production defaults
+remain 256 items / 256 KiB. Both synchronous and cooperative 8K cases use the
+same feature-enabled binary: `OTEL_DFE_EXPERIMENT_CODEC_EXECUTION=sync` selects
+the synchronous decoder once at lazy instance creation; otherwise it selects
+the incremental decoder. Small inputs still decode synchronously.
+
+The incremental decoder retains one Arrow builder, yields after at most 128
+records or 64 KiB of message bytes, and checks a 1 ms time target periodically.
+A single message can exceed a segment target. Arrow finalization, framing,
+native batching, output encoding, and compression still contain synchronous
+work; this experiment does not claim a hard scheduling deadline.
+
+Setting `OTEL_DFE_EXPERIMENT_CODEC_PROBE_PATH` enables a 1 ms timer on the
+receiver's pipeline runtime and writes bounded timing samples when the receiver
+exits. The probe contains no telemetry data. Benchmark results must include
+actual I/O latency, not just codec segment durations. The probe and environment
+variables are development instrumentation, not supported codec configuration.
+
+Jobs do not spawn or enqueue background work. Existing node concurrency and
+channel backpressure bound active callers. Dropping a conversion future drops
+its partial builder and input references; delivery cancellation remains the
+caller's responsibility and no acknowledgement is sent automatically.

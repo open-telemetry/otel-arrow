@@ -47,10 +47,17 @@ const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
 const RUN_HEADER_LEN: usize = 16;
 const FRAME_HEADER_LEN: usize = 4;
-// Bound one synchronous parse/build/finalize operation until cooperative codec
-// execution is available. These are hard limits, not configurable batch targets.
+// Production bounds remain conservative. The development-only feature admits
+// larger inputs for synchronous/cooperative comparisons, not a default rollout.
+// These are hard admission limits, independent of configurable batch targets.
+#[cfg(not(feature = "experimental-cooperative-syslog"))]
 pub(super) const MAX_BATCH_ITEMS: usize = 256;
-const MAX_BATCH_BYTES: usize = 256 * 1024;
+#[cfg(feature = "experimental-cooperative-syslog")]
+pub(super) const MAX_BATCH_ITEMS: usize = 8192;
+#[cfg(not(feature = "experimental-cooperative-syslog"))]
+pub(super) const MAX_BATCH_BYTES: usize = 256 * 1024;
+#[cfg(feature = "experimental-cooperative-syslog")]
+pub(super) const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
 
 const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
@@ -290,6 +297,11 @@ struct Frame<'a> {
 
 struct FrameIter<'a> {
     bytes: &'a [u8],
+    state: FrameState,
+}
+
+#[derive(Clone, Copy)]
+struct FrameState {
     cursor: usize,
     remaining: usize,
     run_remaining: usize,
@@ -298,21 +310,19 @@ struct FrameIter<'a> {
     finished: bool,
 }
 
-impl<'a> Iterator for FrameIter<'a> {
-    type Item = Result<Frame<'a>, SyslogFramingError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl FrameState {
+    fn next<'a>(&mut self, bytes: &'a [u8]) -> Option<Result<Frame<'a>, SyslogFramingError>> {
         if self.finished {
             return None;
         }
         if self.remaining == 0 {
             self.finished = true;
-            return (self.cursor != self.bytes.len())
+            return (self.cursor != bytes.len())
                 .then(|| Err(framing_error("trailing bytes after syslog batch frames")));
         }
         if self.run_remaining == 0 {
             let run_header_end = match self.cursor.checked_add(RUN_HEADER_LEN) {
-                Some(end) if end <= self.bytes.len() => end,
+                Some(end) if end <= bytes.len() => end,
                 Some(_) => {
                     self.finished = true;
                     return Some(Err(framing_error("truncated syslog timestamp run")));
@@ -322,9 +332,9 @@ impl<'a> Iterator for FrameIter<'a> {
                     return Some(Err(framing_error("syslog timestamp run overflow")));
                 }
             };
-            self.observed_time = read_i64(&self.bytes[self.cursor..self.cursor + 8]);
-            self.run_remaining = read_u32(&self.bytes[self.cursor + 8..self.cursor + 12]) as usize;
-            let year = &self.bytes[self.cursor + 12..run_header_end];
+            self.observed_time = read_i64(&bytes[self.cursor..self.cursor + 8]);
+            self.run_remaining = read_u32(&bytes[self.cursor + 8..self.cursor + 12]) as usize;
+            let year = &bytes[self.cursor + 12..run_header_end];
             self.received_local_year = i32::from_be_bytes([year[0], year[1], year[2], year[3]]);
             self.cursor = run_header_end;
             if self.run_remaining == 0 || self.run_remaining > self.remaining {
@@ -336,7 +346,7 @@ impl<'a> Iterator for FrameIter<'a> {
         }
         let start = self.cursor;
         let header_end = match start.checked_add(FRAME_HEADER_LEN) {
-            Some(header_end) if header_end <= self.bytes.len() => header_end,
+            Some(header_end) if header_end <= bytes.len() => header_end,
             Some(_) => {
                 self.finished = true;
                 return Some(Err(framing_error("truncated syslog frame header")));
@@ -346,14 +356,14 @@ impl<'a> Iterator for FrameIter<'a> {
                 return Some(Err(framing_error("syslog frame header overflow")));
             }
         };
-        let message_len = read_u32(&self.bytes[start..header_end]) as usize;
+        let message_len = read_u32(&bytes[start..header_end]) as usize;
         if message_len > MAX_MESSAGE_SIZE {
             self.finished = true;
             return Some(Err(framing_error("syslog message exceeds 16 KiB")));
         }
         let message_start = header_end;
         let end = match message_start.checked_add(message_len) {
-            Some(end) if end <= self.bytes.len() => end,
+            Some(end) if end <= bytes.len() => end,
             Some(_) => {
                 self.finished = true;
                 return Some(Err(framing_error("truncated syslog frame body")));
@@ -369,9 +379,17 @@ impl<'a> Iterator for FrameIter<'a> {
         Some(Ok(Frame {
             observed_time: self.observed_time,
             received_local_year: self.received_local_year,
-            message: &self.bytes[message_start..end],
-            encoded: &self.bytes[start..end],
+            message: &bytes[message_start..end],
+            encoded: &bytes[start..end],
         }))
+    }
+}
+
+impl<'a> Iterator for FrameIter<'a> {
+    type Item = Result<Frame<'a>, SyslogFramingError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.state.next(self.bytes)
     }
 }
 
@@ -398,12 +416,14 @@ fn validated_frames(bytes: &[u8]) -> Result<(usize, FrameIter<'_>), SyslogFramin
         count,
         FrameIter {
             bytes,
-            cursor: BATCH_HEADER_LEN,
-            remaining: count,
-            run_remaining: 0,
-            observed_time: 0,
-            received_local_year: 0,
-            finished: false,
+            state: FrameState {
+                cursor: BATCH_HEADER_LEN,
+                remaining: count,
+                run_remaining: 0,
+                observed_time: 0,
+                received_local_year: 0,
+                finished: false,
+            },
         },
     ))
 }
@@ -429,10 +449,15 @@ const fn read_i64(bytes: &[u8]) -> i64 {
 // emit one that the decoder cannot safely process in a single synchronous call.
 fn validate_decode_limits(count: usize, bytes: usize) -> Result<(), SyslogFramingError> {
     if count > MAX_BATCH_ITEMS {
-        return Err(framing_error("syslog batch exceeds 256 messages"));
+        return Err(framing_error(format!(
+            "syslog batch exceeds {MAX_BATCH_ITEMS} messages"
+        )));
     }
     if bytes > MAX_BATCH_BYTES {
-        return Err(framing_error("syslog batch exceeds 256 KiB"));
+        return Err(framing_error(format!(
+            "syslog batch exceeds {} KiB",
+            MAX_BATCH_BYTES / 1024
+        )));
     }
     Ok(())
 }
@@ -446,6 +471,8 @@ impl PdataDecoder for SyslogDecoder {
         signal: SignalType,
         bytes: &Bytes,
     ) -> Result<OtapArrowRecords, CodecError> {
+        #[cfg(feature = "experimental-cooperative-syslog")]
+        let _segment = super::experiment::SegmentTimer::new(false);
         if signal != SignalType::Logs {
             return Err(CodecError::Unsupported {
                 encoding: SYSLOG_CEF_ENCODING,
@@ -469,6 +496,111 @@ impl PdataDecoder for SyslogDecoder {
             .build()
             .map_err(|error| operation_error(CodecOperation::Decode, error))
     }
+}
+
+/// Experimental decoder that yields without constructing intermediate Arrow batches.
+#[cfg(feature = "experimental-cooperative-syslog")]
+struct CooperativeSyslogDecoder;
+
+#[cfg(feature = "experimental-cooperative-syslog")]
+impl PdataDecoder for CooperativeSyslogDecoder {
+    fn decode(
+        &mut self,
+        signal: SignalType,
+        bytes: &Bytes,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        SyslogDecoder.decode(signal, bytes)
+    }
+
+    fn start_decode(
+        &mut self,
+        signal: SignalType,
+        bytes: &Bytes,
+    ) -> Result<otel_arrow_dfe_pdata_codec::DecodeTask, CodecError> {
+        use otel_arrow_dfe_pdata_codec::DecodeTask;
+        if signal != SignalType::Logs {
+            return self.decode(signal, bytes).map(DecodeTask::Ready);
+        }
+        let (count, frames) = validated_frames(bytes)
+            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        validate_decode_limits(count, bytes.len())
+            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        // Small inputs retain the synchronous path, with no job allocation.
+        if count <= 256 && bytes.len() <= 256 * 1024 {
+            return self.decode(signal, bytes).map(DecodeTask::Ready);
+        }
+        Ok(DecodeTask::Incremental(Box::new(SyslogDecodeJob {
+            bytes: bytes.clone(),
+            frames: frames.state,
+            builder: Some(ReceivedArrowRecordsBuilder::default()),
+        })))
+    }
+}
+
+#[cfg(feature = "experimental-cooperative-syslog")]
+struct SyslogDecodeJob {
+    bytes: Bytes,
+    frames: FrameState,
+    builder: Option<ReceivedArrowRecordsBuilder>,
+}
+
+#[cfg(feature = "experimental-cooperative-syslog")]
+impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
+    fn step(
+        &mut self,
+        budget: otel_arrow_dfe_pdata_codec::DecodeBudget,
+    ) -> Result<Option<OtapArrowRecords>, CodecError> {
+        let _segment = super::experiment::SegmentTimer::new(false);
+        let started = std::time::Instant::now();
+        let mut records = 0;
+        let mut bytes = 0;
+        loop {
+            let Some(frame) = self.frames.next(&self.bytes) else {
+                let builder = self.builder.take().ok_or_else(|| {
+                    operation_error(
+                        CodecOperation::Decode,
+                        framing_error("decode job already finished"),
+                    )
+                })?;
+                // Finalization is still one synchronous operation. Measure it
+                // separately; parse-loop yields do not prove it meets a budget.
+                let _finalization = super::experiment::SegmentTimer::new(true);
+                return builder
+                    .build()
+                    .map(Some)
+                    .map_err(|error| operation_error(CodecOperation::Decode, error));
+            };
+            let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
+            let parsed = parser::parse(frame.message)
+                .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
+                .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+            let builder = self.builder.as_mut().ok_or_else(|| {
+                operation_error(
+                    CodecOperation::Decode,
+                    framing_error("decode job already finished"),
+                )
+            })?;
+            builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
+            records += 1;
+            bytes += frame.message.len();
+            if records >= budget.max_records()
+                || bytes >= budget.max_bytes()
+                || (records.is_multiple_of(16) && started.elapsed() >= budget.max_duration())
+            {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+fn create_decoder(_: otel_arrow_dfe_pdata_codec::DecodePolicy) -> Box<dyn PdataDecoder> {
+    #[cfg(feature = "experimental-cooperative-syslog")]
+    if std::env::var_os("OTEL_DFE_EXPERIMENT_CODEC_EXECUTION").as_deref()
+        != Some(std::ffi::OsStr::new("sync"))
+    {
+        return Box::new(CooperativeSyslogDecoder);
+    }
+    Box::<SyslogDecoder>::default()
 }
 
 #[derive(Default)]
@@ -753,7 +885,7 @@ static SYSLOG_BATCHING_SUPPORT: BatchingSupport = BatchingSupport {
 register_pdata_codec!(
     SYSLOG_CEF_CODEC,
     CodecRegistration::new(&SYSLOG_CEF_METADATA)
-        .with_decoder(|_| Box::<SyslogDecoder>::default())
+        .with_decoder(create_decoder)
         .with_batcher(CodecBatcherRegistration::new(
             &SYSLOG_BATCHING_SUPPORT,
             || Box::<SyslogBatcher>::default(),
@@ -857,6 +989,11 @@ pub mod bench_support {
 }
 
 #[cfg(test)]
+pub(super) const fn full_sized_test_message_capacity() -> usize {
+    (MAX_BATCH_BYTES - BATCH_HEADER_LEN - RUN_HEADER_LEN) / (MAX_MESSAGE_SIZE + FRAME_HEADER_LEN)
+}
+
+#[cfg(test)]
 mod tests {
     use arrow::array::TimestampNanosecondArray;
     use chrono::TimeZone;
@@ -905,7 +1042,7 @@ mod tests {
         let at_item_limit = batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS], 42);
         let large = vec![b'x'; MAX_MESSAGE_SIZE];
         let mut full = SyslogBatchBuilder::new();
-        for _ in 0..15 {
+        for _ in 0..full_sized_test_message_capacity() {
             full.append_with_year(&large, 2024).unwrap();
         }
         let remaining = MAX_BATCH_BYTES - full.bytes.len() - FRAME_HEADER_LEN;
@@ -997,12 +1134,15 @@ mod tests {
             (
                 unchecked_batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS + 1]),
                 None,
-                vec![256, 1],
+                vec![MAX_BATCH_ITEMS, 1],
             ),
             (
-                unchecked_batch(&[large.as_slice(); 16]),
+                unchecked_batch(&vec![
+                    large.as_slice();
+                    full_sized_test_message_capacity() + 1
+                ]),
                 NonZeroU64::new(u64::MAX),
-                vec![15, 1],
+                vec![full_sized_test_message_capacity(), 1],
             ),
         ] {
             let messages = |bytes: &Bytes| {
@@ -1060,7 +1200,7 @@ mod tests {
 
         let message = vec![b'x'; MAX_MESSAGE_SIZE];
         let mut builder = SyslogBatchBuilder::new();
-        for _ in 0..15 {
+        for _ in 0..full_sized_test_message_capacity() {
             builder.append_with_year(&message, 2024).unwrap();
         }
         assert!(builder.should_flush(usize::MAX));
@@ -1077,7 +1217,7 @@ mod tests {
                 .decode(SignalType::Logs, &builder.finish(42).unwrap().bytes)
                 .unwrap()
                 .num_items(),
-            16
+            full_sized_test_message_capacity() + 1
         );
 
         let mut builder = SyslogBatchBuilder::new();
@@ -1096,7 +1236,10 @@ mod tests {
         let too_large = vec![b'x'; MAX_MESSAGE_SIZE + 1];
         for bytes in [
             unchecked_batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS + 1]),
-            unchecked_batch(&vec![large.as_slice(); 16]),
+            unchecked_batch(&vec![
+                large.as_slice();
+                full_sized_test_message_capacity() + 1
+            ]),
             unchecked_batch(&[too_large.as_slice()]),
         ] {
             let mut payload: OtapPayload =
@@ -1128,7 +1271,7 @@ mod tests {
         };
         let mut inputs = Vec::new();
         for (message, observed) in [(b"first".as_slice(), 1), (b"second", 2), (b"third", 3)] {
-            inputs.push(batch(&vec![message; 200], observed));
+            inputs.push(batch(&vec![message; MAX_BATCH_ITEMS * 25 / 32], observed));
         }
         let result = SyslogBatcher
             .batch(SignalType::Logs, &settings, inputs)
@@ -1156,11 +1299,19 @@ mod tests {
         }
         assert_eq!(
             observed,
-            [vec![1; 200], vec![2; 200], vec![3; 200]].concat()
+            [
+                vec![1; MAX_BATCH_ITEMS * 25 / 32],
+                vec![2; MAX_BATCH_ITEMS * 25 / 32],
+                vec![3; MAX_BATCH_ITEMS * 25 / 32]
+            ]
+            .concat()
         );
 
         let large = vec![b'x'; MAX_MESSAGE_SIZE];
-        let input = batch(&[large.as_slice(); 8], 42);
+        let input = batch(
+            &vec![large.as_slice(); full_sized_test_message_capacity().div_ceil(2)],
+            42,
+        );
         let result = SyslogBatcher
             .batch(SignalType::Logs, &settings, vec![input.clone(), input])
             .unwrap();
@@ -1178,7 +1329,7 @@ mod tests {
                 .iter()
                 .map(|(b, _)| validated_item_count(b).unwrap())
                 .collect::<Vec<_>>(),
-            [15, 1]
+            [full_sized_test_message_capacity(), 1]
         );
         for (bytes, _) in result.batches {
             assert!(bytes.len() <= MAX_BATCH_BYTES);
@@ -1191,7 +1342,10 @@ mod tests {
     #[test]
     fn byte_splits_respect_budgets_without_oversized_fallback() {
         let message = vec![b'x'; MAX_MESSAGE_SIZE];
-        let input = unchecked_batch(&vec![message.as_slice(); 32]);
+        let input = unchecked_batch(&vec![
+            message.as_slice();
+            full_sized_test_message_capacity() * 2 + 2
+        ]);
         let settings = BatchSettings {
             max_size: NonZeroU64::new(u64::MAX),
             ..SYSLOG_BATCH_SETTINGS
@@ -1233,7 +1387,11 @@ mod tests {
                 .iter()
                 .map(|(b, _)| validated_item_count(b).unwrap())
                 .collect::<Vec<_>>(),
-            [15, 15, 2]
+            [
+                full_sized_test_message_capacity(),
+                full_sized_test_message_capacity(),
+                2
+            ]
         );
         for (bytes, range) in result.batches {
             assert_eq!(range, 0..=0);
@@ -2124,5 +2282,203 @@ mod tests {
             vec![MAX_BATCH_ITEMS, 1]
         );
         assert!(split.batches.iter().all(|(_, range)| range == &(0..=0)));
+    }
+    #[cfg(feature = "experimental-cooperative-syslog")]
+    mod cooperative_tests {
+        use std::future::Future;
+        use std::task::{Context as TaskContext, Poll, Waker};
+
+        use otel_arrow_dfe_engine::local::exporter::EffectHandler;
+        use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
+        use otel_arrow_dfe_pdata_codec::{
+            AcceptedEncodings, CodecService, DecodeBudget, DecodeTask, EncodePolicy, EncodingPlan,
+            PdataDecodeJob, PdataEncoding, PdataView,
+        };
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+        use super::*;
+
+        fn handler() -> EffectHandler<OtapPdata> {
+            let (_, metrics) = MetricsReporter::create_new_and_receiver(1);
+            EffectHandler::new(
+                otel_arrow_dfe_engine::testing::test_node("cooperative-codec"),
+                metrics,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            )
+        }
+
+        /// Scenario: Mixed formats and receipt years are decoded across multiple work segments.
+        /// Guarantees: One final batch preserves every Arrow column, timestamp and row order; each parse step obeys its record budget.
+        #[test]
+        fn cooperative_steps_preserve_one_batch_and_fields() {
+            let inputs: [&[u8]; 4] = [
+                b"<34>Oct 11 22:14:15 host app: message",
+                b"<34>1 2024-10-11T22:14:15Z host app 1 - - message",
+                b"CEF:0|Vendor|Product|1|1|event|5|src=10.0.0.1",
+                b"unstructured message",
+            ];
+            let mut builder = SyslogBatchBuilder::new();
+            for index in 0..512 {
+                builder
+                    .append_with_year(inputs[index % 4], 2024 + (index / 256) as i32)
+                    .unwrap();
+            }
+            let bytes = builder.finish(-7).unwrap().bytes;
+            let expected = SyslogDecoder.decode(SignalType::Logs, &bytes).unwrap();
+            let DecodeTask::Incremental(mut job) = CooperativeSyslogDecoder
+                .start_decode(SignalType::Logs, &bytes)
+                .unwrap()
+            else {
+                panic!("large input must create an owned job");
+            };
+            let mut pending = 0;
+            let actual = loop {
+                match job.step(DecodeBudget::default()).unwrap() {
+                    Some(records) => break records,
+                    None => pending += 1,
+                }
+            };
+            assert!(
+                pending >= 4,
+                "512 records need at least four bounded parse steps"
+            );
+            for kind in [ArrowPayloadType::Logs, ArrowPayloadType::LogAttrs] {
+                assert_eq!(actual.get(kind), expected.get(kind));
+            }
+        }
+
+        /// Scenario: Large messages reach the byte budget before the record budget.
+        /// Guarantees: Byte-heavy input selects an incremental job and one parse step consumes at most 64 KiB of messages.
+        #[test]
+        fn cooperative_byte_budget_bounds_one_step() {
+            let message = vec![b'x'; MAX_MESSAGE_SIZE];
+            let bytes = unchecked_batch(&vec![message.as_slice(); 32]);
+            assert!(matches!(
+                CooperativeSyslogDecoder
+                    .start_decode(SignalType::Logs, &bytes)
+                    .unwrap(),
+                DecodeTask::Incremental(_)
+            ));
+            let (_, frames) = validated_frames(&bytes).unwrap();
+            let mut job = SyslogDecodeJob {
+                bytes: bytes.clone(),
+                frames: frames.state,
+                builder: Some(ReceivedArrowRecordsBuilder::default()),
+            };
+            assert!(job.step(DecodeBudget::default()).unwrap().is_none());
+            let consumed = 32 - job.frames.remaining;
+            assert!(
+                (1..=DecodeBudget::default().max_bytes() / MAX_MESSAGE_SIZE).contains(&consumed)
+            );
+        }
+
+        /// Scenario: Corruption appears after several completed parse steps while another node uses the same service.
+        /// Guarantees: Mutable service access is released before suspension; failure returns exact bytes, count and delivery context, then valid work still succeeds.
+        #[tokio::test(flavor = "current_thread")]
+        async fn cooperative_failure_recovers_after_partial_progress() {
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let complete = unchecked_batch(&vec![b"SECRET_TELEMETRY".as_slice(); 512]);
+            let bytes = complete.slice(..complete.len() - 1);
+            let pointer = bytes.as_ptr();
+            let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
+            let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 512);
+            let peer = "127.0.0.1:1234".parse().unwrap();
+            let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+            let mut conversion = Box::pin(handler.materialize_otap(pdata));
+            assert!(matches!(
+                conversion
+                    .as_mut()
+                    .poll(&mut TaskContext::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            let other = OtapPdata::new_default(
+                codec
+                    .admit(SignalType::Logs, batch(&[b"valid"], 42))
+                    .unwrap()
+                    .into(),
+            );
+            assert!(handler.materialize_otap(other).await.is_ok());
+            let error = conversion.await.unwrap_err();
+            assert!(!format!("{error:?}").contains("SECRET_TELEMETRY"));
+            let (_, recovered) = error.into_parts();
+            assert_eq!(recovered.peer_addr(), Some(peer));
+            assert_eq!(recovered.signal_type(), SignalType::Logs);
+            assert_eq!(
+                recovered.payload_ref().encoding(),
+                Some(&SYSLOG_CEF_ENCODING)
+            );
+            assert_eq!(recovered.payload_ref().known_item_count(), Some(512));
+            let recovered_bytes = recovered.payload_ref().encoded_bytes().unwrap();
+            assert_eq!(recovered_bytes.as_ptr(), pointer);
+            assert_eq!(recovered_bytes, &bytes);
+            let next = OtapPdata::new_default(
+                codec
+                    .admit(SignalType::Logs, batch(&[b"next"], 43))
+                    .unwrap()
+                    .into(),
+            );
+            assert!(handler.materialize_otap(next).await.is_ok());
+        }
+
+        /// Scenario: A conversion future is dropped after yielding with a partially built batch.
+        /// Guarantees: Input sharing and partial state are released, and cancellation neither leases nor poisons the reusable codec instance.
+        #[tokio::test(flavor = "current_thread")]
+        async fn cooperative_cancellation_releases_owned_progress() {
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let bytes = unchecked_batch(&vec![b"message".as_slice(); 512]);
+            let pdata = OtapPdata::new_default(
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into(),
+            );
+            let mut conversion = Box::pin(handler.materialize_otap(pdata));
+            assert!(matches!(
+                conversion
+                    .as_mut()
+                    .poll(&mut TaskContext::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            assert!(!bytes.is_unique());
+            drop(conversion);
+            assert!(bytes.is_unique());
+            let next = OtapPdata::new_default(
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into(),
+            );
+            assert!(handler.materialize_otap(next).await.is_ok());
+        }
+
+        /// Scenario: Read-only views accept encoded syslog or require native records, then export to OTLP.
+        /// Guarantees: Direct borrowing creates no codec or buffer copy; fallback and cross-codec output use the cooperative boundary without changing the input.
+        #[tokio::test(flavor = "current_thread")]
+        async fn cooperative_views_and_cross_encoding_preserve_input() {
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let bytes = unchecked_batch(&vec![b"message".as_slice(); 512]);
+            let pointer = bytes.as_ptr();
+            let mut payload: OtapPayload = codec.admit(SignalType::Logs, bytes).unwrap().into();
+            let accepted = AcceptedEncodings::accept_encoded([codec]);
+            let view = handler.view(&payload, &accepted).await.unwrap();
+            let PdataView::Encoded(view) = view else {
+                panic!("accepted input must remain borrowed");
+            };
+            assert_eq!(view.bytes().as_ptr(), pointer);
+            use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
+            assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+            let view = handler
+                .view(&payload, &AcceptedEncodings::native())
+                .await
+                .unwrap();
+            assert!(matches!(view, PdataView::Native(_)));
+            let plan = EncodingPlan::resolve(
+                CodecService::new().unwrap().registry(),
+                &PdataEncoding::OTLP,
+                EncodePolicy::default(),
+            )
+            .unwrap();
+            let encoded = handler.encode_owned(&mut payload, &plan).await.unwrap();
+            assert!(!encoded.is_empty());
+            assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), pointer);
+            assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+        }
     }
 }
