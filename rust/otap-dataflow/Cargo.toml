@@ -254,6 +254,7 @@ tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 tower = "0.5.2"
 tower-service = "0.3"
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2"] }
 hyper-util = "0.1.17"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 http-body-util = "0.1"
@@ -273,7 +274,7 @@ globset = "0.4.20"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=9.0.5"
 byte-unit = { version = "5.2.0", features = ["serde"] }
-clickhouse = { version = "0.15.3", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
+clickhouse = { version = "0.15.3", default-features = false, features = ["lz4"] }
 clickhouse-ext-arrow = "0.2.0"
 cpu-time = "1.0.0"
 
