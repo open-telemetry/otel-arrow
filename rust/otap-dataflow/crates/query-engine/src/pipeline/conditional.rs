@@ -27,7 +27,7 @@ use crate::error::Result;
 use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
-use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::eval::{EvalContext, align_attrs_to_record};
 use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::data_points::{
@@ -561,7 +561,25 @@ impl PipelineStage for ConditionalPipelineStage {
                         // all-false: no rows selected for this dp type in this branch
                         remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
                     }
-                    Some(scoped_value) => {
+                    Some(mut scoped_value) => {
+                        let predicate_scope_attrs_id = match scoped_value.scope {
+                            DataScope::Attribute(attrs_id, _, _)
+                            | DataScope::AttributesAll(attrs_id) => Some(attrs_id),
+                            // already aligned to the record / scalar, no alignment needed ..
+                            DataScope::Record(_)
+                            | DataScope::RootParent(_)
+                            | DataScope::StaticScalar => None,
+                        };
+
+                        if let Some(attrs_id) = predicate_scope_attrs_id {
+                            scoped_value = align_attrs_to_record(
+                                scoped_value,
+                                attrs_id,
+                                &otap_batch,
+                                &eval_ctx,
+                            )?
+                        }
+
                         let predicate_selection_vec =
                             scoped_value_to_boolean_array(scoped_value.values, num_dp_rows)?;
                         let branch_selection_vec =

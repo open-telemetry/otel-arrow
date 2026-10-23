@@ -3762,10 +3762,17 @@ async fn test_conditional_data_point_by_attribute() {
                 data_points: vec![
                     NumberDataPoint::build()
                         .flags(1u32)
-                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .attributes(vec![
+                            KeyValue::new("env", AnyValue::new_string("prod")),
+                            KeyValue::new("foo", AnyValue::new_string("bar")),
+                        ])
                         .finish(),
                     NumberDataPoint::build()
                         .flags(2u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(3u32)
                         .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
                         .finish(),
                 ],
@@ -3782,6 +3789,13 @@ async fn test_conditional_data_point_by_attribute() {
                 data_points: vec![
                     NumberDataPoint::build()
                         .flags(100u32)
+                        .attributes(vec![
+                            KeyValue::new("env", AnyValue::new_string("prod")),
+                            KeyValue::new("foo", AnyValue::new_string("bar")),
+                        ])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(100u32)
                         .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
                         .finish(),
                     NumberDataPoint::build()
@@ -3795,6 +3809,7 @@ async fn test_conditional_data_point_by_attribute() {
 
     assert_metrics_eq(result, expected);
 }
+
 
 /// Scenario: A conditional inside data_points that assigns a new attribute in one branch.
 /// Guarantees: Data points in the matching branch receive the new attribute while data points
