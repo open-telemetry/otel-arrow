@@ -82,18 +82,15 @@ impl OtapArrowRecords {
         }
     }
 
-    /// Replace payloads in `self` with those present in `source`.
+    /// Move populated batches from `source` into `self`, overwriting existing batches.
     ///
-    /// For each payload type in the signal, if `source` contains a batch for that payload type
-    /// it replaces the corresponding slot in `self`. If `source` does not contain a batch for
-    /// that payload type, the existing batch in `self` (if any) is left unchanged.
-    ///
-    /// This is analogous to JavaScript's `Object.assign` but for payload types: only the
-    /// populated slots in `source` overwrite slots in `self`.
-    pub fn assign_present_payloads(&mut self, source: &Self) -> Result<()> {
+    /// For each payload type, if `source` contains a batch it is moved into `self`, replacing
+    /// any existing batch for that slot. Payload types that are absent in `source` are left
+    /// unchanged in `self`.
+    pub fn replace_batches_from(&mut self, mut source: Self) -> Result<()> {
         for &payload_type in self.allowed_payload_types() {
-            if let Some(batch) = source.get(payload_type) {
-                self.set(payload_type, batch.clone())?;
+            if let Some(batch) = source.remove(payload_type) {
+                self.set(payload_type, batch)?;
             }
         }
         Ok(())

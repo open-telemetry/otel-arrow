@@ -561,29 +561,15 @@ pub fn coerce_arithmetic(
 /// identifier of metric data point type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
+#[repr(u8)]
 pub enum MetricDataPointType {
-    NumberDataPoint,
-    HistogramDataPoint,
-    ExponentialHistogramDataPoint,
-    SummaryDataPoint,
+    NumberDataPoint = 0,
+    HistogramDataPoint = 1,
+    ExponentialHistogramDataPoint = 2,
+    SummaryDataPoint = 3,
 }
 
-/// Number of [`MetricDataPointType`] variants.
-pub const METRIC_DATA_POINT_TYPE_COUNT: usize = 4;
-
 impl MetricDataPointType {
-    /// Returns a unique index for this variant in `0..METRIC_DATA_POINT_TYPE_COUNT`.
-    ///
-    /// This is used to index fixed-size arrays keyed by data point type.
-    pub const fn index(self) -> usize {
-        match self {
-            Self::NumberDataPoint => 0,
-            Self::HistogramDataPoint => 1,
-            Self::ExponentialHistogramDataPoint => 2,
-            Self::SummaryDataPoint => 3,
-        }
-    }
-
     /// Get the OTAP payload type containing data points of this metric type
     pub fn payload_type(&self) -> ArrowPayloadType {
         match self {
