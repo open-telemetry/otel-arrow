@@ -14,7 +14,10 @@ Use one owner and one active pass:
    seed. The implementation also mixes the generation into the seed.
 3. Feed every scanner observation to `observe` in callback order. Apply emitted
    evidence synchronously, before consuming the next observation.
-4. After traversal, create one `Scanner::binding_batch`. Drive
+4. After traversal, create one `Scanner::binding_batch`, even when no binding
+   requests are queued. On root-refresh error, call `apply_binding_batch_error`
+   or abort the pass; do not discard the error because the worklist is empty.
+   On success, drive
    `next_binding_check`, borrow `binding_request(id)`, call `batch.check`, then
    apply its scanner-owned result with `apply_binding_check`. Repeat until the
    cursor returns None. No path copies or repeated full-table searches are
@@ -62,7 +65,10 @@ expected environment returns or the receiver is recreated.
 Only an effectively complete pass emits `Disappeared`. This starts the lifecycle
 owner's pending-disappearance work; it does not establish permanent EOF.
 Retention, runtime vetoes, terminal framing and finalization remain with their
-owners. Evidence can repeat across passes and must be consumed idempotently.
+owners. Evidence can repeat within or across passes and must be consumed
+idempotently. In particular, `CoverageLost(Unstable)` can be emitted for several
+conflicting observations/records and again at completion; it is not an
+exactly-once notification.
 Rejected candidates may be reconsidered after later fresh observations.
 
 `Excluded` is distinct from disappearance. A positively ineligible binding can
@@ -117,9 +123,17 @@ Both atomic admission and legacy `supersede`/`track` use the same successor-link
 helper. It updates established ancestors and retains runtime ID plus locator,
 so inode reuse cannot resolve an old rebound. Active Live ownership remains
 valid without a resident reader. Rebinding clears the record's successor link.
-A one-way hardlink to a still-valid binding is not a cycle; real swaps/cycles and
-unstable observations still defer binding publication. The global rebound
-barrier remains in force.
+A one-way hardlink to a still-valid binding is not a cycle. New uncontested
+rebound edges update per-pass disjoint sets held in the tracked records. Only
+an edge joining already-connected endpoints needs a directed chain check;
+this avoids repeatedly walking growing acyclic chains. Closing a swap/cycle
+reports coverage loss even if the pass never finishes. Repeated unchanged
+rebounds do not repeat this check. Once failure has been delivered and the pass
+is incomplete, further incremental checks stop. Completion still sweeps the
+graph to defer
+dependent binding work. A confirmed-cycle walk can visit all tracked records;
+rotation latency remains a qualification concern. The global rebound barrier
+remains in force.
 
 `TrackedFile::binding` holds a complete native path or is unavailable. The
 bounded authoritative `AdvisoryPath` remains with checkpoint/identity state.
@@ -152,7 +166,11 @@ slot-only path index checks fresh observations against retained candidates'
 selected native paths without copying path keys. It includes pending and
 sampled candidates, updates before path mutation or slot reuse, and resets at
 `begin`; historical paths from earlier passes are not conflict evidence. It is
-not an unbounded history of all observed aliases. Conflicting candidates are
+not an unbounded history of all observed aliases. A second ID-only index covers
+the current-pass minimum alias already retained for each tracked record, so
+resident-first and resident-versus-resident conflicts use the same evidence
+rules. Both indexes reset at `begin`; the previous-pass alias hint is not fresh
+path-conflict evidence. Conflicting candidates are
 withheld, including a newly sampled candidate that replaces the conflicting
 slot. Token
 validation uses generation, slot bounds, selection and acknowledgement state

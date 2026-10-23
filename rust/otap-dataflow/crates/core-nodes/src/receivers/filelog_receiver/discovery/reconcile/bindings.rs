@@ -158,6 +158,140 @@ impl Reconciler {
             })
     }
 
+    // A live record has at most one current rebound target. Multiple live owners
+    // of that locator are ambiguous; a validated target binding terminates a chain.
+    fn rebound_target(
+        tracked: &Records,
+        locators: &RecordIndex<FileLocator>,
+        id: TrackedId,
+    ) -> Result<Option<TrackedId>, ()> {
+        let record = &tracked[&id];
+        if !record.file.active || record.file.role != BindingRole::Live {
+            return Ok(None);
+        }
+        let mut next = None;
+        if let Some(locator) = record.pass.rebound {
+            for target in locators.get(&locator, tracked) {
+                let other = &tracked[&target];
+                if other.file.active && other.file.role == BindingRole::Live {
+                    if next.is_some() {
+                        return Err(());
+                    }
+                    next = Some(target);
+                }
+            }
+        }
+        Ok(next.filter(|target| !tracked[target].pass.binding_eligible))
+    }
+
+    // Shared traversal for immediate edge checks and the completion-time graph
+    // sweep. A path has at most tracked.len() vertices and reuses bounded scratch.
+    fn trace_binding_chain(
+        tracked: &mut Records,
+        locators: &RecordIndex<FileLocator>,
+        walk: &mut Vec<TrackedId>,
+        start: TrackedId,
+    ) -> bool {
+        walk.clear();
+        let mut current = Some(start);
+        let mut blocked = false;
+        while let Some(id) = current {
+            match tracked[&id].pass.graph {
+                Visit::Visiting | Visit::Blocked => {
+                    blocked = true;
+                    break;
+                }
+                Visit::Done => break,
+                Visit::Unseen => (),
+            }
+            tracked.get_mut(&id).expect("graph vertex").pass.graph = Visit::Visiting;
+            walk.push(id);
+            match Self::rebound_target(tracked, locators, id) {
+                Ok(next) => current = next,
+                Err(()) => {
+                    blocked = true;
+                    break;
+                }
+            }
+        }
+        blocked
+    }
+
+    // Union by rank with path halving, stored in already-bounded tracked records.
+    // begin initializes every parent to its own ID; records cannot move in/out
+    // of the logical graph during a pass. Rank is bounded by log2(population).
+    fn rebound_component(tracked: &mut Records, mut id: TrackedId) -> TrackedId {
+        loop {
+            let parent = TrackedId(tracked[&id].pass.rebound_parent);
+            if parent == id {
+                return id;
+            }
+            let grandparent = tracked[&parent].pass.rebound_parent;
+            tracked
+                .get_mut(&id)
+                .expect("component member")
+                .pass
+                .rebound_parent = grandparent;
+            id = parent;
+        }
+    }
+
+    // Every uncontested vertex adds at most one outgoing edge. A directed cycle
+    // can therefore form only when the new endpoints are already connected.
+    // This avoids repeatedly walking growing acyclic chains. Changed conflicting
+    // edges already reported failure; the final sweep still checks the full graph.
+    pub(super) fn detect_new_rebound(
+        tracked: &mut Records,
+        locators: &RecordIndex<FileLocator>,
+        walk: &mut Vec<TrackedId>,
+        start: TrackedId,
+    ) -> bool {
+        if tracked[&start].pass.conflict {
+            return false;
+        }
+        let target = match Self::rebound_target(tracked, locators, start) {
+            Ok(Some(target)) => target,
+            Ok(None) => return false,
+            Err(()) => {
+                tracked.get_mut(&start).expect("graph vertex").pass.conflict = true;
+                return true;
+            }
+        };
+        if tracked[&target].pass.conflict {
+            return false;
+        }
+        let mut left = Self::rebound_component(tracked, start);
+        let mut right = Self::rebound_component(tracked, target);
+        if left != right {
+            if tracked[&left].pass.rebound_rank > tracked[&right].pass.rebound_rank {
+                std::mem::swap(&mut left, &mut right);
+            }
+            let equal_rank = tracked[&left].pass.rebound_rank == tracked[&right].pass.rebound_rank;
+            tracked
+                .get_mut(&left)
+                .expect("component root")
+                .pass
+                .rebound_parent = right.0;
+            if equal_rank {
+                tracked
+                    .get_mut(&right)
+                    .expect("component root")
+                    .pass
+                    .rebound_rank += 1;
+            }
+            return false;
+        }
+        // Confirm against current directed bindings and mark affected records.
+        // Reset scratch marks because later observations can add more edges.
+        let blocked = Self::trace_binding_chain(tracked, locators, walk, start);
+        for id in walk.drain(..) {
+            let record = tracked.get_mut(&id).expect("visited graph vertex");
+            record.pass.graph = Visit::Unseen;
+            record.pass.conflict |= blocked;
+        }
+        blocked
+    }
+
     pub(super) fn detect_binding_cycles(&mut self) {
         self.binding_keys.clear();
         self.binding_keys.extend(self.tracked.keys().copied());
@@ -166,43 +300,12 @@ impl Reconciler {
             if self.tracked[&start].pass.graph != Visit::Unseen {
                 continue;
             }
-            self.binding_walk.clear();
-            let mut current = Some(start);
-            let mut blocked = false;
-            while let Some(id) = current {
-                match self.tracked[&id].pass.graph {
-                    Visit::Visiting | Visit::Blocked => {
-                        blocked = true;
-                        break;
-                    }
-                    Visit::Done => break,
-                    Visit::Unseen => (),
-                }
-                self.tracked.get_mut(&id).expect("graph vertex").pass.graph = Visit::Visiting;
-                self.binding_walk.push(id);
-                let tracked = &self.tracked[&id];
-                if !tracked.file.active || tracked.file.role != BindingRole::Live {
-                    current = None;
-                    continue;
-                }
-                let mut next = None;
-                if let Some(locator) = tracked.pass.rebound {
-                    for target in self.locators.get(&locator, &self.tracked) {
-                        let other = &self.tracked[&target];
-                        if other.file.active && other.file.role == BindingRole::Live {
-                            if next.is_some() {
-                                blocked = true;
-                                break;
-                            }
-                            next = Some(target);
-                        }
-                    }
-                }
-                if blocked {
-                    break;
-                }
-                current = next.filter(|target| !self.tracked[target].pass.binding_eligible);
-            }
+            let blocked = Self::trace_binding_chain(
+                &mut self.tracked,
+                &self.locators,
+                &mut self.binding_walk,
+                start,
+            );
             for id in self.binding_walk.drain(..) {
                 let tracked = self.tracked.get_mut(&id).expect("visited graph vertex");
                 tracked.pass.graph = if blocked { Visit::Blocked } else { Visit::Done };

@@ -1068,7 +1068,7 @@ fn missing_parent_does_not_poison_complete_scan() {
         );
         assert!(completion.complete);
         let request = r.binding_request(TrackedId(1)).unwrap();
-        let mut batch = scanner.binding_batch(&budget, || false);
+        let mut batch = scanner.binding_batch(&budget, || false).unwrap();
         let result = batch.check(request.path, request.parent).unwrap();
         assert_eq!(result.scope, BindingScope::Binding);
         assert_eq!(result.observation.reason, Some(ScanReason::Missing));
@@ -1846,9 +1846,9 @@ fn compact_storage_bound_covers_populated_index_capacity_boundaries() {
 #[test]
 fn compact_metadata_charge_covers_structural_upper_bound() {
     // Reserving 2N entries at 7/8 occupancy rounds to fewer than 32N/7 buckets.
-    // Each of four tables stores an eight-byte ID/slot and a control byte.
+    // Each of five tables stores an eight-byte ID/slot and a control byte.
     // Fixed table padding and owner fields belong to the separate 4096-byte charge.
-    let indexes = (4 * (size_of::<TrackedId>() + 1) * 32).div_ceil(7);
+    let indexes = (5 * (size_of::<TrackedId>() + 1) * 32).div_ceil(7);
     let per_record = size_of::<Tracked>() + 3 * size_of::<TrackedId>() + indexes;
     assert!(
         per_record <= 512,
@@ -2018,7 +2018,7 @@ fn rejected_binding_request_can_advance_without_negative_evidence() {
         );
     }
     let budget = ProbeBudget::default();
-    let mut batch = scanner.binding_batch(&budget, || false);
+    let mut batch = scanner.binding_batch(&budget, || false).unwrap();
     assert_eq!(r.next_binding_check(), Some(TrackedId(1)));
     let request = r.binding_request(TrackedId(1)).unwrap();
     assert!(batch.check(request.path, request.parent).is_err());
@@ -2410,25 +2410,35 @@ fn conflicting_candidate_paths_invalidate_inventory() {
     }
 }
 
-/// Scenario: A candidate's selected alias shrinks, or a fresh resident alias contradicts its retained path.
-/// Guarantees: The path index follows selected-path changes and resident observations cannot bypass retained conflicts.
+/// Scenario: A candidate's selected path conflicts with another candidate or a resident alias, in either order.
+/// Guarantees: Retained alias evidence makes failure immediate in both orders and prevents unrelated disappearance.
 #[test]
 fn selected_path_changes_and_resident_aliases_check_candidates() {
     for resident in [false, true] {
-        let mut r = Reconciler::new(limits()).unwrap();
-        if resident {
-            r.track(file(2, "/resident")).unwrap();
+        for resident_first in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(99, "/missing")).unwrap();
+            if resident {
+                r.track(file(2, "/resident")).unwrap();
+            }
+            start(&mut r, 1);
+            let mut events = Vec::new();
+            if resident_first {
+                feed(&mut r, &observation(2, "/a"), &mut events);
+            }
+            feed(&mut r, &observation(1, "/z"), &mut events);
+            assert!(!events.contains(&"coverage".into()));
+            feed(&mut r, &observation(1, "/a"), &mut events);
+            if !resident_first {
+                assert!(!events.contains(&"coverage".into()));
+                feed(&mut r, &observation(2, "/a"), &mut events);
+            }
+            assert!(events.contains(&"coverage".into()));
+            assert!(!r.pass.as_ref().unwrap().complete);
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert_eq!(r.offers().unwrap().count(), 0);
+            assert!(!events.contains(&"missing:99".into()));
         }
-        start(&mut r, 1);
-        let mut events = Vec::new();
-        feed(&mut r, &observation(1, "/z"), &mut events);
-        feed(&mut r, &observation(1, "/a"), &mut events);
-        feed(&mut r, &observation(1, "/a"), &mut events);
-        assert!(!events.contains(&"coverage".into()));
-        feed(&mut r, &observation(2, "/a"), &mut events);
-        assert!(events.contains(&"coverage".into()));
-        assert!(!finish(&mut r, true, &mut events).complete);
-        assert_eq!(r.offers().unwrap().count(), 0);
     }
 }
 
@@ -2524,5 +2534,261 @@ fn candidate_path_index_fits_admission_under_churn() {
                 r.retained_bytes()
             );
         }
+    }
+}
+
+/// Scenario: Two resident records are observed at the same new alias in either order.
+/// Guarantees: Coverage loss precedes validation of the second locator, and neither stale binding nor disappearance can be published.
+#[test]
+fn resident_alias_conflicts_are_order_independent() {
+    for reverse in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/resident1")).unwrap();
+        r.track(file(2, "/resident2")).unwrap();
+        r.track(file(99, "/missing")).unwrap();
+        start(&mut r, 1);
+        let mut events = Vec::new();
+        let [first, second] = if reverse { [2, 1] } else { [1, 2] };
+        feed(&mut r, &observation(first, "/shared"), &mut events);
+        assert!(!events.contains(&"coverage".into()));
+        events.clear();
+        feed(&mut r, &observation(second, "/shared"), &mut events);
+        assert_eq!(events.first().map(String::as_str), Some("coverage"));
+        assert!(!r.pass.as_ref().unwrap().complete);
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"missing:99".into()));
+        for id in [TrackedId(1), TrackedId(2)] {
+            assert_eq!(
+                r.rebind(1, id, |_| panic!("conflicting durable binding")),
+                Err(ReconcileError::Feedback)
+            );
+        }
+    }
+}
+
+/// Scenario: A selected resident alias changes, its owner is rebound and retired, and another pass reuses a prior alias.
+/// Guarantees: The ID-only alias index follows minimum changes and dense-slot removal, and old-pass aliases cannot manufacture conflicts.
+#[test]
+fn resident_alias_index_follows_rebind_retirement_and_pass_reset() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/resident1")).unwrap();
+    r.track(file(2, "/resident2")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(&mut r, &observation(1, "/z"), &mut events);
+    feed(&mut r, &observation(1, "/a"), &mut events);
+    feed(&mut r, &observation(2, "/b"), &mut events);
+    assert_eq!(r.aliases.get(OsStr::new("/z"), &r.tracked).count(), 0);
+    assert_eq!(
+        r.aliases
+            .get(OsStr::new("/a"), &r.tracked)
+            .collect::<Vec<_>>(),
+        vec![TrackedId(1)]
+    );
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(r.rebind(1, TrackedId(1), |_| true).unwrap());
+    drop(r.untrack(TrackedId(1)).unwrap());
+    assert_eq!(r.aliases.get(OsStr::new("/a"), &r.tracked).count(), 0);
+    assert_eq!(
+        r.aliases
+            .get(OsStr::new("/b"), &r.tracked)
+            .collect::<Vec<_>>(),
+        vec![TrackedId(2)]
+    );
+    start(&mut r, 2);
+    events.clear();
+    feed(&mut r, &observation(3, "/b"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(!events.contains(&"coverage".into()));
+}
+
+/// Scenario: Root refresh fails after successful traversal, but no tracked file needs a targeted check.
+/// Guarantees: Lost include roots, unverifiable exclusion aliases and cancellation invalidate completion; healthy or resolvably absent exclusion roots remain complete.
+#[test]
+fn empty_binding_batch_delivers_root_refresh_failures() {
+    use super::super::{ProbeBudget, ScanConfig, ScanLimits, Scanner, SymlinkPolicy};
+    for case in [
+        "healthy",
+        "missing",
+        "replaced",
+        "exclusion",
+        "cancelled",
+        "absent_exclusion",
+    ] {
+        let healthy = matches!(case, "healthy" | "absent_exclusion");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("logs");
+        let excluded = dir.path().join("private");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&excluded).unwrap();
+        let mut scanner = Scanner::new(
+            ScanConfig {
+                include_roots: vec![root.clone()],
+                exclusion_roots: vec![excluded.clone()],
+                symlinks: SymlinkPolicy::Reject,
+                checkpoint_namespace: locator(u64::MAX),
+                limits: ScanLimits::default(),
+            },
+            Policy,
+        )
+        .unwrap();
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, root.join("missing.log").to_str().unwrap()))
+            .unwrap();
+        let budget = ProbeBudget::default();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        let completion = scanner.scan(
+            1,
+            &budget,
+            || false,
+            |batch| {
+                for observation in batch {
+                    feed(&mut r, observation, &mut events);
+                }
+                true
+            },
+        );
+        assert!(completion.complete);
+        assert_eq!(r.next_binding_check(), None);
+        match case {
+            "missing" | "replaced" => {
+                std::fs::rename(&root, dir.path().join("old")).unwrap();
+                if case == "replaced" {
+                    std::fs::create_dir(&root).unwrap();
+                }
+            }
+            "exclusion" | "absent_exclusion" => {
+                std::fs::remove_dir(&excluded).unwrap();
+                if case == "exclusion" {
+                    std::os::unix::fs::symlink(dir.path().join("unavailable"), &excluded).unwrap();
+                }
+            }
+            _ => (),
+        }
+        match scanner.binding_batch(&budget, || case == "cancelled") {
+            Ok(_) => assert!(healthy, "{case}"),
+            Err(error) => {
+                assert!(!healthy, "{case}");
+                assert!(error.reason.invalidates_coverage());
+                if case == "replaced" {
+                    assert_eq!(error.reason, ScanReason::RootChanged);
+                    assert_eq!(error.root, Some(root.as_path()));
+                }
+                r.apply_binding_batch_error(1, &error, |e| record(e, &mut events))
+                    .unwrap();
+                assert!(events.contains(&"coverage".into()));
+                assert!(!r.pass.as_ref().unwrap().complete);
+                assert!(!events.contains(&"parent:1".into()));
+            }
+        }
+        let summary = r
+            .finish(completion, Duration::from_secs(11), |e| {
+                record(e, &mut events)
+            })
+            .unwrap();
+        assert_eq!(summary.complete, healthy);
+        assert_eq!(events.contains(&"missing:1".into()), healthy);
+    }
+}
+
+/// Scenario: The final edge of a two-way swap or three-cycle arrives before scan completion, in either traversal order.
+/// Guarantees: The newly closed cycle emits failure immediately for resident and nonresident records, without waiting for finish.
+#[test]
+fn binding_cycles_are_reported_when_the_last_edge_arrives() {
+    for size in [2, 3] {
+        for reverse in [false, true] {
+            for resident in [false, true] {
+                let mut r = Reconciler::new(limits()).unwrap();
+                for id in 1..=size {
+                    let mut tracked = file(id, &format!("/file{id}"));
+                    tracked.resident = resident;
+                    r.track(tracked).unwrap();
+                }
+                r.track(file(99, "/missing")).unwrap();
+                start(&mut r, 1);
+                let mut events = Vec::new();
+                let mut ids: Vec<_> = (1..=size).collect();
+                if reverse {
+                    ids.reverse();
+                }
+                for (index, id) in ids.into_iter().enumerate() {
+                    feed(
+                        &mut r,
+                        &observation(id % size + 1, &format!("/file{id}")),
+                        &mut events,
+                    );
+                    assert_eq!(
+                        events.contains(&"coverage".into()),
+                        index + 1 == size as usize
+                    );
+                }
+                assert!(!r.pass.as_ref().unwrap().complete);
+                assert!(!finish(&mut r, true, &mut events).complete);
+                assert!(!events.contains(&"missing:99".into()));
+                assert_eq!(r.offers().unwrap().count(), 0);
+            }
+        }
+    }
+}
+
+/// Scenario: Owner-supplied evidence closes a rebound cycle between two records with unavailable bindings.
+/// Guarantees: Association uses the same prompt cycle check as traversal and immediately invalidates coverage.
+#[test]
+fn associated_rebound_cycle_is_reported_before_finish() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    for id in [1, 2] {
+        let mut tracked = file(id, "/unused");
+        tracked.binding = None;
+        tracked.resident = false;
+        r.track(tracked).unwrap();
+    }
+    start(&mut r, 1);
+    let mut events = Vec::new();
+    feed(&mut r, &observation(1, "/a"), &mut events);
+    feed(&mut r, &observation(2, "/b"), &mut events);
+    events.clear();
+    r.associate_replacement(1, TrackedId(1), locator(2), |e| record(e, &mut events))
+        .unwrap();
+    assert!(events.is_empty());
+    r.associate_replacement(1, TrackedId(2), locator(1), |e| record(e, &mut events))
+        .unwrap();
+    assert_eq!(events, ["coverage"]);
+    assert!(!r.pass.as_ref().unwrap().complete);
+}
+
+/// Scenario: A reverse-ordered acyclic chain grows across many components, then one final edge closes it.
+/// Guarantees: Connectivity bookkeeping never flags the open chain, reports closure immediately, and resets for a fresh pass.
+#[test]
+fn growing_rebound_chain_reports_only_cycle_closure() {
+    const COUNT: u64 = 128;
+    let mut r = Reconciler::new(ReconcileLimits {
+        tracked: COUNT as usize,
+        ..limits()
+    })
+    .unwrap();
+    for id in 0..COUNT {
+        r.track(file(id, &format!("/file{id}"))).unwrap();
+    }
+    let mut events = Vec::new();
+    for generation in [1, 2] {
+        start(&mut r, generation);
+        events.clear();
+        for id in (0..COUNT - 1).rev() {
+            feed(
+                &mut r,
+                &observation(id + 1, &format!("/file{id}")),
+                &mut events,
+            );
+        }
+        assert!(!events.contains(&"coverage".into()));
+        feed(
+            &mut r,
+            &observation(0, &format!("/file{}", COUNT - 1)),
+            &mut events,
+        );
+        assert!(events.contains(&"coverage".into()));
+        assert!(!r.pass.as_ref().unwrap().complete);
+        assert!(!finish(&mut r, true, &mut events).complete);
     }
 }

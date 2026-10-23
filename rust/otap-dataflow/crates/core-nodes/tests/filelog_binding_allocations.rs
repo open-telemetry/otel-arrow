@@ -101,7 +101,7 @@ fn warm_binding_batches_reuse_storage() {
         for observation in &excluded {
             r.observe(generation, observation, now, |_| {}).unwrap();
         }
-        let mut batch = scanner.binding_batch(&budget, || false);
+        let mut batch = scanner.binding_batch(&budget, || false).unwrap();
         let mut valid = 0;
         while let Some(id) = r.next_binding_check() {
             let request = r.binding_request(id).unwrap();

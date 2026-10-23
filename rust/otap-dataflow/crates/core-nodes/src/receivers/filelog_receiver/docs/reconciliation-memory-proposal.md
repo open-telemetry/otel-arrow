@@ -10,7 +10,8 @@ The implementation now uses:
 
 - A packed record vector and a small ID-to-slot table. Removal moves the last
   record and updates its ID entry; indexes never retain a slot as identity.
-- ID-only locator, binding and parent indexes. Native keys are compared against
+- ID-only locator, binding, parent and current-pass minimum-alias indexes.
+  Native keys are compared against
   record-owned paths, including full equality after hash matches. Historical
   records can share keys. Rebind removes old entries before changing a path.
 - A current-pass candidate path index containing only slot numbers. Keys are
@@ -33,7 +34,8 @@ internal scanner limit, not a currently exposed operator configuration field.
 This change adds no shared byte-pool exhaustion or new runtime failure mode.
 
 The 512-byte metadata term is a structural upper bound, not an average derived
-from one fixture. It covers the record, three ID worklists and four ID/slot hash
+from one fixture. It covers the record (including per-pass cycle connectivity),
+three ID worklists and five ID/slot hash
 tables reserved at twice their maximum live population. At the pinned hashbrown
 load factor, power-of-two rounding requires fewer than 32N/7 buckets per table.
 The record/worklist sizes plus rounded table payloads fit within 512 bytes per
@@ -56,12 +58,12 @@ The same long-path and short-path fixtures were used before and after compaction
 
 | Fixture (10,000 records) | Previous live heap | Compact live heap | Compact estimate | Compact charge |
 | --- | ---: | ---: | ---: | ---: |
-| Near-limit paths and alias buffers | 293,623,320 | 126,370,352 | 126,371,280 | 128,025,680 |
-| Short-path metadata replacement churn | 10,620,392 | 3,500,352 | 3,501,280 | 5,215,215 |
-| Populated short binding/parent indexes | Not previously measured | 3,620,352 | 3,621,280 | 6,085,360 |
+| Near-limit paths and alias buffers | 293,623,320 | 126,745,280 | 126,746,264 | 128,025,680 |
+| Short-path metadata replacement churn | 10,620,392 | 3,875,280 | 3,876,264 | 5,215,215 |
+| Populated short binding/parent indexes | Not previously measured | 3,995,280 | 3,996,264 | 6,085,360 |
 
-Long-path live heap fell by about 57%; short-path metadata by about 67%.
-The long-path peak was 126,374,446 bytes, within the charge including temporary
+Long-path live heap fell by about 57%; short-path metadata by about 64%.
+The long-path peak was 126,749,374 bytes, within the charge including temporary
 replacement storage. Dropping each owner releases all measured live allocations.
 Capacity-boundary regressions also populate and churn all indexes without growth.
 Warm reconciliation and the complete binding-check loop remain allocation-free.

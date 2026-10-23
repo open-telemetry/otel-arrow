@@ -183,9 +183,10 @@ impl Candidates {
         observation: &Observation,
         now: Duration,
         replacement: Replacement,
+        path_conflict: bool,
     ) -> Result<ObservationResult, ReconcileError> {
         let locator = observation.locator.expect("validated candidate");
-        let mut conflict = self.check_path(observation);
+        let mut conflict = path_conflict;
         if let Some(&index) = self.index.get(&locator) {
             let slot = &self.slots[index];
             let first_in_pass = !slot.seen;

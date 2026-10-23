@@ -13,7 +13,7 @@ use std::time::Duration;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-/// Scenario: Warm tracked, pending and overflow populations receive unchanged and appended metadata across 100 scans.
+/// Scenario: Warm tracked bindings/aliases, pending candidates and overflow samples receive appended metadata across 100 scans.
 /// Guarantees: The measured synchronous passes allocate no new blocks and retain constant owned capacity.
 #[test]
 fn warm_reconciliation_reuses_storage() {
@@ -30,6 +30,17 @@ fn warm_reconciliation_reuses_storage() {
             errno: None,
         })
         .collect();
+    for inode in 1..=64 {
+        observations.push(Observation {
+            path: format!("/logs/{inode:04}.alias").into(),
+            locator: Some(FileLocator { device: 1, inode }),
+            size: Some(64),
+            modified: None,
+            fingerprint: vec![b'x'; 16],
+            reason: None,
+            errno: None,
+        });
+    }
     let mut r = Reconciler::new(ReconcileLimits {
         tracked: 64,
         pending: 64,
@@ -82,10 +93,13 @@ fn warm_reconciliation_reuses_storage() {
         }
     };
     let _profiler = dhat::Profiler::builder().testing().build();
+    // Two warm passes initialize both reusable alias buffers. Construction is
+    // measured separately; this assertion covers steady-state index/buffer reuse.
     run(&mut r, 0, &observations);
+    run(&mut r, 1, &observations);
     let retained = r.retained_bytes();
     let before = dhat::HeapStats::get();
-    for generation in 1..=100 {
+    for generation in 2..=101 {
         for observation in &mut observations {
             observation.size = Some(64 + generation);
         }

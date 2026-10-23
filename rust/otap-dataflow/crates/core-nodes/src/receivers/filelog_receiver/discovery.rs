@@ -215,6 +215,19 @@ pub enum BindingScope {
     Coverage,
 }
 
+/// Required root context could not be refreshed before targeted checks.
+/// Deliver this independently of individual bindings, including an empty batch.
+#[derive(Debug, thiserror::Error)]
+#[error("binding root refresh failed: {reason:?} (errno {errno:?})")]
+pub struct BindingBatchError<'a> {
+    /// Required coverage/policy failure, or cancellation.
+    pub reason: ScanReason,
+    /// Original OS error, when available.
+    pub errno: Option<i32>,
+    /// Configured root that failed; None for cancellation before root resolution.
+    pub root: Option<&'a Path>,
+}
+
 /// A targeted request is not a valid complete native filename.
 #[derive(Debug, thiserror::Error)]
 #[error("invalid or oversized complete binding path")]

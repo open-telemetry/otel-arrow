@@ -119,6 +119,10 @@ impl<K: Hash + Eq + ?Sized> RecordIndex<K> {
         }
     }
 
+    pub(super) fn clear(&mut self) {
+        self.ids.clear();
+    }
+
     pub(super) fn matches(&self, tracked: &Tracked, key: &K) -> bool {
         (self.key)(tracked).is_some_and(|value| value == key)
     }

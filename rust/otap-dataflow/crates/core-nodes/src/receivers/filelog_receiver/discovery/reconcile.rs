@@ -74,7 +74,7 @@ impl ReconcileLimits {
         }
         // Conservative allocation admission, including full paths, slot/index
         // overhead and candidate copies. Three path buffers are capped by L.
-        // 512 bytes cover a packed record, three ID worklists and four ID/slot
+        // 512 bytes cover a packed record, three ID worklists and five ID/slot
         // tables reserved at 2N (including worst power-of-two bucket rounding).
         // See the storage-bound regression when changing these types or hashbrown.
         // This is not an RSS measurement.
@@ -197,6 +197,9 @@ struct TrackedPass {
     alias_checked: bool,
     exclusion_blocked: bool,
     graph: Visit,
+    // Disjoint-set metadata for new, uncontested rebound edges in this pass.
+    rebound_parent: u64,
+    rebound_rank: u8,
     check_queued: bool,
 }
 
@@ -306,6 +309,7 @@ pub struct Reconciler {
     locators: RecordIndex<FileLocator>,
     bindings: RecordIndex<OsStr>,
     parents: RecordIndex<OsStr>,
+    aliases: RecordIndex<OsStr>,
     candidates: Candidates,
     pass: Option<Pass>,
     last: Option<PassSummary>,
@@ -334,6 +338,9 @@ impl Reconciler {
                     .as_ref()
                     .and_then(|p| p.parent())
                     .map(Path::as_os_str)
+            }),
+            aliases: RecordIndex::new(limits.tracked, |t| {
+                (!t.minimum.as_os_str().is_empty()).then_some(t.minimum.as_os_str())
             }),
             candidates: Candidates::new(limits),
             pass: None,
@@ -456,6 +463,7 @@ impl Reconciler {
         self.locators.remove(id, &self.tracked);
         self.bindings.remove(id, &self.tracked);
         self.parents.remove(id, &self.tracked);
+        self.aliases.remove(id, &self.tracked);
         let tracked = self.tracked.remove(&id).expect("validated record");
         if tracked.pass.rebound.is_some() && !tracked.pass.rebound_resolved {
             self.unresolved_rebounds -= 1;
@@ -483,6 +491,7 @@ impl Reconciler {
             }
         }
         self.candidates.begin(generation, seed);
+        self.aliases.clear();
         self.binding_keys.clear();
         self.binding_work.clear();
         self.binding_cursor = 0;
@@ -492,7 +501,10 @@ impl Reconciler {
                 std::mem::swap(&mut tracked.previous_alias, &mut tracked.minimum);
             }
             tracked.minimum.clear();
-            tracked.pass = TrackedPass::default();
+            tracked.pass = TrackedPass {
+                rebound_parent: tracked.file.id.0,
+                ..TrackedPass::default()
+            };
             // Parent identity changes persist until the expected environment returns.
         }
         self.pass = Some(Pass {
@@ -609,6 +621,23 @@ impl Reconciler {
             .find(|tracked| tracked.file.active && tracked.file.role == BindingRole::Live)
             .map(|tracked| tracked.file.id);
         let eligible = observation.reason.is_none();
+        let mut path_conflict = false;
+        if eligible {
+            path_conflict = self.candidates.check_path(observation);
+            for id in self.aliases.candidates(observation.path.as_os_str()) {
+                let tracked = self.tracked.get_mut(&id).expect("alias index");
+                if self.aliases.matches(tracked, observation.path.as_os_str())
+                    && tracked.file.locator != locator
+                {
+                    tracked.pass.conflict = true;
+                    path_conflict = true;
+                }
+            }
+            if path_conflict {
+                pass.complete = false;
+                emit(Evidence::CoverageLost(ScanReason::Unstable));
+            }
+        }
         let mut resident = false;
         {
             for id in self.locators.candidates(&locator) {
@@ -637,6 +666,7 @@ impl Reconciler {
                     emit_exclusion(tracked, &mut emit);
                 }
                 if eligible {
+                    tracked.pass.conflict |= path_conflict;
                     tracked.pass.eligible = true;
                     resident |= tracked.file.resident;
                     if !tracked
@@ -647,12 +677,17 @@ impl Reconciler {
                         && (tracked.minimum.as_os_str().is_empty()
                             || observation.path.as_os_str() < tracked.minimum.as_os_str())
                     {
+                        // The index reads the existing minimum buffer; remove its
+                        // old key before mutation, then publish the new key.
+                        self.aliases.remove(id, &self.tracked);
                         replace_path(
-                            &mut tracked.minimum,
+                            &mut self.tracked.get_mut(&id).expect("alias owner").minimum,
                             &observation.path,
                             self.limits.path_bytes,
                         );
+                        self.aliases.insert(id, &self.tracked);
                     }
+                    let tracked = self.tracked.get_mut(&id).expect("locator index");
                     if tracked
                         .file
                         .binding
@@ -688,11 +723,11 @@ impl Reconciler {
                         pass.complete = false;
                         emit(Evidence::CoverageLost(ScanReason::Unstable));
                     }
+                    let new_rebound = tracked.pass.rebound != Some(locator);
                     tracked.pass.rebound = Some(locator);
                     tracked.pass.rebound_resolved = tracked.file.role == BindingRole::Superseded
                         && live_owner.is_some_and(|id| tracked.successor == Some((id, locator)));
                     tracked.pass.binding_ineligible = true;
-                    emit_exclusion(tracked, &mut emit);
                     // Historical paths retain replacement context but do not create
                     // competing live claims after repeated incomplete rotations.
                     replacement = match (replacement, tracked.file.role) {
@@ -700,13 +735,28 @@ impl Reconciler {
                         (_, BindingRole::Live) => Replacement::Possible(id),
                         (current, _) => current,
                     };
+                    if new_rebound
+                        && pass.complete
+                        && Self::detect_new_rebound(
+                            &mut self.tracked,
+                            &self.locators,
+                            &mut self.binding_walk,
+                            id,
+                        )
+                    {
+                        pass.complete = false;
+                        emit(Evidence::CoverageLost(ScanReason::Unstable));
+                    }
+                    emit_exclusion(self.tracked.get_mut(&id).expect("binding index"), &mut emit);
                 }
             }
             if !resident {
-                let result = match self
-                    .candidates
-                    .observe(observation, observed_at, replacement)
-                {
+                let result = match self.candidates.observe(
+                    observation,
+                    observed_at,
+                    replacement,
+                    path_conflict,
+                ) {
                     Ok(result) => result,
                     Err(error) => {
                         pass.complete = false;
@@ -714,7 +764,7 @@ impl Reconciler {
                         return Err(error);
                     }
                 };
-                if result.conflict {
+                if result.conflict && !path_conflict {
                     pass.complete = false;
                     emit(Evidence::CoverageLost(ScanReason::Unstable));
                 }
@@ -723,9 +773,6 @@ impl Reconciler {
                     self.stats.overflow_observations =
                         self.stats.overflow_observations.saturating_add(1);
                 }
-            } else if self.candidates.check_path(observation) {
-                pass.complete = false;
-                emit(Evidence::CoverageLost(ScanReason::Unstable));
             }
         }
         Ok(())
@@ -803,6 +850,28 @@ impl Reconciler {
             });
         }
         None
+    }
+
+    /// Applies a binding-batch root-refresh failure even when no file requests
+    /// are queued. This is not a traversal observation and changes no counters.
+    pub fn apply_binding_batch_error(
+        &mut self,
+        generation: u64,
+        error: &super::BindingBatchError<'_>,
+        mut emit: impl FnMut(Evidence<'_>),
+    ) -> Result<(), ReconcileError> {
+        let pass = self.pass.as_mut().ok_or(ReconcileError::Phase)?;
+        if pass.generation != generation {
+            return Err(ReconcileError::Generation);
+        }
+        pass.complete = false;
+        if error.reason == ScanReason::RootChanged
+            && let Some(root) = error.root
+        {
+            emit(Evidence::RootChanged(root));
+        }
+        emit(Evidence::CoverageLost(error.reason));
+        Ok(())
     }
 
     /// Applies targeted evidence without adding to the traversal count. Binding-local
@@ -939,7 +1008,20 @@ impl Reconciler {
             pass.complete = false;
             emit(Evidence::CoverageLost(ScanReason::Unstable));
         }
+        let new_rebound = tracked.pass.rebound != Some(candidate);
         tracked.pass.rebound = Some(candidate);
+        if new_rebound
+            && pass.complete
+            && Self::detect_new_rebound(
+                &mut self.tracked,
+                &self.locators,
+                &mut self.binding_walk,
+                predecessor,
+            )
+        {
+            pass.complete = false;
+            emit(Evidence::CoverageLost(ScanReason::Unstable));
+        }
         Ok(())
     }
 
@@ -1172,6 +1254,7 @@ impl Reconciler {
             + self.locators.retained_bytes()
             + self.bindings.retained_bytes()
             + self.parents.retained_bytes()
+            + self.aliases.retained_bytes()
             + self.candidates.retained_bytes()
             + (self.binding_keys.capacity()
                 + self.binding_walk.capacity()

@@ -60,14 +60,24 @@ impl<P: MatchPolicy> Scanner<P> {
         &'a mut self,
         budget: &'a ProbeBudget,
         mut cancelled: C,
-    ) -> BindingBatch<'a, P, C> {
-        let failure = self.refresh_binding_roots(&mut cancelled).err();
-        BindingBatch {
+    ) -> Result<BindingBatch<'a, P, C>, BindingBatchError<'a>> {
+        if let Err(failure) = self.refresh_binding_roots(&mut cancelled) {
+            return Err(BindingBatchError {
+                reason: failure.reason,
+                errno: failure.errno,
+                root: match failure.root {
+                    Some((true, index)) => Some(&self.config.exclusion_roots[index]),
+                    Some((false, index)) => Some(&self.config.include_roots[index]),
+                    None => None,
+                },
+            });
+        }
+        Ok(BindingBatch {
             scanner: self,
             budget,
             cancelled,
-            failure,
-        }
+            failure: None,
+        })
     }
 
     /// Convenience for one binding. Use `binding_batch` to share root work across
@@ -77,10 +87,18 @@ impl<P: MatchPolicy> Scanner<P> {
         path: &Path,
         expected_parent: Option<FileLocator>,
         budget: &ProbeBudget,
-        cancelled: impl FnMut() -> bool,
+        mut cancelled: impl FnMut() -> bool,
         consume: impl FnOnce(BindingCheck<'_>),
     ) -> Result<(), InvalidBindingPath> {
-        let mut batch = self.binding_batch(budget, cancelled);
+        // A single request always has a consumer, so preserve its combined
+        // result. Multi-request callers receive root failures at construction.
+        let failure = self.refresh_binding_roots(&mut cancelled).err();
+        let mut batch = BindingBatch {
+            scanner: self,
+            budget,
+            cancelled,
+            failure,
+        };
         consume(batch.check(path, expected_parent)?);
         Ok(())
     }
