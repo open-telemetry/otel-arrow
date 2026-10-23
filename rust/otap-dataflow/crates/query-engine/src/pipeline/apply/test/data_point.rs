@@ -3810,7 +3810,6 @@ async fn test_conditional_data_point_by_attribute() {
     assert_metrics_eq(result, expected);
 }
 
-
 /// Scenario: A conditional inside data_points that assigns a new attribute in one branch.
 /// Guarantees: Data points in the matching branch receive the new attribute while data points
 /// in the default branch do not.
