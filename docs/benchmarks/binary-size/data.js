@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792708787261,
+  "lastUpdate": 1792714959883,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -70499,6 +70499,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tina Tan",
+            "username": "athomas9195",
+            "email": "43687093+athomas9195@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c2d302c1a04e9a75b4c07198178e44de6a1b2a59",
+          "message": "chore(receiver): Add scalar and snapshot modes to PostgreSQL receiver  (#4486)\n\n# Change summary\n \nAdds scalar and snapshot watermark modes to the opt-in PostgreSQL\nreceiver introduced in open-telemetry/otel-arrow#4374.\n \nScalar mode incrementally collects rows using one non-null, unique\ninteger or timestamp key. Snapshot mode emits the complete current query\nresult on each polling interval without maintaining a row cursor.\n \nThe implementation reuses the shared database scraper for scheduling,\nOTLP encoding, backpressure, ACK/NACK handling, and checkpointing.\n \n ## Included\n \n- Scalar watermark configuration matching the shared Oracle and SQL\nServer schema: flat `watermark.column` and `watermark.bind`, plus typed\n`watermark.initial` fields (`type` and `value`).\n- Native scalar support for PostgreSQL `int2`, `int4`, `int8`,\n`timestamp`, and `timestamptz` columns.\n- Catalog validation requiring scalar columns to be non-null and backed\nby a valid single-key unique index.\n- Strict scalar keyset validation using one `>` predicate and ascending\ncursor ordering.\n- Zero-bind snapshot queries with optional ordering and no cursor-column\nor uniqueness requirement.\n- Snapshot N+1 row probing and all-or-nothing normalized-memory and\nencoded-OTLP byte limits.\n- Source-local pause behavior for deterministic snapshot row or byte\noverflow, with the checkpoint unchanged.\n- Mode-specific cursor binding, extraction, event timestamps,\nfingerprints, and restart compatibility.\n - PostgreSQL README examples and an enhancement changelog entry.\n \n ## Requirements and current compatibility\n \n | Area | Current requirement or behavior |\n | --- | --- |\n| Composite mode | Existing timestamp and signed-integer tie-breaker\nconfigurations remain compatible. |\n| Scalar key | Must be a direct, non-null column of the driving table\nwith strictly increasing values. |\n| Scalar uniqueness | Must be the sole key column of a valid, immediate,\nnonpartial, expression-free unique index. Included non-key columns are\nallowed. |\n| Scalar types | Supports `int64` over `int2`/`int4`/`int8` and\n`timestamp` over `timestamp`/`timestamptz`. String and unsigned keys are\nnot included. |\n| Snapshot behavior | Re-runs the complete bounded query each interval,\nincluding unchanged rows. Empty results emit nothing. |\n| Snapshot bounds | The complete result must fit `max_rows_per_poll` and\nboth normalized and encoded `max_batch_bytes` limits. Partial snapshots\nare never emitted. |\n| Checkpointing | Scalar resumes from acknowledged progress. Snapshot\ncheckpoints retain acknowledged revisions but no row offset. |\n| Source ordering | Incremental modes require cursor-ordered visibility;\nlate-visible-row recovery is not included. |\n| SQL scope | Preserves the receiver's existing narrow read-only SQL\nallowlist over schema-qualified ordinary tables. |\n| Transport | Existing verified TLS, reconnect, cancellation, framing,\nand shutdown behavior is unchanged. |\n \n ## Related issue\n \n - Related to open-telemetry/otel-arrow#4166\n- Follows open-telemetry/otel-arrow#4374 and\nopen-telemetry/otel-arrow#4434\n \n ## Validation\n \n The following validation passed:\n \n- `cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features postgresql postgresql_receiver` — passed, 52 tests; 1\nenvironment-dependent integration test ignored by default.\n- `cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features postgresql live_scalar_and_snapshot_native_execution --\n--ignored --nocapture` — passed against the PostgreSQL 15.19 Docker TLS\nfixture.\n- `cargo clippy -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features postgresql --all-targets -- -D warnings` — passed.\n- `cargo check -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features postgresql` — passed.\n- `cargo check --no-default-features --features postgresql,crypto-ring`\n— passed from `rust/otap-dataflow`.\n - `cargo xtask quick-check` with `CARGO_BUILD_JOBS=2` — passed.\n- `npx markdownlint-cli2\nrust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/README.md`\n— passed.\n - Diff whitespace and ASCII-only Rust source checks — passed.\n \n ## User-facing changes\n \n The PostgreSQL receiver now supports three watermark modes:\n \n - `composite` for timestamp plus tie-breaker keyset collection;\n - `scalar` for one unique integer or timestamp key;\n - `snapshot` for complete recurring query results.",
+          "timestamp": "2026-10-22T23:38:02Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c2d302c1a04e9a75b4c07198178e44de6a1b2a59"
+        },
+        "date": 1792714943971,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.49,
             "unit": "MB"
           },
           {
