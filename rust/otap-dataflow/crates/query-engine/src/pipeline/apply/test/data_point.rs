@@ -2939,14 +2939,6 @@ async fn test_not_supported_queries_return_error() {
                 where is Log
             }",
         },
-        // conditional operator call (if/else) is not yet supported for metric data points
-        TestCase {
-            query: "metrics | apply data_points {
-                if (flags > 0) {
-                    drop
-                }
-            }",
-        },
         // nested apply pipeline to modify data point attributes is not yet supported
         TestCase {
             query: "metrics | apply data_points {
@@ -3465,4 +3457,449 @@ async fn test_filter_data_points_by_missing_resource_attribute() {
             "{query} with env on first resource: {env_on_first_resource}"
         );
     }
+}
+
+/// Scenario: A conditional branch inside data_points transforms only matching data points.
+/// Guarantees: Only data points whose flags > 5 have flags set to 0; other data points
+/// pass through unchanged.
+#[tokio::test]
+async fn test_conditional_data_point_no_default_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set flags = 0
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                    NumberDataPoint::build().flags(10u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(0u32).finish(),
+                    NumberDataPoint::build().flags(0u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: An if/else inside data_points transforms both branches differently.
+/// Guarantees: Data points matching the condition get one transformation; all others get
+/// a different transformation from the else branch.
+#[tokio::test]
+async fn test_conditional_data_point_with_default_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set flags = 100
+        } else {
+            set flags = 200
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(100u32).finish(),
+                    NumberDataPoint::build().flags(200u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: An if/else if/else inside data_points with three branches.
+/// Guarantees: Each data point is routed to exactly one branch based on exclusive
+/// condition evaluation order.
+#[tokio::test]
+async fn test_conditional_data_point_multiple_branches() {
+    let query = r#"metrics | apply data_points {
+        if (flags == 1) {
+            set flags = 100
+        } else if (flags == 2) {
+            set flags = 200
+        } else {
+            set flags = 300
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(1u32).finish(),
+                    NumberDataPoint::build().flags(2u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(100u32).finish(),
+                    NumberDataPoint::build().flags(200u32).finish(),
+                    NumberDataPoint::build().flags(300u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional branch inside data_points filters within a branch.
+/// Guarantees: Only data points matching the condition AND the nested filter survive;
+/// data points not matching the condition pass through unchanged.
+#[tokio::test]
+async fn test_conditional_data_point_filter_in_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            where flags < 10
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                    NumberDataPoint::build().flags(12u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    // flags=3 does not match the if condition, passes through
+    // flags=7 matches condition and passes the nested filter (7 < 10)
+    // flags=12 matches condition but fails the nested filter (12 >= 10), removed
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(7u32).finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional inside data_points applied to a batch with all metric types.
+/// Guarantees: The condition is evaluated independently for each data point type
+/// (gauge, sum, histogram, exponential histogram, summary). Data points matching the
+/// condition are transformed; others pass through unchanged.
+#[tokio::test]
+async fn test_conditional_data_point_all_metric_types() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set flags = 0
+        } else {
+            set flags = 99
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                ],
+            })
+            .finish(),
+        Metric::build()
+            .name("sum")
+            .data_sum(Sum {
+                data_points: vec![
+                    NumberDataPoint::build().flags(10u32).finish(),
+                    NumberDataPoint::build().flags(2u32).finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build().flags(1u32).finish(),
+                    HistogramDataPoint::build().flags(8u32).finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("exp_histogram")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build().flags(6u32).finish(),
+                    ExponentialHistogramDataPoint::build().flags(4u32).finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("summary")
+            .data_summary(Summary {
+                data_points: vec![
+                    SummaryDataPoint::build().flags(9u32).finish(),
+                    SummaryDataPoint::build().flags(5u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    // Verify each metric type: flags > 5 -> 0, flags <= 5 -> 99
+    let scope_metrics = &result.resource_metrics[0].scope_metrics[0];
+    for metric in &scope_metrics.metrics {
+        let data = metric.data.as_ref().unwrap();
+        match data {
+            Data::Gauge(g) => {
+                // input was [3, 7] -> if branch: 7->0, else branch: 3->99
+                let flags: Vec<u32> = g.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "gauge: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "gauge: expected 99 in {flags:?}");
+            }
+            Data::Sum(s) => {
+                // input was [10, 2] -> if branch: 10->0, else branch: 2->99
+                let flags: Vec<u32> = s.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "sum: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "sum: expected 99 in {flags:?}");
+            }
+            Data::Histogram(h) => {
+                // input was [1, 8] -> if branch: 8->0, else branch: 1->99
+                let flags: Vec<u32> = h.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "histogram: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "histogram: expected 99 in {flags:?}");
+            }
+            Data::ExponentialHistogram(e) => {
+                // input was [6, 4] -> if branch: 6->0, else branch: 4->99
+                let flags: Vec<u32> = e.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "exp_histogram: expected 0 in {flags:?}");
+                assert!(
+                    flags.contains(&99),
+                    "exp_histogram: expected 99 in {flags:?}"
+                );
+            }
+            Data::Summary(s) => {
+                // input was [9, 5] -> if branch: 9->0, else branch: 5->99
+                let flags: Vec<u32> = s.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "summary: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "summary: expected 99 in {flags:?}");
+            }
+        }
+    }
+}
+
+/// Scenario: A conditional inside data_points using a data point attribute in the condition.
+/// Guarantees: The condition correctly evaluates against data point attributes to select
+/// which branch processes each data point.
+#[tokio::test]
+async fn test_conditional_data_point_by_attribute() {
+    let query = r#"metrics | apply data_points {
+        if (attributes["env"] == "prod") {
+            set flags = 100
+        } else {
+            set flags = 200
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(1u32)
+                        .attributes(vec![
+                            KeyValue::new("env", AnyValue::new_string("prod")),
+                            KeyValue::new("foo", AnyValue::new_string("bar")),
+                        ])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(2u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(3u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(100u32)
+                        .attributes(vec![
+                            KeyValue::new("env", AnyValue::new_string("prod")),
+                            KeyValue::new("foo", AnyValue::new_string("bar")),
+                        ])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(100u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(200u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("staging"))])
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional inside data_points that assigns a new attribute in one branch.
+/// Guarantees: Data points in the matching branch receive the new attribute while data points
+/// in the default branch do not.
+#[tokio::test]
+async fn test_conditional_data_point_assign_attribute_in_branch() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            set attributes["selected"] = true
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build().flags(3u32).finish(),
+                    NumberDataPoint::build().flags(7u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(7u32)
+                        .attributes(vec![KeyValue::new("selected", AnyValue::new_bool(true))])
+                        .finish(),
+                    NumberDataPoint::build().flags(3u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: A conditional branch filters out all data points of one type while keeping another.
+/// Guarantees: The resulting OTAP batch no longer contains the payload type for the fully
+/// filtered data point type, while the other data point type is preserved.
+#[tokio::test]
+async fn test_conditional_data_point_removes_empty_payload_type() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            where false
+        }
+    }"#;
+
+    // Gauge has flags=10 (matches condition, then filtered by `where false` -> removed)
+    // Histogram has flags=2 (does not match condition -> passes through)
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![NumberDataPoint::build().flags(10u32).finish()],
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![HistogramDataPoint::build().flags(2u32).finish()],
+                ..Default::default()
+            })
+            .finish(),
+    ]);
+
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(input)))
+        .await
+        .unwrap();
+
+    // NumberDataPoints payload should be absent since the only gauge data point was filtered out
+    assert!(
+        result.get(ArrowPayloadType::NumberDataPoints).is_none(),
+        "expected NumberDataPoints payload to be absent after filtering all gauge data points"
+    );
+
+    // HistogramDataPoints payload should still be present
+    assert!(
+        result.get(ArrowPayloadType::HistogramDataPoints).is_some(),
+        "expected HistogramDataPoints payload to be present"
+    );
 }
