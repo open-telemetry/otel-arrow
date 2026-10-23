@@ -29,7 +29,7 @@ use crate::pipeline::concat::{
     concatenate_metrics, concatenate_traces,
 };
 use crate::pipeline::expr::eval::EvalContext;
-use crate::pipeline::expr::types::MetricDataPointType;
+use crate::pipeline::expr::types::{METRIC_DATA_POINT_TYPE_COUNT, MetricDataPointType};
 use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::data_points::{
     filter_metric_data_points, remove_all_metric_data_points,
@@ -257,9 +257,6 @@ impl PipelineStage for ConditionalPipelineStage {
                         align_selection_to_root(Some(scoped_value), &otap_batch, &eval_ctx)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
-                        //
-                        // TODO: handle the scalar case separately here to avoid materializing
-                        // a full boolean array when the predicate is a constant true/false.
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
                     }
                 }
@@ -410,9 +407,6 @@ impl PipelineStage for ConditionalPipelineStage {
             }
 
             // evaluate the branch condition directly on the attributes record batch
-            //
-            // TODO: handle the scalar case separately here to avoid materializing
-            // a full boolean array when the predicate is a constant true/false.
             let predicate = branch
                 .condition
                 .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
@@ -482,24 +476,24 @@ impl PipelineStage for ConditionalPipelineStage {
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         // Track which data point rows have been claimed by previous branches, per data point
-        // type. Each entry is a BooleanArray where `true` means the row was already selected.
-        let mut already_selected: Vec<(MetricDataPointType, BooleanArray)> =
-            MetricDataPointType::all()
-                .filter_map(|dp_type| {
-                    otap_batch
-                        .get(dp_type.payload_type())
-                        .filter(|rb| rb.num_rows() > 0)
-                        .map(|rb| {
-                            (
-                                dp_type,
-                                BooleanArray::new(BooleanBuffer::new_unset(rb.num_rows()), None),
-                            )
-                        })
-                })
-                .collect();
+        // type. Indexed by MetricDataPointType::index(); None means the dp type is absent or
+        // has zero rows.
+        let mut already_selected: [Option<BooleanArray>; METRIC_DATA_POINT_TYPE_COUNT] =
+            [const { None }; METRIC_DATA_POINT_TYPE_COUNT];
+        let mut any_present = false;
+        for dp_type in MetricDataPointType::all() {
+            if let Some(rb) = otap_batch.get(dp_type.payload_type()) {
+                if rb.num_rows() > 0 {
+                    already_selected[dp_type.index()] = Some(BooleanArray::new(
+                        BooleanBuffer::new_unset(rb.num_rows()),
+                        None,
+                    ));
+                    any_present = true;
+                }
+            }
+        }
 
-        if already_selected.is_empty() {
-            // no data points present in the batch -- nothing to do
+        if !any_present {
             return Ok(otap_batch);
         }
 
@@ -507,10 +501,10 @@ impl PipelineStage for ConditionalPipelineStage {
             Vec::with_capacity(self.branches.len() + usize::from(self.default_branch.is_some()));
 
         for branch in &mut self.branches {
-            // Check if all data point types have been fully claimed by previous branches
+            // Check if all present data point types have been fully claimed
             let all_claimed = already_selected
                 .iter()
-                .all(|(_, sel)| sel.true_count() == sel.len());
+                .all(|sel| sel.as_ref().map_or(true, |s| s.true_count() == s.len()));
             if all_claimed {
                 break;
             }
@@ -518,44 +512,44 @@ impl PipelineStage for ConditionalPipelineStage {
             let mut branch_otap_batch = otap_batch.clone();
             let mut any_selected = false;
 
-            for (dp_type, already_selected_vec) in &mut already_selected {
-                let num_dp_rows = otap_batch
-                    .get(dp_type.payload_type())
-                    .map_or(0, |rb| rb.num_rows());
+            for dp_type in MetricDataPointType::all() {
+                let Some(already_sel) = &mut already_selected[dp_type.index()] else {
+                    // dp type not present in the batch
+                    continue;
+                };
 
-                if num_dp_rows == 0 || already_selected_vec.true_count() == num_dp_rows {
-                    // all rows already claimed or no rows present for this dp type
-                    remove_all_metric_data_points(&mut branch_otap_batch, dp_type);
+                let num_dp_rows = already_sel.len();
+                if already_sel.true_count() == num_dp_rows {
+                    // all rows already claimed by previous branches
+                    remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
                     continue;
                 }
 
-                let eval_ctx = EvalContext::new_for_metrics_data_points(*dp_type, session_ctx);
+                let eval_ctx = EvalContext::new_for_metrics_data_points(dp_type, session_ctx);
                 let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
                 match predicate_result {
                     None => {
                         // expression evaluated to None (e.g. missing field) -- treat as
                         // all-false: no rows selected for this dp type in this branch
-                        remove_all_metric_data_points(&mut branch_otap_batch, dp_type);
+                        remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
                     }
                     Some(scoped_value) => {
-                        // TODO: handle the scalar case separately here to avoid materializing
-                        // a full boolean array when the predicate is a constant true/false.
                         let predicate_selection_vec =
                             scoped_value_to_boolean_array(scoped_value.values, num_dp_rows)?;
                         let branch_selection_vec =
-                            and(&predicate_selection_vec, &not(already_selected_vec)?)?;
+                            and(&predicate_selection_vec, &not(already_sel)?)?;
 
                         // update already-selected tracking for this dp type
-                        *already_selected_vec = or(already_selected_vec, &predicate_selection_vec)?;
+                        *already_sel = or(already_sel, &predicate_selection_vec)?;
 
                         if branch_selection_vec.true_count() == 0 {
-                            remove_all_metric_data_points(&mut branch_otap_batch, dp_type);
+                            remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
                         } else {
                             let mut id_bitmap = self.id_bitmap_pool.acquire();
                             let result = filter_metric_data_points(
                                 &mut branch_otap_batch,
-                                dp_type,
+                                &dp_type,
                                 &branch_selection_vec,
                                 &mut id_bitmap,
                             );
@@ -568,7 +562,6 @@ impl PipelineStage for ConditionalPipelineStage {
             }
 
             if any_selected {
-                // execute the branch's pipeline stages on the filtered batch
                 for stage in &mut branch.pipeline_stages {
                     branch_otap_batch = stage
                         .execute_on_metric_data_points(
@@ -585,37 +578,33 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         // Handle the default branch -- rows not claimed by any conditional branch
-        let has_remaining = already_selected.iter().any(|(dp_type, sel)| {
-            otap_batch
-                .get(dp_type.payload_type())
-                .is_some_and(|rb| sel.true_count() < rb.num_rows())
+        let has_remaining = MetricDataPointType::all().any(|dp_type| {
+            already_selected[dp_type.index()]
+                .as_ref()
+                .is_some_and(|sel| sel.true_count() < sel.len())
         });
 
         if has_remaining {
             let mut default_otap_batch = otap_batch.clone();
             let mut default_has_data = false;
 
-            for (dp_type, already_selected_vec) in &already_selected {
-                let num_dp_rows = otap_batch
-                    .get(dp_type.payload_type())
-                    .map_or(0, |rb| rb.num_rows());
-
-                if num_dp_rows == 0 {
+            for dp_type in MetricDataPointType::all() {
+                let Some(already_sel) = &already_selected[dp_type.index()] else {
                     continue;
-                }
+                };
 
-                if already_selected_vec.true_count() == num_dp_rows {
+                if already_sel.true_count() == already_sel.len() {
                     // all rows were claimed by conditional branches
-                    remove_all_metric_data_points(&mut default_otap_batch, dp_type);
-                } else if already_selected_vec.true_count() == 0 {
+                    remove_all_metric_data_points(&mut default_otap_batch, &dp_type);
+                } else if already_sel.true_count() == 0 {
                     // no rows were claimed -- all rows go to default, no filtering needed
                     default_has_data = true;
                 } else {
-                    let remaining_selection = not(already_selected_vec)?;
+                    let remaining_selection = not(already_sel)?;
                     let mut id_bitmap = self.id_bitmap_pool.acquire();
                     let result = filter_metric_data_points(
                         &mut default_otap_batch,
-                        dp_type,
+                        &dp_type,
                         &remaining_selection,
                         &mut id_bitmap,
                     );
@@ -644,7 +633,6 @@ impl PipelineStage for ConditionalPipelineStage {
         }
 
         if branch_results.is_empty() {
-            // no branches produced any data point results -- return the original batch
             return Ok(otap_batch);
         }
 

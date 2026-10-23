@@ -568,7 +568,22 @@ pub enum MetricDataPointType {
     SummaryDataPoint,
 }
 
+/// Number of [`MetricDataPointType`] variants.
+pub const METRIC_DATA_POINT_TYPE_COUNT: usize = 4;
+
 impl MetricDataPointType {
+    /// Returns a unique index for this variant in `0..METRIC_DATA_POINT_TYPE_COUNT`.
+    ///
+    /// This is used to index fixed-size arrays keyed by data point type.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::NumberDataPoint => 0,
+            Self::HistogramDataPoint => 1,
+            Self::ExponentialHistogramDataPoint => 2,
+            Self::SummaryDataPoint => 3,
+        }
+    }
+
     /// Get the OTAP payload type containing data points of this metric type
     pub fn payload_type(&self) -> ArrowPayloadType {
         match self {
@@ -609,19 +624,6 @@ impl MetricDataPointType {
             Self::NumberDataPoint => Some(ArrowPayloadType::NumberDpExemplarAttrs),
             Self::SummaryDataPoint => None,
         }
-    }
-
-    /// Returns all [`ArrowPayloadType`]s associated with this data point type: the data point
-    /// batch itself, its attributes, exemplars, and exemplar attributes.
-    pub fn associated_payload_types(&self) -> impl Iterator<Item = ArrowPayloadType> {
-        [
-            Some(self.payload_type()),
-            Some(self.dp_attrs_payload_type()),
-            self.exemplar_payload_type(),
-            self.exemplar_attr_payload_type(),
-        ]
-        .into_iter()
-        .flatten()
     }
 
     /// returns an iterator of all the types of metric data points

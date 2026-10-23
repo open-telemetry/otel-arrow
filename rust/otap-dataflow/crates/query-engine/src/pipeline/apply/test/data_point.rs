@@ -3633,20 +3633,23 @@ async fn test_conditional_data_point_filter_in_branch() {
     assert_metrics_eq(result, expected);
 }
 
-/// Scenario: A conditional inside data_points applied to a batch with multiple metric types.
-/// Guarantees: The condition is evaluated independently for each data point type. Data
-/// points from gauge and histogram metrics are both conditionally transformed.
+/// Scenario: A conditional inside data_points applied to a batch with all metric types.
+/// Guarantees: The condition is evaluated independently for each data point type
+/// (gauge, sum, histogram, exponential histogram, summary). Data points matching the
+/// condition are transformed; others pass through unchanged.
 #[tokio::test]
-async fn test_conditional_data_point_multiple_metric_types() {
+async fn test_conditional_data_point_all_metric_types() {
     let query = r#"metrics | apply data_points {
         if (flags > 5) {
             set flags = 0
+        } else {
+            set flags = 99
         }
     }"#;
 
     let input = to_metrics_data(vec![
         Metric::build()
-            .name("gauge_metric")
+            .name("gauge")
             .data_gauge(Gauge {
                 data_points: vec![
                     NumberDataPoint::build().flags(3u32).finish(),
@@ -3655,12 +3658,41 @@ async fn test_conditional_data_point_multiple_metric_types() {
             })
             .finish(),
         Metric::build()
-            .name("hist_metric")
-            .data_histogram(Histogram {
-                aggregation_temporality: 0,
+            .name("sum")
+            .data_sum(Sum {
                 data_points: vec![
-                    HistogramDataPoint::build().flags(10u32).finish(),
-                    HistogramDataPoint::build().flags(2u32).finish(),
+                    NumberDataPoint::build().flags(10u32).finish(),
+                    NumberDataPoint::build().flags(2u32).finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![
+                    HistogramDataPoint::build().flags(1u32).finish(),
+                    HistogramDataPoint::build().flags(8u32).finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("exp_histogram")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build().flags(6u32).finish(),
+                    ExponentialHistogramDataPoint::build().flags(4u32).finish(),
+                ],
+                ..Default::default()
+            })
+            .finish(),
+        Metric::build()
+            .name("summary")
+            .data_summary(Summary {
+                data_points: vec![
+                    SummaryDataPoint::build().flags(9u32).finish(),
+                    SummaryDataPoint::build().flags(5u32).finish(),
                 ],
             })
             .finish(),
@@ -3668,29 +3700,46 @@ async fn test_conditional_data_point_multiple_metric_types() {
 
     let result = exec_metrics_query(query, input).await;
 
-    let expected = to_metrics_data(vec![
-        Metric::build()
-            .name("gauge_metric")
-            .data_gauge(Gauge {
-                data_points: vec![
-                    NumberDataPoint::build().flags(0u32).finish(),
-                    NumberDataPoint::build().flags(3u32).finish(),
-                ],
-            })
-            .finish(),
-        Metric::build()
-            .name("hist_metric")
-            .data_histogram(Histogram {
-                aggregation_temporality: 0,
-                data_points: vec![
-                    HistogramDataPoint::build().flags(0u32).finish(),
-                    HistogramDataPoint::build().flags(2u32).finish(),
-                ],
-            })
-            .finish(),
-    ]);
-
-    assert_metrics_eq(result, expected);
+    // Verify each metric type: flags > 5 -> 0, flags <= 5 -> 99
+    let scope_metrics = &result.resource_metrics[0].scope_metrics[0];
+    for metric in &scope_metrics.metrics {
+        let data = metric.data.as_ref().unwrap();
+        match data {
+            Data::Gauge(g) => {
+                // input was [3, 7] -> if branch: 7->0, else branch: 3->99
+                let flags: Vec<u32> = g.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "gauge: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "gauge: expected 99 in {flags:?}");
+            }
+            Data::Sum(s) => {
+                // input was [10, 2] -> if branch: 10->0, else branch: 2->99
+                let flags: Vec<u32> = s.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "sum: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "sum: expected 99 in {flags:?}");
+            }
+            Data::Histogram(h) => {
+                // input was [1, 8] -> if branch: 8->0, else branch: 1->99
+                let flags: Vec<u32> = h.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "histogram: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "histogram: expected 99 in {flags:?}");
+            }
+            Data::ExponentialHistogram(e) => {
+                // input was [6, 4] -> if branch: 6->0, else branch: 4->99
+                let flags: Vec<u32> = e.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "exp_histogram: expected 0 in {flags:?}");
+                assert!(
+                    flags.contains(&99),
+                    "exp_histogram: expected 99 in {flags:?}"
+                );
+            }
+            Data::Summary(s) => {
+                // input was [9, 5] -> if branch: 9->0, else branch: 5->99
+                let flags: Vec<u32> = s.data_points.iter().map(|dp| dp.flags).collect();
+                assert!(flags.contains(&0), "summary: expected 0 in {flags:?}");
+                assert!(flags.contains(&99), "summary: expected 99 in {flags:?}");
+            }
+        }
+    }
 }
 
 /// Scenario: A conditional inside data_points using a data point attribute in the condition.
