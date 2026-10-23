@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Allow the Geneva exporter to consume Entra tokens from Azure Identity Auth."
+issues: 4457
+subtext: "Azure Identity Auth owns acquisition, caching, refresh, and readiness. Managed identity SDK work runs on a bounded blocking worker, while the Geneva uploader retains the GCS exchange and ingestion credentials."

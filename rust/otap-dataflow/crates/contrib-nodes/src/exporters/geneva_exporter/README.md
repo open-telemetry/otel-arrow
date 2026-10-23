@@ -38,6 +38,58 @@ config:
   max_concurrent_uploads: 4
 ```
 
+### Azure Identity Auth extension
+
+To keep Entra identity acquisition outside the exporter, bind the existing
+Azure Identity Auth extension and select `externaltoken` authentication:
+
+```yaml
+extensions:
+  geneva_identity:
+    type: "urn:microsoft:extension:azure_identity_auth"
+    config:
+      method: managed_identity
+      scope: "https://monitor.azure.com/.default"
+      startup_timeout: 30s
+
+nodes:
+  geneva-exporter:
+    type: "urn:microsoft:exporter:geneva"
+    capabilities:
+      bearer_token_provider: geneva_identity
+    config:
+      endpoint: "https://geneva.example.com"
+      environment: production
+      account: "my-account"
+      namespace: "my-namespace"
+      account_routing:
+        default_group: "my-account-group"
+      region: westus2
+      config_major_version: 1
+      tenant: "my-tenant"
+      role_name: "df-engine"
+      role_instance: "instance-001"
+      auth:
+        type: externaltoken
+        resource: "https://monitor.azure.com"
+```
+
+The resource and scope above are examples. Configure both for the Entra audience
+required by the target Geneva environment. One Azure Identity Auth extension
+instance serves one identity and one scope. The bearer-token capability does
+not expose its configured scope, so the exporter cannot validate that it
+matches `auth.resource`; GCS rejects an audience or authorization mismatch.
+
+The extension owns Entra token acquisition, caching, refresh, readiness, and
+authentication telemetry. The uploader uses that Entra token only to request
+Geneva ingestion credentials from GCS, then keeps its existing ingestion-token
+and routing cache. A valid cached Geneva credential allows uploads to continue
+without consulting the Entra provider.
+
+Azure Arc uses the same `managed_identity` method. Arc detection and the HIMDS
+challenge-response remain in the Azure Identity SDK; the Geneva exporter does
+not contain Arc-specific identity logic.
+
 ### Agent-fed credentials
 
 When the embedding host supplies the Geneva token and routing metadata, bind
@@ -200,7 +252,7 @@ config:
 
   # Authentication method. Other default-build values are
   # "usermanagedidentity", "usermanagedidentitybyarmresourceid",
-  # "workloadidentity", and "agentfed". "certificate" requires the
+  # "workloadidentity", "externaltoken", and "agentfed". "certificate" requires the
   # opt-in "geneva-certificate-auth" build feature.
   auth:
     type: systemmanagedidentity
