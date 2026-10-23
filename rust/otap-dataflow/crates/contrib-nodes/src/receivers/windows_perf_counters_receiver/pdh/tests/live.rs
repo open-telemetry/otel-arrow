@@ -45,8 +45,8 @@ async fn live_pdh_persistent_worker_reuses_and_closes_query() {
     assert_eq!(after.1 - before.1, 1);
 }
 
-/// Scenario: Two independently configured receiver workers collect in one process.
-/// Guarantees: Each receiver owns a distinct query and both can collect and shut down cleanly.
+/// Scenario: Two independently configured receiver workers receive concurrent collection requests.
+/// Guarantees: Both requests produce observations from independently owned queries that shut down cleanly.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires live Windows performance counters; run explicitly with `-- --ignored`"]
 async fn live_pdh_independent_workers_can_collect_concurrently() {
@@ -74,8 +74,9 @@ async fn live_pdh_independent_workers_can_collect_concurrently() {
     )
     .await
     .unwrap();
-    assert!(!first.collect().await.unwrap().points.is_empty());
-    assert!(!second.collect().await.unwrap().points.is_empty());
+    let (first_result, second_result) = tokio::join!(first.collect(), second.collect());
+    assert!(!first_result.unwrap().points.is_empty());
+    assert!(!second_result.unwrap().points.is_empty());
     assert!(
         first
             .shutdown(Instant::now() + Duration::from_secs(2))
