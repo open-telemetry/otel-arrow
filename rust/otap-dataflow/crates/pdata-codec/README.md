@@ -196,6 +196,9 @@ implementations run ordinary codecs synchronously, but can drive incremental
 decoding with bounded work segments on that same runtime thread. This does not
 offload CPU work or make synchronous encoding cooperative.
 
+See the engine's [runtime responsiveness guidance](../../docs/async-best-practices.md#runtime-responsiveness)
+for work budgets, cancellation, backpressure, and full-engine validation.
+
 A non-incremental decoder, encoder, or batcher can still block its caller. The
 engine service boundary is the intended integration point for a future bounded
 executor: fast codecs can remain inline, while codecs explicitly classified as
