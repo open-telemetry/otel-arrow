@@ -191,7 +191,7 @@ fn restore_original_parent_payload(
 /// metric record batch, resource/scope attributes, and metric-level attributes.
 ///
 /// Data-point-level conditional branching does not split or modify these parent payloads, so
-/// they are stripped from branch results before concatenation and preserved from the original.
+/// they are removed from branch results before concatenation and preserved from the original.
 const DATA_POINT_PARENT_PAYLOAD_TYPES: [ArrowPayloadType; 5] = [
     ArrowPayloadType::ResourceAttrs,
     ArrowPayloadType::ScopeAttrs,
@@ -202,7 +202,7 @@ const DATA_POINT_PARENT_PAYLOAD_TYPES: [ArrowPayloadType; 5] = [
 
 /// Remove parent-level payload types from each branch result, leaving only data-point
 /// sub-batches (data points, dp attrs, exemplars, exemplar attrs).
-fn strip_data_point_parent_payloads(branch_results: &mut [OtapArrowRecords]) {
+fn remove_data_point_parent_payloads(branch_results: &mut [OtapArrowRecords]) {
     for branch_result in branch_results.iter_mut() {
         for payload_type in DATA_POINT_PARENT_PAYLOAD_TYPES {
             _ = branch_result.remove(payload_type);
@@ -211,11 +211,9 @@ fn strip_data_point_parent_payloads(branch_results: &mut [OtapArrowRecords]) {
 }
 
 /// Remove all data-point sub-batches from `otap_batch`, leaving only the parent payloads.
-fn remove_all_data_point_payloads(otap_batch: &mut OtapArrowRecords) {
-    for payload_type in otap_batch.allowed_payload_types() {
-        if !DATA_POINT_PARENT_PAYLOAD_TYPES.contains(payload_type) {
-            _ = otap_batch.remove(*payload_type);
-        }
+fn remove_data_point_payloads(otap_batch: &mut OtapArrowRecords) {
+    for dp_type in MetricDataPointType::all() {
+        remove_all_metric_data_points(otap_batch, &dp_type);
     }
 }
 
@@ -531,7 +529,8 @@ impl PipelineStage for ConditionalPipelineStage {
             Vec::with_capacity(self.branches.len() + usize::from(self.default_branch.is_some()));
 
         for branch in &mut self.branches {
-            // Check if all present data point types have been fully claimed
+            // Check if all present data point types have already been processed by previous
+            // branches. If so, we can skip processing current and subsequent branches
             let all_claimed = already_selected
                 .iter()
                 .all(|sel| sel.as_ref().map_or(true, |s| s.true_count() == s.len()));
@@ -539,9 +538,10 @@ impl PipelineStage for ConditionalPipelineStage {
                 break;
             }
 
+            // build the OTAP batch that will be the input to the branch pipeline by applying the
+            // condition predicate to data points not selected by previous branches:
             let mut branch_otap_batch = otap_batch.clone();
             let mut any_selected = false;
-
             for dp_type in MetricDataPointType::all() {
                 let Some(already_sel) = &mut already_selected[dp_type as usize] else {
                     // dp type not present in the batch
@@ -607,7 +607,8 @@ impl PipelineStage for ConditionalPipelineStage {
             }
         }
 
-        // Handle the default branch -- rows not claimed by any conditional branch
+        // Handle the default (else) branch for any data points that were not selected by
+        // some previous if/else if branch:
         let has_remaining = MetricDataPointType::all().any(|dp_type| {
             already_selected[dp_type as usize]
                 .as_ref()
@@ -666,12 +667,11 @@ impl PipelineStage for ConditionalPipelineStage {
             return Ok(otap_batch);
         }
 
-        // Concatenate the data-point sub-batches from all branches back into the original
-        // OTAP batch. The root metric batch, resource/scope attrs, and metric attrs are
-        // preserved from the original.
-        strip_data_point_parent_payloads(&mut branch_results);
+        // concatenate the data-point sub-batches from all branches back into the original OTAP batch.
+        // The root metric batch, resource/scope attrs, and metric attrs are preserved from the original.
+        remove_data_point_parent_payloads(&mut branch_results);
         let concatenated = concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())?;
-        remove_all_data_point_payloads(&mut otap_batch);
+        remove_data_point_payloads(&mut otap_batch);
         otap_batch.replace_batches_from(concatenated)?;
 
         Ok(otap_batch)

@@ -3838,3 +3838,54 @@ async fn test_conditional_data_point_assign_attribute_in_branch() {
 
     assert_metrics_eq(result, expected);
 }
+
+/// Scenario: A conditional branch filters out all data points of one type while keeping another.
+/// Guarantees: The resulting OTAP batch no longer contains the payload type for the fully
+/// filtered data point type, while the other data point type is preserved.
+#[tokio::test]
+async fn test_conditional_data_point_removes_empty_payload_type() {
+    let query = r#"metrics | apply data_points {
+        if (flags > 5) {
+            where false
+        }
+    }"#;
+
+    // Gauge has flags=10 (matches condition, then filtered by `where false` -> removed)
+    // Histogram has flags=2 (does not match condition -> passes through)
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![NumberDataPoint::build().flags(10u32).finish()],
+            })
+            .finish(),
+        Metric::build()
+            .name("histogram")
+            .data_histogram(Histogram {
+                data_points: vec![HistogramDataPoint::build().flags(2u32).finish()],
+                ..Default::default()
+            })
+            .finish(),
+    ]);
+
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+    let result = pipeline
+        .execute(otlp_to_otap(&OtlpProtoMessage::Metrics(input)))
+        .await
+        .unwrap();
+
+    // NumberDataPoints payload should be absent since the only gauge data point was filtered out
+    assert!(
+        result.get(ArrowPayloadType::NumberDataPoints).is_none(),
+        "expected NumberDataPoints payload to be absent after filtering all gauge data points"
+    );
+
+    // HistogramDataPoints payload should still be present
+    assert!(
+        result.get(ArrowPayloadType::HistogramDataPoints).is_some(),
+        "expected HistogramDataPoints payload to be present"
+    );
+}
