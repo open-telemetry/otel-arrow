@@ -390,7 +390,7 @@ async fn credential_acquisition_obeys_connect_deadline() {
     let result = tokio::time::timeout(Duration::from_secs(2), adapter.validate_query(&query))
         .await
         .expect("adapter must enforce its own connect deadline");
-    assert_eq!(result, Err(Error::Deadline));
+    assert_eq!(result, Err(Error::ConnectTimeout));
     assert_eq!(started.elapsed(), Duration::from_secs(1));
     assert_eq!(acquisitions.get(), 1);
     assert_eq!(calls.connections.load(Ordering::Relaxed), 0);
@@ -420,7 +420,7 @@ async fn credentials_and_connector_share_one_deadline() {
     let result = tokio::time::timeout(Duration::from_secs(2), adapter.validate_query(&query))
         .await
         .expect("credential acquisition must not restart the connect deadline");
-    assert_eq!(result, Err(Error::Deadline));
+    assert_eq!(result, Err(Error::ConnectTimeout));
     assert_eq!(started.elapsed(), Duration::from_secs(1));
     assert_eq!(acquisitions.get(), 1);
     assert_eq!(connections.get(), 1);
@@ -503,8 +503,47 @@ fn driver_errors_are_redacted_and_retries_are_allowlisted() {
     assert!(SqlServerAdapter::<PendingConnector>::is_retryable(
         &Error::QueryTimeout
     ));
+    for kind in [
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::HostUnreachable,
+        io::ErrorKind::NetworkUnreachable,
+        io::ErrorKind::NetworkDown,
+    ] {
+        assert!(SqlServerAdapter::<PendingConnector>::is_retryable(
+            &Error::ConnectTransport(kind)
+        ));
+        assert!(!SqlServerAdapter::<PendingConnector>::is_retryable(
+            &Error::Transport(kind)
+        ));
+    }
+    for kind in [
+        io::ErrorKind::Other,
+        io::ErrorKind::NotFound,
+        io::Error::from_raw_os_error(i32::MAX).kind(),
+    ] {
+        assert!(SqlServerAdapter::<PendingConnector>::is_retryable(
+            &Error::NameResolution(kind)
+        ));
+        assert!(!SqlServerAdapter::<PendingConnector>::is_retryable(
+            &Error::ConnectTransport(kind)
+        ));
+        assert!(!SqlServerAdapter::<PendingConnector>::is_retryable(
+            &Error::Transport(kind)
+        ));
+    }
+    for kind in [
+        io::ErrorKind::InvalidInput,
+        io::ErrorKind::InvalidData,
+        io::ErrorKind::PermissionDenied,
+        io::ErrorKind::Unsupported,
+    ] {
+        assert!(!SqlServerAdapter::<PendingConnector>::is_retryable(
+            &Error::NameResolution(kind)
+        ));
+    }
     for error in [
         Error::Tls,
+        Error::TlsConfiguration,
         Error::Credentials,
         Error::Metadata,
         Error::Deadline,
@@ -527,6 +566,7 @@ struct ProtocolCalls {
     requests: AtomicUsize,
     checked_logins: AtomicUsize,
     resets: AtomicUsize,
+    checked_cursors: AtomicUsize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -553,6 +593,7 @@ struct ScriptedStream {
     fault: Option<ResponseFault>,
     delayed: Option<(Pin<Box<tokio::time::Sleep>>, Vec<u8>)>,
     reset: bool,
+    expected_cursor: Option<i64>,
 }
 
 impl AsyncRead for ScriptedStream {
@@ -610,6 +651,30 @@ impl AsyncWrite for ScriptedStream {
                 break;
             }
             let end = self.writing[1] & 1 != 0;
+            if let Some(cursor) = self.expected_cursor
+                && self.writing[0] == 3
+                && end
+            {
+                let describe = "sys.dm_exec_describe_first_result_set"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>();
+                if !self.writing[..length]
+                    .windows(describe.len())
+                    .any(|value| value == describe)
+                {
+                    // RPC parameter @P1, no flags, INTN(8), eight value bytes.
+                    let mut parameter = vec![3, b'@', 0, b'P', 0, b'1', 0, 0, 0x26, 8, 8];
+                    parameter.extend(cursor.to_le_bytes());
+                    assert!(
+                        self.writing[..length]
+                            .windows(parameter.len())
+                            .any(|value| value == parameter),
+                        "scalar fetch must bind the last durable cursor"
+                    );
+                    _ = self.calls.checked_cursors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             if self.writing[0] == 0x10
                 && let Some(expected) = self.expected_login.take()
             {
@@ -786,12 +851,32 @@ pub(super) fn rows_response(values: &[i64]) -> Vec<u8> {
     packet(body)
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ConnectStep {
+    Ready,
+    Fail(Error),
+    Stall,
+}
+
+#[derive(Clone, Copy, Default)]
+enum ConnectCleanup {
+    #[default]
+    Confirmed,
+    Failed,
+    Stalled,
+}
+
 struct FixtureConnector {
     sessions: VecDeque<Vec<Vec<u8>>>,
     calls: Arc<ProtocolCalls>,
     expected_credentials: VecDeque<BasicAuthCredential>,
     fault: Option<ResponseFault>,
-    connect_errors: VecDeque<Error>,
+    connect_steps: VecDeque<ConnectStep>,
+    connect_times: Rc<RefCell<Vec<tokio::time::Instant>>>,
+    cleanup_times: Rc<RefCell<Vec<tokio::time::Instant>>>,
+    connection_pending: bool,
+    connect_cleanup: Rc<Cell<ConnectCleanup>>,
+    expected_cursor: Option<i64>,
 }
 
 impl FixtureConnector {
@@ -801,7 +886,12 @@ impl FixtureConnector {
             calls: Arc::default(),
             expected_credentials: VecDeque::new(),
             fault: None,
-            connect_errors: VecDeque::new(),
+            connect_steps: VecDeque::new(),
+            connect_times: Rc::default(),
+            cleanup_times: Rc::default(),
+            connection_pending: false,
+            connect_cleanup: Rc::default(),
+            expected_cursor: None,
         }
     }
 }
@@ -815,8 +905,20 @@ impl SqlServerConnector for FixtureConnector {
         mut config: tiberius::Config,
     ) -> Result<tiberius::Client<Self::Stream>, Error> {
         _ = self.calls.connections.fetch_add(1, Ordering::Relaxed);
-        if let Some(error) = self.connect_errors.pop_front() {
-            return Err(error);
+        assert!(!self.connection_pending, "no overlapping connection work");
+        self.connect_times
+            .borrow_mut()
+            .push(tokio::time::Instant::now());
+        match self.connect_steps.pop_front().unwrap_or(ConnectStep::Ready) {
+            ConnectStep::Fail(error) => {
+                self.connection_pending = true;
+                return Err(error);
+            }
+            ConnectStep::Stall => {
+                self.connection_pending = true;
+                return futures::future::pending().await;
+            }
+            ConnectStep::Ready => {}
         }
         // Test-only login against in-memory bytes, not a production TLS connector.
         config.encryption(tiberius::EncryptionLevel::NotSupported);
@@ -834,10 +936,27 @@ impl SqlServerConnector for FixtureConnector {
                 fault: self.fault,
                 delayed: None,
                 reset: false,
+                expected_cursor: self.expected_cursor,
             },
         )
         .await
         .map_err(Error::from)
+    }
+
+    async fn shutdown(&mut self) -> Result<(), Error> {
+        if self.connection_pending {
+            match self.connect_cleanup.get() {
+                ConnectCleanup::Confirmed => {
+                    self.connection_pending = false;
+                    self.cleanup_times
+                        .borrow_mut()
+                        .push(tokio::time::Instant::now());
+                }
+                ConnectCleanup::Failed => return Err(Error::Driver),
+                ConnectCleanup::Stalled => return futures::future::pending().await,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1278,6 +1397,7 @@ async fn published_driver_contains_uncertain_cancellation() {
 struct CleanupFailureProbe {
     receiver: otel_arrow_dfe_scraper::DatabaseReceiver<SqlServerAdapter<FixtureConnector>>,
     expected: Error,
+    cleanup_failed: bool,
 }
 
 #[async_trait(?Send)]
@@ -1296,7 +1416,11 @@ impl local::Receiver<OtapPdata> for CleanupFailureProbe {
         let Err(error) = result else {
             panic!("cleanup cannot report success")
         };
-        assert!(error.to_string().contains("cleanup failed"), "{error}");
+        assert_eq!(
+            error.to_string().contains("cleanup failed"),
+            self.cleanup_failed,
+            "{error}"
+        );
         assert!(
             error.to_string().contains(&self.expected.to_string()),
             "{error}"
@@ -1344,6 +1468,7 @@ fn run_uncertain_response(directory: &std::path::Path, fault: ResponseFault) {
         CleanupFailureProbe {
             receiver,
             expected: uncertain_error(fault),
+            cleanup_failed: true,
         },
         test_node(runtime.config().name.clone()),
         Arc::new(NodeUserConfig::new_receiver_config(
@@ -1427,6 +1552,9 @@ fn shared_controller_quarantines_uncertain_driver_responses() {
             std::fs::create_dir(&directory).unwrap();
             run_uncertain_response(&directory, fault);
         }
+        let directory = std::path::PathBuf::from(&root).join("connection");
+        std::fs::create_dir(&directory).unwrap();
+        run_connection_failure(&directory, Error::Transport(io::ErrorKind::TimedOut), true);
         return;
     }
     // Quarantined real leases intentionally live until process exit; isolate them
@@ -1855,6 +1983,7 @@ enum SafeRecovery {
     ConnectReset,
     AcknowledgedReset,
     AcknowledgedPrefix,
+    ConnectFailure { step: ConnectStep, reconnect: bool },
 }
 
 struct SafeRecoveryProbe(
@@ -1869,7 +1998,7 @@ impl local::Receiver<OtapPdata> for SafeRecoveryProbe {
         effects: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         tokio::time::timeout(
-            Duration::from_secs(15),
+            Duration::from_secs(30),
             local::Receiver::start(Box::new(self.0), controls, effects),
         )
         .await
@@ -1926,6 +2055,7 @@ fn run_safe_recovery(case: SafeRecovery) {
 
     let prefix = matches!(case, SafeRecovery::AcknowledgedPrefix);
     let mut raw = raw_config(false, 4096);
+    raw["connection"]["connect_timeout"] = json!("1s");
     raw["query"]["catch_up"] = json!({"max_pages":if prefix { 3 } else { 1 }});
     if prefix {
         raw["query"]["max_rows_per_poll"] = json!(5);
@@ -1964,8 +2094,10 @@ fn run_safe_recovery(case: SafeRecovery) {
         SafeRecovery::ConnectReset => {
             let mut connector = FixtureConnector::new([recovered]);
             connector
-                .connect_errors
-                .push_back(Error::Transport(io::ErrorKind::ConnectionReset));
+                .connect_steps
+                .push_back(ConnectStep::Fail(Error::Transport(
+                    io::ErrorKind::ConnectionReset,
+                )));
             (connector, 5)
         }
         SafeRecovery::AcknowledgedReset => {
@@ -1986,8 +2118,26 @@ fn run_safe_recovery(case: SafeRecovery) {
             ]]),
             10,
         ),
+        SafeRecovery::ConnectFailure { step, reconnect } => {
+            let mut connector = if reconnect {
+                let (_, mut connector) = uncertain_response(ResponseFault::ResetOnceDuringRows);
+                connector.sessions.push_back(recovered);
+                connector
+            } else {
+                FixtureConnector::new([recovered])
+            };
+            connector.connect_steps = if reconnect {
+                VecDeque::from([ConnectStep::Ready, step, ConnectStep::Ready])
+            } else {
+                VecDeque::from([step, step, ConnectStep::Ready])
+            };
+            connector.expected_cursor = Some(7);
+            (connector, if reconnect { 11 } else { 5 })
+        }
     };
     let calls = Arc::clone(&connector.calls);
+    let connect_times = Rc::clone(&connector.connect_times);
+    let cleanup_times = Rc::clone(&connector.cleanup_times);
     let directory = tempfile::tempdir().unwrap();
     let store = CheckpointStore::new(
         directory.path(),
@@ -2034,7 +2184,7 @@ fn run_safe_recovery(case: SafeRecovery) {
             };
             let mut committed = previous;
             for ids in expected_pages {
-                let data = tokio::time::timeout(Duration::from_secs(8), ctx.recv())
+                let data = tokio::time::timeout(Duration::from_secs(20), ctx.recv())
                     .await
                     .expect("safe recovery emits")
                     .expect("row page");
@@ -2043,6 +2193,10 @@ fn run_safe_recovery(case: SafeRecovery) {
                     checkpoint.read().unwrap(),
                     Some(committed.clone()),
                     "{case:?}: failed operation and unacknowledged page cannot advance progress"
+                );
+                assert!(
+                    SourceBinding::acquire(checkpoint.clone()).is_err(),
+                    "ownership stays held through recovery and downstream ACK"
                 );
                 let (_, ack) = next_ack(AckMsg::new(data)).unwrap();
                 ctx.send_control_msg(NodeControlMsg::Ack(ack))
@@ -2067,7 +2221,13 @@ fn run_safe_recovery(case: SafeRecovery) {
         });
     assert_eq!(
         calls.connections.load(Ordering::Relaxed),
-        if prefix { 1 } else { 2 }
+        if prefix {
+            1
+        } else if matches!(case, SafeRecovery::ConnectFailure { .. }) {
+            3
+        } else {
+            2
+        }
     );
     assert_eq!(
         calls.requests.load(Ordering::Relaxed),
@@ -2076,6 +2236,28 @@ fn run_safe_recovery(case: SafeRecovery) {
     );
     if matches!(case, SafeRecovery::AcknowledgedReset) {
         assert_eq!(calls.resets.load(Ordering::Relaxed), 1);
+    }
+    if let SafeRecovery::ConnectFailure { reconnect, .. } = case {
+        assert_eq!(
+            calls.checked_cursors.load(Ordering::Relaxed),
+            if reconnect { 2 } else { 1 }
+        );
+        assert_eq!(calls.resets.load(Ordering::Relaxed), usize::from(reconnect));
+        let times = connect_times.borrow();
+        let cleanup = cleanup_times.borrow();
+        assert_eq!(cleanup.len(), if reconnect { 1 } else { 2 });
+        if reconnect {
+            assert!(times[1].duration_since(times[0]) >= Duration::from_secs(1));
+            assert!(times[2].duration_since(cleanup[0]) >= Duration::from_secs(2));
+        } else {
+            for index in 0..2 {
+                assert!(
+                    times[index + 1].duration_since(cleanup[index])
+                        >= Duration::from_secs(1 << index),
+                    "controller backoff starts only after confirmed connection cleanup"
+                );
+            }
+        }
     }
     drop(SourceBinding::acquire(store).expect("confirmed shutdown releases ownership"));
 }
@@ -2098,6 +2280,179 @@ fn shared_controller_recovers_safe_transport_failures() {
     }
 }
 
+fn transient_connect_steps() -> [ConnectStep; 7] {
+    [
+        ConnectStep::Stall,
+        ConnectStep::Fail(Error::Transport(io::ErrorKind::TimedOut)),
+        ConnectStep::Fail(Error::Transport(io::ErrorKind::HostUnreachable)),
+        ConnectStep::Fail(Error::Transport(io::ErrorKind::NetworkUnreachable)),
+        ConnectStep::Fail(Error::Transport(io::ErrorKind::NetworkDown)),
+        ConnectStep::Fail(Error::NameResolution(io::ErrorKind::Other)),
+        ConnectStep::Fail(Error::NameResolution(
+            io::Error::from_raw_os_error(i32::MAX).kind(),
+        )),
+    ]
+}
+
+fn run_connection_failure(directory: &std::path::Path, error: Error, cleanup_failed: bool) {
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::{
+        memory_limiter::{LocalReceiverAdmissionState, MemoryPressureState},
+        receiver::ReceiverWrapper,
+        testing::{receiver::TestRuntime, test_node},
+    };
+    use otel_arrow_dfe_scraper::{CheckpointStore, DatabaseReceiver, SourceBinding};
+    let config = config(false);
+    let query = config.query().clone();
+    let mut connector = FixtureConnector::new([]);
+    connector.connect_steps.push_back(ConnectStep::Fail(error));
+    if cleanup_failed {
+        connector.connect_cleanup.set(ConnectCleanup::Failed);
+    }
+    let calls = Arc::clone(&connector.calls);
+    let store = CheckpointStore::new(
+        directory,
+        "group",
+        "pipeline",
+        "connection",
+        "events",
+        config.config_fingerprint().to_owned(),
+    );
+    let source = SourceBinding::acquire(store.clone()).unwrap();
+    let previous = store
+        .write(0, &Cursor::Scalar(ScalarValue::Int64(7)))
+        .unwrap()
+        .0;
+    let receiver = DatabaseReceiver::new(
+        SqlServerAdapter::new(config, connector, Box::new(Credentials)),
+        query,
+        source,
+        Duration::from_millis(1),
+        5,
+        LocalReceiverAdmissionState::from_process_state(&MemoryPressureState::default()),
+        None,
+    );
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let wrapper = ReceiverWrapper::local(
+        CleanupFailureProbe {
+            receiver,
+            expected: if cleanup_failed { Error::Driver } else { error },
+            cleanup_failed,
+        },
+        test_node(runtime.config().name.clone()),
+        Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:sql_server_test",
+        )),
+        runtime.config(),
+    );
+    runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(|mut ctx| async move {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(8), ctx.recv())
+                    .await
+                    .unwrap()
+                    .is_err(),
+                "failed connections cannot emit"
+            );
+        });
+    assert_eq!(store.read().unwrap(), Some(previous));
+    assert_eq!(calls.connections.load(Ordering::Relaxed), 1, "no reconnect");
+    assert_eq!(calls.requests.load(Ordering::Relaxed), 0, "no SQL");
+    if cleanup_failed {
+        assert!(
+            SourceBinding::acquire(store).is_err(),
+            "ownership stays quarantined"
+        );
+    } else {
+        drop(SourceBinding::acquire(store).expect("confirmed cleanup releases ownership"));
+    }
+}
+
+/// Scenario: Connection setup returns certificate/configuration/credential failures or known invalid resolver input.
+/// Guarantees: The controller terminates without retry, SQL, output, or checkpoint movement after confirmed cleanup.
+#[test]
+fn shared_controller_connection_policy_keeps_permanent_failures_terminal() {
+    for error in [
+        Error::Tls,
+        Error::TlsConfiguration,
+        Error::Credentials,
+        Error::NameResolution(io::ErrorKind::InvalidInput),
+        Error::NameResolution(io::ErrorKind::PermissionDenied),
+        Error::ConnectTransport(io::ErrorKind::Other),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        run_connection_failure(directory.path(), error, false);
+    }
+}
+
+/// Scenario: Initial connections repeatedly time out or fail on unreachable networks or unresolved DNS causes.
+/// Guarantees: One controller backs off after confirmed cleanup, revalidates, emits saved-cursor rows, and commits only on ACK.
+#[test]
+fn shared_controller_recovers_transient_initial_connections() {
+    // Real checkpoint-worker I/O requires real time; timestamps assert minimum
+    // backoff, never an upper performance bound or scheduler ordering.
+    for step in transient_connect_steps() {
+        run_safe_recovery(SafeRecovery::ConnectFailure {
+            step,
+            reconnect: false,
+        });
+    }
+}
+
+/// Scenario: A streaming reset with acknowledged cleanup starts recovery, but reconnect suffers a transient outage.
+/// Guarantees: Backoff grows across phases and recovery revalidates without partial output or premature durable progress.
+#[test]
+fn shared_controller_recovers_transient_reconnect_failures() {
+    for step in transient_connect_steps() {
+        run_safe_recovery(SafeRecovery::ConnectFailure {
+            step,
+            reconnect: true,
+        });
+    }
+}
+
+/// Scenario: A retryable connection failure leaves a worker whose cleanup fails or never acknowledges completion.
+/// Guarantees: The adapter returns a terminal error, blocks every reuse path, and retains uncertainty for shutdown.
+#[tokio::test(start_paused = true)]
+async fn connection_retry_requires_confirmed_cleanup() {
+    for cleanup in [ConnectCleanup::Failed, ConnectCleanup::Stalled] {
+        for step in [
+            ConnectStep::Stall,
+            ConnectStep::Fail(Error::Transport(io::ErrorKind::TimedOut)),
+        ] {
+            let config = config(false);
+            let query = config.query().clone();
+            let mut connector = FixtureConnector::new([]);
+            connector.connect_steps.push_back(step);
+            connector.connect_cleanup.set(cleanup);
+            let cleanup_state = Rc::clone(&connector.connect_cleanup);
+            let calls = Arc::clone(&connector.calls);
+            let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+            _ = adapter.begin_operation().unwrap();
+            assert_eq!(adapter.validate_query(&query).await, Err(Error::Driver));
+            assert!(!SqlServerAdapter::<FixtureConnector>::is_retryable(
+                &Error::Driver
+            ));
+            assert!(adapter.begin_operation().is_err());
+            assert_eq!(adapter.reconnect(&query).await, Err(Error::NotValidated));
+            assert_eq!(
+                adapter.validate_query(&query).await,
+                Err(Error::NotValidated)
+            );
+            assert_eq!(
+                adapter.execute(&query, &query.watermark().initial()).await,
+                Err(Error::NotValidated)
+            );
+            // Even a later exit cannot erase the earlier unconfirmed state.
+            cleanup_state.set(ConnectCleanup::Confirmed);
+            assert_eq!(adapter.shutdown().await, Err(Error::Driver));
+            assert_eq!(calls.connections.load(Ordering::Relaxed), 1);
+            assert_eq!(calls.requests.load(Ordering::Relaxed), 0);
+        }
+    }
+}
 /// Scenario: A byte-limited page is acknowledged by both server cancellation and downstream delivery.
 /// Guarantees: The same logged-in session emits consecutive nonoverlapping cursor rows with freshly validated metadata.
 #[test]

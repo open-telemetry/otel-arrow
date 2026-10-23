@@ -343,11 +343,30 @@ validation before the next fetch and a new cancellation generation.
 
 The shared controller retries a metadata/fetch timeout only after the server
 acknowledges cancellation. The adapter returns a distinct `QueryTimeout` in
-this case; the generic `Deadline` remains terminal for credential/connection
-timeouts and other unconfirmed deadlines. Retry uses shared bounded backoff,
-reconnects, revalidates metadata, and resumes at the last durable cursor.
+this case; other unconfirmed query deadlines remain terminal. Retry uses shared
+bounded backoff, reconnects, revalidates metadata, and resumes at the last
+durable cursor.
 Neither the failed operation nor its retry advances the checkpoint before a
 downstream ACK.
+
+Initial connections and reconnects use the same recovery loop for the total
+credential/connection deadline, socket timeouts, unavailable hosts/networks,
+and allowlisted connection resets/refusals. DNS failures also retry, including
+unclassified OS resolver causes: the platform can erase temporary resolver
+failures into a generic I/O category. This fallback applies only to name
+resolution, not arbitrary socket, TLS, or query errors. Known invalid-input,
+permission, and unsupported resolver errors remain terminal. An unresolvable
+but syntactically valid hostname can therefore keep retrying until DNS or the
+configuration is corrected. Invalid configuration, unusable credentials,
+certificate/identity/expiry failures, and unclassified TLS errors stay terminal.
+
+Each failed connection attempt must confirm owned-worker shutdown within one
+second before it can enter backoff. Failed or unconfirmed cleanup blocks
+reconnect and keeps source ownership quarantined; it never admits a second
+worker. Dropping setup also blocks reuse until shutdown confirms completion.
+Retry delays start at one second, double to a 30-second cap,
+and reset after a successful poll. Recovery revalidates the query and preserves
+the last durably acknowledged cursor, with the same at-least-once semantics.
 
 Transport errors are retryable only when there is no outstanding submitted
 response, or when ATTENTION has explicitly confirmed completion. An established

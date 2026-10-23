@@ -221,7 +221,10 @@ async fn establish(
     // acknowledge exit while an orphaned DNS task is still outstanding.
     let addresses = (host.as_str(), port)
         .to_socket_addrs()
-        .map_err(|error| Error::Transport(error.kind()))?;
+        .map_err(|error| Error::NameResolution(error.kind()))?;
+    if addresses.as_slice().is_empty() {
+        return Err(Error::NameResolution(io::ErrorKind::NotFound));
+    }
     let stream = TcpStream::connect(addresses.as_slice())
         .await
         .map_err(|error| Error::Transport(error.kind()))?;
@@ -266,6 +269,21 @@ mod tests {
         };
         assert_eq!(connector.shutdown().await, Err(Error::Driver));
         assert_eq!(connector.shutdown().await, Err(Error::Driver));
+        let endpoint: SqlServerConnectionConfig = serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1", "database":"fixture"
+        }))
+        .unwrap();
+        assert_eq!(
+            connector
+                .connect(&endpoint, Config::new())
+                .await
+                .unwrap_err(),
+            Error::Driver,
+        );
+        assert!(
+            connector.worker.is_none(),
+            "failed cleanup cannot spawn a replacement"
+        );
     }
 
     /// Scenario: A TCP peer accepts the handshake but never answers prelogin.
@@ -312,7 +330,7 @@ mod tests {
 
     /// Scenario: A cancelled worker has not yet acknowledged exit and shutdown is interrupted.
     /// Guarantees: Cleanup retains that worker until acknowledgement, without admitting another job.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn interrupted_shutdown_retains_worker_until_confirmed() {
         let (cancel, cancelled) = watch::channel(false);
         let (acknowledge, exited) = oneshot::channel();
@@ -327,6 +345,19 @@ mod tests {
         );
         assert!(*cancelled.borrow());
         assert!(connector.worker.is_some());
+        let endpoint: SqlServerConnectionConfig = serde_json::from_value(serde_json::json!({
+            "host":"127.0.0.1", "database":"fixture"
+        }))
+        .unwrap();
+        {
+            let attempt = connector.connect(&endpoint, Config::new());
+            tokio::pin!(attempt);
+            assert!(futures::poll!(&mut attempt).is_pending());
+        }
+        assert!(
+            connector.worker.is_some(),
+            "replacement waits for the original worker"
+        );
         acknowledge.send(()).unwrap();
         connector.shutdown().await.unwrap();
         assert!(connector.worker.is_none());
