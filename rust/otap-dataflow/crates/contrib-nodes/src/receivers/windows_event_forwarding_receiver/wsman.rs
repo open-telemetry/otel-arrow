@@ -138,6 +138,11 @@ pub struct Envelope<'input> {
 impl<'input> Envelope<'input> {
     /// Parse a bounded envelope with exactly one Header followed by one Body.
     ///
+    /// `max_bytes` bounds input size independently of `max_nodes`, which bounds
+    /// arena entries (elements, text nodes, and comment/PI placeholders).
+    /// Header blocks must be namespace-qualified. Envelope, Header, and Body
+    /// may contain only XML whitespace between their child elements.
+    ///
     /// DTDs are disabled. Required WS-Addressing Action and MessageID headers
     /// must be unique, nonempty scalar elements. Action-specific body and
     /// mustUnderstand checks are left to the future dispatcher; this parser
@@ -147,11 +152,11 @@ impl<'input> Envelope<'input> {
     ///
     /// Rejects oversized input, invalid XML, unexpected envelope structure, and
     /// missing, duplicate, nested, or empty required addressing headers.
-    pub fn parse(xml: &'input str, max_bytes: usize) -> Result<Self, Error> {
+    pub fn parse(xml: &'input str, max_bytes: usize, max_nodes: usize) -> Result<Self, Error> {
         if xml.len() > max_bytes {
             return Err(Error::TooLarge);
         }
-        let document = Document::parse_bounded(xml, max_bytes)?;
+        let document = Document::parse_bounded(xml, max_nodes)?;
         let root = document.root_element();
         if !root.has_tag_name((SOAP, "Envelope")) {
             return Err(Error::InvalidEnvelope("expected SOAP 1.2 Envelope"));
@@ -162,17 +167,27 @@ impl<'input> Envelope<'input> {
                 .next()
                 .filter(|node| node.has_tag_name((SOAP, "Header")))
                 .ok_or(Error::InvalidEnvelope("expected Header"))?;
-            let _body = elements
+            let body = elements
                 .next()
                 .filter(|node| node.has_tag_name((SOAP, "Body")))
                 .ok_or(Error::InvalidEnvelope("expected Body"))?;
             if elements.next().is_some() || has_non_whitespace_text(root) {
                 return Err(Error::InvalidEnvelope("unexpected Envelope content"));
             }
+            if has_non_whitespace_text(body) {
+                return Err(Error::InvalidEnvelope("unexpected Body content"));
+            }
             header
         };
         if has_non_whitespace_text(header) {
             return Err(Error::InvalidEnvelope("unexpected Header content"));
+        }
+        if header
+            .children()
+            .filter(Node::is_element)
+            .any(|node| node.tag_name().namespace().is_none())
+        {
+            return Err(Error::InvalidEnvelope("unqualified Header block"));
         }
         let action = addressing_header(header, "Action")?;
         let message_id = addressing_header(header, "MessageID")?;
@@ -244,6 +259,8 @@ fn scalar_text(element: Node<'_, '_>, name: &'static str) -> Result<String, Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MAX_TEST_NODES: usize = 64;
 
     const XML: &str = r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
 xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
@@ -322,7 +339,7 @@ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
                 };
                 let decoded = decode_body(&bytes, encoding, bytes.len()).unwrap();
                 assert_eq!(decoded, xml);
-                let envelope = Envelope::parse(&decoded, decoded.len()).unwrap();
+                let envelope = Envelope::parse(&decoded, decoded.len(), MAX_TEST_NODES).unwrap();
                 assert_eq!(envelope.action(), "urn:test:Events");
                 assert_eq!(envelope.message_id(), "uuid:AbC-123");
                 assert_eq!(
@@ -362,12 +379,12 @@ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
             assert_eq!(decode_body(&[], encoding, 0).unwrap(), "");
         }
         assert_eq!(decode_body(&[], Encoding::Utf8, 0).unwrap(), "");
-        assert!(Envelope::parse(XML, XML.len()).is_ok());
+        assert!(Envelope::parse(XML, XML.len(), MAX_TEST_NODES).is_ok());
         assert!(matches!(
-            Envelope::parse(XML, XML.len() - 1),
+            Envelope::parse(XML, XML.len() - 1, MAX_TEST_NODES),
             Err(Error::TooLarge)
         ));
-        assert!(Envelope::parse("", 0).is_err());
+        assert!(Envelope::parse("", 0, MAX_TEST_NODES).is_err());
     }
 
     /// Scenario: text contains invalid UTF-8, odd UTF-16, unpaired surrogates, or opposite BOMs.
@@ -417,7 +434,7 @@ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
         ] {
             assert!(
                 matches!(
-                    Envelope::parse(&xml, xml.len()),
+                    Envelope::parse(&xml, xml.len(), MAX_TEST_NODES),
                     Err(Error::InvalidEnvelope(_))
                 ),
                 "accepted {xml}"
@@ -436,7 +453,7 @@ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
                 let xml = XML.replace(&field, &replacement);
                 assert!(
                     matches!(
-                        Envelope::parse(&xml, xml.len()),
+                        Envelope::parse(&xml, xml.len(), MAX_TEST_NODES),
                         Err(Error::InvalidEnvelope(_))
                     ),
                     "accepted {xml}"
@@ -461,14 +478,16 @@ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
                 " uuid:AbC<!--comment--><![CDATA[-]]>&#49;23 ",
             )
             .replace("urn:test:Events", " urn:test:Events ");
-        let envelope = Envelope::parse(&xml, xml.len()).unwrap();
+        let envelope = Envelope::parse(&xml, xml.len(), MAX_TEST_NODES).unwrap();
         assert_eq!(envelope.action(), " urn:test:Events ");
         assert_eq!(envelope.message_id(), " uuid:AbC-123 ");
         let default_namespace = XML
             .replace("xmlns:s=", "xmlns=")
             .replace("<s:", "<")
             .replace("</s:", "</");
-        assert!(Envelope::parse(&default_namespace, default_namespace.len()).is_ok());
+        assert!(
+            Envelope::parse(&default_namespace, default_namespace.len(), MAX_TEST_NODES).is_ok()
+        );
     }
 
     /// Scenario: input contains malformed XML, a DTD, unknown entities, or multiple roots.
@@ -483,9 +502,84 @@ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
             "<broken".into(),
         ] {
             assert!(
-                matches!(Envelope::parse(&xml, xml.len()), Err(Error::InvalidXml(_))),
+                matches!(
+                    Envelope::parse(&xml, xml.len(), MAX_TEST_NODES),
+                    Err(Error::InvalidXml(_))
+                ),
                 "accepted {xml}"
             );
         }
+    }
+
+    /// Scenario: a valid envelope contains direct Body text, including CDATA or character references.
+    /// Guarantees: only XML whitespace is allowed between Body elements; payload text stays valid.
+    #[test]
+    fn rejects_direct_body_text() {
+        for content in ["unexpected", "<![CDATA[unexpected]]>", "&#160;"] {
+            let xml = XML.replace("<s:Body>", &format!("<s:Body>{content}"));
+            assert!(matches!(
+                Envelope::parse(&xml, xml.len(), MAX_TEST_NODES),
+                Err(Error::InvalidEnvelope("unexpected Body content"))
+            ));
+        }
+        let xml = XML.replace("<s:Body>", "<s:Body> \t\r\n<!--comment-->");
+        let envelope = Envelope::parse(&xml, xml.len(), MAX_TEST_NODES).unwrap();
+        assert_eq!(
+            envelope.body().first_element_child().unwrap().text(),
+            Some("<Event>example</Event>")
+        );
+    }
+
+    /// Scenario: an extra header block is unqualified despite valid Action and MessageID fields.
+    /// Guarantees: unqualified blocks fail, while prefixed and default-namespace blocks remain valid.
+    #[test]
+    fn requires_qualified_header_blocks() {
+        for block in ["<Extra/>", "<Extra xmlns=''/>"] {
+            let xml = XML.replace("</s:Header>", &format!("{block}</s:Header>"));
+            assert!(matches!(
+                Envelope::parse(&xml, xml.len(), MAX_TEST_NODES),
+                Err(Error::InvalidEnvelope("unqualified Header block"))
+            ));
+        }
+        for block in [
+            "<e:Extra xmlns:e='urn:extension'/>",
+            "<Extra xmlns='urn:extension'/>",
+        ] {
+            let xml = XML.replace("</s:Header>", &format!("{block}</s:Header>"));
+            assert!(Envelope::parse(&xml, xml.len(), MAX_TEST_NODES).is_ok());
+        }
+    }
+
+    /// Scenario: comment padding exhausts the node budget while input remains below the byte limit.
+    /// Guarantees: node limits are independent, accept equality, and reject one extra node or zero capacity.
+    #[test]
+    fn enforces_independent_node_limit() {
+        // Five elements and two scalar text nodes, with no inter-element whitespace.
+        let base = format!(
+            "<s:Envelope xmlns:s='{SOAP}' xmlns:a='{ADDRESSING}'><s:Header>\
+                 <a:Action>urn:test</a:Action><a:MessageID>id</a:MessageID>\
+                 </s:Header><s:Body/></s:Envelope>"
+        );
+        let max_nodes = 10;
+        let max_bytes = 1024;
+        assert!(Envelope::parse(&base, max_bytes, 7).is_ok());
+        assert!(matches!(
+            Envelope::parse(&base, max_bytes, 0),
+            Err(Error::InvalidXml(crate::common::xml::Error::Invalid(
+                "node limit exceeded"
+            )))
+        ));
+        let at_limit = base.replace("<s:Body/>", "<s:Body><!--1--><!--2--><!--3--></s:Body>");
+        assert!(at_limit.len() < max_bytes);
+        assert!(Envelope::parse(&at_limit, max_bytes, max_nodes).is_ok());
+        let over_limit = at_limit.replace("</s:Body>", "<!--4--></s:Body>");
+        assert!(over_limit.len() < max_bytes);
+        assert!(matches!(
+            Envelope::parse(&over_limit, max_bytes, max_nodes),
+            Err(Error::InvalidXml(crate::common::xml::Error::Invalid(
+                "node limit exceeded"
+            )))
+        ));
+        assert!(Envelope::parse(&over_limit, max_bytes, max_nodes + 1).is_ok());
     }
 }
