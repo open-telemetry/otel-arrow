@@ -84,7 +84,7 @@ class OwnerCoverageTests(unittest.TestCase):
             self.files(self.receiver, self.exporter), author="ALICE"
         )
         self.assertEqual(state, "failure")
-        self.assertEqual(description, "Owner coverage missing: exporters/sink")
+        self.assertEqual(description, "Snapshot may be stale; owner coverage missing: exporters/sink")
         self.assertIn(f"`{self.receiver}`: owner coverage author @alice.", summary)
         self.assertIn(f"`{self.exporter}`: owner coverage missing.", summary)
 
@@ -100,6 +100,8 @@ class OwnerCoverageTests(unittest.TestCase):
             files, [self.review("BOB")], author="Alice"
         )
         self.assertEqual(state, "success")
+        self.assertIn("later reviews are not reflected until the next refresh", summary)
+        self.assertIn("merging or rebasing main and pushing", summary)
         self.assertIn("author @alice", summary)
         self.assertIn("approved by @bob", summary)
         self.assertEqual(
@@ -152,7 +154,7 @@ class OwnerCoverageTests(unittest.TestCase):
                     self.files(extension), author="Alice"
                 )
                 self.assertEqual(state, "error")
-                self.assertEqual(description, "Owner coverage unknown: extensions/auth")
+                self.assertEqual(description, "Snapshot may be stale; owner coverage unknown: extensions/auth")
                 self.assertIn("ownership unavailable", summary)
 
         unknown = f"{self.receiver}-unknown"
@@ -160,7 +162,7 @@ class OwnerCoverageTests(unittest.TestCase):
             self.files(self.exporter, unknown)
         )
         self.assertEqual(state, "error")
-        self.assertEqual(description, "Owner coverage unknown: receivers/source-unknown")
+        self.assertEqual(description, "Snapshot may be stale; owner coverage unknown: receivers/source-unknown")
         self.assertIn(f"`{self.exporter}`: owner coverage missing.", summary)
 
     # Scenario: A rename crosses owners while other changes touch only core paths.
@@ -267,7 +269,7 @@ class OwnerCoverageTests(unittest.TestCase):
             with self.subTest(files=files):
                 state, description, _ = self.report(files, author="Alice")
                 self.assertEqual(state, "error")
-                self.assertEqual(description, "Owner coverage unknown: receivers/new")
+                self.assertEqual(description, "Snapshot may be stale; owner coverage unknown: receivers/new")
 
     # Scenario: Changes affect shared source/benchmark helpers, registration, or category docs.
     # Guarantees: Shared paths are not misidentified as individual nodes or extensions.
@@ -293,21 +295,21 @@ class OwnerCoverageTests(unittest.TestCase):
     def test_description_limit_and_full_summary(self):
         for issue in ("missing", "unknown"):
             with self.subTest(issue=issue):
-                prefix = f"Owner coverage {issue}: "
+                prefix = f"Snapshot may be stale; owner coverage {issue}: "
                 name = "x" * (140 - len(prefix))
                 self.assertEqual(
                     reporter.coverage_description(issue, [name]), prefix + name
                 )
                 self.assertEqual(
                     reporter.coverage_description(issue, [name + "x"]),
-                    f"Owner coverage {issue} for 1 component(s)",
+                    f"Snapshot may be stale; owner coverage {issue} for 1 component(s)",
                 )
 
         directory = f"{self.exporter}-" + "x" * 130
         self.write_owners(directory, ["Bob"])
         state, description, summary = self.report(self.files(directory))
         self.assertEqual(state, "failure")
-        self.assertEqual(description, "Owner coverage missing for 1 component(s)")
+        self.assertEqual(description, "Snapshot may be stale; owner coverage missing for 1 component(s)")
         self.assertIn(f"`{directory}`", summary)
 
     # Scenario: GitHub's file list does not contain all files declared by the PR.
@@ -316,6 +318,22 @@ class OwnerCoverageTests(unittest.TestCase):
         files = self.files(self.receiver, self.exporter)
         with self.assertRaisesRegex(ValueError, "complete PR file list"):
             reporter.owner_report(self.pull(files), files[:1], [], self.root)
+
+    # Scenario: Coverage is refreshed by a PR update or an explicit maintainer dispatch.
+    # Guarantees: Both supported triggers resolve the PR; removed review bridges are rejected.
+    def test_refresh_events_resolve_pull_number(self):
+        cases = (
+            ("pull_request_target", {"pull_request": {"number": 42}}),
+            ("workflow_dispatch", {"inputs": {"pull_request_number": "42"}}),
+        )
+        for event_name, event in cases:
+            with self.subTest(event_name=event_name):
+                self.assertEqual(reporter.pull_number(event_name, event), 42)
+        with self.assertRaisesRegex(ValueError, "Unsupported event"):
+            reporter.pull_number(
+                "workflow_run",
+                {"workflow_run": {"display_title": "Owner reviews for PR #42"}},
+            )
 
     # Scenario: Reporting finds coverage, missing coverage, or an API failure.
     # Guarantees: Red coverage remains advisory; API failure publishes error and fails the run, with no real requests.

@@ -10,8 +10,9 @@ This directory contains the repository's main CI workflows:
 - [`changelog.yml`](changelog.yml): Changelog validation.
 - [`owner-coverage.yml`](owner-coverage.yml): Advisory contrib-owner coverage
   through owner-authorship or approval; red when missing, but not required.
-  Review events arrive through the
-  unprivileged [`owner-coverage-events.yml`](owner-coverage-events.yml) workflow.
+  Snapshots refresh on PR updates or write-access manual dispatch, not reviews.
+  Keeping branches current with `main` is good practice; pushing the resulting
+  commits also refreshes coverage. See [owner coverage](../../CODE_REVIEW.md#advisory-owner-coverage).
 - [`post-merge-actions.yml`](post-merge-actions.yml): Shared Rust cache warming.
 
 ## Event model
