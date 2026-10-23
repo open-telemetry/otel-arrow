@@ -355,14 +355,14 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(
             consts::RESOURCE,
             DataType::Struct(RESOURCE_TEMPLATE_FIELDS.clone()),
-            false,
+            true,
         ),
         Field::new(
             consts::SCOPE,
             DataType::Struct(SCOPE_TEMPLATE_FIELDS.clone()),
             true,
         ),
-        Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+        Field::new(consts::SCHEMA_URL, DataType::Utf8, true),
         Field::new(
             consts::TIME_UNIX_NANO,
             DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
@@ -390,13 +390,13 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             ])),
             true,
         ),
-        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
         // NULL when the source omits it. The OTAP schema marks this as
         // Dictionary(UInt8, Utf8), but the transform preserves an incoming dictionary column if
         // present (see `test_keeps_original_datatype_for_dicts`), and the Parquet writer may
         // dictionary-encode it at write time depending on its settings/heuristics.
         Field::new(consts::EVENT_NAME, DataType::Utf8, true),
-        Field::new(consts::FLAGS, DataType::UInt32, false),
+        Field::new(consts::FLAGS, DataType::UInt32, true),
     ])
 });
 
@@ -411,21 +411,22 @@ static METRICS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(
             consts::SCOPE,
             DataType::Struct(SCOPE_TEMPLATE_FIELDS.clone()),
-            false,
+            true,
         ),
-        Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+        Field::new(consts::SCHEMA_URL, DataType::Utf8, true),
         Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
         Field::new(consts::NAME, DataType::Utf8, false),
-        Field::new(consts::DESCRIPTION, DataType::Utf8, false),
-        Field::new(consts::UNIT, DataType::Utf8, false),
+        Field::new(consts::DESCRIPTION, DataType::Utf8, true),
+        Field::new(consts::UNIT, DataType::Utf8, true),
         Field::new(consts::AGGREGATION_TEMPORALITY, DataType::Int32, true),
+        Field::new(consts::IS_MONOTONIC, DataType::Boolean, true),
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
     ])
 });
 
 static NUMBERS_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
     Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::ID, DataType::UInt32, true),
         Field::new(consts::PARENT_ID, DataType::UInt16, false),
         Field::new(
             consts::START_TIME_UNIX_NANO,
@@ -526,6 +527,11 @@ static EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
         Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
         Field::new(
+            consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
+            DataType::Float64,
+            true,
+        ),
+        Field::new(
             consts::EXP_HISTOGRAM_POSITIVE,
             DataType::Struct(Fields::from(vec![
                 Field::new(consts::EXP_HISTOGRAM_OFFSET, DataType::Int32, false),
@@ -564,8 +570,9 @@ static EXEMPLAR_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
-        Field::new(consts::INT_VALUE, DataType::Int64, false),
-        Field::new(consts::DOUBLE_VALUE, DataType::Int64, false),
+        // An exemplar holds either an int or a double value, so the other column is NULL.
+        Field::new(consts::INT_VALUE, DataType::Int64, true),
+        Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
         Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), true),
         Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
     ])
@@ -604,6 +611,7 @@ static SPANS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
         Field::new(consts::DROPPED_EVENTS_COUNT, DataType::UInt32, true),
         Field::new(consts::DROPPED_LINKS_COUNT, DataType::UInt32, true),
+        Field::new(consts::FLAGS, DataType::UInt32, true),
         Field::new(
             consts::STATUS,
             DataType::Struct(Fields::from(vec![
@@ -637,6 +645,7 @@ static SPAN_LINKS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), true),
         Field::new(consts::TRACE_STATE, DataType::Utf8, true),
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+        Field::new(consts::FLAGS, DataType::UInt32, true),
     ])
 });
 
@@ -675,6 +684,8 @@ mod test {
         array::{DictionaryArray, RecordBatch, RecordBatchOptions, UInt16Array},
         datatypes::UInt8Type,
     };
+    use otel_arrow_dfe_pdata::schema::payloads;
+    use otel_arrow_dfe_pdata::schema::schema::DataType as SpecDataType;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -693,7 +704,7 @@ mod test {
                 ),
                 // add the ID column after the scope column to ensure it correct the column order
                 Field::new(consts::ID, DataType::UInt16, false),
-                // "resource" is missing, so we should insert a new non-nullable struct
+                // "resource" is missing, so we should insert a new all-null struct
                 // also the other columns are missing, so we assert the default/null values are add
             ])),
             vec![
@@ -744,14 +755,14 @@ mod test {
                 Field::new(
                     consts::RESOURCE,
                     DataType::Struct(expected_resource_fields.clone()),
-                    false,
+                    true,
                 ),
                 Field::new(
                     consts::SCOPE,
                     DataType::Struct(expected_scope_fields.clone()),
                     false,
                 ),
-                Field::new(consts::SCHEMA_URL, DataType::Utf8, false),
+                Field::new(consts::SCHEMA_URL, DataType::Utf8, true),
                 Field::new(
                     consts::TIME_UNIX_NANO,
                     DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
@@ -771,9 +782,9 @@ mod test {
                     DataType::Struct(expected_body_fields.clone()),
                     true,
                 ),
-                Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
+                Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
                 Field::new(consts::EVENT_NAME, DataType::Utf8, true),
-                Field::new(consts::FLAGS, DataType::UInt32, false),
+                Field::new(consts::FLAGS, DataType::UInt32, true),
             ])),
             vec![
                 // ensure it kept the original IDs column:
@@ -785,8 +796,8 @@ mod test {
                         Arc::new(StringArray::new_null(3)),
                         Arc::new(UInt32Array::new_null(3)),
                     ],
-                    // ensure that for non-null structs, it creates an all valid null buffer
-                    Some(NullBuffer::new_valid(3)),
+                    // expect that for nullable structs, it creates a null buffer of all nulls
+                    Some(NullBuffer::new_null(3)),
                 )),
                 Arc::new(StructArray::new(
                     expected_scope_fields.clone(),
@@ -799,7 +810,7 @@ mod test {
                     ],
                     Some(NullBuffer::new_valid(3)),
                 )),
-                Arc::new(StringArray::from_iter_values(repeat_n("", 3))),
+                Arc::new(StringArray::new_null(3)),
                 Arc::new(
                     TimestampNanosecondArray::from_iter_values(repeat_n(0, 3))
                         .with_timezone(UTC_TIME_ZONE),
@@ -826,14 +837,46 @@ mod test {
                     // expect that for nullable structs, it creates a null buffer of all nulls
                     Some(NullBuffer::new_null(3)),
                 )),
-                Arc::new(UInt32Array::from_iter_values(repeat_n(0, 3))),
+                Arc::new(UInt32Array::new_null(3)),
                 Arc::new(StringArray::new_null(3)),
-                Arc::new(UInt32Array::from_iter_values(repeat_n(0, 3))),
+                Arc::new(UInt32Array::new_null(3)),
             ],
         )
         .unwrap();
 
         assert_eq!(result, expected)
+    }
+
+    /// Scenario: A metrics batch omits the `resource` struct column, which the metrics template
+    /// keeps non-nullable.
+    /// Guarantees: The transform inserts a struct whose rows are all valid, with each child
+    /// column filled with NULL.
+    #[test]
+    fn test_absent_non_nullable_struct_has_valid_rows() {
+        let metrics_record_batch = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(3)),
+        )
+        .unwrap();
+
+        let result = transform_record_batch_to_known_schema(
+            &metrics_record_batch,
+            ArrowPayloadType::UnivariateMetrics,
+        )
+        .unwrap();
+
+        let resource = result
+            .column_by_name(consts::RESOURCE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert_eq!(resource.null_count(), 0);
+        assert_eq!(resource.fields(), &*RESOURCE_TEMPLATE_FIELDS);
+        for column in resource.columns() {
+            assert_eq!(column.null_count(), 3);
+        }
     }
 
     #[test]
@@ -949,6 +992,195 @@ mod test {
         assert_eq!(event_name_column.data_type(), &DataType::Utf8);
         assert_eq!(event_name_column.len(), 3);
         assert_eq!(event_name_column.null_count(), 3);
+    }
+
+    /// Scenario: A batch carries a column that the OTAP spec defines for its payload type but
+    /// that earlier template schemas omitted (`is_monotonic`, span and span link `flags`, and
+    /// `zero_threshold`).
+    /// Guarantees: The column, with its values and nulls, survives the transform instead of
+    /// being dropped from the Parquet output.
+    #[test]
+    fn test_keeps_spec_columns_present_in_batch() {
+        let cases: Vec<(ArrowPayloadType, &str, ArrayRef)> = vec![
+            (
+                ArrowPayloadType::UnivariateMetrics,
+                consts::IS_MONOTONIC,
+                Arc::new(BooleanArray::from(vec![Some(true), Some(false), None])),
+            ),
+            (
+                ArrowPayloadType::Spans,
+                consts::FLAGS,
+                Arc::new(UInt32Array::from(vec![Some(1), None, Some(0x100)])),
+            ),
+            (
+                ArrowPayloadType::SpanLinks,
+                consts::FLAGS,
+                Arc::new(UInt32Array::from(vec![Some(1), None, Some(0x100)])),
+            ),
+            (
+                ArrowPayloadType::ExpHistogramDataPoints,
+                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
+                Arc::new(Float64Array::from(vec![Some(0.5), None, Some(1e-9)])),
+            ),
+        ];
+
+        for (payload_type, column_name, column) in cases {
+            let record_batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    column_name,
+                    column.data_type().clone(),
+                    true,
+                )])),
+                vec![column.clone()],
+            )
+            .unwrap();
+
+            let result =
+                transform_record_batch_to_known_schema(&record_batch, payload_type).unwrap();
+
+            let result_column = result
+                .column_by_name(column_name)
+                .unwrap_or_else(|| panic!("{payload_type:?} should keep the {column_name} column"));
+            assert_eq!(result_column, &column, "{payload_type:?}.{column_name}");
+        }
+    }
+
+    /// Scenario: A batch omits optional OTAP columns that have no meaningful placeholder value,
+    /// such as ids, flags, schema URLs, metric descriptions and units, and exemplar values.
+    /// Guarantees: The transform fills each of these columns with NULL rather than a zero or
+    /// empty-string placeholder, using the column type defined by the OTAP spec.
+    #[test]
+    fn test_absent_optional_columns_are_null() {
+        let cases = [
+            (ArrowPayloadType::Logs, consts::RESOURCE),
+            (ArrowPayloadType::Logs, consts::SCHEMA_URL),
+            (ArrowPayloadType::Logs, consts::DROPPED_ATTRIBUTES_COUNT),
+            (ArrowPayloadType::Logs, consts::FLAGS),
+            (ArrowPayloadType::UnivariateMetrics, consts::SCOPE),
+            (ArrowPayloadType::UnivariateMetrics, consts::SCHEMA_URL),
+            (ArrowPayloadType::UnivariateMetrics, consts::DESCRIPTION),
+            (ArrowPayloadType::UnivariateMetrics, consts::UNIT),
+            (ArrowPayloadType::UnivariateMetrics, consts::IS_MONOTONIC),
+            (ArrowPayloadType::NumberDataPoints, consts::ID),
+            (
+                ArrowPayloadType::ExpHistogramDataPoints,
+                consts::EXP_HISTOGRAM_ZERO_THRESHOLD,
+            ),
+            (ArrowPayloadType::NumberDpExemplars, consts::INT_VALUE),
+            (ArrowPayloadType::NumberDpExemplars, consts::DOUBLE_VALUE),
+            (ArrowPayloadType::Spans, consts::FLAGS),
+            (ArrowPayloadType::SpanLinks, consts::FLAGS),
+        ];
+
+        for (payload_type, column_name) in cases {
+            let record_batch = RecordBatch::try_new_with_options(
+                Arc::new(Schema::empty()),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(3)),
+            )
+            .unwrap();
+
+            let result =
+                transform_record_batch_to_known_schema(&record_batch, payload_type).unwrap();
+
+            let (_, field) = result.schema_ref().fields().find(column_name).unwrap();
+            assert!(field.is_nullable(), "{payload_type:?}.{column_name}");
+            let column = result.column_by_name(column_name).unwrap();
+            assert_eq!(column.null_count(), 3, "{payload_type:?}.{column_name}");
+            match payloads::get(payload_type)
+                .get(column_name)
+                .unwrap()
+                .data_type
+            {
+                SpecDataType::Simple(value_type) | SpecDataType::Dictionary { value_type, .. } => {
+                    assert_eq!(
+                        column.data_type(),
+                        &value_type.to_arrow(),
+                        "{payload_type:?}.{column_name}"
+                    );
+                }
+                SpecDataType::Struct(_) => {
+                    assert!(
+                        matches!(column.data_type(), DataType::Struct(_)),
+                        "{payload_type:?}.{column_name}"
+                    );
+                }
+                SpecDataType::List(_) => unreachable!("no list columns are checked here"),
+            }
+        }
+    }
+
+    /// Scenario: An exemplar batch that has only int values is followed by one that has only
+    /// double values, and both are written to the same Parquet file, whose schema is taken from
+    /// the first batch.
+    /// Guarantees: Both batches are written, and the values read back keep the int and double
+    /// values with NULL for the value each exemplar does not use.
+    #[test]
+    fn test_exemplars_with_int_then_double_values_share_parquet_file() {
+        use bytes::Bytes;
+        use parquet::arrow::ArrowWriter;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+
+        let int_exemplars = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt32, false),
+                Field::new(consts::INT_VALUE, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from(vec![0, 1])),
+                Arc::new(Int64Array::from(vec![7, 8])),
+            ],
+        )
+        .unwrap();
+        let double_exemplars = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt32, false),
+                Field::new(consts::DOUBLE_VALUE, DataType::Float64, true),
+            ])),
+            vec![
+                Arc::new(UInt32Array::from(vec![2])),
+                Arc::new(Float64Array::from(vec![1.5])),
+            ],
+        )
+        .unwrap();
+
+        let int_exemplars = transform_record_batch_to_known_schema(
+            &int_exemplars,
+            ArrowPayloadType::NumberDpExemplars,
+        )
+        .unwrap();
+        let double_exemplars = transform_record_batch_to_known_schema(
+            &double_exemplars,
+            ArrowPayloadType::NumberDpExemplars,
+        )
+        .unwrap();
+
+        let mut buffer = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut buffer, int_exemplars.schema(), None).unwrap();
+        writer.write(&int_exemplars).unwrap();
+        writer.write(&double_exemplars).unwrap();
+        _ = writer.close().unwrap();
+
+        let reader = ParquetRecordBatchReader::try_new(Bytes::from(buffer), 1024).unwrap();
+        let batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(batches.len(), 1);
+        let int_values = batches[0]
+            .column_by_name(consts::INT_VALUE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(int_values, &Int64Array::from(vec![Some(7), Some(8), None]));
+        let double_values = batches[0]
+            .column_by_name(consts::DOUBLE_VALUE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert_eq!(
+            double_values,
+            &Float64Array::from(vec![None, None, Some(1.5)])
+        );
     }
 
     #[test]
