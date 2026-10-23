@@ -6,14 +6,24 @@
   "timeout_minutes": 45,
   "required": false,
   "paths": [
-    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/**"
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/**",
+    "rust/otap-dataflow/crates/scraper/**",
+    "rust/otap-dataflow/crates/engine/**",
+    "rust/otap-dataflow/crates/config/**",
+    "rust/otap-dataflow/crates/channel/**",
+    "rust/otap-dataflow/crates/telemetry/**",
+    "rust/otap-dataflow/crates/otap/**",
+    "rust/otap-dataflow/crates/pdata/**",
+    "rust/otap-dataflow/crates/pdata-codec/**"
   ],
   "command": [
-    "bash",
-    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/run.sh"
+    "python3",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/run.py",
+    "test"
   ],
   "cleanup": [
-    "bash",
-    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/cleanup.sh"
+    "python3",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/run.py",
+    "cleanup"
   ]
 }
