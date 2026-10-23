@@ -42,6 +42,9 @@ otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true
 otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
 futures.workspace = true
 futures-timer.workspace = true
+globset.workspace = true
+sha2.workspace = true
+otel-arrow-dfe-filelog-checkpoint.workspace = true
 hex.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
@@ -55,6 +58,7 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 slotmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
@@ -75,6 +79,7 @@ xxhash-rust.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 nix.workspace = true
+rustix.workspace = true
 
 [features]
 # Compatibility default: existing consumers continue to compile every core node.
@@ -155,7 +160,7 @@ otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
-otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["test-codecs"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 flate2.workspace = true
 http-body-util.workspace = true
@@ -180,6 +185,12 @@ weaver_semconv.workspace = true
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
+required-features = ["bench"]
+
+[[bench]]
+name = "batch_processor"
+harness = false
+path = "benches/batch_processor/main.rs"
 required-features = ["bench"]
 
 [[bench]]
@@ -224,3 +235,21 @@ path = "benches/filelog_multiline/allocations.rs"
 [[test]]
 name = "filelog_multiline_memory"
 harness = false
+
+[[test]]
+name = "filelog_multiline_grouping_memory"
+harness = false
+
+[[bench]]
+name = "filelog_grouping"
+harness = false
+path = "benches/filelog_grouping/main.rs"
+
+[[test]]
+name = "filelog_path_memory"
+harness = false
+
+[[bench]]
+name = "filelog_scan"
+harness = false
+path = "benches/filelog_scan/main.rs"

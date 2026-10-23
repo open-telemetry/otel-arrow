@@ -73,8 +73,6 @@ use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayloadHelpers, otap::transform::sanitize::sanitize_otap_batch,
 };
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-#[cfg(test)]
-use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_query_engine::{
     parser::default_parser_options,
     pipeline::{
@@ -1400,18 +1398,19 @@ mod test {
     /// Send one traces batch and one metrics batch with signals that have the same "name" values
     /// Used to test that the query selects the right signal type
     async fn send_one_traces_one_metrics_same_names(ctx: &mut TestContext<OtapPdata>) {
-        let spans = vec![
-            Span::build().name("foo").finish(),
-            Span::build().name("bar").finish(),
-        ];
-
         let trace_otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData::new(vec![
             ResourceSpans::new(
                 Resource::default(),
-                vec![ScopeSpans::new(
-                    InstrumentationScope::default(),
-                    spans.clone(),
-                )],
+                vec![
+                    ScopeSpans::new(
+                        InstrumentationScope::build().name("foo").finish(),
+                        vec![Span::build().name("foo").finish()],
+                    ),
+                    ScopeSpans::new(
+                        InstrumentationScope::build().name("bar").finish(),
+                        vec![Span::build().name("bar").finish()],
+                    ),
+                ],
             ),
         ])));
 
@@ -1421,18 +1420,19 @@ mod test {
         .await
         .expect("no process error");
 
-        let metrics = vec![
-            Metric::build().name("foo").finish(),
-            Metric::build().name("bar").finish(),
-        ];
-
         let metrics_otap_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData::new(vec![
             ResourceMetrics::new(
                 Resource::default(),
-                vec![ScopeMetrics::new(
-                    InstrumentationScope::default(),
-                    metrics.clone(),
-                )],
+                vec![
+                    ScopeMetrics::new(
+                        InstrumentationScope::build().name("foo").finish(),
+                        vec![Metric::build().name("foo").finish()],
+                    ),
+                    ScopeMetrics::new(
+                        InstrumentationScope::build().name("bar").finish(),
+                        vec![Metric::build().name("bar").finish()],
+                    ),
+                ],
             ),
         ])));
 
@@ -1547,7 +1547,7 @@ mod test {
     fn test_signal_scope_all() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let query = "signals | where name == \"foo\"";
+        let query = "signals | where instrumentation_scope.name == \"foo\"";
         let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
@@ -1620,6 +1620,8 @@ mod test {
         test_port_rx
     }
 
+    /// Scenario: A transform routes an entire log batch to a named output.
+    /// Guarantees: The default output is empty and all input records reach the named output unchanged.
     #[test]
     fn test_simple_route_to() {
         // test ensure it will only operate on all signals
@@ -1656,12 +1658,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload.into_data() {
-                    PayloadData::OtapRecords(result) => {
-                        assert_eq!(result, input)
-                    }
-                    _ => panic!("unexpected payload type"),
-                }
+                let result = payload.otap_ref().expect("expected native OTAP output");
+                assert_eq!(result, &input);
                 // TODO when we support Ack/Nack here assert on routed context
             })
             .validate(|_ctx| async move {})
@@ -2048,6 +2046,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: A transform routes logs by severity to named and default outputs.
+    /// Guarantees: Each log reaches the expected output and unused dictionary values are removed.
     #[test]
     fn test_conditional_route_to() {
         // test ensure it will only operate on all signals
@@ -2063,8 +2063,8 @@ mod test {
         let error_port_rx = set_pdata_sender("error_port", &mut processor);
         let info_port_rx = set_pdata_sender("info_port", &mut processor);
 
-        fn assert_logs_records_equal(otap_batch: OtapArrowRecords, log_record: LogRecord) {
-            let result = otap_to_otlp(&otap_batch);
+        fn assert_logs_records_equal(otap_batch: &OtapArrowRecords, log_record: LogRecord) {
+            let result = otap_to_otlp(otap_batch);
             match result {
                 OtlpProtoMessage::Logs(logs) => {
                     assert_eq!(
@@ -2101,14 +2101,13 @@ mod test {
                     .expect("no process error");
 
                 // check anything not routed get outputted to the default port
-                let out = ctx
-                    .drain_pdata()
-                    .await
-                    .into_iter()
-                    .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from_with_default)
-                    .map(Result::unwrap);
-                let default_result = out.into_iter().next().expect("one result");
+                let out = ctx.drain_pdata().await;
+                let default_result = out
+                    .first()
+                    .expect("one result")
+                    .payload_ref()
+                    .otap_ref()
+                    .expect("expected native OTAP output");
                 assert_logs_records_equal(default_result, other_log_record);
 
                 // check error log record got routed to correct out port
@@ -2118,26 +2117,21 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload.into_data() {
-                    PayloadData::OtapRecords(result) => {
-                        // ensure the routed record was "sanitized"
-                        let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
-                        let severity_text_col = logs_batch
-                            .column_by_name(consts::SEVERITY_TEXT)
-                            .unwrap()
-                            .as_any()
-                            .downcast_ref::<DictionaryArray<UInt8Type>>()
-                            .unwrap();
-                        let eq_filtered_val =
-                            eq(severity_text_col.values(), &StringArray::new_scalar("INFO"))
-                                .unwrap();
-                        assert_eq!(eq_filtered_val.true_count(), 0);
+                let result = payload.otap_ref().expect("expected native OTAP output");
+                // ensure the routed record was "sanitized"
+                let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
+                let severity_text_col = logs_batch
+                    .column_by_name(consts::SEVERITY_TEXT)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .unwrap();
+                let eq_filtered_val =
+                    eq(severity_text_col.values(), &StringArray::new_scalar("INFO")).unwrap();
+                assert_eq!(eq_filtered_val.true_count(), 0);
 
-                        // ensure the routed record equals what was expected
-                        assert_logs_records_equal(result, error_log_record);
-                    }
-                    _ => panic!("unexpected payload type"),
-                }
+                // ensure the routed record equals what was expected
+                assert_logs_records_equal(result, error_log_record);
 
                 // check info log record got routed to correct out port
                 let mut routed = Vec::new();
@@ -2146,12 +2140,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload.into_data() {
-                    PayloadData::OtapRecords(result) => {
-                        assert_logs_records_equal(result, info_log_record);
-                    }
-                    _ => panic!("unexpected payload type"),
-                }
+                let result = payload.otap_ref().expect("expected native OTAP output");
+                assert_logs_records_equal(result, info_log_record);
             })
             .validate(|_ctx| async move {})
     }
@@ -2551,8 +2541,10 @@ mod test {
                     ("info_port", &info_ctx),
                 ] {
                     assert_eq!(
-                        context.transport_headers(),
-                        Some(&headers),
+                        context
+                            .transport_headers()
+                            .expect("transport headers retained"),
+                        &headers,
                         "{port} lost the inbound transport headers"
                     );
                     assert_eq!(
@@ -3177,6 +3169,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: A transform routes a batch with sanitization disabled.
+    /// Guarantees: Routed output retains unreferenced dictionary values when sanitization is disabled.
     #[test]
     fn test_skip_sanitize() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -3253,23 +3247,18 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload.into_data() {
-                    PayloadData::OtapRecords(result) => {
-                        // check sanitization was skipped on routed record
-                        let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
-                        let severity_text_col = logs_batch
-                            .column_by_name(consts::SEVERITY_TEXT)
-                            .unwrap()
-                            .as_any()
-                            .downcast_ref::<DictionaryArray<UInt8Type>>()
-                            .unwrap();
-                        let eq_filtered_val =
-                            eq(severity_text_col.values(), &StringArray::new_scalar("INFO"))
-                                .unwrap();
-                        assert_eq!(eq_filtered_val.true_count(), 1);
-                    }
-                    _ => panic!("unexpected payload type"),
-                }
+                let result = payload.otap_ref().expect("expected native OTAP output");
+                // check sanitization was skipped on routed record
+                let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
+                let severity_text_col = logs_batch
+                    .column_by_name(consts::SEVERITY_TEXT)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .unwrap();
+                let eq_filtered_val =
+                    eq(severity_text_col.values(), &StringArray::new_scalar("INFO")).unwrap();
+                assert_eq!(eq_filtered_val.true_count(), 1);
             })
             .validate(|_ctx| async move {})
     }

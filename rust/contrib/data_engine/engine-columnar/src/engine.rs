@@ -14,6 +14,7 @@ use otel_arrow_contrib_data_engine_expressions::*;
 
 use crate::{
     engine_diagnostic::{ColumnarEngineDiagnostic, ColumnarEngineDiagnosticLevel},
+    execution_context::ExecutionContext,
     *,
 };
 
@@ -58,6 +59,17 @@ impl ColumnarEngine {
         mut pipeline: PipelineExpression,
         options: ColumnarEngineOptions,
     ) -> ColumnarEngine {
+        for expression in pipeline.get_expressions_mut() {
+            if let DataExpression::Discard(d) = expression
+                && let Some(predicate) = d.get_predicate_mut()
+            {
+                // Note: The arrow filter operation used for discard by the
+                // engine works inversely to what the expression tree is set up
+                // to express so we invert the predicate once at construction.
+                predicate.invert();
+            }
+        }
+
         Self {
             diagnostic_level: options.diagnostic_level,
             pipeline,
@@ -95,7 +107,41 @@ impl<'a, const BATCH_SIZE: usize> ColumnarEngineBatch<'a, BATCH_SIZE> {
     }
 
     pub(crate) fn initialize(&mut self) {
-        todo!()
+        let pipeline = &self.engine.pipeline;
+
+        let initializations = pipeline.get_initializations();
+
+        if initializations.is_empty() {
+            return;
+        }
+
+        let execution_context = ExecutionContext::<EmptyRecords>::new(
+            self.engine.diagnostic_level,
+            &self.diagnostics,
+            pipeline,
+            None,
+        );
+
+        if execution_context.is_diagnostic_level_enabled(ColumnarEngineDiagnosticLevel::Verbose) {
+            for (constant_id, constant) in pipeline.get_constants().iter().enumerate() {
+                execution_context.add_diagnostic(ColumnarEngineDiagnostic::new(
+                    ColumnarEngineDiagnosticLevel::Verbose,
+                    constant,
+                    format!("Constant defined with id '{constant_id}'"),
+                ));
+            }
+        }
+
+        for init in initializations {
+            match init {
+                PipelineInitialization::SetGlobalVariable {
+                    name,
+                    value: scalar,
+                } => {
+                    todo!()
+                }
+            }
+        }
     }
 
     pub fn push_records<TRecordFactory: ColumnarRecordsFactory<BATCH_SIZE>>(
@@ -103,7 +149,49 @@ impl<'a, const BATCH_SIZE: usize> ColumnarEngineBatch<'a, BATCH_SIZE> {
         factory: &TRecordFactory,
         mut batches: [Option<RecordBatch>; BATCH_SIZE],
     ) {
-        todo!()
+        let pipeline = &self.engine.pipeline;
+
+        let records = factory.create(None, &batches);
+
+        let mut current_batch_record_count = records.len();
+
+        if current_batch_record_count == 0 {
+            return;
+        }
+
+        let diagnostic_level = records
+            .get_diagnostic_level()
+            .unwrap_or(self.engine.diagnostic_level);
+
+        let mut execution_context =
+            ExecutionContext::new(diagnostic_level, &self.diagnostics, pipeline, Some(records));
+
+        for expression in pipeline.get_expressions() {
+            match expression {
+                DataExpression::Discard(_) => todo!(),
+                DataExpression::Summary(_) => todo!(),
+                DataExpression::Transform(_) => todo!(),
+                DataExpression::Branch(_) => todo!(),
+                DataExpression::Output(_) => todo!(),
+            }
+        }
+
+        if current_batch_record_count > 0 {
+            let mut state = execution_context.into_parts().expect("has records").into();
+
+            factory.apply(
+                &ColumnarEngineDiagnosticReceiverImpl::new(diagnostic_level, &self.diagnostics),
+                pipeline,
+                &mut state,
+                &mut batches,
+            );
+
+            self.included_record_count += current_batch_record_count;
+        } else {
+            std::mem::drop(execution_context);
+        }
+
+        self.included_batches.push(batches);
     }
 
     pub fn flush(self) -> ColumnarEngineResults<'a, BATCH_SIZE> {
@@ -132,7 +220,7 @@ impl<const BATCH_SIZE: usize> Display for ColumnarEngineResults<'_, BATCH_SIZE> 
     }
 }
 
-fn format_diagnostics(
+pub(crate) fn format_diagnostics(
     query: &str,
     diagnostics: &[ColumnarEngineDiagnostic<'_>],
     output: &mut dyn Write,
