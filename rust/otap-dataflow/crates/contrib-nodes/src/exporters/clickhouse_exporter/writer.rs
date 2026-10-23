@@ -137,20 +137,52 @@ fn has_tls_material(tls: &otel_arrow_dfe_config::tls::TlsClientConfig) -> bool {
     has_ca || has_client_cert || has_client_key
 }
 
+/// Pool idle timeout applied to every hyper client we construct.
+///
+/// The ClickHouse server default `keep_alive_timeout` is 3 s. We use a
+/// slightly shorter idle timeout so that hyper reclaims connections before
+/// the server closes them, avoiding "connection reset" errors on reuse.
+const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// TCP keepalive interval for ClickHouse HTTP connections.
+const TCP_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Build a plaintext-only hyper client (no TLS) wrapped in a ClickHouse
+/// [`Client`].
+fn build_plaintext_client() -> Client {
+    let mut connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    connector.set_keepalive(Some(TCP_KEEPALIVE));
+
+    let hyper_client =
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+            .build(connector);
+
+    Client::with_http_client(hyper_client)
+}
+
 /// Build a ClickHouse HTTP client bound to `database` from the exporter config.
 ///
+/// All branches construct a provider-neutral hyper client rather than relying
+/// on `clickhouse::Client::default()`, which hard-codes a specific rustls
+/// crypto provider.  This keeps the exporter aligned with the workspace's
+/// `crypto-*` feature selection (ring, aws-lc, openssl, or symcrypt).
+///
+/// # TLS paths
+///
 /// When a `tls` block is present and the shared TLS loader returns certificate
-/// material, a custom `hyper` HTTP client is constructed with the configured CA
-/// trust anchors and optional client certificate (mTLS), and injected via
-/// [`clickhouse::Client::with_http_client`].  The connector uses
+/// material, a custom hyper HTTPS client is built with the configured CA trust
+/// anchors and optional client certificate (mTLS).  The connector uses
 /// `https_only()` so that configured certificates are always applied.
 ///
 /// When a `tls` block is present with `insecure: true` and no custom CA, the
-/// shared loader returns `None` and we fall through to [`Client::default()`],
-/// giving the user an explicit plaintext path on `http://` endpoints.
+/// shared loader returns `None` and a plaintext-only hyper client is used,
+/// consistent with the shared loader's contract and the behavior of other
+/// components (OTLP/gRPC, OAuth2).
 ///
-/// Without a `tls` block the default client is used, which already handles
-/// basic `https://` endpoints through the crate's built-in rustls features.
+/// Without a `tls` block the endpoint scheme decides: `https://` endpoints
+/// get a provider-neutral HTTPS connector with system CA trust anchors, while
+/// `http://` endpoints use a plaintext connector.
 ///
 /// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can
 /// build one per target database without concern.
@@ -228,21 +260,43 @@ pub(crate) async fn build_client(
                 let hyper_client = hyper_util::client::legacy::Client::builder(
                     hyper_util::rt::TokioExecutor::new(),
                 )
-                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
                 .build(https_connector);
 
                 Client::with_http_client(hyper_client)
             }
             None => {
                 // The shared loader returned None -- insecure=true with no
-                // custom CA on a non-https endpoint. Use the default plaintext
-                // client, consistent with the shared loader's contract and the
-                // behavior of other components (OTLP/gRPC, OAuth2).
-                Client::default()
+                // custom CA on a non-https endpoint. Plaintext is explicitly
+                // requested.
+                build_plaintext_client()
             }
         }
     } else {
-        Client::default()
+        // No tls block: let the shared loader decide based on endpoint scheme.
+        // - https:// => provider-neutral TLS with system CA trust anchors
+        // - http://  => plaintext
+        match otel_arrow_dfe_otap::tls_utils::build_rustls_client_config(None, &config.endpoint)
+            .await
+            .map_err(ClickhouseExporterError::TlsConfig)?
+        {
+            Some((rustls_config, _server_name)) => {
+                let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_tls_config(rustls_config)
+                    .https_only()
+                    .enable_http1()
+                    .build();
+
+                let hyper_client = hyper_util::client::legacy::Client::builder(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+                .build(https_connector);
+
+                Client::with_http_client(hyper_client)
+            }
+            None => build_plaintext_client(),
+        }
     };
 
     client = client
@@ -496,15 +550,31 @@ mod tests {
         );
     }
 
-    /// Scenario: build_client without a tls block returns the default client.
-    /// Guarantees: the non-TLS path continues to work and returns Ok.
+    /// Scenario: build_client without a tls block on an http:// endpoint.
+    /// Guarantees: the plaintext path builds a provider-neutral hyper client
+    /// and returns Ok without requiring a crypto provider.
     #[tokio::test]
-    async fn build_client_without_tls_succeeds() {
+    async fn build_client_without_tls_http_succeeds() {
         let config = test_config_with_tls("http://localhost:8123", None);
         let result = build_client(&config, "default").await;
         assert!(
             result.is_ok(),
-            "build_client without TLS should succeed: {result:?}"
+            "build_client without TLS on http:// should succeed: {result:?}"
+        );
+    }
+
+    /// Scenario: build_client without a tls block on an https:// endpoint.
+    /// Guarantees: the provider-neutral default-TLS path loads system CA
+    /// trust anchors via the installed crypto provider and returns Ok.
+    #[tokio::test]
+    async fn build_client_without_tls_https_succeeds() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let config = test_config_with_tls("https://clickhouse.example.com:8443", None);
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_ok(),
+            "build_client without TLS on https:// should succeed: {result:?}"
         );
     }
 
