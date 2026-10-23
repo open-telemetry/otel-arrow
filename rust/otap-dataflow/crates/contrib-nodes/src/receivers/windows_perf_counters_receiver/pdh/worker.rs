@@ -49,13 +49,15 @@ pub(in super::super) struct Worker {
     pub(super) accepted: Arc<AtomicBool>,
     pub(super) shutdown_requested: Arc<AtomicBool>,
     pub(super) join: Option<WorkerJoin>,
-    pub(super) completion: Option<oneshot::Receiver<()>>,
     pub(in super::super) startup: StartupState,
 }
 
 // Both join phases stay owned across cancellation of shutdown().
 pub(super) enum WorkerJoin {
-    Thread(JoinHandle<()>),
+    Thread {
+        join: JoinHandle<()>,
+        completion: oneshot::Receiver<()>,
+    },
     Joining(tokio::task::JoinHandle<Result<(), Error>>),
 }
 
@@ -142,8 +144,10 @@ impl Worker {
                     tx,
                     accepted,
                     shutdown_requested,
-                    join: Some(WorkerJoin::Thread(join)),
-                    completion: Some(completion_rx),
+                    join: Some(WorkerJoin::Thread {
+                        join,
+                        completion: completion_rx,
+                    }),
                     startup,
                 })
             }
@@ -190,13 +194,11 @@ impl Worker {
             return Ok(true);
         }
         let deadline = tokio::time::Instant::from_std(deadline);
-        if matches!(self.join, Some(WorkerJoin::Thread(_))) {
-            let completion = self.completion.as_mut().ok_or(Error::WorkerStopped)?;
+        if let Some(WorkerJoin::Thread { completion, .. }) = self.join.as_mut() {
             if tokio::time::timeout_at(deadline, completion).await.is_err() {
                 return Ok(false);
             }
-            self.completion = None;
-            let Some(WorkerJoin::Thread(join)) = self.join.take() else {
+            let Some(WorkerJoin::Thread { join, .. }) = self.join.take() else {
                 return Err(Error::WorkerStopped);
             };
             self.join = Some(WorkerJoin::Joining(join_worker(join)));
