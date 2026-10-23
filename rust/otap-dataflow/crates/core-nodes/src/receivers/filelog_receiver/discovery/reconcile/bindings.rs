@@ -386,13 +386,18 @@ impl Reconciler {
             return Err(ReconcileError::Tracked);
         }
         if let Some(old) = self.tracked.get(&file.id) {
+            // Recovery may validate an Unverified claim here. A Superseded
+            // claim must use rebind's complete-pass and rebound barriers,
+            // including publication at the unchanged historical path.
+            let role_allowed = file.role == old.file.role
+                || (old.file.role == BindingRole::Unverified
+                    && file.role == BindingRole::Live
+                    && old.pass.binding_eligible
+                    && !old.binding_blocked());
             if old.file.locator != file.locator
                 || old.file.binding.as_ref().map(|p| p.as_os_str())
                     != file.binding.as_ref().map(|p| p.as_os_str())
-                || (file.role != old.file.role
-                    && !(file.role == BindingRole::Live
-                        && old.pass.binding_eligible
-                        && !old.binding_blocked()))
+                || !role_allowed
             {
                 return Err(ReconcileError::Tracked);
             }

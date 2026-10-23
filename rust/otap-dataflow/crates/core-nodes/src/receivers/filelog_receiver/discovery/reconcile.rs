@@ -466,6 +466,52 @@ impl Reconciler {
             .unwrap_or((None, false))
     }
 
+    // Parent identity is directory evidence, regardless of which file caused
+    // the probe. Both traversal and targeted checks update the same indexed
+    // family, preserving expected identities and per-pass publication blocks.
+    fn observe_parent(
+        &mut self,
+        path: &Path,
+        observed: Option<FileLocator>,
+        force_changed: bool,
+        emit: &mut impl FnMut(Evidence<'_>),
+    ) -> bool {
+        let (expected, _) =
+            Self::directory_baseline(&self.tracked, &self.parents, path.as_os_str());
+        let pass = self.pass.as_mut().expect("active parent observation");
+        let mut changed = false;
+        for id in self.parents.candidates(path.as_os_str()) {
+            let tracked = self.tracked.get_mut(&id).expect("parent index");
+            if !self.parents.matches(tracked, path.as_os_str()) {
+                continue;
+            }
+            tracked.parent = tracked.parent.or(expected);
+            if tracked.parent.is_none() && !force_changed {
+                tracked.parent = observed;
+            }
+            tracked.pass.parent_seen |= observed.is_some();
+            if force_changed
+                || observed
+                    .is_some_and(|actual| tracked.parent.is_some_and(|expected| actual != expected))
+            {
+                tracked.parent_changed = true;
+                tracked.pass.parent_unstable = true;
+                changed = true;
+                pass.environment_failed = true;
+                pass.complete = false;
+                emit(Evidence::ParentChanged(id));
+            } else if observed.is_some() {
+                // Fresh restoration clears persistent state, never this pass's
+                // evidence barrier: earlier observations may belong to the old view.
+                tracked.parent_changed = false;
+            }
+        }
+        if changed {
+            emit(Evidence::CoverageLost(ScanReason::RootChanged));
+        }
+        changed
+    }
+
     // Called only after preflight under an exclusive borrow. No fallible protocol
     // validation remains after the owner's durable commit.
     fn insert_tracked(&mut self, file: TrackedFile) {
@@ -681,41 +727,11 @@ impl Reconciler {
                 emit(Evidence::CoverageLost(reason));
             }
         }
-        let pass = self.pass.as_mut().expect("validated active pass");
         if observation.reason == Some(ScanReason::Directory) {
-            let (expected, _) = Self::directory_baseline(
-                &self.tracked,
-                &self.parents,
-                observation.path.as_os_str(),
-            );
-            {
-                for id in self.parents.candidates(observation.path.as_os_str()) {
-                    let tracked = self.tracked.get_mut(&id).expect("parent index");
-                    if !self.parents.matches(tracked, observation.path.as_os_str()) {
-                        continue;
-                    }
-                    let locator = observation.locator.expect("validated directory shape");
-                    tracked.pass.parent_seen = true;
-                    // A first sighting for this record must respect an expected
-                    // identity already retained by a neighbour in this directory.
-                    tracked.parent = tracked.parent.or(expected);
-                    if let Some(expected) = tracked.parent {
-                        if expected != locator {
-                            tracked.parent_changed = true;
-                            tracked.pass.parent_unstable = true;
-                            pass.environment_failed = true;
-                            pass.complete = false;
-                            emit(Evidence::ParentChanged(id));
-                        } else {
-                            tracked.parent_changed = false;
-                        }
-                    } else {
-                        tracked.parent = Some(locator);
-                    }
-                }
-            }
+            let _ = self.observe_parent(&observation.path, observation.locator, false, &mut emit);
             return Ok(());
         }
+        let pass = self.pass.as_mut().expect("validated active pass");
         // A contextual miss is useful only with current, unchanged parent evidence.
         // Never turn an arbitrary ENOENT into a binding revocation.
         if origin == Origin::Scan && observation.reason == Some(ScanReason::Missing) {
@@ -1058,53 +1074,38 @@ impl Reconciler {
                 emit,
             );
         }
-        if binding
-            && tracked.parent.is_none()
-            && check.scope == BindingScope::Binding
-            && let Some(observed_parent) = check.parent
-        {
-            let path = check
-                .observation
-                .path
-                .parent()
-                .expect("validated binding parent")
-                .as_os_str();
-            let (expected, changed) = Self::directory_baseline(&self.tracked, &self.parents, path);
-            // Seed unknown peers together. Otherwise N initial targeted checks in
-            // one directory would each scan N records to discover this baseline.
-            for peer in self.parents.candidates(path) {
-                let tracked = self.tracked.get_mut(&peer).expect("parent index");
-                if self.parents.matches(tracked, path) && tracked.parent.is_none() {
-                    tracked.parent = Some(expected.unwrap_or(observed_parent));
-                    tracked.parent_changed |= changed;
-                }
-            }
-        }
-        let tracked = self
-            .tracked
-            .get_mut(&id)
-            .expect("validated binding identity");
-        let unchanged = check.parent.is_some() && check.parent == tracked.parent;
         if binding {
-            if check.scope == BindingScope::ParentChanged
-                || check
-                    .parent
-                    .is_some_and(|parent| tracked.parent.is_some_and(|expected| expected != parent))
-            {
-                tracked.parent_changed = true;
-                tracked.pass.parent_unstable = true;
-                pass.environment_failed = true;
-                pass.complete = false;
-                emit(Evidence::ParentChanged(id));
-                emit(Evidence::CoverageLost(ScanReason::RootChanged));
+            let reported_change = check.scope == BindingScope::ParentChanged
+                || check.parent.is_some_and(|parent| {
+                    tracked.parent.is_some_and(|expected| expected != parent)
+                });
+            if reported_change && tracked.parent_changed && tracked.pass.parent_seen {
+                // This pass already propagated a changed parent to the whole
+                // family. Repeated failed checks must not rescan it per file.
                 return Ok(());
             }
-            if let Some(parent) = check.parent {
-                tracked.parent = Some(parent);
-                tracked.pass.parent_seen = true;
-                tracked.parent_changed = false;
+            let refresh_peers = reported_change
+                || (check.parent.is_some() && (tracked.parent.is_none() || tracked.parent_changed));
+            if refresh_peers {
+                let parent = check
+                    .observation
+                    .path
+                    .parent()
+                    .expect("validated binding parent");
+                if self.observe_parent(parent, check.parent, reported_change, &mut emit) {
+                    return Ok(());
+                }
+            } else if check.parent.is_some() {
+                // Healthy checks with an established baseline need no family
+                // walk. Initial validation already seeds unknown peers together.
+                self.tracked
+                    .get_mut(&id)
+                    .expect("checked binding")
+                    .pass
+                    .parent_seen = true;
             }
         }
+        let unchanged = check.parent.is_some() && check.parent == self.tracked[&id].parent;
         self.consume(
             generation,
             check.observation,

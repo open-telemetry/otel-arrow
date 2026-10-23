@@ -3780,12 +3780,22 @@ fn blocked_reconnection_cannot_promote_a_binding_to_live() {
                 .next()
                 .expect("fresh eligible offer")
                 .token;
-            assert!(
-                r.admit(token, file(1, "/logs/app"), |_| Some(Duration::from_secs(
-                    32
-                )))
-                .unwrap()
-            );
+            if role == BindingRole::Unverified {
+                assert!(
+                    r.admit(token, file(1, "/logs/app"), |_| Some(Duration::from_secs(
+                        32
+                    )))
+                    .unwrap()
+                );
+            } else {
+                let mut reconnect = file(1, "/logs/app");
+                reconnect.role = role;
+                assert!(
+                    r.admit(token, reconnect, |_| Some(Duration::from_secs(32)))
+                        .unwrap()
+                );
+                assert!(r.rebind(3, TrackedId(1), |_| true).unwrap());
+            }
             assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Live);
             assert!(!r.tracked[&TrackedId(1)].binding_blocked());
             assert_eq!(
@@ -3794,4 +3804,255 @@ fn blocked_reconnection_cannot_promote_a_binding_to_live() {
             );
         }
     }
+}
+
+fn changed_parent_evidence(r: &mut Reconciler, targeted: bool, events: &mut Vec<String>) {
+    if targeted {
+        let failure = evidence(None, "/logs/a", ScanReason::RootChanged);
+        let pass = r.pass.as_ref().unwrap();
+        r.apply_binding_check(
+            pass.generation,
+            TrackedId(1),
+            super::super::BindingCheck {
+                observation: &failure,
+                parent: Some(locator(11)),
+                context_valid: false,
+                scope: super::super::BindingScope::ParentChanged,
+                diagnostic_path: Path::new("/logs"),
+            },
+            pass.observed_at,
+            |e| record(e, events),
+        )
+        .unwrap();
+    } else {
+        feed(
+            r,
+            &evidence(Some(11), "/logs", ScanReason::Directory),
+            events,
+        );
+    }
+}
+
+/// Scenario: Traversal or a targeted check detects a replaced parent before or after sibling replacement evidence.
+/// Guarantees: Both routes preserve sibling baselines, withhold affected replacement work, and allow independent admission.
+#[test]
+fn parent_evidence_routes_apply_the_same_sibling_publication_block() {
+    for targeted in [false, true] {
+        for change_first in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/logs/a")).unwrap();
+            r.track(file(2, "/logs/b")).unwrap();
+            let mut inactive = file(5, "/logs/retired");
+            inactive.active = false;
+            r.track(inactive).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            assert!(finish(&mut r, true, &mut events).complete);
+            start(&mut r, 2);
+            if change_first {
+                changed_parent_evidence(&mut r, targeted, &mut events);
+            }
+            feed(&mut r, &observation(3, "/logs/b"), &mut events);
+            if !change_first {
+                changed_parent_evidence(&mut r, targeted, &mut events);
+            }
+            for id in [1, 2, 5] {
+                assert_eq!(r.tracked[&TrackedId(id)].parent, Some(locator(10)));
+                assert!(r.tracked[&TrackedId(id)].parent_changed);
+                assert!(r.tracked[&TrackedId(id)].pass.parent_unstable);
+                assert!(events.contains(&format!("parent:{id}")));
+            }
+            // A repeated targeted result observes the already-propagated state.
+            if targeted {
+                changed_parent_evidence(&mut r, true, &mut events);
+            }
+            feed(&mut r, &observation(4, "/independent"), &mut events);
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert_eq!(
+                r.supersede(2, TrackedId(2), locator(3)),
+                Err(ReconcileError::Feedback)
+            );
+            let offers: Vec<_> = r
+                .offers()
+                .unwrap()
+                .map(|o| (o.token, o.candidate.locator))
+                .collect();
+            assert_eq!(offers.len(), 1);
+            assert_eq!(offers[0].1, locator(4));
+            assert!(
+                r.admit(offers[0].0, file(4, "/independent"), |_| Some(
+                    Duration::from_secs(22)
+                ))
+                .unwrap()
+            );
+            assert_eq!(r.tracked[&TrackedId(2)].file.role, BindingRole::Live);
+        }
+    }
+}
+
+/// Scenario: A targeted check discovers parent replacement after a nonresident sibling's eligible evidence, optionally followed by restoration.
+/// Guarantees: Sibling promotion and new-ID callbacks are withheld, but unchanged-role reconnection and unrelated admission remain usable.
+#[test]
+fn targeted_parent_changes_guard_sibling_admission_before_durability() {
+    for role in [BindingRole::Unverified, BindingRole::Superseded] {
+        for restore in [0, 1, 2] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/logs/a")).unwrap();
+            let mut sibling = file(2, "/logs/b");
+            sibling.role = role;
+            sibling.resident = false;
+            r.track(sibling).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(10), "/logs", ScanReason::Directory),
+                &mut events,
+            );
+            assert!(finish(&mut r, true, &mut events).complete);
+            start(&mut r, 2);
+            feed(&mut r, &observation(2, "/logs/b"), &mut events);
+            changed_parent_evidence(&mut r, true, &mut events);
+            if restore == 1 {
+                feed(
+                    &mut r,
+                    &evidence(Some(10), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            } else if restore == 2 {
+                apply_test_check(
+                    &mut r,
+                    1,
+                    &evidence(None, "/logs/a", ScanReason::Missing),
+                    Some(locator(10)),
+                    true,
+                    &mut events,
+                );
+            }
+            feed(&mut r, &observation(4, "/independent"), &mut events);
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert!(r.tracked[&TrackedId(2)].pass.parent_unstable);
+            assert_eq!(r.tracked[&TrackedId(2)].parent_changed, restore == 0);
+            let offers: Vec<_> = r
+                .offers()
+                .unwrap()
+                .map(|o| (o.token, o.candidate.locator))
+                .collect();
+            let token = offers.iter().find(|(_, loc)| *loc == locator(2)).unwrap().0;
+            assert_eq!(
+                r.admit(token, file(2, "/logs/b"), |_| panic!(
+                    "sibling promotion reached durability"
+                )),
+                Err(ReconcileError::Tracked)
+            );
+            let mut new_identity = file(3, "/logs/b");
+            new_identity.locator = locator(2);
+            assert_eq!(
+                r.admit(token, new_identity, |_| panic!(
+                    "sibling new identity reached durability"
+                )),
+                Err(ReconcileError::Feedback)
+            );
+            let mut reconnect = file(2, "/logs/b");
+            reconnect.role = role;
+            assert!(
+                r.admit(token, reconnect, |_| Some(Duration::from_secs(22)))
+                    .unwrap()
+            );
+            assert_eq!(r.tracked[&TrackedId(2)].file.role, role);
+            assert!(r.tracked[&TrackedId(2)].binding_blocked());
+            let independent = offers.iter().find(|(_, loc)| *loc == locator(4)).unwrap().0;
+            assert!(
+                r.admit(independent, file(4, "/independent"), |_| Some(
+                    Duration::from_secs(22)
+                ))
+                .unwrap()
+            );
+        }
+    }
+}
+
+/// Scenario: A superseded predecessor reappears after its successor retires, first on an incomplete pass and then behind another unresolved rebound.
+/// Guarantees: Same-role reconnection works, but only rebind after completeness and rebound resolution restores Live and clears the successor memo.
+#[test]
+fn superseded_publication_requires_rebind_and_the_rebound_barrier() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    let mut old = file(1, "/s");
+    old.resident = false;
+    r.track(old).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(&mut r, &observation(2, "/s"), &mut events);
+    assert!(!finish(&mut r, false, &mut events).complete);
+    let token = r.offers().unwrap().next().unwrap().token;
+    assert!(
+        r.admit(token, file(2, "/s"), |_| Some(Duration::from_secs(12)))
+            .unwrap()
+    );
+    drop(r.untrack(TrackedId(2)).unwrap());
+    assert_eq!(
+        r.tracked[&TrackedId(1)].successor,
+        Some((TrackedId(2), locator(2)))
+    );
+    r.track(file(3, "/other")).unwrap();
+    start(&mut r, 2);
+    feed(&mut r, &observation(1, "/s"), &mut events);
+    assert!(!finish(&mut r, false, &mut events).complete);
+    let token = r.offers().unwrap().next().unwrap().token;
+    assert_eq!(
+        r.admit(token, file(1, "/s"), |_| panic!(
+            "incomplete promotion reached durability"
+        )),
+        Err(ReconcileError::Tracked)
+    );
+    let mut reconnect = file(1, "/s");
+    reconnect.role = BindingRole::Superseded;
+    assert!(
+        r.admit(token, reconnect, |_| Some(Duration::from_secs(22)))
+            .unwrap()
+    );
+    assert_eq!(
+        r.rebind(2, TrackedId(1), |_| panic!(
+            "incomplete rebind reached durability"
+        )),
+        Err(ReconcileError::Feedback)
+    );
+    r.update_reader_state(2, TrackedId(1), true, false).unwrap();
+    start(&mut r, 3);
+    feed(&mut r, &observation(1, "/s"), &mut events);
+    feed(&mut r, &observation(4, "/other"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    let token = r
+        .offers()
+        .unwrap()
+        .find(|o| o.candidate.locator == locator(1))
+        .unwrap()
+        .token;
+    assert_eq!(
+        r.admit(token, file(1, "/s"), |_| panic!(
+            "superseded promotion bypassed rebind"
+        )),
+        Err(ReconcileError::Tracked)
+    );
+    assert_eq!(
+        r.rebind(3, TrackedId(1), |_| panic!(
+            "unresolved rebound bypassed barrier"
+        )),
+        Err(ReconcileError::Feedback)
+    );
+    r.resolve_rebound(3, TrackedId(3), locator(4)).unwrap();
+    assert!(
+        r.rebind(3, TrackedId(1), |path| {
+            assert_eq!(path, Path::new("/s"));
+            true
+        })
+        .unwrap()
+    );
+    assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Live);
+    assert!(r.tracked[&TrackedId(1)].successor.is_none());
 }

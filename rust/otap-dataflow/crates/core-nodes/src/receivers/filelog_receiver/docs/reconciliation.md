@@ -60,12 +60,20 @@ tracked bindings, and conflicts against retained candidate paths emit
 Consumers must process that evidence even if the pass never finishes. Both
 traversal and targeted checks identify changed roots. Parent
 changes remain latched, including for inactive retained records, until the
-expected environment returns or the receiver is recreated. Explicit `Unstable`
+expected environment returns or the receiver is recreated.
+Directory observations and targeted checks share one parent-evidence handler.
+A detected parent replacement blocks every retained binding in that directory,
+including already-baselined siblings, before later publication can use its
+evidence. Expected identities are preserved; restoration clears persistent
+latches but never the current pass's publication blocks. Healthy targeted checks
+and repeated reports of an already-propagated change avoid another family walk.
+Explicit `Unstable`
 outcomes also invalidate matching retained candidate, binding and selected-alias
 work, even when the failed probe supplies no locator. A retained rebound connects
 the failure to its candidate if that candidate has since selected another alias;
-unrelated stable candidates remain usable during the incomplete pass. Candidate-local
-policy and verification failures likewise invalidate their dependent retained
+unrelated stable candidates remain usable during the incomplete pass.
+Candidate-local policy and verification failures likewise invalidate their
+dependent retained
 evidence without blocking unrelated positive exclusion.
 
 Only an effectively complete pass emits `Disappeared`. This starts the lifecycle
@@ -104,9 +112,11 @@ An active historical record sharing the candidate path cannot veto reconnection
 solely because its parent is blocked. New-identity publication at that path is
 still rejected for every active blocked binding, including Superseded and
 Unverified records; locator equality alone does not prove continuity.
-Same-ID reconnection preserves the role while its binding is blocked. Promotion
-from Unverified or Superseded to Live is binding publication and requires fresh
-eligible evidence with no binding block.
+Same-ID reconnection preserves the role while its binding is blocked. Recovery
+may promote Unverified to Live only with fresh eligible binding evidence and no
+binding block. Superseded records reconnect without changing role; only `rebind`
+can restore Live, including at the same historical path. This requires a complete
+pass and resolved rebounds, and clears the old successor memo.
 The final complete-pass check requires both persistent parent latches and per-pass
 binding blocks to be clear.
 Ordinary unrelated traversal incompleteness alone does not prevent a contextual
