@@ -3,4 +3,4 @@ component: pipeline
 note: "Migrate `receiver:host_metrics` internal telemetry to enum-dimensioned metric sets."
 issues: [3530]
 subtext: >-
-  See the Old-to-New mapping table in the host_metrics_receiver README for the full migration guide from flat counters to dimensioned metric sets.
+  Migration: See the Old-to-New mapping table in the host_metrics_receiver README for the full guide from flat counters to dimensioned metric sets.
