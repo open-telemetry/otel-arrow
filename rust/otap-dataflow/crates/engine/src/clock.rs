@@ -16,13 +16,15 @@
 //!
 //! The production path is intentionally small: clock reads go through a
 //! thread-local lookup and a small enum branch, then immediately use
-//! `Instant::now()` / `tokio::time::sleep_until(...)`. The simulated clock's
-//! waiter bookkeeping and locking are only used when tests explicitly install a
-//! `SimClock`, so the expected production impact is negligible.
+//! `Instant::now()` / `tokio::time::sleep_until(...)`. Timeouts and intervals
+//! are built on `sleep_until`, so they follow the same clock. The simulated
+//! clock's waiter bookkeeping and locking are only used when tests explicitly
+//! install a `SimClock`, so the expected production impact is negligible.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 /// Boxed sleep future used by the engine control plane.
@@ -91,10 +93,139 @@ pub fn sleep_until(deadline: Instant) -> Sleep {
     }
 }
 
+/// Returns the current instant of the clock that drives sleeps.
+///
+/// System sleeps are tokio timers, so this reads tokio's clock. Without
+/// tokio's `test-util` feature that is `Instant::now()`; with it, this follows
+/// a paused tokio clock, so relative deadlines line up with
+/// `tokio::time::advance` in tests that pause time.
+fn timer_now() -> Instant {
+    match current_clock() {
+        ClockHandle::System => tokio::time::Instant::now().into_std(),
+        #[cfg(any(test, feature = "test-utils"))]
+        ClockHandle::Sim(clock) => clock.now(),
+    }
+}
+
 /// Creates a sleep future for the active clock after a duration.
 #[must_use]
 pub fn sleep(duration: Duration) -> Sleep {
-    sleep_until(now() + duration)
+    sleep_until(timer_now() + duration)
+}
+
+/// Error returned by [`timeout_at`] and [`timeout`] when the deadline passes
+/// before the wrapped future completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Elapsed;
+
+/// Runs `future` until it completes or the active clock reaches `deadline`.
+///
+/// The wrapped future is polled before the deadline, so a future that is ready
+/// at the deadline still wins (same as `tokio::time::timeout_at`).
+pub async fn timeout_at<F: Future>(deadline: Instant, future: F) -> Result<F::Output, Elapsed> {
+    let mut future = std::pin::pin!(future);
+    let mut sleep = sleep_until(deadline);
+    std::future::poll_fn(|cx| {
+        let had_budget_before = tokio::task::coop::has_budget_remaining();
+        if let Poll::Ready(output) = future.as_mut().poll(cx) {
+            return Poll::Ready(Ok(output));
+        }
+        poll_deadline(&mut sleep, had_budget_before, cx).map(|()| Err(Elapsed))
+    })
+    .await
+}
+
+/// Polls a timeout's deadline after its wrapped future returned `Pending`.
+///
+/// Tokio sleeps (and the `SimClock` waiters) spend tokio's cooperative
+/// budget. If the wrapped future used up a budget it had before its poll, the
+/// deadline is polled without the budget, as `tokio::time::timeout` does, so
+/// a future that exhausts the budget on every poll can't block expiry.
+/// Outside a tokio runtime the budget is always available and this is a plain
+/// poll.
+fn poll_deadline(sleep: &mut Sleep, had_budget_before: bool, cx: &mut Context<'_>) -> Poll<()> {
+    if had_budget_before && !tokio::task::coop::has_budget_remaining() {
+        Pin::new(&mut tokio::task::coop::unconstrained(sleep.as_mut())).poll(cx)
+    } else {
+        sleep.as_mut().poll(cx)
+    }
+}
+
+/// Runs `future` until it completes or `duration` passes on the active clock.
+///
+/// The deadline is taken when this function is called, not when the returned
+/// future is first polled.
+pub fn timeout<F: Future>(
+    duration: Duration,
+    future: F,
+) -> impl Future<Output = Result<F::Output, Elapsed>> {
+    timeout_at(timer_now() + duration, future)
+}
+
+/// Lateness past which [`Interval`] skips missed ticks instead of firing the
+/// next one on schedule. Matches tokio's interval.
+const INTERVAL_SKIP_THRESHOLD: Duration = Duration::from_millis(5);
+
+/// Periodic ticker on the active clock.
+///
+/// Missed ticks are skipped, like `tokio::time::MissedTickBehavior::Skip`: a
+/// tick that fires late is followed by the next tick still aligned to the
+/// original schedule.
+pub struct Interval {
+    next: Instant,
+    period: Duration,
+    sleep: Option<Sleep>,
+}
+
+/// Creates an [`Interval`] whose first tick completes one `period` from now.
+///
+/// # Panics
+///
+/// Panics if `period` is zero.
+#[must_use]
+pub fn interval(period: Duration) -> Interval {
+    interval_at(timer_now() + period, period)
+}
+
+/// Creates an [`Interval`] whose first tick completes at `start`.
+///
+/// # Panics
+///
+/// Panics if `period` is zero.
+#[must_use]
+pub fn interval_at(start: Instant, period: Duration) -> Interval {
+    assert!(period > Duration::ZERO, "`period` must be non-zero");
+    Interval {
+        next: start,
+        period,
+        sleep: None,
+    }
+}
+
+impl Interval {
+    /// Completes at the next tick and returns the instant it was scheduled for.
+    ///
+    /// Cancel safe: dropping the returned future before it completes keeps the
+    /// pending tick for the next call.
+    pub async fn tick(&mut self) -> Instant {
+        let Self {
+            next,
+            period,
+            sleep,
+        } = self;
+        sleep.get_or_insert_with(|| sleep_until(*next)).await;
+        *sleep = None;
+
+        let scheduled = *next;
+        let now = timer_now();
+        *next = if now > scheduled + INTERVAL_SKIP_THRESHOLD {
+            let behind = (now - scheduled).as_nanos() % period.as_nanos();
+            now + *period - Duration::from_nanos(behind as u64)
+        } else {
+            scheduled + *period
+        };
+        scheduled
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -258,5 +389,155 @@ impl Drop for ClockOverrideGuard {
         CLOCK_OVERRIDE.with(|clock| {
             let _ = clock.replace(previous);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+
+    /// Scenario: a future wrapped in `timeout_at` is still pending when the
+    /// installed `SimClock` reaches the deadline, while a second wrapped future
+    /// is already ready at its deadline.
+    /// Guarantees: the timeout resolves to `Err(Elapsed)` only once simulated
+    /// time reaches the deadline, and a ready future wins over an elapsed
+    /// deadline.
+    #[test]
+    fn timeout_at_follows_sim_clock() {
+        let clock = SimClock::new();
+        let _guard = clock.install();
+        let deadline = clock.now() + Duration::from_millis(10);
+
+        let mut pending = Box::pin(timeout_at(deadline, std::future::pending::<()>()));
+        assert!(pending.as_mut().now_or_never().is_none());
+        clock.advance(Duration::from_millis(9));
+        assert!(pending.as_mut().now_or_never().is_none());
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(pending.now_or_never(), Some(Err(Elapsed)));
+
+        let ready = timeout_at(deadline, std::future::ready(7));
+        assert_eq!(ready.now_or_never(), Some(Ok(7)));
+    }
+
+    /// Scenario: `timeout` is created, simulated time moves past its duration,
+    /// and only then is the returned future polled.
+    /// Guarantees: the deadline is taken when `timeout` is called, so the first
+    /// poll already reports `Err(Elapsed)`.
+    #[test]
+    fn timeout_deadline_starts_at_call() {
+        let clock = SimClock::new();
+        let _guard = clock.install();
+
+        let fut = timeout(Duration::from_millis(10), std::future::pending::<()>());
+        clock.advance(Duration::from_millis(10));
+        assert_eq!(fut.now_or_never(), Some(Err(Elapsed)));
+    }
+
+    /// Scenario: with tokio's clock paused and real time moving on, `timeout`,
+    /// `sleep` and `interval` are created and tokio time is advanced by hand.
+    /// Guarantees: relative deadlines on the system clock are measured on
+    /// tokio's clock, so each fires exactly when tokio time reaches it, as
+    /// with `tokio::time::timeout`, `tokio::time::sleep` and
+    /// `tokio::time::interval`.
+    #[tokio::test(start_paused = true)]
+    async fn relative_deadlines_follow_paused_tokio_clock() {
+        let mut timeout = Box::pin(timeout(
+            Duration::from_secs(3),
+            std::future::pending::<()>(),
+        ));
+        let mut sleep = sleep(Duration::from_secs(3));
+        let mut interval = interval(Duration::from_secs(3));
+        let start = tokio::time::Instant::now().into_std();
+
+        // Real time drifts away from the paused tokio clock.
+        std::thread::sleep(Duration::from_millis(20));
+
+        tokio::time::advance(Duration::from_millis(2_999)).await;
+        assert!(timeout.as_mut().now_or_never().is_none());
+        assert!(sleep.as_mut().now_or_never().is_none());
+        assert!(interval.tick().now_or_never().is_none());
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(timeout.now_or_never(), Some(Err(Elapsed)));
+        assert_eq!(sleep.now_or_never(), Some(()));
+        assert_eq!(
+            interval.tick().now_or_never(),
+            Some(start + Duration::from_secs(3))
+        );
+    }
+
+    /// Scenario: `timeout` wraps a future that spends the task's whole tokio
+    /// cooperative budget on every poll and never completes.
+    /// Guarantees: the timeout still expires, because the deadline is polled
+    /// without the budget once the wrapped future has used it up (as
+    /// `tokio::time::timeout` does).
+    #[tokio::test]
+    async fn timeout_expires_when_wrapped_future_exhausts_coop_budget() {
+        let budget_hog = async {
+            loop {
+                tokio::task::coop::consume_budget().await;
+            }
+        };
+        let guarded = tokio::time::timeout(
+            Duration::from_secs(5),
+            timeout(Duration::from_millis(10), budget_hog),
+        )
+        .await;
+        assert_eq!(guarded, Ok(Err(Elapsed)), "clock::timeout never expired");
+    }
+
+    /// Scenario: an `Interval` with a 10ms period ticks on schedule, then is
+    /// polled 25ms late; pending tick futures are dropped and polled again.
+    /// Guarantees: each tick returns its scheduled instant; a late tick skips
+    /// the missed ticks and stays aligned to the original schedule (like
+    /// tokio's `MissedTickBehavior::Skip`); a dropped pending tick keeps its
+    /// sleep, so repeated polls register one clock waiter, not one per poll.
+    #[test]
+    fn interval_skips_missed_ticks_on_sim_clock() {
+        let clock = SimClock::new();
+        let _guard = clock.install();
+        let start = clock.now() + Duration::from_millis(10);
+        let period = Duration::from_millis(10);
+        let mut interval = interval_at(start, period);
+
+        assert!(interval.tick().now_or_never().is_none());
+        assert!(interval.tick().now_or_never().is_none());
+        let waiters = clock
+            .inner
+            .state
+            .lock()
+            .expect("sim clock poisoned")
+            .waiters
+            .len();
+        assert_eq!(waiters, 1);
+        clock.advance_to(start);
+        assert_eq!(interval.tick().now_or_never(), Some(start));
+
+        // Late by 25ms: the tick scheduled at start+10 fires, the ones at
+        // start+20 and start+30 are skipped, and the next lands on start+40.
+        clock.advance_to(start + Duration::from_millis(35));
+        assert_eq!(
+            interval.tick().now_or_never(),
+            Some(start + Duration::from_millis(10))
+        );
+        assert!(interval.tick().now_or_never().is_none());
+        clock.advance_to(start + Duration::from_millis(40));
+        assert_eq!(
+            interval.tick().now_or_never(),
+            Some(start + Duration::from_millis(40))
+        );
+
+        // A tick within the skip threshold keeps the plain schedule.
+        clock.advance_to(start + Duration::from_millis(52));
+        assert_eq!(
+            interval.tick().now_or_never(),
+            Some(start + Duration::from_millis(50))
+        );
+        clock.advance_to(start + Duration::from_millis(60));
+        assert_eq!(
+            interval.tick().now_or_never(),
+            Some(start + Duration::from_millis(60))
+        );
     }
 }
