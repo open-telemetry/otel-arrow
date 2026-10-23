@@ -64,6 +64,7 @@ impl MetricsPublisher {
             .map_err(|error| PublisherBuildError::InvalidEndpoint(error.to_string()))?;
         let client = Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| PublisherBuildError::Client(Box::new(error)))?;
         Ok(Self {
@@ -148,6 +149,51 @@ mod tests {
             )
             .await
             .expect("publication should succeed");
+    }
+
+    /// Scenario: The publication endpoint redirects to a page that would return HTTP 200.
+    /// Guarantees: Redirects fail publication with their original status and are never followed.
+    #[tokio::test]
+    async fn rejects_redirects_without_following_them() {
+        for status in [301, 302, 303, 307, 308] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/metrics"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("location", format!("{}/login", server.uri())),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(path("/login"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let publisher = MetricsPublisher::new(
+                &format!("{}/metrics", server.uri()),
+                Duration::from_secs(30),
+            )
+            .expect("valid endpoint");
+
+            let error = publisher
+                .publish(
+                    "example-account",
+                    vec![6, 0],
+                    reqwest::header::AUTHORIZATION,
+                    authorization_header(),
+                )
+                .await
+                .expect_err("redirect must not count as successful publication");
+
+            assert!(
+                matches!(error, PublishError::Response { status: actual } if actual.as_u16() == status),
+                "expected original HTTP {status}, got {error}"
+            );
+            assert!(!error.is_retryable());
+            assert!(!error.is_unauthorized());
+        }
     }
 
     /// Scenario: The endpoint rejects a packet with a non-retryable client error.
