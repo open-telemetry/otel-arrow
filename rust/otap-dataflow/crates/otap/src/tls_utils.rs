@@ -652,7 +652,7 @@ pub(crate) async fn build_tonic_client_tls(
 /// if set. Unlike tonic's `ClientTlsConfig` (which carries domain info
 /// internally), `rustls::ClientConfig` does not carry SNI configuration --
 /// callers must apply it at the connector level (e.g. via
-/// [`hyper_rustls::FixedServerNameResolver`]). Ignoring this value will cause
+/// `hyper_rustls::FixedServerNameResolver`). Ignoring this value will cause
 /// certificate verification to use the hostname from the endpoint URL instead.
 pub async fn build_rustls_client_config(
     config: Option<&TlsClientConfig>,
