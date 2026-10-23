@@ -1113,3 +1113,7 @@ postgresql_module_tests!(framing);
 #[cfg(test)]
 #[path = "tls_tests.rs"]
 mod tls_tests;
+
+#[cfg(test)]
+#[path = "ci/live_tests.rs"]
+mod live_tests;
