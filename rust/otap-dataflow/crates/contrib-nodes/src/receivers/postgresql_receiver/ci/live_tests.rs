@@ -434,6 +434,9 @@ async fn live_transport_cancellation_and_reconnect() {
         {
             let client = reader.session.as_ref().expect("reader").client.as_ref().expect("client");
             let observer = observer.session.as_ref().expect("observer").client.as_ref().expect("client");
+            // A statement timeout has the same SQLSTATE as native cancellation.
+            // Disable it only for this probe; reconnect restores session defaults.
+            client.batch_execute("SET statement_timeout = 0").await.expect("disable probe timeout");
             let pid: i32 = client.query_one("SELECT pg_backend_pid()", &[]).await.expect("reader PID").get(0);
             let (cancelled, ()) = tokio::join!(
                 client.simple_query("SELECT pg_sleep(30)"),
