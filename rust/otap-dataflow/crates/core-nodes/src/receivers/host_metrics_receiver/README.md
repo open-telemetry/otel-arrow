@@ -125,15 +125,18 @@ config:
 These tables list telemetry emitted directly by this node. Common engine
 runtime metric sets may also be attached by the pipeline telemetry policy.
 
+Operational notes:
+* `<scope>.<instrument>` is used as shorthand for metric names.
+
 ### Metric Sets
 
 #### `receiver.host_metrics.scrapes`
 
 Scrape outcome counters dimensioned by `outcome`.
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.host_metrics.scrapes` | `{scrape}` | Number of scrape ticks recorded by outcome. |
+| Scope | Instrument | Unit | Attributes | Description |
+| --- | --- | --- | --- | --- |
+| `receiver.host_metrics.scrapes` | `scrapes` | `{scrape}` | `outcome` | Number of scrape ticks recorded by outcome. |
 
 Attributes:
 
@@ -145,9 +148,9 @@ Attributes:
 
 Error counters dimensioned by `error.type`.
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.host_metrics.errors` | `{error}` | Number of errors encountered during scrape ticks and delivery. |
+| Scope | Instrument | Unit | Attributes | Description |
+| --- | --- | --- | --- | --- |
+| `receiver.host_metrics.errors` | `errors` | `{error}` | `error.type` | Number of errors encountered during scrape ticks and delivery. |
 
 Attributes:
 
@@ -159,13 +162,13 @@ Attributes:
 
 Non-dimensioned operational and timing metrics.
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.host_metrics.scrapes_started` | `{scrape}` | Number of scrape ticks started. |
-| `receiver.host_metrics.families_scraped` | `{family}` | Number of due metric families processed. |
-| `receiver.host_metrics.batches_sent` | `{batch}` | Number of batches sent downstream. |
-| `receiver.host_metrics.scrape_duration_ns` | `ns` | Wall-clock scrape duration. |
-| `receiver.host_metrics.scrape_lag_ns` | `ns` | Delay between scheduled and actual scrape start. |
+| Scope | Instrument | Unit | Description |
+| --- | --- | --- | --- |
+| `receiver.host_metrics` | `scrapes.started` | `{scrape}` | Number of scrape ticks started. |
+| `receiver.host_metrics` | `families.scraped` | `{family}` | Number of due metric families processed. |
+| `receiver.host_metrics` | `batches.sent` | `{batch}` | Number of batches sent downstream. |
+| `receiver.host_metrics` | `scrape.duration.ns` | `ns` | Wall-clock scrape duration. |
+| `receiver.host_metrics` | `scrape.lag.ns` | `ns` | Delay between scheduled and actual scrape start. |
 
 ### Events
 

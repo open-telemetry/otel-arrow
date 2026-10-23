@@ -619,10 +619,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                     metrics::HostMetricsErrorType::PartialError,
                                     scrape.partial_errors,
                                 );
-                                metrics.record_error_count(
-                                    metrics::HostMetricsErrorType::SourceReadError,
-                                    scrape.partial_errors,
-                                );
                             }
                             tokio::task::consume_budget().await;
                             let pdata = match encode_snapshot(scrape.snapshot) {
@@ -706,7 +702,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Err(_) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
                                 metrics.record_scrape_outcome(metrics::ScrapeOutcome::Overrun);
                                 metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }

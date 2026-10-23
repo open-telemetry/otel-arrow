@@ -82,19 +82,19 @@ pub struct HostMetricsErrorMetrics {
 #[derive(Debug, Default, Clone)]
 pub struct HostMetricsGeneralMetrics {
     /// Number of scrape ticks started.
-    #[metric(name = "scrapes_started", unit = "{scrape}")]
+    #[metric(unit = "{scrape}")]
     pub scrapes_started: Counter<u64>,
     /// Number of due metric families processed.
-    #[metric(name = "families_scraped", unit = "{family}")]
+    #[metric(unit = "{family}")]
     pub families_scraped: Counter<u64>,
     /// Number of batches sent downstream.
-    #[metric(name = "batches_sent", unit = "{batch}")]
+    #[metric(unit = "{batch}")]
     pub batches_sent: Counter<u64>,
     /// Wall-clock scrape duration.
-    #[metric(name = "scrape_duration_ns", unit = "ns")]
+    #[metric(unit = "ns")]
     pub scrape_duration_ns: Mmsc,
     /// Delay between scheduled and actual scrape start.
-    #[metric(name = "scrape_lag_ns", unit = "ns")]
+    #[metric(unit = "ns")]
     pub scrape_lag_ns: Mmsc,
 }
 
