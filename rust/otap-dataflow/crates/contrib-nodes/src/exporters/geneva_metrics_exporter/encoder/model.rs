@@ -180,6 +180,14 @@ pub struct MetricExemplar {
 /// Geneva Metrics ingestion packet encoding failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum EncodeError {
+    /// One metric cannot fit within the publication size limit.
+    #[error("Geneva metrics packet size {size} exceeds the {maximum}-byte limit")]
+    PacketSizeOverflow {
+        /// Complete encoded size, including metadata and strings.
+        size: usize,
+        /// Maximum permitted packet size.
+        maximum: usize,
+    },
     /// A sampling flag requires a value that was not supplied.
     #[error("sampling flag {flag:#x} requires {field}")]
     MissingValue {
