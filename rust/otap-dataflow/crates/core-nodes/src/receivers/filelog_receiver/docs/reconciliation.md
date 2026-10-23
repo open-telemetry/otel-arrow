@@ -96,9 +96,16 @@ and replacement publication. Observing the change, or collecting binding evidenc
 while the change is latched, blocks that binding work for the rest of the pass;
 restoration cannot revive evidence collected under the replacement directory.
 A later pass with the expected parent and fresh evidence can recover. Exact-locator
-reconnection through an independently validated eligible alias remains available,
-even while the distinguished parent is blocked. The final complete-pass check
-requires both persistent parent latches and per-pass binding blocks to be clear.
+reconnection remains available through any independently validated eligible name,
+including the retained binding itself, regardless of which name sorts first.
+This offer does not authorize a new identity, supersession or binding change:
+admission still checks those transitions separately while the parent is blocked.
+An active historical record sharing the candidate path cannot veto reconnection
+solely because its parent is blocked. New-identity publication at that path is
+still rejected for every active blocked binding, including Superseded and
+Unverified records; locator equality alone does not prove continuity.
+The final complete-pass check requires both persistent parent latches and per-pass
+binding blocks to be clear.
 Ordinary unrelated traversal incompleteness alone does not prevent a contextual
 binding miss from authorizing exclusion.
 Exclusion never changes offsets or durable records.

@@ -3500,3 +3500,211 @@ fn parent_recovery_does_not_revive_owner_associated_binding_work() {
         [locator(2)]
     );
 }
+
+/// Scenario: A nonresident record's own locator is validated at its blocked binding, alone or with smaller/larger aliases in either order.
+/// Guarantees: Reconnection preserves the binding and parent block regardless of selected-path order; new identity and binding-change attempts fail before their callbacks.
+#[test]
+fn blocked_binding_allows_own_locator_reconnection_in_all_path_orders() {
+    for paths in [
+        &["/logs/app"][..],
+        &["/logs/app", "/zz/app"][..],
+        &["/zz/app", "/logs/app"][..],
+        &["/logs/app", "/logs.old/app"][..],
+        &["/logs.old/app", "/logs/app"][..],
+    ] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        let mut tracked = file(1, "/logs/app");
+        tracked.resident = false;
+        r.track(tracked).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(
+            &mut r,
+            &evidence(Some(10), "/logs", ScanReason::Directory),
+            &mut events,
+        );
+        assert!(finish(&mut r, true, &mut events).complete);
+        for generation in [2, 3] {
+            start(&mut r, generation);
+            if generation == 2 {
+                feed(
+                    &mut r,
+                    &evidence(Some(11), "/logs", ScanReason::Directory),
+                    &mut events,
+                );
+            }
+            for path in paths {
+                feed(&mut r, &observation(1, path), &mut events);
+            }
+            assert!(!finish(&mut r, true, &mut events).complete);
+            let token = {
+                let mut offers = r.offers().unwrap();
+                let offer = offers.next().expect("own locator remains reconnectable");
+                assert_eq!(offer.candidate.locator, locator(1));
+                assert_eq!(offer.candidate.path, Path::new(paths.iter().min().unwrap()));
+                let token = offer.token;
+                assert!(offers.next().is_none());
+                token
+            };
+            assert!(
+                r.admit(token, file(1, "/changed"), |_| panic!(
+                    "binding change reached durable owner"
+                ))
+                .is_err()
+            );
+            if paths.iter().min() == Some(&"/logs/app") {
+                let mut new_identity = file(2, "/logs/app");
+                new_identity.locator = locator(1);
+                assert_eq!(
+                    r.admit(token, new_identity, |_| panic!(
+                        "new identity reached durable owner"
+                    )),
+                    Err(ReconcileError::Feedback)
+                );
+            }
+            assert!(
+                r.admit(token, file(1, "/logs/app"), |_| Some(Duration::from_secs(
+                    generation * 10 + 2
+                )))
+                .unwrap()
+            );
+            let retained = &r.tracked[&TrackedId(1)];
+            assert_eq!(
+                retained.file.binding.as_deref(),
+                Some(Path::new("/logs/app"))
+            );
+            assert_eq!(retained.file.role, BindingRole::Live);
+            assert!(retained.file.resident);
+            assert!(retained.parent_changed);
+            assert!(retained.binding_blocked());
+            r.update_reader_state(generation, TrackedId(1), true, false)
+                .unwrap();
+        }
+    }
+}
+
+/// Scenario: A blocked Live, Superseded or Unverified binding exposes an offer for its own locator.
+/// Guarantees: A new runtime identity is rejected before durability regardless of binding role, while same-ID reconnection preserves the role and block.
+#[test]
+fn blocked_historical_bindings_allow_only_reconnection() {
+    for role in [
+        BindingRole::Live,
+        BindingRole::Superseded,
+        BindingRole::Unverified,
+    ] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        let mut tracked = file(1, "/logs/app");
+        tracked.role = role;
+        tracked.resident = false;
+        r.track(tracked).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(
+            &mut r,
+            &evidence(Some(10), "/logs", ScanReason::Directory),
+            &mut events,
+        );
+        assert!(finish(&mut r, true, &mut events).complete);
+        start(&mut r, 2);
+        feed(
+            &mut r,
+            &evidence(Some(11), "/logs", ScanReason::Directory),
+            &mut events,
+        );
+        feed(&mut r, &observation(1, "/logs/app"), &mut events);
+        assert!(!finish(&mut r, true, &mut events).complete);
+        let token = r
+            .offers()
+            .unwrap()
+            .next()
+            .expect("reconnection offer")
+            .token;
+        let mut new_identity = file(2, "/logs/app");
+        new_identity.locator = locator(1);
+        assert_eq!(
+            r.admit(token, new_identity, |_| panic!(
+                "new identity reached durable owner"
+            )),
+            Err(ReconcileError::Feedback)
+        );
+        let mut reconnect = file(1, "/logs/app");
+        reconnect.role = role;
+        assert!(
+            r.admit(token, reconnect, |_| Some(Duration::from_secs(22)))
+                .unwrap()
+        );
+        let retained = &r.tracked[&TrackedId(1)];
+        assert_eq!(retained.file.role, role);
+        assert_eq!(
+            retained.file.binding.as_deref(),
+            Some(Path::new("/logs/app"))
+        );
+        assert!(retained.file.resident);
+        assert!(retained.binding_blocked());
+    }
+}
+
+/// Scenario: An active Superseded predecessor shares a blocked path with a nonresident Live successor after rotation.
+/// Guarantees: The predecessor cannot veto unchanged successor reconnection, but new identity publication stays blocked before durability.
+#[test]
+fn blocked_historical_predecessor_does_not_veto_live_reconnection() {
+    for ids in [[1, 2], [2, 1]] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        for id in ids {
+            let mut tracked = file(id, "/logs/app");
+            if id == 1 {
+                tracked.role = BindingRole::Superseded;
+            } else {
+                tracked.resident = false;
+            }
+            r.track(tracked).unwrap();
+        }
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(
+            &mut r,
+            &evidence(Some(10), "/logs", ScanReason::Directory),
+            &mut events,
+        );
+        assert!(finish(&mut r, true, &mut events).complete);
+        start(&mut r, 2);
+        feed(
+            &mut r,
+            &evidence(Some(11), "/logs", ScanReason::Directory),
+            &mut events,
+        );
+        feed(&mut r, &observation(2, "/logs/app"), &mut events);
+        assert!(!finish(&mut r, true, &mut events).complete);
+        let offers: Vec<_> = r
+            .offers()
+            .unwrap()
+            .map(|o| (o.token, o.candidate.locator))
+            .collect();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].1, locator(2));
+        let mut new_identity = file(3, "/logs/app");
+        new_identity.locator = locator(2);
+        assert_eq!(
+            r.admit(offers[0].0, new_identity, |_| panic!(
+                "new identity reached durable owner"
+            )),
+            Err(ReconcileError::Feedback)
+        );
+        assert!(
+            r.admit(offers[0].0, file(2, "/logs/app"), |_| Some(
+                Duration::from_secs(22)
+            ))
+            .unwrap()
+        );
+        assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Superseded);
+        assert_eq!(r.tracked[&TrackedId(2)].file.role, BindingRole::Live);
+        assert!(r.tracked[&TrackedId(2)].file.resident);
+        for id in [1, 2] {
+            assert!(r.tracked[&TrackedId(id)].binding_blocked());
+            assert_eq!(
+                r.tracked[&TrackedId(id)].file.binding.as_deref(),
+                Some(Path::new("/logs/app"))
+            );
+        }
+    }
+}

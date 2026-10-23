@@ -359,6 +359,17 @@ impl Reconciler {
         let offer = self.candidates.offer(token)?;
         let candidate = offer.candidate;
         let new_identity = !self.tracked.contains_key(&file.id);
+        // Locator equality is only an offer hint, not proof of continuity.
+        // Historical and recovered bindings retain parent-publication guards
+        // even when no Live predecessor exists to be superseded.
+        if new_identity
+            && self
+                .bindings
+                .records(candidate.path.as_os_str(), &self.tracked)
+                .any(|tracked| tracked.file.active && tracked.binding_blocked())
+        {
+            return Err(ReconcileError::Feedback);
+        }
         // Historical replacement context controls start policy, not ownership.
         // Only the current Live owner of the chosen path can be superseded or
         // exempted from duplicate-binding preflight. Other rebounds remain work

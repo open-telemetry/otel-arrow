@@ -1213,15 +1213,24 @@ impl Reconciler {
         let pass = self.pass.take().expect("checked active pass");
         self.detect_binding_cycles();
         self.candidates.block_conflicts(|candidate| {
-            self.locators
-                .records(&candidate.locator, &self.tracked)
-                .any(|tracked| tracked.file.active && tracked.pass.conflict)
-                || self
-                    .bindings
-                    .records(candidate.path.as_os_str(), &self.tracked)
-                    .any(|tracked| {
-                        tracked.file.active && (tracked.pass.conflict || tracked.binding_blocked())
-                    })
+            // An offer can reconnect an existing record even when another
+            // historical binding at this path has a parent block. Admission
+            // separately rejects new identity publication at any blocked path.
+            let mut reconnect = false;
+            for tracked in self.locators.records(&candidate.locator, &self.tracked) {
+                if tracked.file.active {
+                    reconnect = true;
+                    if tracked.pass.conflict {
+                        return true;
+                    }
+                }
+            }
+            self.bindings
+                .records(candidate.path.as_os_str(), &self.tracked)
+                .any(|tracked| {
+                    tracked.file.active
+                        && (tracked.pass.conflict || (!reconnect && tracked.binding_blocked()))
+                })
         });
         self.unresolved_rebounds = self
             .tracked
