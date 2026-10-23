@@ -539,22 +539,28 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.drain_ingress");
-                            if let Some(in_flight_scrape) = in_flight.take() {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
-                                    metrics.general.scrape_duration_ns.record(elapsed_nanos(in_flight_scrape.started));
-                                }
+                            if let (Some(in_flight_scrape), Some(metrics)) =
+                                (in_flight.take(), metrics.as_mut())
+                            {
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
+                                metrics
+                                    .general
+                                    .scrape_duration_ns
+                                    .record(elapsed_nanos(in_flight_scrape.started));
                             }
                             effect_handler.notify_receiver_drained().await?;
                             return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.shutdown");
-                            if let Some(in_flight_scrape) = in_flight.take() {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
-                                    metrics.general.scrape_duration_ns.record(elapsed_nanos(in_flight_scrape.started));
-                                }
+                            if let (Some(in_flight_scrape), Some(metrics)) =
+                                (in_flight.take(), metrics.as_mut())
+                            {
+                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
+                                metrics
+                                    .general
+                                    .scrape_duration_ns
+                                    .record(elapsed_nanos(in_flight_scrape.started));
                             }
                             return Ok(terminal_state(deadline, &mut metrics));
                         }
