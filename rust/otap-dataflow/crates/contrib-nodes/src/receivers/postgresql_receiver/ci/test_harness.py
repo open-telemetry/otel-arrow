@@ -9,9 +9,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import run
 
@@ -151,6 +153,167 @@ class HarnessTests(unittest.TestCase):
         self.cleanup_error = False
         run.cleanup(self.artifacts)
         self.assert_cleaned()
+
+    # Scenario: Compose waits for a fixture that has finished initialization.
+    # Guarantees: Both readiness probes require TCP, which the temporary init server never opens.
+    def test_tcp_readiness(self):
+        healthcheck = run.COMPOSE.read_text(encoding="utf-8").split("healthcheck:", 1)[1]
+        self.assertIn("pg_isready -h 127.0.0.1", healthcheck)
+        self.assertIn('PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h 127.0.0.1', healthcheck)
+        self.assertIn("SELECT count(*) FROM public.receiver_events", healthcheck)
+
+    # Scenario: The owned command succeeds, fails, times out, or is interrupted.
+    # Guarantees: Every result waits for process-group cleanup before returning or propagating the error.
+    def test_command_cleanup_order(self):
+        self.mock_command.stop()
+        for outcome in ("success", "failure", "timeout", "interrupt"):
+            with self.subTest(outcome=outcome):
+                process = Mock()
+                process.returncode = 17 if outcome == "failure" else 0
+                error = {
+                    "timeout": subprocess.TimeoutExpired(["owned"], 30),
+                    "interrupt": KeyboardInterrupt(),
+                }.get(outcome)
+                process.communicate.side_effect = error
+                process.communicate.return_value = ("output", None)
+                with patch.object(run.os, "name", "posix"), \
+                        patch.object(run.subprocess, "Popen", return_value=process) as launch, \
+                        patch.object(run, "stop_group") as stop:
+                    if outcome == "success":
+                        self.assertEqual(run.command(
+                            ["owned"], env={}, timeout=30,
+                        ).stdout, "output")
+                    else:
+                        expected = type(error) if error else subprocess.CalledProcessError
+                        with self.assertRaises(expected):
+                            run.command(["owned"], env={}, timeout=30)
+                    self.assertTrue(launch.call_args.kwargs["start_new_session"])
+                    stop.assert_called_once_with(process)
+
+    # Scenario: An owned group ignores TERM, or has already exited before cleanup.
+    # Guarantees: Cleanup escalates only for that group and always joins the direct child.
+    def test_group_escalation(self):
+        process = Mock(pid=12345)
+        with patch.object(run.os, "killpg", create=True) as kill, \
+                patch.object(run.signal, "SIGKILL", 9, create=True), \
+                patch.object(run.time, "monotonic", side_effect=[0, 6]):
+            run.stop_group(process)
+        self.assertEqual(kill.call_args_list, [
+            call(12345, run.signal.SIGTERM), call(12345, 0),
+            call(12345, 9),
+        ])
+        process.wait.assert_called_once_with(timeout=5)
+        process.reset_mock()
+        with patch.object(run.os, "killpg", create=True, side_effect=ProcessLookupError):
+            run.stop_group(process)
+        process.wait.assert_called_once_with(timeout=5)
+
+
+@unittest.skipUnless(sys.platform == "linux", "real owned process groups require the Linux CI runner")
+class ProcessTreeTests(unittest.TestCase):
+    def exercise(self, outcome, ignore_term=False):
+        with tempfile.TemporaryDirectory(prefix="otel-pg-process-test-") as directory:
+            root = Path(directory)
+            script = r"""
+import os, pathlib, signal, subprocess, sys, time
+root = pathlib.Path(sys.argv[1])
+ignore = sys.argv[3] == "1"
+if ignore:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if sys.argv[2] == "child":
+    (root / "ready.tmp").write_text(str(os.getpid()))
+    (root / "ready.tmp").rename(root / "ready")
+    while True:
+        signal.pause()
+child = subprocess.Popen(
+    [sys.executable, __file__, str(root), "child", sys.argv[3]],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+def terminate(_signum, _frame):
+    child.wait(timeout=10)
+    sys.exit(0)
+if not ignore:
+    signal.signal(signal.SIGTERM, terminate)
+while not (root / "go").exists():
+    time.sleep(0.01)
+if sys.argv[4] == "failure":
+    sys.exit(17)
+while True:
+    signal.pause()
+"""
+            path = root / "tree.py"
+            path.write_text(script, encoding="utf-8")
+            original_popen = subprocess.Popen
+            captured = []
+
+            def launch(*args, **kwargs):
+                process = original_popen(*args, **kwargs)
+                captured.append(process)
+                communicate = process.communicate
+
+                def at_ready(timeout):
+                    deadline = time.monotonic() + 30
+                    while not (root / "ready").exists():
+                        if time.monotonic() >= deadline or process.poll() is not None:
+                            self.fail("owned child did not signal readiness")
+                        time.sleep(0.01)
+                    (root / "go").touch()
+                    if outcome == "interrupt":
+                        raise KeyboardInterrupt()
+                    return communicate(timeout=0 if outcome == "timeout" else timeout)
+
+                process.communicate = at_ready
+                return process
+
+            expected = {
+                "timeout": subprocess.TimeoutExpired,
+                "interrupt": KeyboardInterrupt,
+                "failure": subprocess.CalledProcessError,
+            }[outcome]
+            try:
+                with patch.object(run.subprocess, "Popen", side_effect=launch):
+                    with self.assertRaises(expected):
+                        run.command(
+                            [sys.executable, str(path), str(root), "parent",
+                             str(int(ignore_term)), outcome],
+                            env=os.environ.copy(), timeout=30,
+                        )
+                self.assertIsNotNone(captured[0].poll(), "direct child reaped")
+                pid = int((root / "ready").read_text())
+                status = Path(f"/proc/{pid}/stat")
+                deadline = time.monotonic() + 5
+                while status.exists():
+                    try:
+                        if status.read_text().split(") ", 1)[1][0] == "Z":
+                            break
+                    except FileNotFoundError:
+                        break
+                    if time.monotonic() >= deadline:
+                        self.fail("grandchild must not remain alive")
+                    time.sleep(0.01)
+            finally:
+                if captured:
+                    run.stop_group(captured[0])
+
+    # Scenario: A command times out after its grandchild signals readiness.
+    # Guarantees: The real command and descendant are terminated and the direct child is joined.
+    def test_timeout_tree(self):
+        self.exercise("timeout")
+
+    # Scenario: An interrupt arrives while an owned command tree is running.
+    # Guarantees: KeyboardInterrupt propagates only after the real process tree is stopped.
+    def test_interrupted_tree(self):
+        self.exercise("interrupt")
+
+    # Scenario: A failed direct child leaves its grandchild running.
+    # Guarantees: Failure cleanup terminates descendants even though their parent has exited.
+    def test_failed_parent_tree(self):
+        self.exercise("failure")
+
+    # Scenario: Both command and grandchild ignore graceful termination.
+    # Guarantees: Bounded escalation kills the full owned group rather than leaving live descendants.
+    def test_timeout_escalates(self):
+        self.exercise("timeout", ignore_term=True)
 
 
 if __name__ == "__main__":

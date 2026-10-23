@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -28,10 +29,41 @@ LIVE_TESTS = (
 
 
 def command(args, *, env, timeout, stdout=None):
-    return subprocess.run(
-        args, cwd=WORKSPACE, env=env, timeout=timeout, check=True,
+    if os.name != "posix":
+        raise RuntimeError("The Compose CI runner requires Linux process-group support")
+    process = subprocess.Popen(
+        args, cwd=WORKSPACE, env=env, start_new_session=True,
         stdout=stdout, stderr=subprocess.STDOUT if stdout else None, text=True,
     )
+    try:
+        output, _ = process.communicate(timeout=timeout)
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, args, output=output)
+        return subprocess.CompletedProcess(args, process.returncode, stdout=output)
+    finally:
+        # Cargo may have descendants even after its direct child exits. The
+        # private session keeps signals scoped to this command, never the caller.
+        stop_group(process)
+
+
+def stop_group(process):
+    def signal_group(sig):
+        try:
+            os.killpg(process.pid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+
+    if signal_group(signal.SIGTERM):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            process.poll()
+            if not signal_group(0):
+                break
+            time.sleep(0.05)
+        if signal_group(0):
+            signal_group(signal.SIGKILL)
+    process.wait(timeout=5)
 
 
 def compose(project):

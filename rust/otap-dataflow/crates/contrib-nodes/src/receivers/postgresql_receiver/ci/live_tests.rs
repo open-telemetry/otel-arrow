@@ -61,7 +61,7 @@ fn config(mode: &str, state: &Path) -> Value {
         "connection":{"host":"localhost","port":port,"database":"receiver_fixture","tls":{"ca_file":ca_file}},
         "query":{
             "statement":format!("SELECT e.event_id, e.event_ts, e.actor, e.scalar_ts FROM public.receiver_events AS e {predicate}"),
-            "interval":"1m","fetch_size_rows":1,"max_rows_per_poll":if mode == "snapshot" {3} else {2},
+            "interval":"1m","fetch_size_rows":1,"max_rows_per_poll":match mode {"snapshot" => 3, "composite" => 1, _ => 2},
             "max_batch_bytes":"10 MiB","catch_up":{"max_pages":1}
         },
         "watermark":watermark,
@@ -120,22 +120,14 @@ async fn live_verified_tls_polling_modes() {
             );
             let mut cursor = query.watermark().initial();
             let mut rows = Vec::new();
+            let mut page_sizes = Vec::new();
             loop {
                 _ = adapter.begin_operation().expect("page operation");
                 let page = adapter.execute(&query, &cursor).await.expect("native page");
                 if page.rows.is_empty() {
                     break;
                 }
-                assert_eq!(
-                    page.rows.len(),
-                    if mode == "snapshot" {
-                        3
-                    } else if rows.is_empty() {
-                        2
-                    } else {
-                        1
-                    }
-                );
+                page_sizes.push(page.rows.len());
                 cursor = page.rows.last().expect("page cursor").cursor.clone();
                 rows.extend(page.rows);
                 if mode == "snapshot" {
@@ -144,6 +136,24 @@ async fn live_verified_tls_polling_modes() {
                 assert!(rows.len() <= 3, "keyset advances without replay");
             }
             assert_eq!(rows.len(), 3);
+            assert_eq!(
+                page_sizes,
+                match mode {
+                    "snapshot" => vec![3],
+                    "composite" => vec![1, 1, 1],
+                    _ => vec![2, 1],
+                }
+            );
+            if mode == "composite" {
+                assert_eq!(
+                    rows[0].cursor,
+                    Cursor::composite("2026-10-05T00:00:01.000000Z".into(), 1)
+                );
+                assert_eq!(
+                    rows[1].cursor,
+                    Cursor::composite("2026-10-05T00:00:01.000000Z".into(), 2)
+                );
+            }
             for (index, row) in rows.iter().enumerate() {
                 let timestamp = if index < 2 {
                     "2026-10-05T00:00:01.000000Z"
@@ -417,7 +427,7 @@ fn live_factory_replay_and_restart() {
 }
 
 /// Scenario: The owned TLS database cancels a running query, then disconnects an idle reader.
-/// Guarantees: Native TLS cancellation is observed, idle reconnect resumes polling, untrusted TLS fails, and drivers join.
+/// Guarantees: Native cancellation is observed; failed polling recovers through the current reconnect fence and revalidation.
 #[tokio::test]
 #[ignore = "requires the PostgreSQL TLS fixture; run ci/run.py test"]
 async fn live_transport_cancellation_and_reconnect() {
@@ -461,8 +471,31 @@ async fn live_transport_cancellation_and_reconnect() {
         while !reader.session.as_ref().expect("reader").driver.is_finished() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        _ = reader.begin_operation().expect("reconnect operation");
-        reader.reconnect(&query).await.expect("idle reconnect");
+        _ = reader.begin_operation().expect("disconnected poll operation");
+        let error = reader.execute(&query, &query.watermark().initial()).await.expect_err("disconnected session cannot emit");
+        assert!(PostgreSqlAdapter::is_retryable(&error), "production controller retries this transport error");
+        // Existing behavior conservatively fences even this already-dead idle
+        // session. Do not bypass the fence; shutdown during it reports Cleanup.
+        assert!(reader.reconnect_not_before.is_some_and(|deadline| deadline > Instant::now()));
+        // Match the controller's real retry policy (1s, doubling up to 30s).
+        // Waiting on the fence consumes the reconnect operation's timeout too,
+        // so a retryable Timeout can require another reconnect attempt.
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            tokio::time::sleep(backoff).await;
+            _ = reader.begin_operation().expect("reconnect operation");
+            match reader.reconnect(&query).await {
+                Ok(()) => break,
+                Err(error) => {
+                    assert_eq!(error, Error::Timeout, "only the known reconnect-fence timeout is allowed");
+                    assert!(PostgreSqlAdapter::is_retryable(&error));
+                    backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                }
+            }
+        }
+        assert!(reader.reconnect_not_before.is_none(), "reconnect awaited the production fence");
+        _ = reader.begin_operation().expect("revalidation operation");
+        assert_eq!(reader.validate_query(&query).await.expect("metadata after reconnect").len(), 4);
         _ = reader.begin_operation().expect("poll operation");
         let page = reader.execute(&query, &query.watermark().initial()).await.expect("resumed polling");
         assert_eq!(page.rows.len(), 2);

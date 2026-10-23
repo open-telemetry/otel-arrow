@@ -361,7 +361,7 @@ advances the acknowledged checkpoint.
 
 The shared contrib workflow selects the advisory Ubuntu 24.04 job for receiver
 and shared dependency changes, following the Oracle and SQL Server patterns.
-With Docker Compose v2, Python, and Rust build prerequisites, run from the
+On Linux with Docker Compose v2, Python, and Rust build prerequisites, run from the
 repository root:
 
 ```sh
@@ -377,7 +377,13 @@ independent. Certificate rotation and full `df_engine` process smoke tests are
 not part of this suite.
 
 Runs own a unique Compose project, private temporary credentials, and ephemeral
-loopback port; cleanup runs on failure too. Manual fixture defaults are unchanged.
+loopback port; commands own a process group terminated before failure cleanup.
+Readiness requires the final TCP server, not its Unix-only initialization server.
+Manual fixture defaults are unchanged. Idle-disconnect coverage follows failed
+polling, retryable error, reconnect, revalidation, and polling. It currently waits
+through the receiver's conservative 30-second reconnect fence; shutdown during
+that fence reports unconfirmed cleanup, and a reconnect timeout may require another
+controller retry. Fixing that production behavior is separate.
 For an already provisioned fixture, set `OTEL_ARROW_POSTGRESQL_TEST_PORT` and
 `OTEL_ARROW_POSTGRESQL_TEST_CA_FILE`, then run from `rust/otap-dataflow`:
 
