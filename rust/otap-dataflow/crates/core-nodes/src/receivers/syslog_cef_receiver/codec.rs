@@ -57,6 +57,10 @@ pub(super) const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SYNC_BATCH_ITEMS: usize = 256;
 const MAX_SYNC_BATCH_BYTES: usize = 256 * 1024;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
+// Learn from the most recent batch, not a high-water mark. A hint carries no
+// buffer and is applied only after another message arrives. The cap and sealing
+// trim below bound over-reservation after a burst turns into sparse traffic.
+const MAX_LEARNED_BATCH_CAPACITY: usize = 1024 * 1024;
 
 const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
     min_size: Some(100),
@@ -113,6 +117,7 @@ pub(super) struct SyslogBatchBuilder {
     bytes: BytesMut,
     item_count: u32,
     max_items_hint: usize,
+    reservation_hint: usize,
     run_year: Option<i32>,
     run_count: u32,
     run_count_offset: usize,
@@ -166,6 +171,7 @@ impl SyslogBatchBuilder {
             bytes,
             item_count: 0,
             max_items_hint: max_items_hint.clamp(1, MAX_BATCH_ITEMS),
+            reservation_hint: 0,
             run_year: None,
             run_count: 0,
             run_count_offset: 0,
@@ -238,8 +244,9 @@ impl SyslogBatchBuilder {
             self.run_year = Some(received_local_year);
         }
         if self.is_empty() {
-            self.bytes
-                .reserve(predicted_frame_capacity(self.max_items_hint, message.len()));
+            let predicted = predicted_frame_capacity(self.max_items_hint, message.len());
+            let learned = self.reservation_hint.saturating_sub(self.bytes.len());
+            self.bytes.reserve(predicted.max(learned));
         }
         self.item_count = item_count;
         // A run is no larger than the checked total item count above.
@@ -252,7 +259,8 @@ impl SyslogBatchBuilder {
     /// Replaces this builder while retaining its configured item-count hint.
     #[must_use]
     pub(super) fn take(&mut self) -> Self {
-        let replacement = Self::with_max_items(self.max_items_hint);
+        let mut replacement = Self::with_max_items(self.max_items_hint);
+        replacement.reservation_hint = self.bytes.len().min(MAX_LEARNED_BATCH_CAPACITY);
         std::mem::replace(self, replacement)
     }
 
@@ -276,6 +284,13 @@ impl SyslogBatchBuilder {
             .copy_from_slice(&self.run_count.to_be_bytes());
         for offset in std::iter::once(BATCH_HEADER_LEN).chain(self.additional_run_offsets) {
             self.bytes[offset..offset + 8].copy_from_slice(&observed_time.to_be_bytes());
+        }
+        // Do not queue a tiny timer-flushed payload backed by a learned large
+        // allocation. The next builder's hint also decays to this actual size.
+        if self.bytes.capacity() > MAX_PREDICTED_BATCH_CAPACITY
+            && self.bytes.len() < self.bytes.capacity() / 4
+        {
+            self.bytes = BytesMut::from(self.bytes.as_ref());
         }
         let item_count = self.item_count as usize;
         Ok(SyslogBatch {
@@ -1633,6 +1648,77 @@ mod tests {
             predicted_frame_capacity(usize::MAX, usize::MAX),
             MAX_PREDICTED_BATCH_CAPACITY - BATCH_HEADER_LEN - RUN_HEADER_LEN
         );
+    }
+
+    /// Scenario: Successive homogeneous full batches follow the same receiver target.
+    /// Guarantees: Learning the previous size avoids buffer growth on the next batch
+    /// without allocating a large replacement buffer while the connection is idle.
+    #[test]
+    fn reservation_learns_recent_size_without_retaining_a_buffer() {
+        let message = [b'x'; 100];
+        let mut builder = SyslogBatchBuilder::with_max_items(MAX_BATCH_ITEMS);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(&message, 2024).unwrap();
+        }
+        let previous_size = builder.bytes.len();
+        let first = builder.take().finish(42).unwrap();
+        assert_eq!(validated_item_count(&first.bytes).unwrap(), MAX_BATCH_ITEMS);
+        assert_eq!(builder.reservation_hint, previous_size);
+        assert!(builder.capacity() <= MAX_PREDICTED_BATCH_CAPACITY);
+        builder.append_with_year(&message, 2024).unwrap();
+        let capacity = builder.capacity();
+        let pointer = builder.bytes.as_ptr();
+        for _ in 1..MAX_BATCH_ITEMS {
+            builder.append_with_year(&message, 2024).unwrap();
+        }
+        assert_eq!(builder.capacity(), capacity);
+        assert_eq!(builder.bytes.as_ptr(), pointer);
+        assert_eq!(builder.take().finish(42).unwrap().bytes, first.bytes);
+    }
+
+    /// Scenario: A large batch is followed by sparse traffic and a timer-sized seal.
+    /// Guarantees: The published small batch sheds excess capacity, preserves its
+    /// frame, and the next reservation follows the small batch rather than the peak.
+    #[test]
+    fn reservation_decays_and_small_output_does_not_retain_large_capacity() {
+        let mut builder = SyslogBatchBuilder::with_max_items(MAX_BATCH_ITEMS);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(&[b'x'; 100], 2024).unwrap();
+        }
+        drop(builder.take());
+        builder.append_with_year(b"small", 2025).unwrap();
+        let oversized_pointer = builder.bytes.as_ptr();
+        let small_size = builder.bytes.len();
+        let batch = builder.take().finish(7).unwrap();
+        assert_ne!(batch.bytes.as_ptr(), oversized_pointer);
+        assert_eq!(builder.reservation_hint, small_size);
+        let (_, frames) = validated_frames(&batch.bytes).unwrap();
+        let frame = frames.into_iter().next().unwrap().unwrap();
+        assert_eq!(frame.message, b"small");
+        assert_eq!(frame.observed_time, 7);
+        assert_eq!(frame.received_local_year, 2025);
+        builder.append_with_year(b"small", 2025).unwrap();
+        assert!(builder.capacity() <= MAX_PREDICTED_BATCH_CAPACITY);
+    }
+
+    /// Scenario: Large messages grow a batch beyond the learning cap before discard.
+    /// Guarantees: The next prediction is capped and memory-pressure discard resets
+    /// both buffered data and the capacity hint without changing the item target.
+    #[test]
+    fn reservation_is_capped_and_discard_forgets_it() {
+        let mut builder = SyslogBatchBuilder::with_max_items(MAX_BATCH_ITEMS);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(&[b'x'; 200], 2024).unwrap();
+        }
+        assert!(builder.bytes.len() > MAX_LEARNED_BATCH_CAPACITY);
+        drop(builder.take());
+        assert_eq!(builder.reservation_hint, MAX_LEARNED_BATCH_CAPACITY);
+        builder.append_with_year(b"small", 2024).unwrap();
+        builder.discard();
+        assert!(builder.is_empty());
+        assert_eq!(builder.reservation_hint, 0);
+        assert_eq!(builder.max_items_hint, MAX_BATCH_ITEMS);
+        assert!(builder.capacity() <= MAX_PREDICTED_BATCH_CAPACITY);
     }
 
     /// Scenario: Encoded framing is malformed or contains trailing data.
