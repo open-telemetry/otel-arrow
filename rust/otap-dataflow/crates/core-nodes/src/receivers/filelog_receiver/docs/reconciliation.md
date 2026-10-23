@@ -51,7 +51,11 @@ file or cancel finalization. `Validated` supplies fresh eligible evidence for
 identity and resident-handle validation. Locator equality alone proves neither.
 
 `CoverageLost`, `RootChanged(path)` and `ParentChanged(id)` arrive before pass
-completion. Both traversal and targeted checks identify changed roots. Parent
+completion. Candidate shrink, changed fingerprint prefixes, contradictory
+tracked bindings, and conflicts against retained candidate paths emit
+`CoverageLost(Unstable)` when detected, before the observation call returns.
+Consumers must process that evidence even if the pass never finishes. Both
+traversal and targeted checks identify changed roots. Parent
 changes remain latched, including for inactive retained records, until the
 expected environment returns or the receiver is recreated.
 
@@ -122,6 +126,7 @@ bounded authoritative `AdvisoryPath` remains with checkpoint/identity state.
 Its truncated suffix cannot be opened or used for native lexicographic ordering.
 `associate_replacement` accepts narrowly associated owner-provided context; it
 must not associate every candidate merely because some saved path is unavailable.
+Its evidence callback reports contradictory associations immediately too.
 
 ## Bounded selection and memory
 
@@ -142,7 +147,14 @@ slots; a one-slot budget alternates groups. Full tracked capacity still permits
 identity matching and reconnection. Only identities proven to require new slots
 are parked while capacity is full. No finite starvation bound is claimed.
 Detected candidate instability is latched
-for the entire pass, even when an overflow sample is later evicted. Token
+for the entire pass, even when an overflow sample is later evicted. A bounded
+slot-only path index checks fresh observations against retained candidates'
+selected native paths without copying path keys. It includes pending and
+sampled candidates, updates before path mutation or slot reuse, and resets at
+`begin`; historical paths from earlier passes are not conflict evidence. It is
+not an unbounded history of all observed aliases. Conflicting candidates are
+withheld, including a newly sampled candidate that replaces the conflicting
+slot. Token
 validation uses generation, slot bounds, selection and acknowledgement state
 without searching the offer list. A feedback cursor skips acknowledged prefixes
 once, so draining offers does not repeatedly scan earlier acknowledgements.

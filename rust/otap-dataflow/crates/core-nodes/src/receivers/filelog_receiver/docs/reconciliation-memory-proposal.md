@@ -13,6 +13,8 @@ The implementation now uses:
 - ID-only locator, binding and parent indexes. Native keys are compared against
   record-owned paths, including full equality after hash matches. Historical
   records can share keys. Rebind removes old entries before changing a path.
+- A current-pass candidate path index containing only slot numbers. Keys are
+  read from existing candidate buffers; no additional paths are owned.
 - One exact-length binding and two reusable alias buffers. Alias buffers grow
   lazily, but their capacity never exceeds the native-path limit L. No full-path
   copies or per-key ID vectors are owned by the indexes.
@@ -35,7 +37,10 @@ from one fixture. It covers the record, three ID worklists and four ID/slot hash
 tables reserved at twice their maximum live population. At the pinned hashbrown
 load factor, power-of-two rounding requires fewer than 32N/7 buckets per table.
 The record/worklist sizes plus rounded table payloads fit within 512 bytes per
-record; a regression checks this when types change. Fixed owner/table padding
+record; a regression checks this when types change. The candidate metadata term
+covers its slot, selection scratch, locator index and slot-only path index; a
+separate layout regression and populated churn tests check that allowance.
+Fixed owner/table padding
 is charged separately. One replacement can transiently retain an old path or
 fingerprint buffer while allocating its replacement, hence the global L + F.
 
@@ -51,12 +56,12 @@ The same long-path and short-path fixtures were used before and after compaction
 
 | Fixture (10,000 records) | Previous live heap | Compact live heap | Compact estimate | Compact charge |
 | --- | ---: | ---: | ---: | ---: |
-| Near-limit paths and alias buffers | 293,623,320 | 126,370,264 | 126,371,144 | 128,025,680 |
-| Short-path metadata replacement churn | 10,620,392 | 3,500,264 | 3,501,144 | 5,215,215 |
-| Populated short binding/parent indexes | Not previously measured | 3,620,264 | 3,621,144 | 6,085,360 |
+| Near-limit paths and alias buffers | 293,623,320 | 126,370,352 | 126,371,280 | 128,025,680 |
+| Short-path metadata replacement churn | 10,620,392 | 3,500,352 | 3,501,280 | 5,215,215 |
+| Populated short binding/parent indexes | Not previously measured | 3,620,352 | 3,621,280 | 6,085,360 |
 
 Long-path live heap fell by about 57%; short-path metadata by about 67%.
-The long-path peak was 126,374,358 bytes, within the charge including temporary
+The long-path peak was 126,374,446 bytes, within the charge including temporary
 replacement storage. Dropping each owner releases all measured live allocations.
 Capacity-boundary regressions also populate and churn all indexes without growth.
 Warm reconciliation and the complete binding-check loop remain allocation-free.

@@ -674,7 +674,7 @@ fn unavailable_binding_does_not_mark_every_candidate_as_replacement() {
     let mut events = Vec::new();
     feed(&mut r, &observation(2, "/a"), &mut events);
     feed(&mut r, &observation(3, "/unrelated"), &mut events);
-    r.associate_replacement(1, TrackedId(1), locator(2))
+    r.associate_replacement(1, TrackedId(1), locator(2), |_| {})
         .unwrap();
     let _ = finish(&mut r, false, &mut events);
     let offers: Vec<_> = r.offers().unwrap().collect();
@@ -2223,7 +2223,11 @@ fn evicted_overflow_conflict_keeps_pass_incomplete() {
         // Fixed generation, seed and inventory force replacement of the initial
         // sample. Assert the eviction below instead of assuming it happened.
         for inode in 3..=1024 {
-            feed(&mut r, &observation(inode, "/other"), &mut events);
+            feed(
+                &mut r,
+                &observation(inode, &format!("/other/{inode}")),
+                &mut events,
+            );
         }
         assert!(!finish(&mut r, true, &mut events).complete);
         assert!(!events.contains(&"missing:2000".into()));
@@ -2251,7 +2255,11 @@ fn large_offer_batch_preserves_token_lifecycle() {
         let mut events = Vec::new();
         start(&mut r, 1);
         for inode in 1..=10000 {
-            feed(&mut r, &observation(inode, "/candidate"), &mut events);
+            feed(
+                &mut r,
+                &observation(inode, &format!("/candidate/{inode}")),
+                &mut events,
+            );
         }
         assert!(finish(&mut r, true, &mut events).complete);
         let tokens: Vec<_> = r.offers().unwrap().map(|o| o.token).collect();
@@ -2294,5 +2302,227 @@ fn large_offer_batch_preserves_token_lifecycle() {
             .unwrap(),
             IdentityFeedback::Deferred
         );
+    }
+}
+
+/// Scenario: A scan detects candidate shrink or changed fingerprint after earlier passes supplied disappearance evidence.
+/// Guarantees: The consumer receives coverage loss before observe returns, even if the new pass never finishes.
+#[test]
+fn candidate_conflicts_are_delivered_before_completion() {
+    for shrink in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(99, "/missing")).unwrap();
+        let mut events = Vec::new();
+        for generation in [1, 2] {
+            start(&mut r, generation);
+            assert!(finish(&mut r, true, &mut events).complete);
+        }
+        events.clear();
+        start(&mut r, 3);
+        feed(&mut r, &observation(1, "/new"), &mut events);
+        assert!(events.is_empty());
+        let mut changed = observation(1, "/new");
+        if shrink {
+            changed.size = Some(2);
+            changed.fingerprint = b"ab".to_vec();
+        } else {
+            changed.fingerprint = b"xyz".to_vec();
+        }
+        r.observe(3, &changed, Duration::from_secs(30), |e| {
+            assert!(matches!(e, Evidence::CoverageLost(ScanReason::Unstable)));
+            record(e, &mut events);
+        })
+        .unwrap();
+        assert_eq!(events, ["coverage"]);
+        assert!(!r.pass.as_ref().unwrap().complete);
+        // Deliberately do not finish: the worker may stall after this observation.
+    }
+}
+
+/// Scenario: A tracked binding observes its owner and replacement in either order, or two different replacements.
+/// Guarantees: Contradictions immediately invalidate coverage; returning owner evidence cannot precede the failure notification.
+#[test]
+fn tracked_binding_conflicts_are_delivered_before_completion() {
+    for (first, second) in [(1, 2), (2, 1), (2, 3)] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/bound")).unwrap();
+        start(&mut r, 1);
+        let mut events = Vec::new();
+        feed(&mut r, &observation(first, "/bound"), &mut events);
+        assert!(!events.contains(&"coverage".into()));
+        events.clear();
+        feed(&mut r, &observation(second, "/bound"), &mut events);
+        let failure = events
+            .iter()
+            .position(|e| e == "coverage")
+            .expect("immediate conflict evidence");
+        if second == 1 {
+            assert!(failure < events.iter().position(|e| e == "validated:1").unwrap());
+        }
+        assert!(!r.pass.as_ref().unwrap().complete);
+    }
+}
+
+/// Scenario: Identity feedback associates two fresh candidates with the same predecessor during an unfinished pass.
+/// Guarantees: An owner-supplied contradiction also emits coverage loss immediately, without waiting for finish.
+#[test]
+fn associated_replacement_conflicts_are_delivered_before_completion() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/bound")).unwrap();
+    start(&mut r, 1);
+    let mut events = Vec::new();
+    feed(&mut r, &observation(2, "/b"), &mut events);
+    feed(&mut r, &observation(3, "/c"), &mut events);
+    r.associate_replacement(1, TrackedId(1), locator(2), |e| record(e, &mut events))
+        .unwrap();
+    assert!(events.is_empty());
+    r.associate_replacement(1, TrackedId(1), locator(3), |e| record(e, &mut events))
+        .unwrap();
+    assert_eq!(events, ["coverage"]);
+    assert!(!r.pass.as_ref().unwrap().complete);
+}
+
+/// Scenario: Stable probes of one untracked native path report different locators in either order.
+/// Guarantees: Both candidates are withheld, failure is immediate, and completion cannot emit disappearance.
+#[test]
+fn conflicting_candidate_paths_invalidate_inventory() {
+    use std::os::unix::ffi::OsStrExt;
+    for path in [
+        PathBuf::from("/new"),
+        PathBuf::from(OsStr::from_bytes(b"/logs/\xff")),
+    ] {
+        for reverse in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(99, "/missing")).unwrap();
+            start(&mut r, 1);
+            let mut events = Vec::new();
+            for inode in if reverse { [2, 1] } else { [1, 2] } {
+                let mut seen = observation(inode, "/unused");
+                seen.path = path.clone();
+                feed(&mut r, &seen, &mut events);
+            }
+            assert_eq!(events, ["coverage"]);
+            assert!(!r.pass.as_ref().unwrap().complete);
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert_eq!(r.offers().unwrap().count(), 0);
+            assert!(!events.contains(&"missing:99".into()));
+        }
+    }
+}
+
+/// Scenario: A candidate's selected alias shrinks, or a fresh resident alias contradicts its retained path.
+/// Guarantees: The path index follows selected-path changes and resident observations cannot bypass retained conflicts.
+#[test]
+fn selected_path_changes_and_resident_aliases_check_candidates() {
+    for resident in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        if resident {
+            r.track(file(2, "/resident")).unwrap();
+        }
+        start(&mut r, 1);
+        let mut events = Vec::new();
+        feed(&mut r, &observation(1, "/z"), &mut events);
+        feed(&mut r, &observation(1, "/a"), &mut events);
+        feed(&mut r, &observation(1, "/a"), &mut events);
+        assert!(!events.contains(&"coverage".into()));
+        feed(&mut r, &observation(2, "/a"), &mut events);
+        assert!(events.contains(&"coverage".into()));
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert_eq!(r.offers().unwrap().count(), 0);
+    }
+}
+
+/// Scenario: A retained path acquires a new locator in a later pass, and different non-UTF-8 names coexist.
+/// Guarantees: Historical paths are not current evidence, and native names are never compared through lossy text.
+#[test]
+fn path_conflict_checks_use_fresh_native_evidence() {
+    use std::os::unix::ffi::OsStrExt;
+    let mut r = Reconciler::new(limits()).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(&mut r, &observation(1, "/same"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    start(&mut r, 2);
+    events.clear();
+    feed(&mut r, &observation(2, "/same"), &mut events);
+    for (inode, path) in [(3, b"/logs/\xff"), (4, b"/logs/\xfe")] {
+        let mut seen = observation(inode, "/unused");
+        seen.path = PathBuf::from(OsStr::from_bytes(path));
+        feed(&mut r, &seen, &mut events);
+    }
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(!events.contains(&"coverage".into()));
+}
+
+/// Scenario: Contradictory overflow paths are followed by enough better-ranked candidates to replace the sample.
+/// Guarantees: Path-conflict failure survives sample eviction and cannot produce disappearance evidence.
+#[test]
+fn evicted_overflow_path_conflict_stays_incomplete() {
+    let mut r = Reconciler::new(ReconcileLimits {
+        pending: 1,
+        offers: 1,
+        ..limits()
+    })
+    .unwrap();
+    r.track(file(2000, "/missing")).unwrap();
+    start(&mut r, 1);
+    let mut events = Vec::new();
+    feed(&mut r, &observation(1, "/pending"), &mut events);
+    feed(&mut r, &observation(2, "/same"), &mut events);
+    feed(&mut r, &observation(3, "/same"), &mut events);
+    assert_eq!(events, ["coverage"]);
+    for inode in 4..=1024 {
+        feed(
+            &mut r,
+            &observation(inode, &format!("/fresh/{inode}")),
+            &mut events,
+        );
+    }
+    assert!(!finish(&mut r, true, &mut events).complete);
+    assert!(!events.contains(&"missing:2000".into()));
+    assert!(r.offers().unwrap().next().unwrap().candidate.locator.inode > 3);
+}
+
+/// Scenario: Candidate locator/path indexes cross capacity boundaries and recycle slots across passes and acknowledgements.
+/// Guarantees: Owned storage fits the existing candidate allowance through path-index insertion, removal and overflow churn.
+#[test]
+fn candidate_path_index_fits_admission_under_churn() {
+    for count in [1, 7, 8, 111, 112, 113, 895, 896, 897] {
+        let mut r = Reconciler::new(ReconcileLimits {
+            tracked: 1,
+            pending: count,
+            offers: count,
+            path_bytes: 32,
+            fingerprint_bytes: 16,
+        })
+        .unwrap();
+        let charge = 4096 + 32 + 16 + (3 * 32 + 512) + 2 * count * (2 * (32 + 16) + 512);
+        let mut events = Vec::new();
+        for generation in 1..=4 {
+            start(&mut r, generation);
+            for id in 1..=3 * count as u64 {
+                let inode = generation * 10000 + id;
+                feed(
+                    &mut r,
+                    &observation(inode, &format!("/p{inode:08}")),
+                    &mut events,
+                );
+            }
+            assert!(finish(&mut r, true, &mut events).complete);
+            let tokens: Vec<_> = r.offers().unwrap().map(|o| o.token).collect();
+            for token in tokens {
+                r.acknowledge(
+                    token,
+                    IdentityFeedback::Rejected,
+                    Duration::from_secs(generation * 10 + 1),
+                )
+                .unwrap();
+            }
+            assert!(
+                r.retained_bytes() <= charge,
+                "{count}: {} > {charge}",
+                r.retained_bytes()
+            );
+        }
     }
 }

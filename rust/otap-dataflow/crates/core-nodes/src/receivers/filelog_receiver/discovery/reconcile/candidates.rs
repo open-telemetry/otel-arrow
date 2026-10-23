@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{FileLocator, Observation, ReconcileError, ReconcileLimits, TrackedId};
-use std::collections::{BinaryHeap, HashMap};
+use hashbrown::HashTable;
+use std::collections::{BinaryHeap, HashMap, hash_map::RandomState};
+use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -82,6 +84,9 @@ struct Slot {
 pub(super) struct Candidates {
     slots: Vec<Slot>,
     index: HashMap<FileLocator, usize>,
+    // Current-pass selected paths only; keys borrow the existing slot buffers.
+    paths: HashTable<usize>,
+    path_hash: RandomState,
     free: Vec<usize>,
     sample: BinaryHeap<(u64, usize)>,
     order: Vec<usize>,
@@ -94,6 +99,11 @@ pub(super) struct Candidates {
     overflow_turn: bool,
     conflict_seen: bool,
     feedback_cursor: usize,
+}
+
+pub(super) struct ObservationResult {
+    pub overflow: bool,
+    pub conflict: bool,
 }
 
 impl Candidates {
@@ -128,6 +138,8 @@ impl Candidates {
             // deletes create tombstones; this headroom lets hashbrown rehash those
             // in place instead of growing a logically bounded table during scans.
             index: HashMap::with_capacity(capacity * 2),
+            paths: HashTable::with_capacity(capacity * 2),
+            path_hash: RandomState::new(),
             free: (0..limits.pending).rev().collect(),
             sample: BinaryHeap::with_capacity(limits.offers),
             order: Vec::with_capacity(capacity),
@@ -144,6 +156,7 @@ impl Candidates {
     }
 
     pub(super) fn begin(&mut self, generation: u64, seed: u64) {
+        self.paths.clear();
         for slot in &mut self.slots[self.pending..] {
             if slot.occupied {
                 let _ = self.index.remove(&slot.candidate.locator);
@@ -170,23 +183,27 @@ impl Candidates {
         observation: &Observation,
         now: Duration,
         replacement: Replacement,
-    ) -> Result<bool, ReconcileError> {
+    ) -> Result<ObservationResult, ReconcileError> {
         let locator = observation.locator.expect("validated candidate");
+        let mut conflict = self.check_path(observation);
         if let Some(&index) = self.index.get(&locator) {
-            let slot = &mut self.slots[index];
+            let slot = &self.slots[index];
             let first_in_pass = !slot.seen;
-            if slot.seen {
-                // Appends may extend the prefix/size. Shrink or changed bytes are
-                // inconsistent evidence; no offer may silently select one version.
-                if observation.size.expect("candidate size") < slot.candidate.size
+            // Appends may extend the prefix/size. Shrink or changed bytes are
+            // inconsistent evidence; no offer may silently select one version.
+            conflict |= slot.seen
+                && (observation.size.expect("candidate size") < slot.candidate.size
                     || !observation
                         .fingerprint
-                        .starts_with(&slot.candidate.fingerprint)
-                {
-                    slot.conflict = true;
-                    self.conflict_seen = true;
-                }
+                        .starts_with(&slot.candidate.fingerprint));
+            let path_changed =
+                first_in_pass || observation.path.as_os_str() < slot.candidate.path.as_os_str();
+            if path_changed {
+                self.remove_path(index);
             }
+            let slot = &mut self.slots[index];
+            slot.conflict |= conflict;
+            self.conflict_seen |= conflict;
             refresh(slot, observation, first_in_pass);
             slot.candidate.replacement = match (slot.candidate.replacement, replacement) {
                 (Replacement::Possible(old), Replacement::Possible(new)) => {
@@ -195,7 +212,13 @@ impl Candidates {
                 (Replacement::Unrelated, current) => current,
                 (historical, Replacement::Unrelated) => historical,
             };
-            return Ok(false);
+            if path_changed {
+                self.insert_path(index);
+            }
+            return Ok(ObservationResult {
+                overflow: false,
+                conflict,
+            });
         }
         let next_sequence = self
             .sequence
@@ -216,8 +239,12 @@ impl Candidates {
         } else {
             let &(worst, index) = self.sample.peek().expect("nonzero sample bound");
             if rank >= worst {
-                return Ok(true);
+                return Ok(ObservationResult {
+                    overflow: true,
+                    conflict,
+                });
             }
+            self.remove_path(index);
             let _ = self.index.remove(&self.slots[index].candidate.locator);
             *self.sample.peek_mut().expect("nonempty sample") = (rank, index);
             index
@@ -225,7 +252,7 @@ impl Candidates {
         self.sequence = next_sequence;
         let slot = &mut self.slots[index];
         slot.occupied = true;
-        slot.conflict = false;
+        slot.conflict = conflict;
         slot.acknowledged = false;
         slot.needs_capacity = false;
         slot.order = self.sequence;
@@ -234,8 +261,61 @@ impl Candidates {
         slot.candidate.first_seen = now;
         slot.candidate.replacement = replacement;
         refresh(slot, observation, true);
+        self.insert_path(index);
         let _ = self.index.insert(locator, index);
-        Ok(overflow)
+        Ok(ObservationResult { overflow, conflict })
+    }
+
+    // Check before sampling: even a discarded or resident incoming locator can
+    // contradict retained evidence. All duplicates already found for this path
+    // are conflicted, so finding one different owner is sufficient.
+    pub(super) fn check_path(&mut self, observation: &Observation) -> bool {
+        if self.paths.is_empty() {
+            return false;
+        }
+        let locator = observation.locator.expect("validated candidate");
+        let other = self
+            .paths
+            .find(
+                self.path_hash.hash_one(observation.path.as_os_str()),
+                |&index| {
+                    let candidate = &self.slots[index].candidate;
+                    candidate.path.as_os_str() == observation.path.as_os_str()
+                        && candidate.locator != locator
+                },
+            )
+            .copied();
+        if let Some(index) = other {
+            self.slots[index].conflict = true;
+            self.conflict_seen = true;
+        }
+        other.is_some()
+    }
+
+    fn insert_path(&mut self, index: usize) {
+        let slots = &self.slots;
+        let hash = &self.path_hash;
+        let _ = self.paths.insert_unique(
+            hash.hash_one(slots[index].candidate.path.as_os_str()),
+            index,
+            |&index| hash.hash_one(slots[index].candidate.path.as_os_str()),
+        );
+    }
+
+    // Remove before replacing a path or reusing a slot. Unseen historical
+    // candidates have no entry: their paths are not current-pass evidence.
+    fn remove_path(&mut self, index: usize) {
+        let slot = &self.slots[index];
+        if slot.occupied && slot.seen {
+            let entry = self
+                .paths
+                .find_entry(
+                    self.path_hash.hash_one(slot.candidate.path.as_os_str()),
+                    |&other| other == index,
+                )
+                .expect("current candidate path index");
+            let _ = entry.remove();
+        }
     }
 
     pub(super) fn finish(
@@ -358,6 +438,7 @@ impl Candidates {
     }
 
     fn remove(&mut self, index: usize) {
+        self.remove_path(index);
         let slot = &mut self.slots[index];
         let _ = self.index.remove(&slot.candidate.locator);
         slot.occupied = false;
@@ -414,6 +495,7 @@ impl Candidates {
                 .map(|slot| slot.candidate.path.capacity() + slot.candidate.fingerprint.capacity())
                 .sum::<usize>()
             + super::table_bytes::<FileLocator, usize>(self.slots.len() * 2, false)
+            + self.paths.allocation_size()
             + (self.free.capacity() + self.order.capacity() + self.selected.capacity())
                 * size_of::<usize>()
             + self.sample.capacity() * size_of::<(u64, usize)>()
@@ -441,4 +523,24 @@ fn rank(seed: u64, locator: FileLocator) -> u64 {
         value ^ (value >> 31)
     }
     mix(seed ^ mix(locator.device) ^ locator.inode.rotate_left(29))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: The candidate layout or either index changes on the pinned toolchain.
+    /// Guarantees: Slots, selection scratch, locator buckets and path-index buckets fit the 512-byte metadata allowance.
+    #[test]
+    fn candidate_metadata_charge_covers_both_indexes() {
+        // Two-times reservation and power-of-two rounding give fewer than 32N/7
+        // buckets. Fixed table padding belongs to the global 4096-byte charge.
+        let buckets =
+            ((size_of::<(FileLocator, usize)>() + 1 + size_of::<usize>() + 1) * 32).div_ceil(7);
+        let metadata = size_of::<Slot>() + 4 * size_of::<usize>() + buckets;
+        assert!(
+            metadata <= 512,
+            "candidate metadata {metadata} exceeds charge"
+        );
+    }
 }

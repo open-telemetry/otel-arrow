@@ -662,6 +662,8 @@ impl Reconciler {
                         tracked.pass.binding_eligible = true;
                         if tracked.pass.rebound.is_some() {
                             tracked.pass.conflict = true;
+                            pass.complete = false;
+                            emit(Evidence::CoverageLost(ScanReason::Unstable));
                         }
                     }
                     emit(Evidence::Validated(id, observation));
@@ -683,6 +685,8 @@ impl Reconciler {
                         || tracked.pass.rebound.is_some_and(|prior| prior != locator)
                     {
                         tracked.pass.conflict = true;
+                        pass.complete = false;
+                        emit(Evidence::CoverageLost(ScanReason::Unstable));
                     }
                     tracked.pass.rebound = Some(locator);
                     tracked.pass.rebound_resolved = tracked.file.role == BindingRole::Superseded
@@ -699,22 +703,29 @@ impl Reconciler {
                 }
             }
             if !resident {
-                let overflow = match self
+                let result = match self
                     .candidates
                     .observe(observation, observed_at, replacement)
                 {
-                    Ok(overflow) => overflow,
+                    Ok(result) => result,
                     Err(error) => {
                         pass.complete = false;
                         emit(Evidence::CoverageLost(ScanReason::Limit));
                         return Err(error);
                     }
                 };
-                if overflow {
+                if result.conflict {
+                    pass.complete = false;
+                    emit(Evidence::CoverageLost(ScanReason::Unstable));
+                }
+                if result.overflow {
                     pass.overflow = true;
                     self.stats.overflow_observations =
                         self.stats.overflow_observations.saturating_add(1);
                 }
+            } else if self.candidates.check_path(observation) {
+                pass.complete = false;
+                emit(Evidence::CoverageLost(ScanReason::Unstable));
             }
         }
         Ok(())
@@ -909,8 +920,9 @@ impl Reconciler {
         generation: u64,
         predecessor: TrackedId,
         candidate: FileLocator,
+        mut emit: impl FnMut(Evidence<'_>),
     ) -> Result<(), ReconcileError> {
-        let pass = self.pass.as_ref().ok_or(ReconcileError::Phase)?;
+        let pass = self.pass.as_mut().ok_or(ReconcileError::Phase)?;
         if pass.generation != generation {
             return Err(ReconcileError::Generation);
         }
@@ -924,6 +936,8 @@ impl Reconciler {
         self.candidates.associate(candidate, predecessor)?;
         if tracked.pass.rebound.is_some_and(|prior| prior != candidate) {
             tracked.pass.conflict = true;
+            pass.complete = false;
+            emit(Evidence::CoverageLost(ScanReason::Unstable));
         }
         tracked.pass.rebound = Some(candidate);
         Ok(())
