@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Syslog receiver preserves original messages in encoded pdata until native processing is required."
+issues: [3452]
+subtext: "RFC 3164 retains its receipt year. Syslog batches are capped at 256 messages/256 KiB. With format: preserve, move downstream batching limits from otap to config.codecs.syslog-batch (items only). See the syslog receiver README for migration examples."
