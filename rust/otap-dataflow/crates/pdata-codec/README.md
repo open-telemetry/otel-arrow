@@ -498,5 +498,7 @@ provide a queue-byte or process-memory budget.
 Arrow finalization, native batching, output encoding, and compression still
 contain synchronous work. Direct synchronous codec APIs also remain available;
 callers that require scheduling opportunities must use effect-handler
-materialization, views, or output preparation. Cooperative decoding is not a
-hard scheduling deadline or support for codecs awaiting external I/O.
+materialization, views, output preparation, or batch-plan preparation/finishing.
+Batch-plan conversions also retain the original encoded input on cancellation.
+Cooperative decoding is not a hard scheduling deadline or support for codecs
+awaiting external I/O.

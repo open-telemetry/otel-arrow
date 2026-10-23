@@ -459,6 +459,22 @@ impl PdataPayload {
         }
     }
 
+    /// Replaces encoded input only after cooperative materialization succeeds.
+    ///
+    /// Batching retains its borrowed input and caches on failure or cancellation;
+    /// native input stays untouched without cloning records or creating a codec.
+    pub(crate) async fn materialize_otap_cooperative<Y: Future<Output = ()>>(
+        &mut self,
+        codecs: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        if let PayloadStorage::Encoded(encoded) = &self.storage {
+            let records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
+            *self = records.into();
+        }
+        Ok(())
+    }
+
     /// Returns a representation-independent read-only view.
     pub fn view<'a>(
         &'a self,

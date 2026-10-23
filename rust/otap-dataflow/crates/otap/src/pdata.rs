@@ -1819,7 +1819,8 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &BatchPlan,
                 payload: &mut OtapPayload,
             ) -> Result<(), CodecError> {
-                plan.prepare(payload, self.codec_service())
+                plan.prepare_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
             }
 
             async fn batch(
@@ -1836,7 +1837,8 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &BatchPlan,
                 payload: &mut OtapPayload,
             ) -> Result<(), CodecError> {
-                plan.finish(payload, self.codec_service())
+                plan.finish_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
             }
         }
     };

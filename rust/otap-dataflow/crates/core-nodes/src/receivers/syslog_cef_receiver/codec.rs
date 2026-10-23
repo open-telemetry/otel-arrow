@@ -2480,6 +2480,79 @@ mod tests {
             assert!(handler.materialize_otap(next).await.is_ok());
         }
 
+        /// Scenario: Batch preparation and finishing convert large syslog input to native OTAP or OTLP.
+        /// Guarantees: Both paths yield; cancellation and late decode failure preserve original bytes, identity and cached counts, and successful conversion remains reusable.
+        #[tokio::test(flavor = "current_thread")]
+        async fn batch_plan_conversions_preserve_input_across_yields() {
+            use otel_arrow_dfe_pdata_codec::{BatchPlan, PdataFormat};
+
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let complete = unchecked_batch(&vec![b"message".as_slice(); 512]);
+            let truncated = complete.slice(..complete.len() - 1);
+            let otlp = CodecService::new()
+                .unwrap()
+                .registry()
+                .resolve(&PdataEncoding::OTLP)
+                .unwrap();
+            let encoded_otlp = PdataFormat::encoded(otlp);
+            for (output, settings, working) in [
+                (PdataFormat::OTAP, BatchSettings::otap(), PdataFormat::OTAP),
+                (encoded_otlp, BatchSettings::otlp(), encoded_otlp),
+                (encoded_otlp, BatchSettings::otap(), PdataFormat::OTAP),
+            ] {
+                let plan = BatchPlan::new(output, settings, false).unwrap();
+                for prepare in [true, false] {
+                    for bytes in [&complete, &truncated] {
+                        let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
+                        let mut payload =
+                            otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(
+                                payload, 512,
+                            );
+                        let convert = async |payload: &mut OtapPayload| {
+                            if prepare {
+                                handler.prepare_batch(&plan, payload).await
+                            } else {
+                                handler.finish_batch(&plan, payload).await
+                            }
+                        };
+                        let mut conversion = Box::pin(convert(&mut payload));
+                        assert!(matches!(
+                            conversion
+                                .as_mut()
+                                .poll(&mut TaskContext::from_waker(Waker::noop())),
+                            Poll::Pending
+                        ));
+                        drop(conversion);
+                        assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                        assert_eq!(payload.encoded_bytes().unwrap(), bytes);
+                        assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+                        assert_eq!(payload.known_item_count(), Some(512));
+
+                        let result = convert(&mut payload).await;
+                        if bytes.len() == complete.len() {
+                            result.unwrap();
+                            assert_eq!(payload.format(), if prepare { working } else { output });
+                            assert_eq!(
+                                handler
+                                    .materialize_otap_payload(payload)
+                                    .await
+                                    .unwrap()
+                                    .num_items(),
+                                512
+                            );
+                        } else {
+                            assert!(result.is_err());
+                            assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                            assert_eq!(payload.encoded_bytes().unwrap(), bytes);
+                            assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+                            assert_eq!(payload.known_item_count(), Some(512));
+                        }
+                    }
+                }
+            }
+        }
+
         /// Scenario: Read-only views accept encoded syslog or require native records, then export to OTLP.
         /// Guarantees: Direct borrowing creates no codec or buffer copy; fallback and cross-codec output use the cooperative boundary without changing the input.
         #[tokio::test(flavor = "current_thread")]
