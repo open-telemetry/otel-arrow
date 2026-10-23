@@ -165,6 +165,9 @@ use otel_arrow_dfe_engine::component_inventory;
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
+    /// Test-only handoff at the boundary between successive bootstrap launches.
+    #[cfg(test)]
+    after_bootstrap_launch: Option<fn(&ControllerRuntime<PData>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,7 +533,11 @@ impl<
 {
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
-        Self { pipeline_factory }
+        Self {
+            pipeline_factory,
+            #[cfg(test)]
+            after_bootstrap_launch: None,
+        }
     }
 
     /// Validates that every configured node resolves to a registered component and that the
@@ -1831,7 +1838,7 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
-        for (pipeline_entry, pipeline_placement) in
+        'bootstrap: for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
         {
             let deployment = LogicalPipelineDeployment::new(
@@ -1879,15 +1886,32 @@ impl<
             );
 
             for placement in &pipeline_placement.cores {
-                let launched = runtime.launch_pipeline_thread(
+                let launched = match runtime.launch_pipeline_thread(
                     &deployment,
                     placement.core_id.id,
                     placement_snapshot.generation,
                     runtime.next_thread_id(),
                     telemetry_system.engine_tracing_setup(),
                     None,
-                )?;
+                ) {
+                    Ok(launched) => launched,
+                    Err(Error::PipelineLaunchCancelled) => {
+                        // Reach normal teardown so the original failure remains the run error.
+                        otel_info!(
+                            "controller.bootstrap.shutdown_requested",
+                            pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
+                            pipeline_id = pipeline_entry.pipeline_id.as_ref(),
+                            message = "Global shutdown started; remaining bootstrap launches are cancelled"
+                        );
+                        break 'bootstrap;
+                    }
+                    Err(error) => return Err(error),
+                };
                 runtime.register_launched_instance(launched);
+                #[cfg(test)]
+                if let Some(after_launch) = self.after_bootstrap_launch {
+                    after_launch(&runtime);
+                }
             }
         }
 
@@ -3164,6 +3188,154 @@ groups: {{}}
                 assert_eq!(instance.phase(), PipelinePhase::Stopped);
             }
         }
+    }
+
+    fn assert_bootstrap_failure_stops_launches_and_preserves_error(run_mode: RunMode) {
+        fn fail_receiver_build(
+            _pipeline_ctx: PipelineContext,
+            _node: otel_arrow_dfe_engine::node::NodeId,
+            _node_config: Arc<NodeUserConfig>,
+            _receiver_config: &ReceiverConfig,
+            _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+        ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "bootstrap receiver build failed".to_owned(),
+            })
+        }
+
+        static FACTORY: PipelineFactory<()> = PipelineFactory::new(
+            &[
+                ReceiverFactory {
+                    name: "urn:otel:receiver:internal_telemetry",
+                    create: create_test_observability_receiver,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+                ReceiverFactory {
+                    name: "urn:test:receiver:example",
+                    create: fail_receiver_build,
+                    context_declarations: None,
+                    wiring_contract: WiringContract::UNRESTRICTED,
+                    validate_config: accept_any_test_config,
+                },
+            ],
+            TEST_OBSERVABILITY_PROCESSORS,
+            TEST_OBSERVABILITY_EXPORTERS,
+            &[],
+        );
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+policies:
+  runtime_recovery:
+    enabled: false
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    extensions:
+      observe_shutdown:
+        type: urn:test:extension:observe_shutdown
+groups:
+  g:
+    pipelines:
+      first: &pipeline
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: urn:test:receiver:example
+            config: null
+          exporter:
+            type: urn:test:exporter:example
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      second: *pipeline
+"#,
+        )
+        .expect("bootstrap failure config");
+        let (options, context_rx) = admin_shutdown_test_options();
+        let mut controller = Controller::new(&FACTORY);
+        // Observe the fatal shutdown before bootstrap can attempt its next launch.
+        // The subprocess deadline bounds this real controller lifecycle wait.
+        controller.after_bootstrap_launch =
+            Some(ControllerRuntime::wait_until_global_shutdown_drains_or_released);
+        let error = controller
+            .run_with_mode(config, run_mode, options)
+            .expect_err("the original bootstrap failure must reach the caller");
+        assert!(
+            error.to_string().contains("runtime recovery is disabled")
+                && error
+                    .to_string()
+                    .contains("bootstrap receiver build failed"),
+            "shutdown must preserve the original failure: {error}"
+        );
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("controller context captured before bootstrap");
+        assert!(
+            !context.control_plane.has_active_instances(),
+            "teardown must finish every instance and shutdown coordinator"
+        );
+        let snapshot = context.observed_state.snapshot();
+        let regular_instances: usize = snapshot
+            .iter()
+            .filter(|(key, _)| key.pipeline_group_id().as_ref() != SYSTEM_PIPELINE_GROUP_ID)
+            .map(|(_, status)| status.per_instance().len())
+            .sum();
+        assert_eq!(
+            regular_instances, 1,
+            "bootstrap must not spawn another producer after shutdown begins"
+        );
+        let observability = snapshot
+            .get(&PipelineKey::new(
+                SYSTEM_PIPELINE_GROUP_ID.into(),
+                SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+            ))
+            .expect("system observability is tracked");
+        assert!(
+            observability.is_terminated(),
+            "system observability must stop before the controller returns"
+        );
+    }
+
+    /// Scenario: bootstrap fails on its first producer before a second pipeline can launch.
+    /// Guarantees: shutdown mode stops admission, tears down observability, and returns the original failure.
+    #[test]
+    fn launch_bootstrap_failure_tears_down_and_preserves_error() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::launch_bootstrap_failure_tears_down_and_preserves_error",
+            );
+            return;
+        }
+        assert_bootstrap_failure_stops_launches_and_preserves_error(RunMode::ShutdownWhenDone);
+    }
+
+    /// Scenario: a parked controller encounters a fatal producer failure during bootstrap.
+    /// Guarantees: fatal-wait release does not skip cleanup or replace the original failure with cancellation.
+    #[test]
+    fn launch_bootstrap_failure_tears_down_parked_controller() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::launch_bootstrap_failure_tears_down_parked_controller",
+            );
+            return;
+        }
+        assert_bootstrap_failure_stops_launches_and_preserves_error(RunMode::ParkMainThread);
     }
 
     /// Scenario: an unread stdout pipe times out during the final drain, and the warning
