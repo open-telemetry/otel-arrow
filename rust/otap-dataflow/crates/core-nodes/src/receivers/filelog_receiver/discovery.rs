@@ -13,11 +13,13 @@ mod budget;
 mod linux;
 mod native_path;
 mod probe;
+/// Bounded observation reconciliation and candidate selection.
+pub mod reconcile;
 mod roots;
 mod walk;
 
 pub use budget::{ProbeBudget, ProbeReservation};
-pub use linux::Scanner;
+pub use linux::{BindingBatch, Scanner};
 
 use super::source::{FileLocator, SymlinkPolicy};
 use std::path::{Path, PathBuf};
@@ -202,6 +204,52 @@ pub struct Observation {
     pub errno: Option<i32>,
 }
 
+/// Which evidence a targeted lookup could establish.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindingScope {
+    /// Optional binding-local evidence; uncertainty permits complete-pass fallback.
+    Binding,
+    /// Positive change to this binding's expected parent directory identity.
+    ParentChanged,
+    /// Required root, environment or target-policy coverage failed.
+    Coverage,
+}
+
+/// Required root context could not be refreshed before targeted checks.
+/// Deliver this independently of individual bindings, including an empty batch.
+#[derive(Debug, thiserror::Error)]
+#[error("binding root refresh failed: {reason:?} (errno {errno:?})")]
+pub struct BindingBatchError<'a> {
+    /// Required coverage/policy failure, or cancellation.
+    pub reason: ScanReason,
+    /// Original OS error, when available.
+    pub errno: Option<i32>,
+    /// Configured root that failed; None for cancellation before root resolution.
+    pub root: Option<&'a Path>,
+}
+
+/// A targeted request is not a valid complete native filename.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid or oversized complete binding path")]
+pub struct InvalidBindingPath;
+
+/// Fresh evidence from a targeted distinguished-binding check. This does not
+/// count toward the scanner's traversal completion marker.
+#[derive(Debug)]
+pub struct BindingCheck<'a> {
+    /// Outcome from the same pin-bound checks used by the scanner.
+    pub observation: &'a Observation,
+    /// Fresh validated parent identity, if available.
+    pub parent: Option<FileLocator>,
+    /// Include roots and expected parent were validated without environment change.
+    /// Only this context permits a missing binding to authorize fast exclusion.
+    pub context_valid: bool,
+    /// Distinguishes optional lookup uncertainty from receiver-wide evidence loss.
+    pub scope: BindingScope,
+    /// Bounded path identifying the failed root, changed parent, or checked binding.
+    pub diagnostic_path: &'a Path,
+}
+
 /// Ordered end-of-pass marker, emitted only after all batches are consumed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScanCompletion {
@@ -222,3 +270,7 @@ pub struct InvalidScanConfig;
 
 #[cfg(test)]
 mod tests;
+
+fn valid_evidence_limits(path_bytes: usize, fingerprint_bytes: usize) -> bool {
+    (1..=65536).contains(&path_bytes) && (16..=65535).contains(&fingerprint_bytes)
+}
