@@ -1325,10 +1325,6 @@ impl<A: PdhApi> Query<A> {
         result
     }
 
-    pub(super) fn record_prime_failure(&mut self, error: &Error) {
-        record_query_failure(&mut self.pending, &self.configs, error);
-    }
-
     fn remaining_expansion_capacity(&self, allocated_expanded: usize) -> usize {
         self.max_native_counters
             .saturating_sub(self.exact_counter_reservations)

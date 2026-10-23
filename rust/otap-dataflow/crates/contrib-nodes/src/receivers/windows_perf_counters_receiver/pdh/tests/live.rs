@@ -276,8 +276,33 @@ async fn live_pdh_ascii_case_variants_share_native_membership() {
         excluded_aggregation: None,
     };
     variant.source_mapping_index = 1;
-    let mut query = open_live_query(vec![canonical, variant], "ascii-case");
-    let sample = query.collect().unwrap();
+    let mut query = Query::open_replacement(
+        vec![canonical, variant],
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        256,
+        4_096,
+        "ascii-case".to_owned(),
+        None,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    let sample = wait_for_live_process_membership(
+        &mut query,
+        "both case variants of the owned process",
+        |sample| sample,
+        |sample| {
+            sample.metadata.failures.is_empty()
+                && sample.points.len() == 2
+                && [0, 1].into_iter().all(|counter_index| {
+                    sample.points.iter().any(|point| {
+                        point.counter_index == counter_index
+                            && point.value == SampleValue::Value(Number::Integer(pid))
+                    })
+                })
+        },
+    )
+    .await;
     assert!(
         sample.metadata.failures.is_empty(),
         "{:#?}",
@@ -351,10 +376,10 @@ async fn live_pdh_collects_common_calculated_disk_counters() {
 }
 
 /// Scenario: Startup adds a healthy exact counter while another configured counter is absent.
-/// Guarantees: The worker starts, emits the healthy point, and retains a visible retry failure.
+/// Guarantees: The worker starts, emits a valid healthy value, and reports the unavailable counter context.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires live Windows performance counters; run explicitly with `-- --ignored`"]
-async fn live_pdh_unavailable_exact_counter_retries_after_startup() {
+async fn live_pdh_unavailable_exact_counter_preserves_healthy_startup() {
     let _serial = TEST_PDH_LOCK.lock().await;
     let before = query_counts();
     let counters = vec![
@@ -374,12 +399,10 @@ async fn live_pdh_unavailable_exact_counter_retries_after_startup() {
     .await
     .unwrap();
     let sample = worker.collect().await.unwrap();
-    assert!(
-        sample
-            .points
-            .iter()
-            .any(|point| point.path.as_ref() == r"\Memory\Available Bytes")
-    );
+    assert!(sample.points.iter().any(|point| {
+        point.path.as_ref() == r"\Memory\Available Bytes"
+            && matches!(point.value, SampleValue::Value(Number::Integer(value)) if value >= 0)
+    }));
     assert!(sample.metadata.failures.iter().any(|failure| {
         failure.counter_index == 1
             && failure.reason == "selector_unresolved"
@@ -847,31 +870,73 @@ impl LiveProcessMembership {
     }
 }
 
-async fn wait_for_live_process_membership(
-    query: &mut Query,
-    instance_name: &str,
-    expected: &BTreeSet<i64>,
+async fn wait_for_live_process_membership<T: std::fmt::Debug>(
+    query: &mut Query<impl PdhApi>,
     phase: &str,
-) -> LiveProcessMembership {
+    mut observe: impl FnMut(Sample) -> T,
+    matches: impl Fn(&T) -> bool,
+) -> T {
     let deadline = Instant::now() + Duration::from_secs(20);
+    let mut last_observed = None;
+    let mut last_error = None;
     loop {
-        let last_observed = match query.collect() {
+        match query.collect() {
             Ok(sample) => {
-                let observed = LiveProcessMembership::from_sample(sample, instance_name);
-                if observed.matches(expected) {
+                let observed = observe(sample);
+                if matches(&observed) {
                     return observed;
                 }
-                format!("{observed:#?}")
+                last_observed = Some(observed);
             }
-            Err(error) => format!("collection error: {error:?}"),
-        };
+            Err(error) => last_error = Some(error),
+        }
         assert!(
             Instant::now() < deadline,
-            "{phase} did not converge; expected process IDs {expected:?}; last observed: \
-             {last_observed}"
+            "{phase} did not converge; last observed: {last_observed:#?}; \
+             last collection error: {last_error:?}"
         );
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
+}
+
+/// Scenario: Membership collection fails once before the same query returns the expected value.
+/// Guarantees: The visibility wait stays pending through the error and accepts recovery without restarting the query.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn membership_wait_recovers_after_collection_error() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let path = r"\Memory\Available Bytes";
+    let (state, mut query) = fake_query_with_seed(
+        vec![counter(path, "memory")],
+        vec![fake_counter(path, Number::Integer(42))],
+        Duration::from_secs(60),
+        Duration::MAX,
+        1,
+        None,
+    );
+    let before = state.borrow().calls.collect;
+    state.borrow_mut().collect_error = true;
+    let waiting = wait_for_live_process_membership(
+        &mut query,
+        "collection-error recovery",
+        |sample| sample,
+        |sample| {
+            sample.points.len() == 1
+                && sample.points[0].value == SampleValue::Value(Number::Integer(42))
+        },
+    );
+    tokio::pin!(waiting);
+    poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(state.borrow().calls.collect, before + 1);
+    state.borrow_mut().collect_error = false;
+    let sample = waiting.await;
+    assert_eq!(sample.points[0].path.as_ref(), path);
+    assert_eq!(state.borrow().calls.collect, before + 2);
 }
 
 /// Scenario: A filtered process wildcard repeatedly changes membership while one query stays open.
@@ -906,9 +971,9 @@ async fn live_pdh_refreshes_process_membership_after_duplicate_renumbering() {
 
     let mut observed = wait_for_live_process_membership(
         &mut query,
-        &fixture.instance,
-        &expected,
         "initial two-process membership",
+        |sample| LiveProcessMembership::from_sample(sample, &fixture.instance),
+        |observed| observed.matches(&expected),
     )
     .await;
     for cycle in 1..=2 {
@@ -919,9 +984,9 @@ async fn live_pdh_refreshes_process_membership_after_duplicate_renumbering() {
         fixture.stop(removed);
         let _ = wait_for_live_process_membership(
             &mut query,
-            &fixture.instance,
-            &expected,
             &format!("cycle {cycle} surviving process after renumbering"),
+            |sample| LiveProcessMembership::from_sample(sample, &fixture.instance),
+            |observed| observed.matches(&expected),
         )
         .await;
 
@@ -929,9 +994,9 @@ async fn live_pdh_refreshes_process_membership_after_duplicate_renumbering() {
         assert!(expected.insert(replacement));
         observed = wait_for_live_process_membership(
             &mut query,
-            &fixture.instance,
-            &expected,
             &format!("cycle {cycle} replacement discovery"),
+            |sample| LiveProcessMembership::from_sample(sample, &fixture.instance),
+            |observed| observed.matches(&expected),
         )
         .await;
     }
@@ -990,7 +1055,7 @@ async fn live_pdh_collects_parsed_instance_paths() {
         })
         .collect::<BTreeSet<_>>();
     assert_eq!(ids, expected);
-    assert!(into_otap(&counters, sample).unwrap().is_some());
+    assert!(project_sample(&counters, &sample).unwrap().is_some());
 }
 
 /// Scenario: One live PDH query maps two distinct Memory paths to metrics with different attributes.
@@ -1055,7 +1120,7 @@ async fn live_pdh_collects_distinct_native_paths_and_outputs() {
                 }
             })
             .collect::<Vec<_>>();
-        let records = into_otap(&config.counters, sample).unwrap().unwrap();
+        let records = project_sample(&config.counters, &sample).unwrap().unwrap();
         let bytes: OtlpProtoBytes = OtapPayload::from_otap(records)
             .try_into_with_default()
             .unwrap();
@@ -1125,7 +1190,7 @@ async fn live_pdh_direct_queries() {
             assert!(
                 matches!(sample.points[0].value, SampleValue::Value(Number::Integer(value)) if value >= 0)
             );
-            assert!(into_otap(&configs, sample).unwrap().is_some());
+            assert!(project_sample(&configs, &sample).unwrap().is_some());
         }
         assert_eq!(first.start_time_unix_nano, start);
     }
@@ -1189,7 +1254,7 @@ async fn live_pdh_calculated_counters() {
             SampleValue::Value(Number::Double(value)) if value.is_finite() && value >= 0.0
         ));
     }
-    assert!(into_otap(&configs, sample).unwrap().is_some());
+    assert!(project_sample(&configs, &sample).unwrap().is_some());
 }
 
 /// Scenario: The local Windows providers expose system elapsed time and one processor multi-timer.
@@ -1231,5 +1296,5 @@ async fn live_pdh_elapsed_and_multi_timer_counters() {
             SampleValue::Value(Number::Double(value)) if value.is_finite() && value >= 0.0
         )
     }));
-    assert!(into_otap(&configs, second).unwrap().is_some());
+    assert!(project_sample(&configs, &second).unwrap().is_some());
 }

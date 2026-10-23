@@ -6,12 +6,7 @@ use super::super::model::{
     ExpansionOverflow, InstanceIdentity, Number, PendingMetadata, Sample, SampleDiagnostics,
     SampleFailure, SampleValue, merge_diagnostics,
 };
-use super::super::{
-    TEST_PDH_LOCK,
-    config::Config,
-    otap_builder::{into_otap, project_sample},
-    test_utils::decode,
-};
+use super::super::{config::Config, otap_builder::project_sample, test_utils::decode};
 use super::expansion::*;
 use super::native::NativePdh;
 use super::query::*;
@@ -20,7 +15,7 @@ use super::*;
 use super::{QueryCadence, Worker};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::rc::Rc;
@@ -28,6 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+
+pub(super) static TEST_PDH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // Scoped tracing subscribers can race through process-wide callsite caches.
 pub(super) fn assert_isolated_tracing(test: impl FnOnce()) {
@@ -45,47 +42,112 @@ pub(super) fn assert_isolated_tracing(test: impl FnOnce()) {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("isolated tracing subprocess");
+    let mut stdout = child.stdout.take().expect("tracing subprocess stdout");
+    let reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        const CAPTURE_LIMIT: usize = 64 * 1024;
+        let mut tail = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            let read = stdout.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(tail);
+            }
+            tail.extend_from_slice(&buffer[..read]);
+            if tail.len() > CAPTURE_LIMIT {
+                let excess = tail.len() - CAPTURE_LIMIT;
+                drop(tail.drain(..excess));
+            }
+        }
+    });
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if child
-            .try_wait()
-            .expect("tracing subprocess status")
-            .is_some()
-        {
-            let output = child.wait_with_output().expect("tracing subprocess output");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(output.status.success(), "{name}:\n{stdout}\n{stderr}");
-            assert!(
-                stdout.contains("1 passed;"),
-                "no isolated test ran: {stdout}"
-            );
-            return;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("tracing subprocess status") {
+            break Some(status);
         }
         if Instant::now() >= deadline {
             child.kill().expect("kill timed-out tracing subprocess");
-            let _ = child.wait().expect("reap tracing subprocess");
-            panic!("isolated tracing test timed out: {name}");
+            break None;
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
+    };
+    let _ = child.wait().expect("reap tracing subprocess");
+    let output = reader
+        .join()
+        .expect("tracing stdout reader panicked")
+        .expect("read tracing stdout");
+    let stdout = String::from_utf8_lossy(&output);
+    let Some(status) = status else {
+        panic!("isolated tracing test timed out: {name}; stdout tail:\n{stdout}");
+    };
+    assert!(status.success(), "{name}; stdout tail:\n{stdout}");
+    assert!(
+        stdout.contains("1 passed;"),
+        "no isolated test ran; stdout tail:\n{stdout}"
+    );
 }
 
-#[derive(Clone, Default)]
-struct CounterWarnings(Arc<std::sync::Mutex<Vec<String>>>);
+/// Scenario: An isolated tracing test writes more stdout than a pipe or the diagnostic capture can hold.
+/// Guarantees: Output is drained while the child runs, and its final one-test success is still verified.
+#[test]
+fn isolated_tracing_drains_large_child_stdout() {
+    assert_isolated_tracing(|| {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+        stdout.flush().unwrap();
+    });
+}
 
-impl CounterWarnings {
-    fn dispatch(&self) -> tracing::Dispatch {
+// Native worker events cross threads; isolated test assertions share their capture.
+#[derive(Clone, Default)]
+pub(super) struct CapturedEvents(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+
+struct CapturedEvent {
+    name: &'static str,
+    error: Option<String>,
+}
+
+impl CapturedEvents {
+    pub(super) fn dispatch(&self) -> tracing::Dispatch {
         use tracing_subscriber::layer::SubscriberExt;
         tracing::Dispatch::new(tracing_subscriber::registry().with(self.clone()))
     }
+
+    pub(super) fn names(&self) -> Vec<&'static str> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.name)
+            .collect()
+    }
+
+    fn counter_failures(&self) -> Vec<String> {
+        self.failure_details("windows_perf_counters_receiver.counter.fail")
+    }
+
+    pub(super) fn query_failures(&self) -> Vec<String> {
+        self.failure_details("windows_perf_counters_receiver.query.fail")
+    }
+
+    fn failure_details(&self, name: &str) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.name == name)
+            .map(|event| {
+                event
+                    .error
+                    .as_ref()
+                    .expect("failure event must include error detail")
+                    .clone()
+            })
+            .collect()
+    }
 }
 
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CounterWarnings {
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedEvents {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if event.metadata().name() != "windows_perf_counters_receiver.counter.fail" {
-            return;
-        }
         #[derive(Default)]
         struct Detail(Option<String>);
         impl tracing::field::Visit for Detail {
@@ -103,9 +165,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CounterWarnings {
         }
         let mut detail = Detail::default();
         event.record(&mut detail);
-        if let Some(detail) = detail.0 {
-            self.0.lock().unwrap().push(detail);
-        }
+        self.0.lock().unwrap().push(CapturedEvent {
+            name: event.metadata().name(),
+            error: detail.0,
+        });
     }
 }
 
@@ -129,6 +192,14 @@ fn cumulative_sum(path: &str, name: &str, unit: &str) -> CounterConfig {
         unit: Arc::from(unit),
         ..counter(path, name)
     }
+}
+
+fn collect_query<A, F>(slot: &mut QuerySlot<A>, open: &mut F, now: Instant) -> Result<Sample, Error>
+where
+    A: PdhApi,
+    F: QueryFactory<A>,
+{
+    collect_query_with_diagnostics(slot, open, now, |_, _| Ok(()))
 }
 
 fn query_counts() -> (usize, usize) {

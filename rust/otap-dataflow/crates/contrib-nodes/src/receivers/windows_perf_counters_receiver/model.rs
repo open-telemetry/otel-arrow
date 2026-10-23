@@ -7,7 +7,7 @@ use super::config::{MAX_SCALE_POWER10, MIN_SCALE_POWER10};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// F6-sized measurements put the metadata-index crossover above 32,768 comparisons.
+// Measurements put the metadata-index crossover above 32,768 comparisons.
 const METADATA_INDEX_WORK_THRESHOLD: usize = 32_768;
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]

@@ -85,7 +85,7 @@ fn query_producer_to_decoded_otap_preserves_observations() {
     sample.timestamp_unix_nano = later.timestamp_unix_nano;
     sample.members.extend(later.members);
     sample.points.extend(later.points);
-    let records = into_otap(&config.counters, sample).unwrap().unwrap();
+    let records = project_sample(&config.counters, &sample).unwrap().unwrap();
     let decoded = decode(records);
     let resource = &decoded.resource_metrics[0];
     assert!(
@@ -202,22 +202,8 @@ use windows_sys::Win32::System::Performance::PDH_INVALID_HANDLE;
 #[test]
 fn collection_diagnostics_log_selector_episodes_without_reminders() {
     assert_isolated_tracing(|| {
-        use tracing_subscriber::layer::SubscriberExt;
-        // The test subscriber shares captured event names; production log state stays worker-local.
-        #[derive(Clone, Default)]
-        struct Events(Arc<std::sync::Mutex<Vec<&'static str>>>);
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _context: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                self.0.lock().unwrap().push(event.metadata().name());
-            }
-        }
-        let output = Events::default();
-        let subscriber = tracing_subscriber::registry().with(output.clone());
-        tracing::subscriber::with_default(subscriber, || {
+        let output = CapturedEvents::default();
+        tracing::dispatcher::with_default(&output.dispatch(), || {
             let healthy = r"\Memory\Available Bytes";
             let missing = r"\Memory\Late Counter";
             let template = r"\Process(worker*)\ID Process";
@@ -258,9 +244,9 @@ fn collection_diagnostics_log_selector_episodes_without_reminders() {
                     .insert(template.to_owned(), vec![member.to_owned()]);
             }
             let _ = logs.log(&query.collect().unwrap()).unwrap();
-            let before_steady = output.0.lock().unwrap().len();
+            let before_steady = output.names().len();
             let _ = logs.log(&query.collect().unwrap()).unwrap();
-            assert_eq!(output.0.lock().unwrap().len(), before_steady);
+            assert_eq!(output.names().len(), before_steady);
             state.borrow_mut().expand_error = true;
             for _ in 0..3 {
                 let sample = query.collect().unwrap();
@@ -268,7 +254,7 @@ fn collection_diagnostics_log_selector_episodes_without_reminders() {
                 let _ = logs.log(&sample).unwrap();
             }
         });
-        let captured = output.0.lock().unwrap();
+        let captured = output.names();
         assert_eq!(
             captured
                 .iter()
@@ -1499,7 +1485,92 @@ fn pending_removal_waits_for_cleanup_backoff() {
     assert_eq!(warnings, 2);
 }
 
-/// Scenario: Seventeen startup patterns each discover 257 available members under the fixed MVP bounds.
+/// Scenario: Removal fails, a later collection buffers another removal failure, and cleanup succeeds before that evidence is delivered.
+/// Guarantees: Buffered evidence does not repeat the cleanup warning, healthy data survives, and a new removal episode warns again.
+#[test]
+fn buffered_removal_failure_stays_suppressed_after_cleanup() {
+    let template = r"\Process(*)\Private Bytes";
+    let expanded = r"\Process(worker)\Private Bytes";
+    let healthy = r"\Memory\Available Bytes";
+    let mut wildcard = counter(template, "private");
+    wildcard.instance_config = InstanceConfig::Wildcard {
+        excluded_aggregation: None,
+    };
+    let configs = vec![wildcard, counter(healthy, "memory")];
+    let mut logs = diagnostics::SampleLogState::new("cleanup-test".to_owned(), configs.clone());
+    let (state, mut query) = fake_query_with_seed(
+        configs,
+        vec![
+            fake_counter(expanded, Number::Integer(1)),
+            fake_counter(healthy, Number::Integer(42)),
+        ],
+        Duration::from_secs(60),
+        Duration::ZERO,
+        2,
+        None,
+    );
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template.to_owned(), vec![expanded.to_owned()]);
+    let now = Instant::now();
+    assert_eq!(logs.log(&query.collect_at(now).unwrap()).unwrap(), 0);
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.expansions.insert(template.to_owned(), Vec::new());
+        state.remove_error = true;
+    }
+    assert_eq!(logs.log(&query.collect_at(now).unwrap()).unwrap(), 1);
+    state.borrow_mut().collect_error = true;
+    let error = query.collect_at(now + Duration::from_secs(1)).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Pdh {
+            operation: PdhOperation::CollectQueryData,
+            ..
+        }
+    ));
+    assert_eq!(logs.log_error(&error).unwrap(), 1);
+    {
+        let mut state = state.borrow_mut();
+        state.collect_error = false;
+        state.remove_error = false;
+    }
+    let cleanup_deadline = now + Duration::from_secs(3);
+    let cleaned = query.collect_at(cleanup_deadline).unwrap();
+    assert_eq!(cleaned.metadata.pending_cleanup, Some(Vec::new()));
+    assert_eq!(cleaned.metadata.failures.len(), 1);
+    assert_eq!(cleaned.metadata.failures[0].reason, "PdhRemoveCounter");
+    assert_eq!(cleaned.metadata.failures[0].path.as_ref(), expanded);
+    assert_eq!(cleaned.points.len(), 1);
+    assert_eq!(cleaned.points[0].path.as_ref(), healthy);
+    assert_eq!(
+        cleaned.points[0].value,
+        SampleValue::Value(Number::Integer(42))
+    );
+    assert_eq!(logs.log(&cleaned).unwrap(), 0);
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template.to_owned(), vec![expanded.to_owned()]);
+    assert_eq!(
+        logs.log(&query.collect_at(cleanup_deadline).unwrap())
+            .unwrap(),
+        0
+    );
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.expansions.insert(template.to_owned(), Vec::new());
+        state.remove_error = true;
+    }
+    assert_eq!(
+        logs.log(&query.collect_at(cleanup_deadline).unwrap())
+            .unwrap(),
+        1
+    );
+}
+
+/// Scenario: Seventeen startup patterns each discover 257 available members under the fixed receiver bounds.
 /// Guarantees: Each pattern admits at most 256 and the receiver installs at most 4096 entries with explicit overflow diagnostics.
 #[test]
 fn startup_admission_enforces_fixed_pattern_and_total_bounds() {
@@ -2840,7 +2911,7 @@ fn same_mapping_overlap_preserves_calculated_readiness() {
 /// Scenario: English exact and wildcard selectors resolve beside German and absent English inputs.
 /// Guarantees: Exact adds stay English, expanded adds use localized identity, projection preserves configured metadata, and unresolved inputs warn once.
 #[test]
-fn smoke_selector_shapes_preserve_language_and_output_sources() {
+fn selector_shapes_preserve_language_and_output_sources() {
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric;
 
@@ -2850,7 +2921,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
         r"\Processor(*)\% Processor Time",
         r"\Process(svchos?)\ID Process",
         r"\Prozessor(_Total)\Prozessorzeit (%)",
-        r"\AldoTel Smoke Missing\Missing Counter",
+        r"\Nonexistent Object\Missing Counter",
     ];
     let localized = [
         r"\Prozessor(0)\Prozessorzeit (%)",
@@ -2860,7 +2931,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
         .iter()
         .enumerate()
         .map(|(index, path)| {
-            let mut config = counter(path, &format!("smoke.{index}"));
+            let mut config = counter(path, &format!("selector.{index}"));
             config.source_mapping_index = index;
             if matches!(index, 2 | 3) {
                 config.instance_config = InstanceConfig::Wildcard {
@@ -2922,7 +2993,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
                     }
             })
     );
-    let records = into_otap(&configs, sample).unwrap().unwrap();
+    let records = project_sample(&configs, &sample).unwrap().unwrap();
     let decoded = decode(records);
     for metric in &decoded.resource_metrics[0].scope_metrics[0].metrics {
         let index = configs
@@ -2979,7 +3050,7 @@ fn unresolved_exact_drives_conditional_refresh_at_discovery_only() {
         let interval = Duration::from_secs(discovery);
         let required = interval.max(Duration::from_secs(600));
         let healthy = r"\Memory\Available Bytes";
-        let missing = r"\AldoTel Smoke Missing\Missing Counter";
+        let missing = r"\Nonexistent Object\Missing Counter";
         let (state, mut query) = fake_query_with_cadences(
             vec![counter(healthy, "healthy"), counter(missing, "missing")],
             vec![fake_counter(healthy, Number::Integer(42))],

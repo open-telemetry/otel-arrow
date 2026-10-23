@@ -102,7 +102,7 @@ fn cancelled_collection_logs_native_failure_once_per_episode() {
             .build()
             .unwrap()
             .block_on(async {
-                let warnings = CounterWarnings::default();
+                let warnings = CapturedEvents::default();
                 // This global subscriber exists only in this test's isolated child process.
                 tracing::dispatcher::set_global_default(warnings.dispatch()).unwrap();
                 let (mut worker, ownership, started, release) =
@@ -125,17 +125,18 @@ fn cancelled_collection_logs_native_failure_once_per_episode() {
                 .await
                 .unwrap();
                 {
-                    let warnings = warnings.0.lock().unwrap();
+                    let warnings = warnings.query_failures();
                     assert_eq!(warnings.len(), 1);
                     assert!(warnings[0].contains("0x00000001"), "{warnings:?}");
                 }
                 assert!(worker.collect().await.is_err());
-                assert_eq!(warnings.0.lock().unwrap().len(), 1);
+                assert_eq!(warnings.query_failures().len(), 1);
                 ownership.collect_status.store(0, Ordering::Release);
                 assert_eq!(worker.collect().await.unwrap().points.len(), 1);
                 ownership.collect_status.store(1, Ordering::Release);
                 assert!(worker.collect().await.is_err());
-                assert_eq!(warnings.0.lock().unwrap().len(), 2);
+                assert_eq!(warnings.query_failures().len(), 2);
+                assert!(warnings.counter_failures().is_empty());
                 assert!(
                     worker
                         .shutdown(Instant::now() + Duration::from_secs(5))
@@ -242,11 +243,25 @@ fn permanently_rejected_exact_startup_is_fatal() {
 }
 
 /// Scenario: Initial and replacement open or setup cleanup fail recoverably before a later successful open.
-/// Guarantees: Pending readiness and bounded retry preserve contextual diagnostic-only warnings, and successful rebuild primes before publication.
+/// Guarantees: Three-counter diagnostic metadata survives one shared query-warning episode, and rebuild priming does not rearm it before collection.
 #[test]
 fn recoverable_startup_errors_become_pending_and_rebuild() {
     for cleanup_failed in [false, true] {
-        let configs = vec![counter(r"\Memory\Available Bytes", "memory")];
+        let configs = [
+            r"\Memory\Available Bytes",
+            r"\Memory\Committed Bytes",
+            r"\Memory\Cache Bytes",
+        ]
+        .into_iter()
+        .map(|path| counter(path, "memory"))
+        .collect::<Vec<_>>();
+        let mut logs = diagnostics::SampleLogState::new("test".to_owned(), configs.clone());
+        let warnings = Cell::new(0);
+        let mut log = |sample: &Sample, query_failures: &PendingMetadata| {
+            warnings
+                .set(warnings.get() + logs.log_query_failures(query_failures)? + logs.log(sample)?);
+            Ok(())
+        };
         let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory_opens = Arc::clone(&opens);
         let dropped = Arc::new(AtomicBool::new(false));
@@ -286,10 +301,11 @@ fn recoverable_startup_errors_become_pending_and_rebuild() {
         let mut slot =
             QuerySlot::open_initial_at(configs.clone(), retry_cap, 4096, &mut open, now).unwrap();
         assert!(slot.query.is_none());
-        let pending = collect_query(
+        let pending = collect_query_with_diagnostics(
             &mut slot,
             &mut open,
             now + retry_cap - Duration::from_nanos(1),
+            &mut log,
         )
         .unwrap();
         assert!(pending.metadata.diagnostics.query_pending);
@@ -298,6 +314,16 @@ fn recoverable_startup_errors_become_pending_and_rebuild() {
         assert!(pending.timestamp_unix_nano > 0);
         assert!(project_sample(&configs, &pending).unwrap().is_none());
         assert_eq!(opens.load(Ordering::Acquire), 1);
+        assert_eq!(warnings.get(), 1);
+        assert_eq!(
+            pending
+                .metadata
+                .failures
+                .iter()
+                .filter(|failure| failure.reason == "query_recovery_pending")
+                .count(),
+            3
+        );
         assert!(pending.metadata.failures.iter().any(|failure| {
             failure.reason
                 == if cleanup_failed {
@@ -307,7 +333,9 @@ fn recoverable_startup_errors_become_pending_and_rebuild() {
                 }
                 && failure.diagnostic_only
         }));
-        let failed_rebuild = collect_query(&mut slot, &mut open, now + retry_cap).unwrap();
+        let failed_rebuild =
+            collect_query_with_diagnostics(&mut slot, &mut open, now + retry_cap, &mut log)
+                .unwrap();
         assert!(failed_rebuild.points.is_empty());
         assert!(failed_rebuild.timestamp_unix_nano > 0);
         assert!(project_sample(&configs, &failed_rebuild).unwrap().is_none());
@@ -329,22 +357,41 @@ fn recoverable_startup_errors_become_pending_and_rebuild() {
                 && !failure.error.is_empty()
         }));
         assert_eq!(opens.load(Ordering::Acquire), 2);
+        assert_eq!(warnings.get(), 1);
         let retry_at = now + retry_cap * 2;
-        let backoff =
-            collect_query(&mut slot, &mut open, retry_at - Duration::from_nanos(1)).unwrap();
+        let backoff = collect_query_with_diagnostics(
+            &mut slot,
+            &mut open,
+            retry_at - Duration::from_nanos(1),
+            &mut log,
+        )
+        .unwrap();
         assert_eq!(backoff.metadata.diagnostics.query_rebuild_attempts, 0);
         assert_eq!(opens.load(Ordering::Acquire), 2);
-        let rebuilt = collect_query(&mut slot, &mut open, retry_at).unwrap();
+        let rebuilt =
+            collect_query_with_diagnostics(&mut slot, &mut open, retry_at, &mut log).unwrap();
         assert!(!rebuilt.metadata.diagnostics.any_query_collected);
         assert!(!rebuilt.metadata.diagnostics.query_pending);
         assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_attempts, 1);
         assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_recoveries, 1);
         assert!(rebuilt.points.is_empty());
         assert!(project_sample(&configs, &rebuilt).unwrap().is_none());
-        let ready = collect_query(&mut slot, &mut open, retry_at).unwrap();
+        assert_eq!(warnings.get(), 1);
+        let ready =
+            collect_query_with_diagnostics(&mut slot, &mut open, retry_at, &mut log).unwrap();
         assert!(ready.metadata.diagnostics.any_query_collected);
-        assert_eq!(ready.points.len(), 1);
+        assert_eq!(ready.points.len(), 3);
         assert_eq!(opens.load(Ordering::Acquire), 3);
+        assert_eq!(warnings.get(), 1);
+        assert_eq!(
+            logs.log_error(&Error::Pdh {
+                operation: PdhOperation::CollectQueryData,
+                path: "<query>".to_owned(),
+                status: 3,
+            })
+            .unwrap(),
+            1
+        );
         drop(slot);
         assert!(dropped.load(Ordering::Acquire));
     }
@@ -1527,7 +1574,7 @@ async fn startup_longer_than_thirty_seconds_eventually_succeeds() {
 }
 
 /// Scenario: The initial wildcard refresh hits a recoverable native cleanup failure before succeeding after the configured retry cap.
-/// Guarantees: Startup remains ready, the backoff scrape reports diagnostics without failing, and recovery waits for the bounded retry.
+/// Guarantees: The query remains pending, the backoff scrape reports diagnostics without failing, and recovery waits for the bounded retry.
 #[test]
 fn startup_wildcard_refresh_failure_retries_after_cap() {
     let template = r"\Process(*)\Private Bytes";

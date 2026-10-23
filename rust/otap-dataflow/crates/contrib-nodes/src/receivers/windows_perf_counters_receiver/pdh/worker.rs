@@ -320,11 +320,18 @@ fn run_worker_thread<A, F>(
         match rx.recv() {
             Ok(Command::Collect(response)) => {
                 let accepted = AcceptedCollectGuard::new(Arc::clone(&accepted));
-                let result = collect_query(&mut slot, open, Instant::now());
+                let result = collect_query_with_diagnostics(
+                    &mut slot,
+                    open,
+                    Instant::now(),
+                    |sample, query_failures| {
+                        let _ = logs.log_query_failures(query_failures)?;
+                        logs.log(sample).map(|_| ())
+                    },
+                );
                 let logged = match &result {
-                    Ok(sample) => logs.log(sample).map(|_| ()),
                     Err(error) if !error.is_stop() => logs.log_error(error).map(|_| ()),
-                    Err(_) => Ok(()),
+                    _ => Ok(()),
                 };
                 let result = logged.and(result);
                 drop(accepted);
@@ -386,9 +393,9 @@ where
                 if !error.is_collection_failure() {
                     return Err(error);
                 }
-                query.record_prime_failure(&error);
                 let retry_installed =
                     error.is_query_collection_failure() && !error.is_invalid_query();
+                slot.record_query_failure(&error);
                 let now = now();
                 slot.update_recovery_state(now, false, &Err(error));
                 if retry_installed {
@@ -490,6 +497,8 @@ pub(super) struct QuerySlot<A: PdhApi> {
     rebuild_seed: Option<QueryRecreationSeed>,
     last_admitted_members: Vec<SampleMember>,
     pending: PendingMetadata,
+    // Select query warnings before merging their per-counter response metadata.
+    query_failures: PendingMetadata,
 }
 
 impl<A: PdhApi> QuerySlot<A> {
@@ -515,6 +524,7 @@ impl<A: PdhApi> QuerySlot<A> {
             rebuild_seed: None,
             last_admitted_members: Vec::new(),
             pending: PendingMetadata::default(),
+            query_failures: PendingMetadata::default(),
         };
         match open(slot.configs.clone(), slot.limit, None) {
             Ok(query) => {
@@ -540,7 +550,9 @@ impl<A: PdhApi> QuerySlot<A> {
     }
 
     fn record_query_failure(&mut self, error: &Error) {
-        record_query_failure(&mut self.pending, &self.configs, error);
+        let mut metadata = PendingMetadata::default();
+        record_query_failure(&mut metadata, &self.configs, error);
+        self.query_failures.merge(metadata);
     }
 
     pub(super) fn collect<F>(&mut self, now: Instant, open: &mut F) -> Result<Sample, Error>
@@ -681,10 +693,11 @@ impl<A: PdhApi> QuerySlot<A> {
     }
 }
 
-pub(super) fn collect_query<A, F>(
+pub(super) fn collect_query_with_diagnostics<A, F>(
     slot: &mut QuerySlot<A>,
     open: &mut F,
     now: Instant,
+    log: impl FnOnce(&Sample, &PendingMetadata) -> Result<(), Error>,
 ) -> Result<Sample, Error>
 where
     A: PdhApi,
@@ -721,11 +734,14 @@ where
     }
     sample.metadata.diagnostics.active_expanded_counters = slot.active_expanded_count();
     sample.metadata.diagnostics.query_pending = slot.is_pending();
+    let query_failures = std::mem::take(&mut slot.query_failures);
+    let logged = log(&sample, &query_failures);
+    sample.metadata.merge_older(query_failures);
     sample
         .metadata
         .failures
         .sort_by_key(|failure| (failure.counter_index, failure.reason));
-    Ok(sample)
+    logged.map(|()| sample)
 }
 
 #[cfg(test)]
