@@ -253,10 +253,8 @@ topics:
       transfer:
         customer:
           type: authorized_identity
-          required: true
         delivery_id:
           type: randomness
-          required: true
         route:
           type: constant
         source_addr:
@@ -279,8 +277,10 @@ config:
   context:
     export:
       customer:
+        required: true
         selector: {type: authorized_identity, named: [customer_id]}
       delivery_id:
+        required: true
         selector: {type: named, named: ["delivery:id"]}
       workspace:
         selector: {type: named, named: ["product_user:workspace"]}
@@ -289,6 +289,10 @@ config:
       route:
         selector: {type: named, named: ["delivery:route"]}
 ```
+
+Topic exporter configuration has the option to set `required: true`
+for any of the fields. An absent required value causes an immediate
+permanent Nack.
 
 Note that the selector `named` list supports multiple names per
 selector. This is useful in cases where more than one composite may
@@ -337,6 +341,72 @@ Like other receivers, the topic receiver will construct Pdata Context
 from the transfer context using their bindings, which results in
 evaluating composite entry presence as needed by its pipeline.
 
+#### Topic receiver composites
+
+The fields of a topic transfer are used to define new composite
+entries.  Topic receivers make use of materialization bindings to
+construct new contexts like other receivers, but whereas ordinary
+receivers use authorized identity and transport header domains as the
+input, topic context-materialization bindings make use of the flat
+entries defined for context transfer as their primitive input.
+
+Using this mechanism, composite context entries with `type: transfer`
+can be used to derive new conditional composite entries from
+transferred context in the receiving pipeline.
+
+To derive conditional transfer composites, use `type: transfer_match`,
+which is a conditional element analogous to `transport_header_match`
+for the transport header domain. Transfer composite entries include
+an additional `topic` field, naming the topic to which they apply.
+
+As an example policy,
+
+```yaml
+policies:
+  context:
+    entries:
+      tenant_base:
+        - type: transfer
+          topic: handoff
+          name: customer
+        - type: transfer
+          topic: handoff
+          name: workspace
+      tenant_one:
+        - type: composite
+          name: tenant_base
+        - type: transfer_match
+          topic: handoff
+          name: customer
+          value: "1"
+      tenant_two:
+        - type: composite
+          name: tenant_base
+        - type: transfer_match
+          topic: handoff
+          name: customer
+          value: "2"
+```
+
+Using the `required_in` conext policy, users may configure that a
+topic receiver requires a certain composite in order for requests to
+pass. Because the engine establishes both the topic receiver and
+exporter bindings, the exporter is able to evaluate receiver conditions.
+Receiver bindings will only receive requests that meet the conditional
+requirements of the listed composites.
+
+```yaml
+node:
+  type: receiver:topic
+  policies:
+    context:
+      required_in:
+        - tenant_base
+  config:
+    topic: handoff
+    ...
+```
+
 ## Durable buffer processor
 
 The durable buffer processor will embed both export and import
@@ -349,10 +419,8 @@ config:
     transfer:
       customer:
         type: authorized_identity
-        required: true
       delivery_id:
         type: randomness
-        required: true
       route:
         type: constant
       source_addr:
@@ -363,7 +431,11 @@ config:
       - customer
     export:
       customer:
+        required: true
         selector: {type: authorized_identity, named: [customer_id]}
+      delivery_id:
+        required: true
+        selector: {type: named, named: ["delivery:id"]}
       workspace:
         selector: {type: transport_header, named: [workspace_id]}
     import:
