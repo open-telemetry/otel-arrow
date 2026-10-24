@@ -334,5 +334,11 @@
     "category": "Safety",
     "description": "Engine memory pressure monitor and shedding controller",
     "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:azure_key_vault_sasl_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
   }
 ]
