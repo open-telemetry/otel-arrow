@@ -83,7 +83,7 @@ mod transport_headers;
 pub mod tls_utils;
 
 /// Bounded hot-reload of client TLS material for OTLP exporters.
-pub(crate) mod client_tls_reload;
+pub mod client_tls_reload;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata, pdata::materialize_context)]

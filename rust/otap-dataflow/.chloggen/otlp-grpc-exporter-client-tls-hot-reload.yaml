@@ -1,0 +1,10 @@
+change_type: enhancement
+
+component: pipeline
+
+note: "Hot-reload file-backed client TLS material in the OTLP gRPC exporter without restarting the collector."
+
+issues: [4160, 4165]
+
+subtext: |
+  The exporter checks files every reload_interval (default 5m), installs only validated CA/certificate/key generations, and keeps working channels on failure. Set reload_interval: null to disable. Rotate related standalone files atomically.

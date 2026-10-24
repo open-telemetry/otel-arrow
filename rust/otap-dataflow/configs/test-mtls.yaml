@@ -53,6 +53,11 @@ groups:
                 cert_file: "./test-certs/client.crt"
                 key_file: "./test-certs/client.key"
 
+                # File-backed client TLS reloads every 5 minutes by default.
+                # Set null to keep this material static after startup.
+                # Rotate these standalone files atomically.
+                reload_interval: "5m"
+
         connections:
           - from: receiver
             to: exporter
