@@ -7,6 +7,7 @@ use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_telemetry::event::{ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
+use otel_arrow_dfe_telemetry::self_tracing::structured::TruncateResult;
 use otel_arrow_dfe_telemetry::self_tracing::{
     LogContext, LogRecord, StructBox, StructuredValue, ValueWriter,
 };
@@ -209,11 +210,12 @@ fn structured_fields_preserve_lazy_evaluation() {
     }
 
     impl StructuredValue for Point {
-        fn write(&self, w: &mut dyn ValueWriter) {
+        fn write(&self, w: &mut dyn ValueWriter) -> TruncateResult {
             w.map(|m| {
-                m.entry("x", |v| v.write_i64(*self.x.borrow()));
-                m.entry("y", |v| v.write_i64(self.y));
-            });
+                let x = m.entry("x", |v| v.write_i64(*self.x.borrow()))?;
+                let y = m.entry("y", |v| v.write_i64(self.y))?;
+                Ok(x.combine(y))
+            })
         }
     }
 
