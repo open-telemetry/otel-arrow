@@ -369,7 +369,7 @@ oracle = [
     "otel-arrow-dfe-contrib-nodes/oracle",
     "flat-file-user-pass-auth",
 ]
-sql-server = ["otel-arrow-dfe-contrib-nodes/sql-server"]
+sql-server = ["otel-arrow-dfe-contrib-nodes/sql-server", "flat-file-user-pass-auth"]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
 windows-perf-counters = ["otel-arrow-dfe-contrib-nodes/windows-perf-counters"]
 
