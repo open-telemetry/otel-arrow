@@ -43,6 +43,8 @@ groups:
                 max_rows_per_poll: 1000
                 fetch_size_rows: 100
                 max_batch_bytes: 4MiB
+                catch_up:
+                  max_pages: ${env:SQL_SERVER_CATCH_UP_MAX_PAGES:-32}
               watermark:
                 mode: composite
                 timestamp:

@@ -620,7 +620,11 @@ registers an advisory Linux live job with the shared contrib integration
 workflow. It runs the serial live suite, rotates replacement/expired/valid
 certificates, and then builds/runs the exact example YAML. The engine trial
 requires console payload output, an acknowledged ID-3 checkpoint, and clean
-shutdown. It stores only a non-secret result summary in CI artifacts; fixture
+shutdown. The trial sets `SQL_SERVER_CATCH_UP_MAX_PAGES=1` so shutdown after
+that checkpoint cannot race an immediately started catch-up query. The example
+defaults to 32 pages when the variable is omitted; mid-query cancellation and
+quarantine remain covered separately by the receiver tests.
+It stores only a non-secret result summary in CI artifacts; fixture
 credentials/keys and engine output stay outside the upload directory. The
 cleanup command always attempts owned removal. Windows CI includes real
 Schannel loopback/protocol coverage, not a hosted live SQL Server job.

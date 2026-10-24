@@ -39,6 +39,9 @@ def engine_trial(directory, artifacts):
     })
     checkpoint = directory / "engine-checkpoints"
     environment["SQL_SERVER_STATE_DIR"] = str(checkpoint)
+    # Keep this clean-shutdown smoke test idle after its acknowledged page.
+    # Mid-query cancellation and quarantine are covered by the receiver suites.
+    environment["SQL_SERVER_CATCH_UP_MAX_PAGES"] = "1"
     target = Path(environment.get("CARGO_TARGET_DIR", WORKSPACE / "target"))
     binary = target / "debug" / ("df_engine.exe" if sys.platform == "win32" else "df_engine")
     log_path = directory / "engine.log"
@@ -63,8 +66,12 @@ def engine_trial(directory, artifacts):
                     raise RuntimeError("Engine did not acknowledge fixture rows within 60 seconds")
                 time.sleep(0.1)
             process.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGINT)
-            if process.wait(timeout=15) != 0:
-                raise RuntimeError("Engine did not shut down cleanly")
+            exit_code = process.wait(timeout=15)
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"Engine did not shut down cleanly (exit code {exit_code}); "
+                    "engine.log remains in the private fixture directory"
+                )
         finally:
             if process.poll() is None:
                 process.terminate()

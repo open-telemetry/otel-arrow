@@ -284,7 +284,6 @@ aws = [
 ]
 
 [dev-dependencies]
-rcgen.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true

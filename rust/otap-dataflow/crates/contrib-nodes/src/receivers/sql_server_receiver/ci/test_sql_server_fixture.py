@@ -590,8 +590,39 @@ class EngineTrialTests(unittest.TestCase):
     def fixture(self, directory):
         (directory / "fixture.json").write_text(json.dumps({"env": {}}), encoding="utf-8")
 
+    # Scenario: The acknowledged engine exits unsuccessfully or is terminated by a signal during shutdown.
+    # Guarantees: CI reports its numeric exit code without uploading payloads or claiming a successful trial.
+    def test_unclean_shutdown_reports_exit_code_without_payloads(self):
+        for exit_code in (1, -2):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.fixture(directory)
+                checkpoint = directory / "engine-checkpoints" / "source.checkpoint.1.json"
+                checkpoint.parent.mkdir()
+                checkpoint.write_text(
+                    json.dumps({"payload": {"cursor": {"tie_breaker": 3}}}), encoding="utf-8",
+                )
+                process = mock.Mock()
+                process.poll.side_effect = [None, exit_code]
+                process.wait.return_value = exit_code
+
+                def spawn(command, **options):
+                    options["stdout"].write("SENSITIVE engine output\n")
+                    return process
+
+                with (
+                    mock.patch.object(CI, "run"),
+                    mock.patch.object(CI.subprocess, "Popen", side_effect=spawn),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, f"exit code {exit_code}") as raised:
+                        CI.engine_trial(directory, directory / "artifacts")
+                self.assertNotIn("SENSITIVE", str(raised.exception))
+                self.assertFalse((directory / "artifacts").exists())
+                process.send_signal.assert_called_once()
+                process.terminate.assert_not_called()
+
     # Scenario: The example engine emits fixture rows, installs its ACK cursor, and shuts down cleanly.
-    # Guarantees: CI uses the exact YAML and records only a non-secret result outside the private fixture.
+    # Guarantees: CI uses the exact YAML with one-page cycles and records only a non-secret result.
     def test_engine_trial_requires_rows_checkpoint_and_clean_exit(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -607,10 +638,12 @@ class EngineTrialTests(unittest.TestCase):
 
             def spawn(command, **options):
                 self.assertEqual(command[1:3], ["--config", "configs/sql-server-console.yaml"])
+                self.assertEqual(options["env"]["SQL_SERVER_CATCH_UP_MAX_PAGES"], "1")
                 options["stdout"].write("hello\nthird\n")
                 return process
 
             with (
+                mock.patch.dict(os.environ, {"SQL_SERVER_CATCH_UP_MAX_PAGES": "32"}),
                 mock.patch.object(CI, "run") as run,
                 mock.patch.object(CI.subprocess, "Popen", side_effect=spawn),
             ):
@@ -621,6 +654,12 @@ class EngineTrialTests(unittest.TestCase):
             result = json.loads((artifacts / "engine-result.json").read_text())
             self.assertEqual(result["acknowledged_id"], 3)
             self.assertEqual([path.name for path in artifacts.iterdir()], ["engine-result.json"])
+
+    # Scenario: The smoke trial overrides catch-up without changing the bundled deployment example's default.
+    # Guarantees: The exact YAML exposes the one-page test setting but preserves the normal 32-page budget.
+    def test_example_preserves_default_catch_up_budget(self):
+        example = (CI.WORKSPACE / "configs" / "sql-server-console.yaml").read_text(encoding="utf-8")
+        self.assertIn("max_pages: ${env:SQL_SERVER_CATCH_UP_MAX_PAGES:-32}", example)
 
     # Scenario: The engine stays alive but never installs acknowledged progress.
     # Guarantees: CI reports failure and reaps only its own child, including a forced kill if necessary.
