@@ -199,6 +199,7 @@ mod tests {
             pipeline: PipelineConfig::from_yaml("pg".into(), "pipe".into(), yaml).unwrap(),
             topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             policies: ResolvedPolicies::default(),
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         }
     }

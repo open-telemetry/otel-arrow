@@ -6236,6 +6236,51 @@ fn reconcile_engine_config_preserves_missing_context_pipeline() {
     }
 }
 
+/// Scenario: Partial reconciliation adds and then clears root and group codec definitions while omitting an existing pipeline.
+/// Guarantees: Codec scopes follow the desired config, unused definitions do not restart pipelines, and omitted pipelines remain present.
+#[test]
+fn reconcile_engine_config_preserves_codec_scopes_and_missing_pipelines() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let root = serde_yaml::from_str(
+        "configurations: {checked: {implementation: otel.otlp, decode: {validation: strict}}}",
+    )
+    .unwrap();
+    let group =
+        serde_yaml::from_str("configurations: {ordinary: {implementation: otel.otlp}}").unwrap();
+    for (root, group) in [(Some(root), Some(group)), (None, None)] {
+        let mut desired = config.clone();
+        desired.codecs = root;
+        let desired_group = desired
+            .groups
+            .get_mut(&PipelineGroupId::from("g1"))
+            .unwrap();
+        desired_group.codecs = group;
+        desired_group.pipelines.clear();
+        let status = runtime
+            .reconcile_engine_config(reconcile_request(desired.clone(), false))
+            .expect("partial codec updates must preserve missing pipelines");
+        assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+        assert!(
+            status
+                .changes
+                .iter()
+                .all(|change| change.action == ConfigChangeAction::Noop)
+        );
+        let snapshot = runtime.engine_config_snapshot();
+        assert_eq!(snapshot.codecs, desired.codecs);
+        assert_eq!(
+            snapshot.groups[&PipelineGroupId::from("g1")].codecs,
+            desired.groups[&PipelineGroupId::from("g1")].codecs,
+        );
+        assert!(
+            snapshot.groups[&PipelineGroupId::from("g1")]
+                .pipelines
+                .contains_key(&PipelineId::from("p1"))
+        );
+    }
+}
+
 /// Scenario: a full-config reconciliation request omits a pipeline and its
 /// policy-bearing group with `delete_missing` disabled.
 /// Guarantees: reconciliation preserves the omitted pipeline, group, and

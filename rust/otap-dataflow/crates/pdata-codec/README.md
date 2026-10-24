@@ -11,6 +11,10 @@ time, and keep mutable decoder, encoder, or batcher state inside one pipeline
 runtime. A payload carries only its encoding identity, signal, bytes, and cached
 metadata; it never owns a codec instance.
 
+Operators: see the [codec user guide](../../docs/codecs.md) for available
+encodings, optional codec bindings and named configurations, inheritance, and pass-through
+limitations. This README describes the developer extension contract.
+
 ## Architecture overview
 
 ![PData forwarding, views, conversion, batching, and codec lifecycle][codec-diagram]
@@ -41,7 +45,8 @@ service that lazily creates and reuses decoder, encoder, and batcher instances.
 Nodes access that service through effect handlers; stateless item counters do
 not require an instance.
 
-The syslog encoding is marked as upcoming in PR5, not part of PR3.
+The overview image marks syslog as upcoming; the syslog codec is now available
+when the syslog/CEF receiver is linked.
 Native OTAP is the common processing representation, not a registered byte codec.
 
 ## Design model
@@ -55,8 +60,10 @@ Native OTAP is the common processing representation, not a registered byte codec
   batching capabilities. A codec may be decode-only or encode-only. A decoder
   must provide an item counter so requested flow metrics remain available.
   Native item batching also requires a counter, including for encode-only codecs.
-- `CodecRegistry` validates the complete link-time registry once. Duplicate or
-  invalid identities fail pipeline runtime construction deterministically.
+- `CodecRegistry` distinguishes encoding identities from implementation IDs.
+  Duplicate implementation IDs and conflicting distribution defaults fail
+  deterministically. Pipeline bindings select implementations without changing
+  byte compatibility.
 - `CodecService` creates mutable implementations lazily and reuses them within
   one pipeline runtime. Payload admission and matching-format forwarding do not
   instantiate a codec.
@@ -153,6 +160,101 @@ without materializing it. `OtapPdata::into_delivery()` transfers an already-used
 input into delivery ownership without cloning, retaining or discarding its
 payload according to `RETURN_DATA`.
 
+## Configuration and implementation lifecycle
+
+The optional `codecs` section contains `bindings` and reusable `configurations`.
+The configuration crate resolves scope inheritance without depending on concrete
+codecs. `PipelineRuntimeServices` supplies the resulting `ResolvedCodecsConfig`
+to `CodecServiceBuilder::with_configuration`. `build()` validates bindings and
+prepares immutable factories; it returns an error for invalid settings.
+Node construction receives the selected immutable registry through
+`PipelineContext`, so batching plans use the bound implementation's capabilities.
+Only effect handlers access mutable instances. No YAML parsing or
+configuration-name resolution happens per message.
+
+```mermaid
+flowchart LR
+    linked["Linked registrations + distribution defaults"] --> registry["Validated registry"]
+    scopes["Optional bindings + named configurations"] --> resolved["ResolvedCodecsConfig"]
+    registry --> prepared["Startup validation + prepared factories"]
+    resolved --> prepared
+    prepared --> service["Pipeline-local CodecService"]
+    service -->|"First use"| instances["Lazy decoder / encoder / batcher"]
+```
+
+Use `.with_implementation("vendor.codec")` to give registered code a stable ID
+separate from its encoding. Omission uses the encoding name for simple unique
+extensions. `.with_default_for_encoding()` declares a distribution default when
+several implementations support compatible bytes. Multiple defaults are rejected;
+without a default an explicit binding is required. Registration order has no
+precedence. Alternatives must preserve the encoding's item-count contract and
+byte semantics; changing incompatible representation semantics needs a new
+encoding identity. Operation/signal support is checked against the selected
+implementation.
+
+### Preparing implementation-specific options
+
+A registration may supply `.with_preparer(prepare)`:
+
+```rust,ignore
+fn prepare(
+    config: &otel_arrow_dfe_config::codecs::CodecConfiguration,
+) -> Result<std::sync::Arc<dyn PreparedCodecFactory>, CodecError> {
+    // Deserialize config.options into this implementation's typed settings.
+    // Reject unknown fields and invalid combinations without logging values.
+    // Own immutable resources here; create mutable instances only on first use.
+    todo!()
+}
+```
+
+`PreparedCodecFactory` can override decoder, encoder, and batcher creation. Its
+default methods delegate to the registered native factories. Common decode
+policy and per-output `EncodePolicy` are passed to these methods. The preparation
+hook must not create mutable instances, decode telemetry, or retain telemetry.
+The built-in preparation rejects all custom options. Unused named definitions
+are validated, but never create mutable codec state.
+
+`allows_encoded_forwarding()` defaults to false for custom prepared factories:
+output options may require rewriting already-compatible bytes. Opt in only when
+forwarding satisfies every output setting. Size limits still apply. The built-in
+factory permits forwarding. Borrowed-view and format matching compare encoding
+identity, not configuration names or implementation pointers.
+
+Decoder authors must honor `Strict`; `BestEffort` permits, but does not require,
+a relaxed parser. Select strategies when creating instances rather than branching
+per field. The runtime keeps the exact original bytes for recovery; repeated
+failures must not poison codec state. Changing selected configuration redeploys
+the pipeline rather than mutating live instances. Instances are never shared
+between pipelines, even for the same named configuration.
+
+Admission, matching forwarding, and borrowed encoded views do not invoke a
+decoder. Counters and native batchers have their own validation contracts and
+must preserve encoding-wide counts independently of configuration. Native OTAP
+movement remains direct. Transport settings and batch thresholds stay node-owned.
+
+### Future WASM implementations
+
+Prepared factories can own immutable compiled resources, keeping configuration
+and mutable state out of payloads. This is a preparation boundary, not a WASM
+loader or guest ABI. WASM support will need versioned interfaces, bounded input,
+output and execution, host-capability restrictions, trap recovery, and a decision
+about guest-backed counting. The current counter is still a native stateless
+function. Ordinary codec operations run synchronously under the runtime lock;
+owned incremental decode jobs release it before yielding. Prepared factories
+can create either kind of decoder. Future asynchronous calls must also release
+service access before suspension.
+
+Registrations currently remain linked/static. Runtime-loaded metadata will need
+registry-owned lifetimes rather than leaked static references. Module discovery,
+loading, and resource policy must be explicit and separate from bindings; no
+module paths or WASM fields are accepted by the built-in configurations today.
+No zero-copy guest/host conversion or asynchronous execution is implied.
+
+For new codecs, run the conformance harness with strict malformed input and test
+both modes where relevant. Also cover invalid options, lazy instance creation,
+independent pipeline state, configured output forwarding/rewrite behavior, and
+recovery after failures. Benchmark strict and best-effort conversion separately.
+
 ## Implement a codec
 
 Implement `PdataDecoder` to convert complete encoded batches to native OTAP.
@@ -165,7 +267,9 @@ Decoder implementations must:
 - Treat the input as untrusted and return `CodecError` instead of panicking.
 - Preserve the signal supplied by the caller.
 - Recover after an error so the same instance can decode a later valid batch.
-- Avoid retaining the input `Bytes`; the engine preserves it for Nack or retry.
+- Avoid retaining input `Bytes` in the decoder instance. An owned incremental
+  job may share them until completion or cancellation; the engine preserves the
+  original message for Nack or retry.
 
 Encoder implementations must produce complete, independently decodable output.
 The basic `encode` method returns owned `Bytes`. An encoder with reusable scratch
@@ -175,20 +279,29 @@ before `.await` to detach ownership from codec state.
 
 ## Execution and asynchronous ownership
 
-Codec decoder, encoder, and batcher methods currently execute synchronously
-while the pipeline-local codec service has exclusive access to the selected
-instance. Prepared output may borrow an encoder's scratch buffer only during a
+Ordinary codec decoder and encoder methods execute synchronously while the
+pipeline-local codec service has exclusive access to the selected instance.
+The incremental decode path releases that access before yielding:
+`start_decode` returns completed records or an owned `PdataDecodeJob`, which
+retains one builder until the entire batch succeeds. The effect handler supplies
+Tokio-aware scheduling; a self-waking future alone may delay I/O under
+`LocalSet`.
+Only incremental jobs allocate a job object; native and synchronous paths do
+not. Prepared output may borrow an encoder's scratch buffer only during a
 synchronous callback. `EncodeOutput::into_bytes` detaches the output before an
 asynchronous transport send; it does not offload or make the encoder itself
 asynchronous.
 
 The node-facing `PdataEffectHandlerExtension` operations are asynchronous so a
 future execution layer can offload work without changing every node API. Their
-current implementations perform the synchronous codec call before the future
-completes. The async signature is therefore an extension seam, not a guarantee
-that codec work runs outside the pipeline runtime.
+implementations run ordinary codecs synchronously, but can drive incremental
+decoding with bounded work segments on that same runtime thread. This does not
+offload CPU work or make synchronous encoding cooperative.
 
-A slow codec would therefore block the calling pipeline runtime today. The
+See the engine's [runtime responsiveness guidance](../../docs/async-best-practices.md#runtime-responsiveness)
+for work budgets, cancellation, backpressure, and full-engine validation.
+
+A non-incremental decoder, encoder, or batcher can still block its caller. The
 engine service boundary is the intended integration point for a future bounded
 executor: fast codecs can remain inline, while codecs explicitly classified as
 blocking can receive owned inputs and return owned outputs through offloaded
@@ -261,8 +374,9 @@ syntax. A procedural attribute macro would require another crate and generated
 code without improving this contract.
 
 Registration and duplicate-name policy belong to the registry, not the macro.
-Registration order is not a precedence mechanism, and the default registry
-rejects duplicate identities independently of link order.
+Registration order is not a precedence mechanism. Implementation IDs are unique;
+encoding defaults and explicit bindings determine selection independently of link
+order.
 
 A stateless item counter is required for every registration with a decoder or
 native item batching. Return `None` when malformed bytes cannot be counted; zero
@@ -462,3 +576,35 @@ The
 is a decode-only example. Its receiver emits independently decodable framed
 batches, its decoder materializes native log records only when required, and
 its native batcher merges frames without parsing their syslog contents.
+
+## Cooperative syslog decoding
+
+The syslog codec materializes up to 8,192 messages or 2 MiB of encoded framing
+per input, with a 16 KiB per-message limit. The receiver still defaults to
+100 messages per batch. Inputs with at most 256 messages and 256 KiB decode
+synchronously without allocating a decode job; larger inputs use incremental
+work automatically through the effect-handler APIs.
+
+An incremental job retains one Arrow builder and shared input bytes. Each step
+processes at most 128 records, stops after reaching 64 KiB of message bytes,
+and checks a 1 ms time target every 16 records. The last record can exceed the
+byte target, and an indivisible record can exceed the time target. The job emits
+one complete Arrow batch only after all framing has been validated.
+
+Jobs do not spawn or enqueue background work. Mutable codec-service access is
+released before the first scheduling point, so other nodes can use the service
+while conversion is pending. Dropping a conversion future releases its partial
+builder and input references; delivery cancellation remains the caller's
+responsibility and no acknowledgement is sent automatically.
+
+Larger batches retain more memory in existing count-bounded channels. Review
+channel capacities when raising batch targets; cooperative scheduling does not
+provide a queue-byte or process-memory budget.
+
+Arrow finalization, native batching, output encoding, and compression still
+contain synchronous work. Direct synchronous codec APIs also remain available;
+callers that require scheduling opportunities must use effect-handler
+materialization, views, output preparation, or batch-plan preparation/finishing.
+Batch-plan conversions also retain the original encoded input on cancellation.
+Cooperative decoding is not a hard scheduling deadline or support for codecs
+awaiting external I/O.

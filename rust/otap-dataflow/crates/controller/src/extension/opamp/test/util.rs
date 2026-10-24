@@ -177,6 +177,7 @@ pub fn test_config() -> OtelDataflowSpec {
     OtelDataflowSpec {
         version: "otel_dataflow/v1".into(),
         policies: Policies::default(),
+        codecs: None,
         topics: HashMap::new(),
         engine: EngineConfig::default(),
         groups: HashMap::from_iter([(Cow::Borrowed("test_pipeline"), PipelineGroupConfig::new())]),

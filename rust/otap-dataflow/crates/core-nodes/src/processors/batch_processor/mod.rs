@@ -258,17 +258,23 @@ impl TryFrom<ConfigInput> for Config {
     type Error = String;
     fn try_from(input: ConfigInput) -> Result<Self, Self::Error> {
         let registry = CodecRegistry::global().map_err(|error| error.to_string())?;
-        let otlp = registry
-            .resolve(&PdataEncoding::OTLP)
-            .map(PdataFormat::encoded)
-            .map_err(|error| error.to_string())?;
         let mut codecs = BTreeMap::new();
         for (name, settings) in input.codecs {
-            let format =
-                PdataFormat::resolve(&registry, &name).map_err(|error| error.to_string())?;
-            let canonical = format.name().to_owned();
-            if (format == PdataFormat::OTAP && input.otap.is_some())
-                || (format == otlp && input.otlp.is_some())
+            // Parsing knows encoding names, not the pipeline's implementation binding.
+            let canonical = if name == "otlp" {
+                PdataEncoding::OTLP.as_str().to_owned()
+            } else {
+                name
+            };
+            if canonical != "otap"
+                && !registry
+                    .codecs()
+                    .any(|codec| codec.encoding().as_str() == canonical)
+            {
+                return Err(format!("unknown batching encoding {canonical}"));
+            }
+            if (canonical == "otap" && input.otap.is_some())
+                || (canonical == PdataEncoding::OTLP.as_str() && input.otlp.is_some())
                 || codecs.insert(canonical.clone(), settings).is_some()
             {
                 return Err(format!("duplicate batching settings for {canonical}"));
@@ -435,18 +441,29 @@ impl Config {
 
     fn plans(&self) -> Result<Vec<(PdataFormat, BatchPlan)>, ConfigError> {
         let registry = CodecRegistry::global().map_err(config_error)?;
+        self.plans_with_registry(&registry)
+    }
+
+    fn plans_with_registry(
+        &self,
+        registry: &CodecRegistry,
+    ) -> Result<Vec<(PdataFormat, BatchPlan)>, ConfigError> {
         let otlp = registry
             .resolve(&PdataEncoding::OTLP)
             .map(PdataFormat::encoded)
             .map_err(config_error)?;
         let formats = if self.format == BatchingFormat::Preserve {
             let mut formats = vec![PdataFormat::OTAP, otlp];
-            let mut extra: Vec<_> = registry
-                .codecs()
-                .filter(|codec| codec.can_decode())
-                .map(PdataFormat::encoded)
-                .filter(|format| *format != otlp)
-                .collect();
+            let mut extra = Vec::new();
+            for registered in registry.codecs() {
+                let selected = registry
+                    .resolve(registered.encoding())
+                    .map_err(config_error)?;
+                let format = PdataFormat::encoded(selected);
+                if selected.can_decode() && format != otlp && !extra.contains(&format) {
+                    extra.push(format);
+                }
+            }
             extra.sort_by_key(|format| format.name());
             formats.extend(extra);
             formats
@@ -455,7 +472,7 @@ impl Config {
                 BatchingFormat::Otap => PdataFormat::OTAP,
                 BatchingFormat::Otlp => otlp,
                 BatchingFormat::Codec(name) => {
-                    PdataFormat::resolve(&registry, name).map_err(config_error)?
+                    PdataFormat::resolve(registry, name).map_err(config_error)?
                 }
                 BatchingFormat::Preserve => unreachable!(),
             }]
@@ -708,12 +725,21 @@ impl BatchProcessor {
         cfg: &Value,
         metrics: MetricSet<BatchProcessorMetrics>,
     ) -> Result<Self, ConfigError> {
+        let registry = CodecRegistry::global().map_err(config_error)?;
+        Self::build_with_registry(cfg, metrics, &registry)
+    }
+
+    fn build_with_registry(
+        cfg: &Value,
+        metrics: MetricSet<BatchProcessorMetrics>,
+        registry: &CodecRegistry,
+    ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(cfg.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
-        let plans = config.plans()?;
+        let plans = config.plans_with_registry(registry)?;
         let mut formats: Vec<Option<FormatState>> = vec![None, None];
         let mut routes = Vec::new();
         for (source, plan) in plans {
@@ -1307,7 +1333,8 @@ pub fn create_otap_batch_processor(
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let metrics = BatchProcessorMetrics::register(&pipeline_ctx);
-    let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
+    let registry = pipeline_ctx.codec_registry().map_err(config_error)?;
+    let proc = BatchProcessor::build_with_registry(&node_config.config, metrics, &registry)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -1987,6 +2014,62 @@ mod tests {
     fn test_default_config_ok() {
         let cfg: Config = serde_json::from_value(json!({})).unwrap();
         cfg.validate().unwrap();
+    }
+
+    /// Scenario: A binding selects either native batching or an OTAP fallback for the same encoding.
+    /// Guarantees: Startup plans honor the selected capabilities, resolve ambiguity, and create one route per encoding.
+    #[test]
+    fn batch_plans_use_pipeline_selected_implementation() {
+        use otel_arrow_dfe_config::codecs::CodecsConfig;
+        use otel_arrow_dfe_pdata_codec::{
+            BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecMetadata,
+            CodecRegistration, CodecServiceBuilder,
+        };
+        static METADATA: CodecMetadata =
+            CodecMetadata::new(PdataEncoding::OTLP, &[SignalType::Logs]);
+        static SUPPORT: BatchingSupport = BatchingSupport {
+            sizers: &[BatchSizer::Items],
+            default_settings: BatchSettings::otap(),
+        };
+        static CODECS: [CodecRegistration; 2] = [
+            CodecRegistration::new(&METADATA)
+                .with_implementation("test.native")
+                .with_decoder(|_| panic!("planning must not instantiate decoders"))
+                .with_item_counter(|_, _| Some(0))
+                .with_batcher(CodecBatcherRegistration::new(&SUPPORT, || {
+                    panic!("planning must not instantiate batchers")
+                })),
+            CodecRegistration::new(&METADATA)
+                .with_implementation("test.fallback")
+                .with_decoder(|_| panic!("planning must not instantiate decoders"))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        let config: Config = serde_json::from_value(json!({
+            "format": "preserve",
+            "otlp": {"sizer": "items", "min_size": 1},
+        }))
+        .unwrap();
+        for (implementation, native) in [("test.native", true), ("test.fallback", false)] {
+            let declaration: CodecsConfig = serde_json::from_value(json!({
+                "bindings": {"otlp-bytes": {"implementation": implementation}},
+            }))
+            .unwrap();
+            let service = CodecServiceBuilder::from_registry(Arc::new(
+                CodecRegistry::validate(&CODECS).unwrap(),
+            ))
+            .with_configuration(CodecsConfig::resolve([&declaration]))
+            .build()
+            .unwrap();
+            let plans = config.plans_with_registry(service.registry()).unwrap();
+            assert_eq!(plans.len(), 2);
+            let (source, plan) = plans
+                .iter()
+                .find(|(format, _)| format.codec().is_some())
+                .unwrap();
+            assert_eq!(source.codec().unwrap().implementation(), implementation);
+            assert_eq!(plan.output_format() == *source, native);
+            assert_eq!(service.test_instance_count().unwrap(), 0);
+        }
     }
 
     /// Scenario: Configuration supplies the full u64 range for batching thresholds and split budgets.

@@ -1,7 +1,47 @@
 # Async Best Practices for OTAP Dataflow
 
-This document outlines best practices for writing async-safe code in the OTAP
-Dataflow project.
+Each pipeline instance runs on one runtime thread. Blocking or monopolizing
+that thread delays I/O, other nodes, Ack/Nack handling, telemetry, and lifecycle
+control. These guidelines cover both blocking operations and CPU-heavy work.
+
+## Runtime responsiveness
+
+An `.await` is a possible suspension point, not proof that another task runs.
+Buffered reads and sends to channels with available capacity can complete
+immediately. Tokio cannot preempt arbitrary synchronous parsing, construction,
+sorting, encoding, or compression.
+
+- Bound uninterrupted CPU work by records, bytes, and elapsed time, where
+  practical. Check progress within expensive loops, not only between batches.
+- Yield deliberately after bounded progress. Excessive per-record yielding adds
+  overhead; `yield_now()` does not guarantee which task or I/O event runs next.
+- Treat time budgets as cooperative targets, not latency guarantees. A single
+  record, library call, or finalization step can exceed the budget.
+- Keep mutable codec borrows and synchronous locks scoped before yielding.
+  Cancellation must release partial work and preserve delivery ownership.
+- Preserve backpressure and bound retained work. Larger batches can increase
+  queued bytes even when channel slot counts do not change.
+- Measure finalization, sorting, encoding, and compression separately: making
+  the decode loop cooperative does not make those stages cooperative.
+
+### Measuring responsiveness
+
+- Run a full pipeline with a concurrent independent I/O/control probe on the
+  same runtime. Define what completion means, such as downstream Ack rather
+  than admission, and distinguish probe latency from telemetry delivery latency.
+- Compare small and large batches at fixed load and under backpressure. Record
+  CPU per delivered item, RSS/queued bytes, tail latency, errors, and achieved
+  throughput together. Report actual probe rate; closed-loop probes can hide
+  demand during stalls and do not establish an open-loop latency SLO.
+- Pin the SUT to an idle core, monitor its SMT sibling and host interference,
+  and control or verify active frequency. Interleave revisions, repeat pairs,
+  and report confidence intervals and exclusions.
+- Separate CPU-only and probe runs to expose probe overhead. To attribute a
+  gain to cooperation, compare the same optimized code with yielding enabled
+  and disabled; a cumulative before/after comparison is insufficient.
+- Check cancellation, shutdown, cleanup, and exact delivery independently.
+  Keep throughput and scheduling-latency thresholds in benchmarks, not ordinary
+  correctness tests; see the [testing guide](testing-guide.md).
 
 ## Common Blocking Operations to Avoid
 
@@ -114,31 +154,29 @@ This script checks for:
 
 ## When You Must Use Blocking Operations
 
-Sometimes you need to use libraries that don't have async versions. Use
-`spawn_blocking`:
+Some libraries require blocking execution. Offloading with `spawn_blocking`
+needs an explicit design: bound submitted work and concurrency, integrate
+backpressure, expose resource use, and define cancellation and shutdown behavior.
+Cancelling the caller does not stop an already running blocking closure.
+Account for the loss of thread/core locality and avoid hidden queues.
 
-```rust
-use tokio::task::spawn_blocking;
-
-async fn use_blocking_library() -> Result<String, Box<dyn std::error::Error>> {
-    let result = spawn_blocking(|| {
-        // Blocking operation here
-        some_blocking_library_call()
-    }).await?;
-
-    Ok(result)
-}
-```
+Do not use offloading as the default fix for CPU-heavy loops that can cooperate
+on the pipeline thread. See the
+[architectural review requirements](ai/ai-assisted-pr-review.md#core-architectural-invariants).
 
 ## Code Review Checklist
 
 When reviewing async code, check for:
 
-- [ ] All I/O operations use async alternatives (`tokio::fs`, `tokio::io`,
-  `tokio::net`)
+- [ ] Runtime I/O uses async interfaces or justified, bounded offload
 - [ ] No `std::thread::sleep` - use `tokio::time::sleep` instead
-- [ ] Blocking operations are wrapped in `spawn_blocking`
-- [ ] No locks held across `.await` points
+- [ ] Necessary blocking offload is bounded, observable, and integrated with
+  backpressure, cancellation, and shutdown
+- [ ] CPU-heavy loops offer scheduling opportunities after bounded progress,
+  including when surrounding awaits are immediately ready
+- [ ] Finalization and other indivisible work are assessed separately
+- [ ] Benchmarks assess CPU, memory, and responsiveness together
+- [ ] No synchronous locks or mutable codec borrows held across `.await`
 
 ## Quick Reference
 

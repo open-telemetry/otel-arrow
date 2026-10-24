@@ -63,6 +63,7 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

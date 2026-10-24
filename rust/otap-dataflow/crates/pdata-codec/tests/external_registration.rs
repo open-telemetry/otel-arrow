@@ -19,6 +19,9 @@ static EXTERNAL_METADATA: CodecMetadata =
         .with_format_version("1")
         .with_compression("zstd");
 
+struct ExternalFactory;
+impl otel_arrow_dfe_pdata_codec::PreparedCodecFactory for ExternalFactory {}
+
 struct ExternalDecoder;
 
 impl PdataDecoder for ExternalDecoder {
@@ -50,6 +53,15 @@ static EXTERNAL_BATCHING: BatchingSupport = BatchingSupport {
 register_pdata_codec!(
     EXTERNAL_CODEC,
     CodecRegistration::new(&EXTERNAL_METADATA)
+        .with_implementation("external.fixture")
+        .with_preparer(|config| {
+            if !config.options.is_empty() {
+                return Err(CodecError::configuration(
+                    "external fixture accepts no options",
+                ));
+            }
+            Ok(std::sync::Arc::new(ExternalFactory))
+        })
         .with_decoder(|_| panic!("admission must not create a decoder"))
         .with_item_counter(|_, bytes| {
             assert!(bytes.is_empty(), "constructed batches must bypass counting");

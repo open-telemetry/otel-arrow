@@ -1748,6 +1748,7 @@ impl<
         let OtelDataflowSpec {
             version,
             policies,
+            codecs,
             topics,
             engine,
             groups,
@@ -1755,16 +1756,19 @@ impl<
         let mut target = live_config.clone();
         target.version = version;
         target.policies = policies;
+        target.codecs = codecs;
         target.topics = topics;
         target.engine = engine;
         for (pipeline_group_id, desired_group) in groups {
             let PipelineGroupConfig {
                 policies,
+                codecs,
                 topics,
                 pipelines,
             } = desired_group;
             let group = target.groups.entry(pipeline_group_id.clone()).or_default();
             group.policies = policies;
+            group.codecs = codecs;
             group.topics = topics;
             for (pipeline_id, pipeline) in pipelines {
                 _ = group.pipelines.insert(pipeline_id, pipeline);
