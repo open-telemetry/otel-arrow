@@ -376,18 +376,13 @@ groups:
 Another policies section controls the context entries the are required
 at certain nodes in the pipeline. These policies can be defined at the
 engine, group, pipeline, or node level. For example, to indicate that
-the `product_account` entry is required at while the `product_user`
-entry is optional:
+the `product_account` entry is required:
 
 ```yaml
 policies:
   context:
     required_in:
-      - node: receiver0
-        entry: product_account
-    optional_in:
-      - node: receiver1
-        entry: product_user
+      - product_account
 ```
 
 or for example, to indicate that a processor must produce a certain
@@ -397,9 +392,11 @@ output context entry.
 policies:
   context:
     required_out:
-      - node: batchproc0
-        entry: product_account
+      - product_account
 ```
+
+Note that `required_in` and `required_out` rules are conjunctions. All
+the listed requirements must be met.
 
 ## Developer interfaces
 

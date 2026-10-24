@@ -396,7 +396,30 @@ Receiver bindings will only receive requests that meet the conditional
 requirements of the listed composites.
 
 ```yaml
-node:
+# This receiver is for tenant one.
+bigfish:
+  type: receiver:topic
+  policies:
+    context:
+      required_in:
+        - tenant_one
+  config:
+    topic: handoff
+    ...
+
+# This receiver is for tenant two.
+smallfish:
+  type: receiver:topic
+  policies:
+    context:
+      required_in:
+        - tenant_two
+  config:
+    topic: handoff
+    ...
+
+# This receiver is for the remaining tenants.
+catchall:
   type: receiver:topic
   policies:
     context:
