@@ -253,6 +253,8 @@ pub enum RetryTerminationReason {
     Deadline,
     /// The processor could not send the PData message or convert the failure into a NACK.
     SendFailure,
+    /// The processor-local scheduler could not accept the next retry.
+    SchedulingFailure,
 }
 
 /// Signal and terminal reason for a PData message the processor stopped retrying.
@@ -598,11 +600,21 @@ impl RetryProcessor {
                 self.metrics.record_retry_scheduled(signal);
                 Ok(())
             }
-            Err(refused) => {
-                let mut nack = NackMsg::new("cannot requeue", refused);
-                self.apply_exhaustion_action(&mut nack);
-                effect_handler.notify_nack(nack).await?;
-                Ok(())
+            Err(mut refused) => {
+                // The local scheduler refused ownership, so this retry will
+                // never run. Remove the frame subscribed above so the
+                // terminal NACK unwinds to the upstream subscriber instead of
+                // re-entering this processor.
+                let _ = refused.context_mut().pop_frame();
+                nack.refused = Box::new(refused);
+                nack.reason = format!("cannot requeue: {}", nack.reason);
+                self.terminate_nack(
+                    nack,
+                    signal,
+                    RetryTerminationReason::SchedulingFailure,
+                    effect_handler,
+                )
+                .await
             }
         }
     }
@@ -828,6 +840,7 @@ mod test {
             RetryTerminationReason::RetryLimit,
             RetryTerminationReason::Deadline,
             RetryTerminationReason::SendFailure,
+            RetryTerminationReason::SchedulingFailure,
         ] {
             messages
                 .with(RetryTerminationAttributes {
@@ -854,7 +867,7 @@ mod test {
             operational_snapshots[0].descriptor().metrics[1].unit,
             "{message}"
         );
-        assert_eq!(message_snapshots.len(), 6);
+        assert_eq!(message_snapshots.len(), 7);
         assert!(
             message_snapshots
                 .iter()
@@ -887,6 +900,7 @@ mod test {
                 "retry_limit",
                 "deadline",
                 "send_failure",
+                "scheduling_failure",
             ]
         );
     }
@@ -1372,6 +1386,110 @@ mod test {
                 }
             );
         }));
+    }
+
+    /// Scenario: The processor-local delayed-resume queue is full when a second transient
+    /// downstream NACK arrives.
+    /// Guarantees: The rejected retry is NACKed once to its upstream subscriber with the payload
+    /// preserved, does not re-enter the retry processor, and is counted as a scheduling failure.
+    #[test]
+    fn test_retry_processor_scheduling_failure_nacks_upstream() {
+        let pipeline_ctx = create_test_pipeline_context();
+        let node = test_node("retry-processor-scheduling-failure");
+        // The delayed-resume queue is bounded by the pdata channel capacity,
+        // so a capacity of one leaves room for exactly one pending retry.
+        let rt: TestRuntime<OtapPdata> = TestRuntime::with_channel_capacities(100, 1);
+
+        let mut node_config = NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN);
+        node_config.config = create_test_config();
+
+        let proc = crate::processors::retry_processor::create_retry_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
+        )
+        .expect("create processor");
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let queued_calldata = TestCallData::new_with(1, 1);
+                let rejected_calldata = TestCallData::new_with(2, 2);
+
+                let mut attempts = Vec::new();
+                for calldata in [&queued_calldata, &rejected_calldata] {
+                    let pdata_in = create_test_pdata().test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+                        calldata.clone().into(),
+                        4444,
+                    );
+                    ctx.process(Message::PData(pdata_in))
+                        .await
+                        .expect("process initial message");
+                    let mut output = ctx.drain_pdata().await;
+                    assert_eq!(output.len(), 1);
+                    attempts.push(output.remove(0));
+                }
+
+                for attempt in attempts {
+                    let (_, nack_msg) =
+                        next_nack(NackMsg::new("simulated downstream failure", attempt))
+                            .expect("expected nack subscriber");
+                    ctx.process(Message::nack_ctrl_msg(nack_msg))
+                        .await
+                        .expect("process nack");
+                }
+
+                // The first retry still owns the only delayed-resume slot.
+                assert!(ctx.next_local_control_deadline().is_some());
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_secs(1),
+                    "retry processor terminal nack for scheduling failure",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, mut nack) =
+                            next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, 4444);
+                        assert!(
+                            nack.reason
+                                .contains("cannot requeue: simulated downstream failure"),
+                            "unexpected reason: {}",
+                            nack.reason
+                        );
+                        assert!(!nack.permanent);
+                        assert_eq!(create_test_pdata().num_items(), nack.refused.num_items());
+                        let calldata: TestCallData =
+                            nack.unwind.route.calldata.try_into().expect("my calldata");
+                        assert_eq!(rejected_calldata, calldata);
+                    }
+                    other => panic!("expected terminal nack, got {other:?}"),
+                }
+                assert!(
+                    pipeline_completion_rx.try_recv().is_err(),
+                    "the rejected retry must be NACKed exactly once"
+                );
+
+                assert_eq!(
+                    collect_retry_metrics(&mut ctx).await,
+                    RetryMetricSummary {
+                        retries_scheduled: 1,
+                        messages_terminated: vec![("scheduling_failure".to_owned(), 1)],
+                        ..RetryMetricSummary::default()
+                    }
+                );
+            })
+            .validate(|ctx| async move {
+                ctx.counters().assert(0, 0, 0, 0);
+            });
     }
 
     fn test_retry_processor(
