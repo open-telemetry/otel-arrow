@@ -1,0 +1,15 @@
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern.
+component: pipeline
+
+# A brief description of the change.
+note: "Allow the ClickHouse exporter to coalesce Arrow batches by row, estimated byte, and time thresholds."
+
+# Mandatory: One or more tracking issues related to the change.
+issues: [3512]
+
+# Additional release-note context.
+subtext: |
+  Configure insert_batching to form insertion groups before concurrent writer lane assignment. It is disabled by default, so existing configurations retain one insertion per transformed message.
