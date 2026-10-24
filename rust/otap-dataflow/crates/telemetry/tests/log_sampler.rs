@@ -210,10 +210,10 @@ fn structured_fields_preserve_lazy_evaluation() {
     }
 
     impl StructuredValue for Point {
-        fn write(&self, w: &mut dyn ValueWriter) -> TruncateResult {
-            w.map(|m| {
-                let x = m.entry("x", |v| v.write_i64(*self.x.borrow()))?;
-                let y = m.entry("y", |v| v.write_i64(self.y))?;
+        fn encode(&self, w: &mut dyn ValueWriter) -> TruncateResult {
+            w.encode_map(&mut |m| {
+                let x = m.encode_entry("x", &mut |v| v.encode_i64(*self.x.borrow()))?;
+                let y = m.encode_entry("y", &mut |v| v.encode_i64(self.y))?;
                 Ok(x.combine(y))
             })
         }

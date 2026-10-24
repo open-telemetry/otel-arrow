@@ -25,31 +25,34 @@ pub const MAX_DEPTH: usize = 16;
 
 /// A value that can encode itself as an OTLP AnyValue.
 pub trait StructuredValue: Any {
-    /// Writes exactly one value to `w`, returning its truncation or failure.
-    fn write(&self, w: &mut dyn ValueWriter) -> TruncateResult;
+    /// Encodes exactly one value, returning its truncation or failure.
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> TruncateResult;
 }
 
 /// Receives one AnyValue. Returning `Ok(Truncation::None)` without writing
 /// produces an empty value.
+///
+/// This object-safe interface lets type-erased structured values use the same
+/// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
-    /// Writes a string, maybe truncated.
-    fn write_str(&mut self, value: &str) -> TruncateResult;
-    /// Writes the `Debug` value as a string, maybe truncated.
-    fn write_debug(&mut self, value: &dyn fmt::Debug) -> TruncateResult;
-    /// Writes an i64.
-    fn write_i64(&mut self, value: i64) -> TruncateResult;
-    /// Writes an f64.
-    fn write_f64(&mut self, value: f64) -> TruncateResult;
-    /// Writes a boolean.
-    fn write_bool(&mut self, value: bool) -> TruncateResult;
-    /// Writes a map; `f` propagates member failures with `?` and combines
+    /// Encodes a string, maybe truncated.
+    fn encode_str(&mut self, value: &str) -> TruncateResult;
+    /// Encodes the `Debug` value as a string, maybe truncated.
+    fn encode_debug(&mut self, value: &dyn fmt::Debug) -> TruncateResult;
+    /// Encodes an i64.
+    fn encode_i64(&mut self, value: i64) -> TruncateResult;
+    /// Encodes an f64.
+    fn encode_f64(&mut self, value: f64) -> TruncateResult;
+    /// Encodes a boolean.
+    fn encode_bool(&mut self, value: bool) -> TruncateResult;
+    /// Encodes a map; `f` propagates member failures with `?` and combines
     /// successful truncation results. A member failure retains the map's prefix.
-    fn write_map(
+    fn encode_map(
         &mut self,
         f: &mut dyn FnMut(&mut dyn MapWriter) -> TruncateResult,
     ) -> TruncateResult;
-    /// Writes an array with the same prefix-retention policy as `write_map`.
-    fn write_array(
+    /// Encodes an array with the same prefix-retention policy as `encode_map`.
+    fn encode_array(
         &mut self,
         f: &mut dyn FnMut(&mut dyn ArrayWriter) -> TruncateResult,
     ) -> TruncateResult;
@@ -58,7 +61,7 @@ pub trait ValueWriter {
 /// Receives the entries of a map.
 pub trait MapWriter {
     /// Adds one entry; failure rolls back the entry and must be propagated.
-    fn write_entry(
+    fn encode_entry(
         &mut self,
         key: &str,
         f: &mut dyn FnMut(&mut dyn ValueWriter) -> TruncateResult,
@@ -68,49 +71,10 @@ pub trait MapWriter {
 /// Receives the elements of an array.
 pub trait ArrayWriter {
     /// Adds one element; failure rolls back the element and must be propagated.
-    fn write_element(
+    fn encode_element(
         &mut self,
         f: &mut dyn FnMut(&mut dyn ValueWriter) -> TruncateResult,
     ) -> TruncateResult;
-}
-
-impl dyn ValueWriter + '_ {
-    /// Writes a map, with `f` adding the entries.
-    pub fn map(
-        &mut self,
-        mut f: impl FnMut(&mut dyn MapWriter) -> TruncateResult,
-    ) -> TruncateResult {
-        self.write_map(&mut f)
-    }
-
-    /// Writes an array, with `f` adding the elements.
-    pub fn array(
-        &mut self,
-        mut f: impl FnMut(&mut dyn ArrayWriter) -> TruncateResult,
-    ) -> TruncateResult {
-        self.write_array(&mut f)
-    }
-}
-
-impl dyn MapWriter + '_ {
-    /// Adds an entry, with `f` writing its value.
-    pub fn entry(
-        &mut self,
-        key: &str,
-        mut f: impl FnMut(&mut dyn ValueWriter) -> TruncateResult,
-    ) -> TruncateResult {
-        self.write_entry(key, &mut f)
-    }
-}
-
-impl dyn ArrayWriter + '_ {
-    /// Adds an element, with `f` writing its value.
-    pub fn element(
-        &mut self,
-        mut f: impl FnMut(&mut dyn ValueWriter) -> TruncateResult,
-    ) -> TruncateResult {
-        self.write_element(&mut f)
-    }
 }
 
 /// A typed, exclusively owned value that can be borrowed as a structured field.
@@ -207,8 +171,8 @@ mod tests {
     }
 
     impl StructuredValue for State {
-        fn write(&self, w: &mut dyn ValueWriter) -> TruncateResult {
-            w.write_i64(self.count)
+        fn encode(&self, encoder: &mut dyn ValueWriter) -> TruncateResult {
+            encoder.encode_i64(self.count)
         }
     }
 
