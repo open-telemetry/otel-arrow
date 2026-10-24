@@ -9,6 +9,7 @@
 
 pub mod encoder;
 pub mod formatter;
+pub mod structured;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
@@ -27,6 +28,7 @@ pub use formatter::{
     AnsiCode, ColorMode, ConsoleWriter, RawLoggingLayer, StyledBufWriter,
     format_log_record_to_string,
 };
+pub use structured::{ArrayWriter, MapWriter, StructBox, StructuredValue, ValueWriter};
 
 /// Initial heap capacity for `LogRecord::new()`'s encoding phase.
 ///
