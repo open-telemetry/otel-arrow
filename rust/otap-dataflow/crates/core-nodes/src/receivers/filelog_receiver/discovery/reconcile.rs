@@ -444,15 +444,12 @@ impl Reconciler {
         let Some(parent) = path.and_then(Path::parent) else {
             return (None, false);
         };
-        // Before the first pass no record can have a runtime parent baseline.
-        if self.last.is_none() {
-            return (None, false);
-        }
         Self::directory_baseline(&self.tracked, &self.parents, parent.as_os_str())
     }
 
-    // Prefer a latched expected identity over a newly validated neighbour. The
-    // runtime ID breaks ties deterministically; never choose by hash order.
+    // observe_parent updates the entire family; insertion and rebind copy its
+    // persistent state. Every member therefore agrees, including (None, changed).
+    // Read one member rather than searching for a known baseline on every admission.
     fn directory_baseline(
         records: &Records,
         parents: &RecordIndex<OsStr>,
@@ -460,8 +457,7 @@ impl Reconciler {
     ) -> (Option<FileLocator>, bool) {
         parents
             .records(path, records)
-            .filter(|tracked| tracked.parent.is_some())
-            .min_by_key(|tracked| (!tracked.parent_changed, tracked.file.id.0))
+            .next()
             .map(|tracked| (tracked.parent, tracked.parent_changed))
             .unwrap_or((None, false))
     }
@@ -506,6 +502,14 @@ impl Reconciler {
                 tracked.parent_changed = false;
             }
         }
+        // This check belongs on the already-linear family update, not the
+        // per-admission lookup (which must also stay cheap in debug builds).
+        debug_assert!({
+            let state = Self::directory_baseline(&self.tracked, &self.parents, path.as_os_str());
+            self.parents
+                .records(path.as_os_str(), &self.tracked)
+                .all(|tracked| (tracked.parent, tracked.parent_changed) == state)
+        });
         if changed {
             emit(Evidence::CoverageLost(ScanReason::RootChanged));
         }
@@ -1051,7 +1055,13 @@ impl Reconciler {
         if alias {
             tracked.pass.alias_checked = true;
         }
-        if check.scope == BindingScope::Coverage {
+        if check.scope == BindingScope::Coverage
+            || (alias
+                && check
+                    .observation
+                    .reason
+                    .is_some_and(ScanReason::invalidates_coverage))
+        {
             tracked.pass.exclusion_blocked = true;
             pass.complete = false;
             let reason = check.observation.reason.unwrap_or(ScanReason::Coverage);

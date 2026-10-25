@@ -3253,30 +3253,6 @@ fn environment_failure_invalidates_earlier_miss_authority() {
     assert!(!finish(&mut r, true, &mut events).complete);
 }
 
-/// Scenario: Retained neighbours disagree after one has latched an expected-directory change.
-/// Guarantees: New bindings inherit the latched expected identity in either insertion order, never the unlatched replacement.
-#[test]
-fn latched_parent_baseline_wins_over_unlatched_neighbour() {
-    for ids in [[1, 2], [2, 1]] {
-        let mut r = Reconciler::new(limits()).unwrap();
-        for id in ids {
-            r.track(file(id, &format!("/logs/{id}"))).unwrap();
-        }
-        let mut events = Vec::new();
-        start(&mut r, 1);
-        assert!(!finish(&mut r, false, &mut events).complete);
-        // Model retained disagreement explicitly; new validation must not pick
-        // the replacement just because its ID or hash-table position comes first.
-        r.tracked.get_mut(&TrackedId(1)).unwrap().parent = Some(locator(11));
-        let expected = r.tracked.get_mut(&TrackedId(2)).unwrap();
-        expected.parent = Some(locator(10));
-        expected.parent_changed = true;
-        r.track(file(3, "/logs/3")).unwrap();
-        assert_eq!(r.tracked[&TrackedId(3)].parent, Some(locator(10)));
-        assert!(r.tracked[&TrackedId(3)].parent_changed);
-    }
-}
-
 /// Scenario: A policy failure follows qualified evidence at one binding, while another binding is positively excluded.
 /// Guarantees: Dependent missing/replacement authority is revoked without withholding the unrelated exclusion.
 #[test]
@@ -4055,4 +4031,289 @@ fn superseded_publication_requires_rebind_and_the_rebound_barrier() {
     );
     assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Live);
     assert!(r.tracked[&TrackedId(1)].successor.is_none());
+}
+
+fn assert_parent_families_uniform(r: &Reconciler) {
+    let mut families = std::collections::HashMap::new();
+    for tracked in r.tracked.values() {
+        if let Some(parent) = tracked.file.binding.as_deref().and_then(Path::parent) {
+            let state = (tracked.parent, tracked.parent_changed);
+            if let Some(previous) = families.insert(parent.as_os_str(), state) {
+                assert_eq!(previous, state, "parent family {}", parent.display());
+            }
+        }
+    }
+}
+
+/// Scenario: Parent families undergo initial targeted validation, change, restoration, insertion, removal and cross-directory rebinding.
+/// Guarantees: Every member shares persistent parent state, so even an unknown baseline can be read from one member safely.
+#[test]
+fn parent_families_remain_uniform_through_lifecycle() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    for (id, path) in [(1, "/logs/a"), (2, "/logs/b"), (3, "/other/c")] {
+        r.track(file(id, path)).unwrap();
+        assert_parent_families_uniform(&r);
+    }
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    apply_test_check(
+        &mut r,
+        1,
+        &observation(1, "/logs/a"),
+        Some(locator(10)),
+        false,
+        &mut events,
+    );
+    assert_parent_families_uniform(&r);
+    assert_eq!(r.tracked[&TrackedId(2)].parent, Some(locator(10)));
+    assert!(finish(&mut r, true, &mut events).complete);
+    r.track(file(4, "/logs/d")).unwrap();
+    r.track(file(5, "/unknown/e")).unwrap();
+    assert_parent_families_uniform(&r);
+    drop(r.untrack(TrackedId(2)).unwrap());
+    assert_parent_families_uniform(&r);
+    start(&mut r, 2);
+    feed(
+        &mut r,
+        &evidence(Some(11), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert_parent_families_uniform(&r);
+    assert!(r.tracked[&TrackedId(4)].parent_changed);
+    apply_test_check(
+        &mut r,
+        1,
+        &evidence(None, "/logs/a", ScanReason::Missing),
+        Some(locator(10)),
+        true,
+        &mut events,
+    );
+    assert_parent_families_uniform(&r);
+    assert!(!r.tracked[&TrackedId(4)].parent_changed);
+    assert!(!finish(&mut r, true, &mut events).complete);
+    r.track(file(6, "/logs/f")).unwrap();
+    assert_parent_families_uniform(&r);
+    start(&mut r, 3);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(3, "/logs/0"), &mut events);
+    feed(&mut r, &observation(1, "/new/0"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(r.rebind(3, TrackedId(3), |_| true).unwrap());
+    assert_eq!(r.tracked[&TrackedId(3)].parent, Some(locator(10)));
+    assert_parent_families_uniform(&r);
+    assert!(r.rebind(3, TrackedId(1), |_| true).unwrap());
+    assert_eq!(r.tracked[&TrackedId(1)].parent, None);
+    assert_parent_families_uniform(&r);
+    drop(r.untrack(TrackedId(4)).unwrap());
+    assert_parent_families_uniform(&r);
+}
+
+/// Scenario: A parent-change result arrives before a baseline is known and another record is registered afterward.
+/// Guarantees: Unknown parent state retains its change latch uniformly instead of losing it during admission lookup.
+#[test]
+fn unknown_parent_change_is_preserved_by_new_family_members() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/unknown/a")).unwrap();
+    r.track(file(2, "/unknown/b")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    let failure = evidence(None, "/unknown/a", ScanReason::RootChanged);
+    r.apply_binding_check(
+        1,
+        TrackedId(1),
+        super::super::BindingCheck {
+            observation: &failure,
+            parent: None,
+            context_valid: false,
+            scope: super::super::BindingScope::ParentChanged,
+            diagnostic_path: Path::new("/unknown"),
+        },
+        Duration::from_secs(10),
+        |e| record(e, &mut events),
+    )
+    .unwrap();
+    assert_parent_families_uniform(&r);
+    assert!(!finish(&mut r, true, &mut events).complete);
+    r.track(file(3, "/unknown/c")).unwrap();
+    assert_eq!(r.tracked[&TrackedId(3)].parent, None);
+    assert!(r.tracked[&TrackedId(3)].parent_changed);
+    assert_parent_families_uniform(&r);
+    start(&mut r, 2);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/unknown", ScanReason::Directory),
+        &mut events,
+    );
+    assert_parent_families_uniform(&r);
+    assert_eq!(r.tracked[&TrackedId(3)].parent, Some(locator(10)));
+    assert!(finish(&mut r, true, &mut events).complete);
+}
+
+/// Scenario: An earlier alias returns a local coverage-invalidating failure after the binding is positively excluded.
+/// Guarantees: Required alias uncertainty emits failure immediately, prevents exclusion and prevents complete-pass fallback.
+#[test]
+fn local_alias_failures_block_positive_exclusion() {
+    for reason in [
+        ScanReason::Coverage,
+        ScanReason::ProbeBusy,
+        ScanReason::Limit,
+        ScanReason::DescriptorExhausted,
+        ScanReason::Unstable,
+    ] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/binding")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(&mut r, &observation(1, "/alias"), &mut events);
+        assert!(finish(&mut r, true, &mut events).complete);
+        start(&mut r, 2);
+        feed(
+            &mut r,
+            &evidence(Some(1), "/binding", ScanReason::Excluded),
+            &mut events,
+        );
+        assert!(!events.contains(&"excluded:1".into()));
+        apply_test_check(
+            &mut r,
+            1,
+            &evidence(None, "/alias", reason),
+            None,
+            false,
+            &mut events,
+        );
+        assert!(events.contains(&"coverage".into()));
+        assert!(!events.contains(&"excluded:1".into()));
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"excluded:1".into()));
+    }
+}
+
+/// Scenario: Real scanner alias checks encounter an occupied probe budget or an inaccessible ancestor after positive binding exclusion.
+/// Guarantees: Local scanner failures block revocation, preserve the alias hint and recover on a fresh pass; privileged processes skip only the permission subcase.
+#[test]
+fn scanner_alias_uncertainty_blocks_exclusion() {
+    use std::os::unix::fs::PermissionsExt;
+    struct RestorePermissions(PathBuf, std::fs::Permissions);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, self.1.clone());
+        }
+    }
+    for inaccessible in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let protected = dir.path().join("aliases");
+        std::fs::create_dir_all(protected.join("nested")).unwrap();
+        let binding = dir.path().join("binding.secret");
+        let alias = protected.join("nested/file.log");
+        std::fs::write(&binding, b"abc").unwrap();
+        std::fs::hard_link(&binding, &alias).unwrap();
+        let actual = FileLocator::from_metadata(&std::fs::metadata(&alias).unwrap());
+        let mut tracked = file(1, binding.to_str().unwrap());
+        tracked.locator = actual;
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(tracked).unwrap();
+        let mut scanner = scanner(dir.path());
+        let budget = super::super::ProbeBudget::default();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        scanner
+            .check_binding(
+                &alias,
+                None,
+                &budget,
+                || false,
+                |check| {
+                    assert!(check.observation.reason.is_none());
+                    feed(&mut r, check.observation, &mut events);
+                },
+            )
+            .unwrap();
+        assert!(finish(&mut r, true, &mut events).complete);
+        start(&mut r, 2);
+        scanner
+            .check_binding(
+                &binding,
+                None,
+                &budget,
+                || false,
+                |check| {
+                    assert_eq!(check.observation.reason, Some(ScanReason::Excluded));
+                    assert_eq!(check.observation.locator, Some(actual));
+                    feed(&mut r, check.observation, &mut events);
+                },
+            )
+            .unwrap();
+        let restore = if inaccessible {
+            let guard = RestorePermissions(
+                protected.clone(),
+                std::fs::metadata(&protected).unwrap().permissions(),
+            );
+            std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0)).unwrap();
+            match std::fs::metadata(&alias) {
+                Ok(_) => {
+                    eprintln!("permission subcase skipped: process bypasses directory permissions");
+                    continue;
+                }
+                Err(e) => assert_eq!(e.raw_os_error(), Some(libc::EACCES)),
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        let reservation = if inaccessible {
+            None
+        } else {
+            Some(budget.try_reserve().unwrap())
+        };
+        let expected = if inaccessible {
+            ScanReason::Coverage
+        } else {
+            ScanReason::ProbeBusy
+        };
+        {
+            let mut batch = scanner.binding_batch(&budget, || false).unwrap();
+            let request = r.binding_request(TrackedId(1)).unwrap();
+            assert_eq!(request.path, alias);
+            let check = batch.check(request.path, request.parent).unwrap();
+            assert_eq!(check.scope, super::super::BindingScope::Binding);
+            assert_eq!(check.observation.reason, Some(expected));
+            if inaccessible {
+                assert_eq!(check.observation.errno, Some(libc::EACCES));
+            }
+            r.apply_binding_check(2, TrackedId(1), check, Duration::from_secs(20), |e| {
+                record(e, &mut events)
+            })
+            .unwrap();
+            assert!(!events.contains(&"excluded:1".into()));
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert!(!events.contains(&"excluded:1".into()));
+        }
+        drop(reservation);
+        drop(restore);
+        start(&mut r, 3);
+        scanner
+            .check_binding(
+                &binding,
+                None,
+                &budget,
+                || false,
+                |check| feed(&mut r, check.observation, &mut events),
+            )
+            .unwrap();
+        let request = r.binding_request(TrackedId(1)).unwrap();
+        let mut batch = scanner.binding_batch(&budget, || false).unwrap();
+        let check = batch.check(request.path, request.parent).unwrap();
+        assert!(check.observation.reason.is_none());
+        r.apply_binding_check(3, TrackedId(1), check, Duration::from_secs(30), |e| {
+            record(e, &mut events)
+        })
+        .unwrap();
+        assert!(finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"excluded:1".into()));
+        eprintln!("scanner alias failure verified: {expected:?}");
+    }
 }

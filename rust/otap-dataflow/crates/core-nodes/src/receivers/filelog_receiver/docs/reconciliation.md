@@ -103,9 +103,10 @@ stable work can remain usable during an incomplete pass.
   blocks last until expected identities return or the receiver is recreated.
   Receiver recreation does not reset checkpoints.
 
-New bindings reuse known parent baselines. A latched expectation wins, then the
-smallest runtime ID breaks ties. Without a retained baseline, first validation
-establishes it. Healthy targeted checks and repeated changes already propagated
+All retained bindings in a directory share its expected parent and persistent
+change state. New bindings copy one member's state, even when the parent is
+unknown; admission does not scan the sibling group. First validation establishes
+an unknown baseline for the whole family. Healthy targeted checks and repeated changes already propagated
 this pass avoid another directory-family walk.
 
 Targeted checks share traversal's ancestor policy, root verification, pin-bound
