@@ -4252,7 +4252,7 @@ fn scanner_alias_uncertainty_blocks_exclusion() {
                 protected.clone(),
                 std::fs::metadata(&protected).unwrap().permissions(),
             );
-            std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0)).unwrap();
+            std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o0)).unwrap();
             match std::fs::metadata(&alias) {
                 Ok(_) => {
                     eprintln!("permission subcase skipped: process bypasses directory permissions");
