@@ -15,6 +15,10 @@ readme = "README.md"
 [lints]
 workspace = true
 
+[features]
+# Explicit opt-in for downstream fault-injection tests; never enabled by default.
+test-utils = []
+
 [dependencies]
 crc.workspace = true
 sha2.workspace = true

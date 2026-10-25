@@ -150,6 +150,7 @@ bench = []
 dev-tools = []
 
 [dev-dependencies]
+otel-arrow-dfe-filelog-checkpoint = { workspace = true, features = ["test-utils"] }
 libtest-mimic.workspace = true
 serde_yaml.workspace = true
 arrow-ipc.workspace = true

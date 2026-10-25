@@ -202,6 +202,23 @@ impl ReplayState {
         self.records.get(file_id)
     }
 
+    /// Checks that an admission owner uses this namespace's selected profile and bounds.
+    /// Historical incompatible records remain present independently of this configuration.
+    #[must_use]
+    pub fn matches_configuration(&self, namespace: &str, config: ReplayConfig) -> bool {
+        self.namespace == namespace && self.config == config
+    }
+
+    /// Finds the unique live-matchable record for a native locator.
+    /// Finalized history is excluded. This lookup does not establish source
+    /// continuity or acquire a runtime lease; callers must validate both.
+    #[must_use]
+    pub fn get_by_locator(&self, locator: &Locator) -> Option<&SnapshotRecord> {
+        self.live_locators
+            .get(locator)
+            .and_then(|id| self.records.get(id))
+    }
+
     /// Iterates the authoritative records in unspecified order.
     #[must_use]
     pub fn records(&self) -> impl ExactSizeIterator<Item = &SnapshotRecord> {

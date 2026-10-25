@@ -384,9 +384,9 @@ fn verify_entry(parent: &File, name: &str, file: &File) -> Result<(), StoreError
 #[derive(Default)]
 pub(super) struct Io {
     pub(super) sync_failed: Option<&'static str>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fail_sync: Option<&'static str>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fail_write_after: Option<usize>,
     #[cfg(test)]
     pub events: Vec<&'static str>,
@@ -411,13 +411,14 @@ impl Io {
         {
             self.events.push(operation);
             self.sync_fds.push(std::os::fd::AsRawFd::as_raw_fd(file));
-            if self.fail_sync == Some(operation) {
-                self.fail_sync = None;
-                return Err(StoreError::SyncFailed {
-                    operation,
-                    source: std::io::Error::other("injected sync failure"),
-                });
-            }
+        }
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.fail_sync == Some(operation) {
+            self.fail_sync = None;
+            return Err(StoreError::SyncFailed {
+                operation,
+                source: std::io::Error::other("injected sync failure"),
+            });
         }
         file.sync_all()
             .map_err(|source| StoreError::SyncFailed { operation, source })?;
@@ -426,7 +427,7 @@ impl Io {
     }
 
     pub fn write_all(&mut self, file: &mut File, bytes: &[u8]) -> Result<(), StoreError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         if let Some(count) = self.fail_write_after.take() {
             file.write_all(&bytes[..count.min(bytes.len())])
                 .map_err(|e| io("write checkpoint", e))?;

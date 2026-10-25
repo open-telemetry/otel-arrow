@@ -71,6 +71,25 @@ migration. Configuration and storage share the checkpoint crate's ID encoding,
 compatibility digest, and size calculations. See the [checkpoint format][checkpoint]
 for the exact rules.
 
+## Fingerprint ambiguity
+
+Fingerprint evidence is a bounded raw prefix after `ignored_header_bytes`, not a
+unique file identifier. For a changed locator, a nonempty equal common prefix
+can associate the candidate with retained Active state even when the file is
+shorter than `fingerprint_bytes`. The candidate then follows
+`identity.on_recovery_mismatch`, rather than `start_at` or `ignore_older_than`.
+This intentionally favors replay of surviving copied bytes over skipping them.
+
+The configured window is a maximum, not a minimum amount of stored evidence.
+A file observed while tiny can leave one-byte evidence even with the default
+1,000-byte window, until growth is observed and persisted.
+
+Smaller windows, including the 16-byte minimum, increase false associations.
+Independent files can share timestamps or headers; a larger window reduces but
+does not eliminate that ambiguity. Under `beginning`, false association can
+replay existing content; under `fail`, it can quarantine a new unrelated file.
+No association transfers the old file's ID, epoch or committed offset.
+
 ## Memory checks
 
 Configuration rejects arithmetic overflow and values above the limits in the

@@ -274,6 +274,12 @@ pub enum Operation {
 }
 
 impl Operation {
+    /// Progress that changes no lifecycle or identity evidence and may defer sync.
+    #[must_use]
+    pub const fn is_ordinary_progress(&self) -> bool {
+        matches!(self, Self::UpdateProgress(progress) if !progress.finalize)
+    }
+
     /// Returns the operation's target file key.
     #[must_use]
     pub const fn file_id(&self) -> FileId {
