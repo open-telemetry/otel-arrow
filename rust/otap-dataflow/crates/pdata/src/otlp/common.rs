@@ -838,8 +838,12 @@ impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
 }
 
 /// Patch a previously written length placeholder with the actual length.
+///
+/// The `N` reserved bytes must contain a zero-valued varint placeholder.
+/// The payload length must fit in those bytes, which may be patched only once
+/// with a nonzero length.
 #[inline]
-fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
+pub fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
     buf: &mut B,
     len: usize,
     len_start_pos: usize,

@@ -18,44 +18,47 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-pub use super::encoder::{TruncateResult, Truncation};
+pub use otel_arrow_dfe_pdata::otlp::{EncodeFailure, EncodeResult};
 
 /// Maximum nesting of maps and arrays; deeper values are dropped.
 pub const MAX_DEPTH: usize = 16;
 
 /// A value that can encode itself as an OTLP AnyValue.
 pub trait StructuredValue: Any {
-    /// Encodes exactly one value, returning its truncation or failure.
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> TruncateResult;
+    /// Encodes exactly one value, propagating failures with `?`.
+    /// The encoder accounts for truncation without caller bookkeeping.
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult;
 }
 
-/// Receives one AnyValue. Returning `Ok(Truncation::None)` without writing
+/// Receives one AnyValue. Returning `Ok(())` without writing
 /// produces an empty value.
 ///
 /// This object-safe interface lets type-erased structured values use the same
 /// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
+    /// Starts a struct with `name` stored as its `msg` field.
+    /// Dropping the builder before `finish()` retains its completed prefix
+    /// and reports truncation at the enclosing value boundary.
+    fn encode_struct(&mut self, name: &str) -> EncodeResult<StructEncoder<'_>>;
     /// Encodes a string, maybe truncated.
-    fn encode_str(&mut self, value: &str) -> TruncateResult;
+    fn encode_str(&mut self, value: &str) -> EncodeResult;
     /// Encodes the `Debug` value as a string, maybe truncated.
-    fn encode_debug(&mut self, value: &dyn fmt::Debug) -> TruncateResult;
+    fn encode_debug(&mut self, value: &dyn fmt::Debug) -> EncodeResult;
     /// Encodes an i64.
-    fn encode_i64(&mut self, value: i64) -> TruncateResult;
+    fn encode_i64(&mut self, value: i64) -> EncodeResult;
     /// Encodes an f64.
-    fn encode_f64(&mut self, value: f64) -> TruncateResult;
+    fn encode_f64(&mut self, value: f64) -> EncodeResult;
     /// Encodes a boolean.
-    fn encode_bool(&mut self, value: bool) -> TruncateResult;
-    /// Encodes a map; `f` propagates member failures with `?` and combines
-    /// successful truncation results. A member failure retains the map's prefix.
-    fn encode_map(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn MapWriter) -> TruncateResult,
-    ) -> TruncateResult;
+    fn encode_bool(&mut self, value: bool) -> EncodeResult;
+    /// Encodes a map; `f` propagates member failures with `?`.
+    /// A member failure retains the map's prefix.
+    fn encode_map(&mut self, f: &mut dyn FnMut(&mut dyn MapWriter) -> EncodeResult)
+    -> EncodeResult;
     /// Encodes an array with the same prefix-retention policy as `encode_map`.
     fn encode_array(
         &mut self,
-        f: &mut dyn FnMut(&mut dyn ArrayWriter) -> TruncateResult,
-    ) -> TruncateResult;
+        f: &mut dyn FnMut(&mut dyn ArrayWriter) -> EncodeResult,
+    ) -> EncodeResult;
 }
 
 /// Receives the entries of a map.
@@ -64,8 +67,8 @@ pub trait MapWriter {
     fn encode_entry(
         &mut self,
         key: &str,
-        f: &mut dyn FnMut(&mut dyn ValueWriter) -> TruncateResult,
-    ) -> TruncateResult;
+        f: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
+    ) -> EncodeResult;
 }
 
 /// Receives the elements of an array.
@@ -73,8 +76,133 @@ pub trait ArrayWriter {
     /// Adds one element; failure rolls back the element and must be propagated.
     fn encode_element(
         &mut self,
-        f: &mut dyn FnMut(&mut dyn ValueWriter) -> TruncateResult,
-    ) -> TruncateResult;
+        f: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
+    ) -> EncodeResult;
+}
+
+pub(crate) trait StructWriter: MapWriter {
+    /// Finalizes an open struct, if any. Incomplete structs retain their prefix.
+    fn finish_struct(&mut self, incomplete: bool);
+}
+
+/// A streaming struct encoder. Field failures propagate immediately with `?`;
+/// an unfinished builder retains its completed fields and reports truncation.
+#[must_use = "finish the struct, or drop it to retain a truncated prefix"]
+pub struct StructEncoder<'a> {
+    writer: &'a mut dyn StructWriter,
+}
+
+impl<'a> StructEncoder<'a> {
+    pub(crate) fn new(writer: &'a mut dyn StructWriter) -> Self {
+        Self { writer }
+    }
+
+    /// Encodes a borrowed field and returns the builder for chaining.
+    pub fn field<T: StructuredValue + ?Sized>(self, name: &str, value: &T) -> EncodeResult<Self> {
+        self.field_with(name, &mut |encoder| value.encode(encoder))
+    }
+
+    /// Encodes a field lazily, invoking `encode` only after its key fits.
+    pub fn field_with(
+        self,
+        name: &str,
+        encode: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
+    ) -> EncodeResult<Self> {
+        self.writer.encode_entry(name, encode)?;
+        Ok(self)
+    }
+
+    /// Completes the struct, preserving any internally recorded truncation.
+    pub fn finish(self) -> EncodeResult {
+        self.writer.finish_struct(false);
+        Ok(())
+    }
+}
+
+impl Drop for StructEncoder<'_> {
+    fn drop(&mut self) {
+        self.writer.finish_struct(true);
+    }
+}
+
+macro_rules! encode_integers {
+    ($($ty:ty),*) => {
+        $(
+            impl StructuredValue for $ty {
+                fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+                    encoder.encode_i64(*self as i64)
+                }
+            }
+        )*
+    };
+}
+
+// Match tracing's integer encoding, including u64's two's-complement conversion.
+encode_integers!(i8, i16, i32, isize, u8, u16, u32, u64, usize);
+
+impl StructuredValue for i64 {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        encoder.encode_i64(*self)
+    }
+}
+
+impl StructuredValue for f64 {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        encoder.encode_f64(*self)
+    }
+}
+
+impl StructuredValue for f32 {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        encoder.encode_f64(f64::from(*self))
+    }
+}
+
+impl StructuredValue for bool {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        encoder.encode_bool(*self)
+    }
+}
+
+impl StructuredValue for str {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        encoder.encode_str(self)
+    }
+}
+
+impl StructuredValue for String {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        self.as_str().encode(encoder)
+    }
+}
+
+impl<T: StructuredValue + ?Sized> StructuredValue for &'static T {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        T::encode(self, encoder)
+    }
+}
+
+impl<T: StructuredValue> StructuredValue for [T] {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        encoder.encode_array(&mut |array| {
+            for value in self {
+                array.encode_element(&mut |encoder| value.encode(encoder))?;
+            }
+            Ok(())
+        })
+    }
+}
+
+impl<T: StructuredValue, const N: usize> StructuredValue for [T; N] {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        self.as_slice().encode(encoder)
+    }
+}
+
+impl<T: StructuredValue> StructuredValue for Vec<T> {
+    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
+        self.as_slice().encode(encoder)
+    }
 }
 
 /// A typed, exclusively owned value that can be borrowed as a structured field.
@@ -171,7 +299,7 @@ mod tests {
     }
 
     impl StructuredValue for State {
-        fn encode(&self, encoder: &mut dyn ValueWriter) -> TruncateResult {
+        fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
             encoder.encode_i64(self.count)
         }
     }
