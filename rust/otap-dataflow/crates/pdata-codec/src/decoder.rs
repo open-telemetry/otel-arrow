@@ -157,6 +157,11 @@ impl DecodeBudget {
 /// Jobs cannot borrow the decoder or the service's runtime lock. Every pending
 /// step must make bounded CPU progress. This is not an external-I/O readiness
 /// interface: returning pending while waiting for I/O would cause a busy loop.
+///
+/// Jobs must be `Send` because shared-engine processors and exporters retain
+/// them across suspension in `Send` caller futures. This excludes local-only
+/// state such as [`std::rc::Rc`], even when used by a local pipeline. The bound
+/// does not offload decoding: each step runs synchronously in its calling task.
 pub trait PdataDecodeJob: Send {
     /// Performs one bounded portion of work, or finalizes the single output batch.
     fn step(&mut self, budget: DecodeBudget) -> Result<Option<OtapArrowRecords>, CodecError>;
