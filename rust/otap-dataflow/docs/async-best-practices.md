@@ -43,6 +43,16 @@ sorting, encoding, or compression.
   Keep throughput and scheduling-latency thresholds in benchmarks, not ordinary
   correctness tests; see the [testing guide](testing-guide.md).
 
+### Interpreting flow timing
+
+`flow.compute.duration` sums wall-clock intervals measured within processors;
+it is not CPU time. Its send markers keep running across awaits, including
+cooperative codec yields, so those intervals can include time spent running
+other tasks. Only processors are directly instrumented. Do not use this metric
+alone to attribute CPU cost or compare cooperative scheduling.
+Suspension-aware timing is engine-wide follow-up work: excluding only codec
+yields would leave other awaits with inconsistent accounting.
+
 ## Common Blocking Operations to Avoid
 
 ### 1. Synchronous I/O Operations
