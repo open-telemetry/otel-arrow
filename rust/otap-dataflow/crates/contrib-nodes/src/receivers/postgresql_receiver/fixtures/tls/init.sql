@@ -7,7 +7,8 @@ CREATE TABLE public.receiver_events (
   event_ts timestamptz(6) NOT NULL,
   event_id bigint NOT NULL,
   actor text NOT NULL,
-  PRIMARY KEY (event_ts, event_id)
+  PRIMARY KEY (event_ts, event_id),
+  UNIQUE (event_id)
 );
 
 INSERT INTO public.receiver_events VALUES

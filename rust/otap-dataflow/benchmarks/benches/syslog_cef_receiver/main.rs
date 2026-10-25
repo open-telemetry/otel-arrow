@@ -31,6 +31,7 @@
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::bench_support::SyslogCodecBench;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::parser::bench_support;
 use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::parser::cef::parse_cef;
 use std::hint::black_box;
@@ -99,6 +100,12 @@ fn bench_timestamp_extraction(c: &mut Criterion) {
         b.iter(|| black_box(bench_support::timestamp(black_box(&rfc3164_parsed))))
     });
 
+    let cef_rfc3164_parsed =
+        bench_support::parse(CEF_WITH_RFC3164_MSG).expect("parse CEF with RFC3164");
+    let _ = group.bench_function("cef_with_rfc3164", |b| {
+        b.iter(|| black_box(bench_support::timestamp(black_box(&cef_rfc3164_parsed))))
+    });
+
     let rfc5424_parsed = bench_support::parse(RFC5424_MSG).expect("parse RFC5424");
     let _ = group.bench_function("rfc5424", |b| {
         b.iter(|| black_box(bench_support::timestamp(black_box(&rfc5424_parsed))))
@@ -162,6 +169,19 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
         });
     });
 
+    // The wrapped CEF path uses the same RFC3164 timestamp conversion.
+    let _ = group.bench_function("cef_with_rfc3164_arrow_batch_100_msgs", |b| {
+        b.iter(|| {
+            let mut builder = ArrowRecordsBuilder::new();
+            for _ in 0..100 {
+                let parsed = bench_support::parse(black_box(CEF_WITH_RFC3164_MSG))
+                    .expect("Failed to parse CEF with RFC3164 message");
+                builder.append_syslog(parsed);
+            }
+            black_box(builder.build().expect("Failed to build Arrow records"))
+        });
+    });
+
     // Benchmark RFC5424 Arrow batch creation with 100 messages
     let _ = group.bench_function("rfc5424_arrow_batch_100_msgs", |b| {
         b.iter(|| {
@@ -192,11 +212,70 @@ fn bench_arrow_batch_creation(c: &mut Criterion) {
 
     group.finish();
 }
+
+fn bench_receiver_pdata_paths(c: &mut Criterion) {
+    const BATCH_SIZE: usize = 100;
+    let messages = vec![RFC5424_MSG; BATCH_SIZE];
+    let mut codec = SyslogCodecBench::new();
+    let framed = codec.frame(&messages);
+    let _ = codec.admit_and_materialize(&messages);
+
+    let mut group = c.benchmark_group("receiver_pdata_path");
+    _ = group.throughput(Throughput::Elements(BATCH_SIZE as u64));
+
+    let _ = group.bench_function("legacy_parse_to_arrow_100_msgs", |b| {
+        b.iter(|| {
+            let mut builder = ArrowRecordsBuilder::new();
+            for message in &messages {
+                let parsed = bench_support::parse(black_box(message))
+                    .expect("Failed to parse RFC5424 message");
+                builder.append_syslog(parsed);
+            }
+            black_box(builder.build().expect("Failed to build Arrow records"))
+        });
+    });
+
+    let _ = group.bench_function("codec_admit_encoded_100_msgs", |b| {
+        b.iter(|| black_box(codec.admit(black_box(&messages))));
+    });
+
+    let _ = group.bench_function("codec_frame_100_msgs", |b| {
+        b.iter(|| black_box(codec.frame(black_box(&messages))));
+    });
+
+    let _ = group.bench_function("codec_materialize_preframed_100_msgs", |b| {
+        b.iter(|| black_box(codec.materialize_framed(black_box(&framed))));
+    });
+
+    let _ = group.bench_function("codec_admit_and_materialize_100_msgs", |b| {
+        b.iter(|| black_box(codec.admit_and_materialize(black_box(&messages))));
+    });
+
+    group.finish();
+}
+
+/// Exercise the codec decoder at the default receiver target and hard batch limit.
+fn bench_rfc3164_codec_materialization(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rfc3164_codec_materialization");
+    for count in [100, 256] {
+        let messages = vec![RFC3164_MSG; count];
+        let mut codec = SyslogCodecBench::new();
+        let framed = codec.frame(&messages);
+        _ = group.throughput(Throughput::Elements(count as u64));
+        let _ = group.bench_function(format!("{count}_msgs"), |b| {
+            b.iter(|| black_box(codec.materialize_framed(black_box(&framed))));
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parse_auto_detect,
     bench_timestamp_extraction,
     bench_cef_extensions,
-    bench_arrow_batch_creation
+    bench_arrow_batch_creation,
+    bench_receiver_pdata_paths,
+    bench_rfc3164_codec_materialization
 );
 criterion_main!(benches);

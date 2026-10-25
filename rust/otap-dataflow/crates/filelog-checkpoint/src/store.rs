@@ -22,7 +22,7 @@ use filesystem::{DataFile, Io, Namespace};
 const DB: &str = "checkpoint.db";
 const CREATE: &str = "checkpoint.db.create.tmp";
 const COMPACT: &str = "checkpoint.db.compact.tmp";
-const MAX_BYTES: u64 = 1 << 30;
+const MAX_BYTES: u64 = crate::CHECKPOINT_MAX_BYTES;
 
 /// Failures never authorize automatic salvage or source progress.
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +44,23 @@ pub enum StoreError {
         /// Configured append byte threshold.
         max_wal_bytes: u64,
         /// Configured append transaction threshold.
+        max_wal_transactions: u64,
+    },
+    /// Portable file/recovery admission rejected the configured bounds.
+    #[error(
+        "{source}; max_tracked_files={max_tracked_files}, max_snapshot_bytes={max_snapshot_bytes}, max_wal_bytes={max_wal_bytes}, max_wal_transactions={max_wal_transactions}"
+    )]
+    Admission {
+        /// Exact overflowing formula or calculated value and ceiling.
+        #[source]
+        source: crate::AdmissionError,
+        /// Contributing population limit.
+        max_tracked_files: u32,
+        /// Configured snapshot limit.
+        max_snapshot_bytes: u64,
+        /// Configured WAL byte threshold.
+        max_wal_bytes: u64,
+        /// Configured WAL transaction threshold.
         max_wal_transactions: u64,
     },
     /// A failed durability barrier is terminal, even if a later fsync would succeed.
@@ -139,7 +156,8 @@ impl StoreConfig {
         }
     }
 
-    fn validate(self) -> Result<Self, StoreError> {
+    /// Validate configured bounds without opening a namespace or allocating recovery state.
+    pub fn validate(self) -> Result<Self, StoreError> {
         if self.replay.max_tracked_files == 0
             || self.replay.max_snapshot_bytes
                 < (SNAPSHOT_HEADER_BYTES + SNAPSHOT_FOOTER_BYTES) as u64
@@ -150,39 +168,18 @@ impl StoreConfig {
                 "nonzero records/count, complete snapshot, and maximum WAL frame required",
             ));
         }
-        // The product can exceed u64 while the byte threshold still bounds
-        // every reachable WAL. Saturation preserves the mathematical minimum.
-        let wal_bound = self
-            .max_wal_transactions
-            .saturating_mul(WAL_MAX_TX_FRAME_BYTES)
-            .min(self.max_wal_bytes);
-        let snapshot = self.replay.max_snapshot_bytes;
-        let bounded = |value: Option<u64>, reason| {
-            value
-                .filter(|v| *v <= MAX_BYTES)
-                .ok_or_else(|| self.invalid(reason))
-        };
-        let _ = bounded(
-            snapshot
-                .checked_add(CHECKPOINT_HEADER_BYTES as u64)
-                .and_then(|v| v.checked_add(wal_bound)),
-            "checkpoint file bound exceeds 1 GiB or overflows",
-        )?;
-        let _ = bounded(
-            snapshot
-                .checked_mul(4)
-                .and_then(|v| v.checked_add(CHECKPOINT_HEADER_BYTES as u64)),
-            "snapshot recovery bound exceeds 1 GiB or overflows",
-        )?;
-        let _ = bounded(
-            snapshot
-                .checked_mul(3)
-                .and_then(|v| v.checked_add(wal_bound))
-                .and_then(|v| {
-                    v.checked_add(4 * WAL_MAX_TX_FRAME_BYTES + CHECKPOINT_HEADER_BYTES as u64)
-                }),
-            "WAL recovery bound exceeds 1 GiB or overflows",
-        )?;
+        let _ = crate::CheckpointBounds::new(
+            self.replay.max_snapshot_bytes,
+            self.max_wal_bytes,
+            self.max_wal_transactions,
+        )
+        .map_err(|source| StoreError::Admission {
+            source,
+            max_tracked_files: self.replay.max_tracked_files,
+            max_snapshot_bytes: self.replay.max_snapshot_bytes,
+            max_wal_bytes: self.max_wal_bytes,
+            max_wal_transactions: self.max_wal_transactions,
+        })?;
         Ok(self)
     }
 }
