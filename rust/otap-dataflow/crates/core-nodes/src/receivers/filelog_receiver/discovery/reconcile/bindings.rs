@@ -16,11 +16,10 @@ impl Reconciler {
     ) -> Result<(), ReconcileError> {
         self.check_finished(generation)?;
         let tracked = self.tracked.get_mut(&id).ok_or(ReconcileError::Tracked)?;
-        if tracked.pass.conflict || tracked.pass.rebound != Some(replacement) {
+        if tracked.pass.conflict || tracked.pass.binding_target.rebound() != Some(replacement) {
             return Err(ReconcileError::Feedback);
         }
-        if !tracked.pass.rebound_resolved {
-            tracked.pass.rebound_resolved = true;
+        if tracked.pass.binding_target.resolve() {
             self.unresolved_rebounds -= 1;
         }
         Ok(())
@@ -92,7 +91,13 @@ impl Reconciler {
             return Err(ReconcileError::Feedback);
         }
         let tracked = self.tracked.get(&id).ok_or(ReconcileError::Tracked)?;
-        if !tracked.file.active || !tracked.pass.name_evidence.is_full() {
+        if !tracked.file.active || !tracked.pass.name_evidence().is_full() {
+            return Err(ReconcileError::Feedback);
+        }
+        // Keep replacement context at the old path until its observed target
+        // can enter normal identity reconciliation. Observation alone grants
+        // no rebound authority and does not block unrelated binding proposals.
+        if matches!(tracked.pass.binding_target, BindingTarget::Observed(_)) {
             return Err(ReconcileError::Feedback);
         }
         // Weak evidence preserves an established Live binding, but cannot be
@@ -155,8 +160,7 @@ impl Reconciler {
             .expect("validated predecessor");
         tracked.file.role = BindingRole::Superseded;
         tracked.successor = None;
-        if !tracked.pass.rebound_resolved {
-            tracked.pass.rebound_resolved = true;
+        if tracked.pass.binding_target.resolve() {
             self.unresolved_rebounds -= 1;
         }
         Ok(())
@@ -165,15 +169,12 @@ impl Reconciler {
     /// Enumerates unresolved identity work, including rebounds to resident files
     /// that produce no candidate offer. The global reselection barrier remains.
     pub fn rebounds(&self) -> impl Iterator<Item = Rebound> + '_ {
-        self.tracked
-            .values()
-            .filter(|t| !t.pass.rebound_resolved)
-            .filter_map(|t| {
-                t.pass.rebound.map(|replacement| Rebound {
-                    predecessor: t.file.id,
-                    replacement,
-                })
+        self.tracked.values().filter_map(|t| {
+            t.pass.binding_target.pending().map(|replacement| Rebound {
+                predecessor: t.file.id,
+                replacement,
             })
+        })
     }
 
     // A live record has at most one current rebound target. Multiple live owners
@@ -188,7 +189,7 @@ impl Reconciler {
             return Ok(None);
         }
         let mut next = None;
-        if let Some(locator) = record.pass.rebound {
+        if let Some(locator) = record.pass.binding_target.rebound() {
             for target in locators.get(&locator, tracked) {
                 let other = &tracked[&target];
                 if other.file.active && other.file.role == BindingRole::Live {
@@ -340,11 +341,10 @@ impl Reconciler {
         for tracked in self.tracked.values_mut() {
             if tracked.file.id == predecessor || tracked.successor == Some(old) {
                 tracked.successor = Some(new);
-                if tracked.pass.rebound == Some(new.1)
+                if tracked.pass.binding_target.rebound() == Some(new.1)
                     && !tracked.pass.conflict
-                    && !tracked.pass.rebound_resolved
+                    && tracked.pass.binding_target.resolve()
                 {
-                    tracked.pass.rebound_resolved = true;
                     self.unresolved_rebounds -= 1;
                 }
             }

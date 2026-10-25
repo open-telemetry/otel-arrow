@@ -99,7 +99,10 @@ stable work can remain usable during an incomplete pass.
   An alias-check coverage failure blocks exclusion for the rest of the pass.
 - Positive exclusion or replacement evidence can authorize prompt exclusion.
   A missing name needs an available, unchanged parent and valid environment
-  context. Unknown or unstable bindings require complete-pass fallback.
+  context. Local lookup uncertainty can use complete-pass fallback. A retained
+  locator with a resource/cancellation failure instead vetoes that record's
+  exclusion for the pass; it grants no admission authority. This deliberately
+  keeps the reader under uncertainty, including descriptor exhaustion.
 - Root/exclusion-root failures and retained parent-change latches block
   missing-path conclusions receiver-wide, including misses recorded before the
   failure. A successful retry does not clear that pass's failure. Unrelated
@@ -115,8 +118,8 @@ stable work can remain usable during an incomplete pass.
 All retained bindings in a directory share its expected parent and persistent
 change state. New bindings copy one member's state, even when the parent is
 unknown; admission does not scan the sibling group. First validation establishes
-an unknown baseline for the whole family. Healthy targeted checks and repeated
-changes already propagated this pass avoid another directory-family walk.
+the baseline for the whole family when it is unknown. Healthy targeted checks
+and repeated changes already propagated this pass avoid another family walk.
 
 Targeted checks share traversal's ancestor policy, root verification, pin-bound
 probes and descriptor budget. Handles close before evidence is returned. A
@@ -126,11 +129,13 @@ ineligibility. Traversal depth is a resource bound, not an exclusion rule.
 ## Reconnection and binding publication
 
 A binding is the record's distinguished path; a rebound means that path now
-names another locator. A named binding and a contradictory rebound invalidate
-the pass immediately, in either order, including owner-supplied associations.
-Policy-qualified evidence participates in this check without gaining publication
-authority. Offers are opportunities for identity checks, not
-permission to publish a new identity or transfer progress.
+names another locator. Weak foreign-locator observations at retained bindings
+are remembered for contradiction checks, including owner associations, in either
+order. They grant no actionable rebound or supersession authority. Binding
+reselection waits for that target to be qualified, preserving replacement
+context at the old path. Unrelated binding proposals remain available.
+Offers are opportunities for identity checks, not permission to publish a new
+identity or transfer progress.
 
 | Operation | Rule |
 | --- | --- |
@@ -194,6 +199,9 @@ context, never a blanket association for unavailable saved paths.
   not retain every alias
   ever seen. Indexes reset at `begin`; previous-pass hints are not fresh conflict
   evidence. A detected conflict stays latched even if its sample is evicted.
+- Binding targets share one locator slot with observed, pending and resolved
+  states. Only qualified targets enter rebound feedback. Aggregate name strength
+  is derived from binding and alias evidence, rather than stored again.
 - Packed records and indexes store IDs/slots, not duplicate path keys. Remove
   entries before changing paths or slots; compare full native keys after hashes.
   Shared historical keys are allowed. Alias buffers are reused and capped at L.

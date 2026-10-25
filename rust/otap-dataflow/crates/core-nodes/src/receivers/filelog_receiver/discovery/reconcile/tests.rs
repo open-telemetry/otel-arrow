@@ -4736,7 +4736,7 @@ fn uncertain_locator_failures_veto_exclusion_without_eligibility() {
             &mut events,
         );
         assert_eq!(
-            r.tracked[&TrackedId(1)].pass.name_evidence,
+            r.tracked[&TrackedId(1)].pass.name_evidence(),
             NameEvidence::None
         );
         assert_eq!(
@@ -4966,7 +4966,7 @@ fn targeted_descriptor_uncertainty_survives_complete_fallback() {
         &mut events,
     );
     assert_eq!(
-        r.tracked[&TrackedId(1)].pass.name_evidence,
+        r.tracked[&TrackedId(1)].pass.name_evidence(),
         NameEvidence::None
     );
     assert_eq!(
@@ -4976,4 +4976,363 @@ fn targeted_descriptor_uncertainty_survives_complete_fallback() {
     assert!(finish(&mut r, true, &mut events).complete);
     assert!(!events.contains(&"excluded:1".into()));
     assert!(events.contains(&"missing:2".into()));
+}
+
+/// Scenario: An untracked foreign locator weakly names a retained binding before or after that binding names its owner.
+/// Guarantees: Both orders fail immediately, withhold unrelated disappearance, and recover only on a fresh contradiction-free pass.
+#[test]
+fn weak_foreign_binding_observations_are_order_independent() {
+    for foreign_reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for own_reason in [
+            None,
+            Some(ScanReason::Content),
+            Some(ScanReason::PresenceOnly),
+        ] {
+            for foreign_first in [false, true] {
+                for targeted in [false, true] {
+                    let mut r = Reconciler::new(limits()).unwrap();
+                    r.track(file(1, "/binding")).unwrap();
+                    r.track(file(3, "/unseen")).unwrap();
+                    let mut events = Vec::new();
+                    start(&mut r, 1);
+                    for foreign in [foreign_first, !foreign_first] {
+                        let o = if foreign {
+                            evidence(Some(2), "/binding", foreign_reason)
+                        } else {
+                            named_observation(1, "/binding", own_reason)
+                        };
+                        if targeted {
+                            apply_test_check(&mut r, 1, &o, None, false, &mut events);
+                        } else {
+                            feed(&mut r, &o, &mut events);
+                        }
+                    }
+                    assert!(events.contains(&"coverage".into()));
+                    assert!(!r.pass.as_ref().unwrap().complete);
+                    assert!(!finish(&mut r, true, &mut events).complete);
+                    assert!(!events.contains(&"missing:3".into()));
+                    assert!(r.rebounds().next().is_none());
+                    assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Live);
+                    start(&mut r, 2);
+                    events.clear();
+                    feed(&mut r, &observation(1, "/binding"), &mut events);
+                    assert!(finish(&mut r, true, &mut events).complete);
+                    assert!(events.contains(&"missing:3".into()));
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: Two different foreign locators name a retained binding with weak or full evidence.
+/// Guarantees: Contradictions among foreign files are detected too, rather than only contradictions with the original owner.
+#[test]
+fn retained_foreign_locator_conflicts_cover_both_strengths() {
+    for second_full in [false, true] {
+        for reverse in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/binding")).unwrap();
+            r.track(file(4, "/unseen")).unwrap();
+            let weak = evidence(Some(2), "/binding", ScanReason::Content);
+            let other = named_observation(
+                3,
+                "/binding",
+                if second_full {
+                    None
+                } else {
+                    Some(ScanReason::PresenceOnly)
+                },
+            );
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            for o in if reverse {
+                [&other, &weak]
+            } else {
+                [&weak, &other]
+            } {
+                feed(&mut r, o, &mut events);
+            }
+            assert!(events.contains(&"coverage".into()));
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert!(!events.contains(&"missing:4".into()));
+            assert!(r.offers().unwrap().next().is_none());
+        }
+    }
+}
+
+/// Scenario: One foreign Content observation has no contradictory current-pass observation.
+/// Guarantees: It grants no offer, actionable rebound, resolution or supersession, and does not invalidate unrelated coverage or consume the rebound counter.
+#[test]
+fn weak_foreign_target_is_observation_not_replacement_authority() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/binding")).unwrap();
+    r.track(file(3, "/unseen")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(2), "/binding", ScanReason::Content),
+        &mut events,
+    );
+    assert!(!events.contains(&"coverage".into()));
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(events.contains(&"missing:3".into()));
+    assert!(r.offers().unwrap().next().is_none());
+    assert!(r.rebounds().next().is_none());
+    assert_eq!(
+        r.resolve_rebound(1, TrackedId(1), locator(2)),
+        Err(ReconcileError::Feedback)
+    );
+    assert_eq!(
+        r.supersede(1, TrackedId(1), locator(2)),
+        Err(ReconcileError::Feedback)
+    );
+    assert_eq!(r.unresolved_rebounds, 0);
+    drop(r.untrack(TrackedId(1)).unwrap());
+    assert_eq!(r.unresolved_rebounds, 0);
+}
+
+/// Scenario: A weak foreign observation is upgraded by full traversal or owner association without changing its locator.
+/// Guarantees: Only qualification exposes identity work; resolution and untracking preserve the pending counter.
+#[test]
+fn weak_target_upgrade_creates_actionable_rebound_once() {
+    for associated in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/binding")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(
+            &mut r,
+            &evidence(Some(2), "/binding", ScanReason::Content),
+            &mut events,
+        );
+        assert!(r.rebounds().next().is_none());
+        if associated {
+            feed(&mut r, &observation(2, "/candidate"), &mut events);
+            r.associate_replacement(1, TrackedId(1), locator(2), |e| record(e, &mut events))
+                .unwrap();
+        } else {
+            feed(&mut r, &observation(2, "/binding"), &mut events);
+        }
+        // A later weak result must not downgrade the qualified target.
+        feed(
+            &mut r,
+            &evidence(Some(2), "/binding", ScanReason::Content),
+            &mut events,
+        );
+        assert!(!events.contains(&"coverage".into()));
+        assert!(!finish(&mut r, false, &mut events).complete);
+        assert_eq!(r.unresolved_rebounds, 1);
+        assert_eq!(
+            r.rebounds().collect::<Vec<_>>(),
+            [Rebound {
+                predecessor: TrackedId(1),
+                replacement: locator(2)
+            }]
+        );
+        r.resolve_rebound(1, TrackedId(1), locator(2)).unwrap();
+        assert_eq!(r.unresolved_rebounds, 0);
+        r.supersede(1, TrackedId(1), locator(2)).unwrap();
+        assert_eq!(r.unresolved_rebounds, 0);
+        drop(r.untrack(TrackedId(1)).unwrap());
+        assert_eq!(r.unresolved_rebounds, 0);
+    }
+}
+
+/// Scenario: A weak target becomes the qualified edge that closes a two-record binding cycle.
+/// Guarantees: Strength upgrade triggers incremental cycle detection immediately even though the locator itself did not change.
+#[test]
+fn target_strength_upgrade_checks_cycles_before_completion() {
+    for weak_first in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/a")).unwrap();
+        r.track(file(2, "/b")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        for weak in [weak_first, !weak_first] {
+            feed(
+                &mut r,
+                &if weak {
+                    evidence(Some(2), "/a", ScanReason::Content)
+                } else {
+                    observation(1, "/b")
+                },
+                &mut events,
+            );
+        }
+        assert!(!events.contains(&"coverage".into()));
+        feed(&mut r, &observation(2, "/a"), &mut events);
+        assert!(events.contains(&"coverage".into()));
+        assert!(!r.pass.as_ref().unwrap().complete);
+        assert!(!finish(&mut r, true, &mut events).complete);
+    }
+}
+
+/// Scenario: A qualified successor was memo-resolved and is then observed weakly at the historical binding.
+/// Guarantees: Weak observations neither downgrade resolved identity work nor reintroduce pending counter work.
+#[test]
+fn weak_observation_preserves_resolved_successor_work() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/binding")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(&mut r, &observation(2, "/binding"), &mut events);
+    assert!(!finish(&mut r, false, &mut events).complete);
+    let token = r.offers().unwrap().next().unwrap().token;
+    assert!(
+        r.admit(token, file(2, "/binding"), |_| Some(Duration::from_secs(
+            12
+        )))
+        .unwrap()
+    );
+    start(&mut r, 2);
+    feed(&mut r, &observation(2, "/binding"), &mut events);
+    feed(
+        &mut r,
+        &evidence(Some(2), "/binding", ScanReason::Content),
+        &mut events,
+    );
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(r.rebounds().next().is_none());
+    assert_eq!(r.unresolved_rebounds, 0);
+    drop(r.untrack(TrackedId(1)).unwrap());
+    assert_eq!(r.unresolved_rebounds, 0);
+}
+
+/// Scenario: Weak and qualified binding targets share one bounded locator slot.
+/// Guarantees: The tagged target adds no storage over the previous optional locator, and aggregate name strength needs no stored field.
+#[test]
+fn binding_target_layout_preserves_compact_storage() {
+    assert!(size_of::<BindingTarget>() <= size_of::<Option<FileLocator>>());
+    assert!(size_of::<TrackedPass>() <= 48);
+}
+
+/// Scenario: A weak target is seen under an inherited parent block, then qualified after same-pass restoration.
+/// Guarantees: Qualification cannot revive tainted binding work; a later fresh pass can admit the replacement normally.
+#[test]
+fn weak_target_upgrade_preserves_the_parent_evidence_barrier() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/logs/app")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(Some(11), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    assert!(!finish(&mut r, true, &mut events).complete);
+    start(&mut r, 2);
+    feed(
+        &mut r,
+        &evidence(Some(2), "/logs/app", ScanReason::Content),
+        &mut events,
+    );
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(2, "/logs/app"), &mut events);
+    assert!(!finish(&mut r, true, &mut events).complete);
+    assert!(r.offers().unwrap().next().is_none());
+    assert_eq!(
+        r.supersede(2, TrackedId(1), locator(2)),
+        Err(ReconcileError::Feedback)
+    );
+    start(&mut r, 3);
+    feed(
+        &mut r,
+        &evidence(Some(10), "/logs", ScanReason::Directory),
+        &mut events,
+    );
+    feed(&mut r, &observation(2, "/logs/app"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    let token = r.offers().unwrap().next().unwrap().token;
+    assert!(
+        r.admit(token, file(2, "/logs/app"), |_| Some(Duration::from_secs(
+            32
+        )))
+        .unwrap()
+    );
+}
+
+/// Scenario: A weak foreign binding observation disagrees with an owner association in either order.
+/// Guarantees: The contradiction is delivered immediately, blocks supersession and prevents unrelated disappearance.
+#[test]
+fn weak_target_and_different_association_conflict_in_both_orders() {
+    for associated_first in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/binding")).unwrap();
+        r.track(file(4, "/unseen")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(&mut r, &observation(3, "/candidate"), &mut events);
+        for associated in [associated_first, !associated_first] {
+            if associated {
+                r.associate_replacement(1, TrackedId(1), locator(3), |e| record(e, &mut events))
+                    .unwrap();
+            } else {
+                feed(
+                    &mut r,
+                    &evidence(Some(2), "/binding", ScanReason::Content),
+                    &mut events,
+                );
+            }
+        }
+        assert!(events.contains(&"coverage".into()));
+        assert!(!r.pass.as_ref().unwrap().complete);
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"missing:4".into()));
+        assert_eq!(
+            r.supersede(1, TrackedId(1), locator(3)),
+            Err(ReconcileError::Feedback)
+        );
+    }
+}
+
+/// Scenario: A predecessor has a full alternate name while its old binding weakly names a replacement.
+/// Guarantees: Reselection preserves replacement context until qualification, without withholding unrelated publication.
+#[test]
+fn weak_target_preserves_replacement_context_until_qualified() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/binding")).unwrap();
+    r.track(file(3, "/other")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(2), "/binding", ScanReason::Content),
+        &mut events,
+    );
+    feed(&mut r, &observation(1, "/alias"), &mut events);
+    feed(&mut r, &observation(3, "/other"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(r.rebounds().next().is_none());
+    assert_eq!(
+        r.binding_proposal(1, TrackedId(1)),
+        Err(ReconcileError::Feedback)
+    );
+    assert_eq!(
+        r.binding_proposal(1, TrackedId(3)).unwrap(),
+        Path::new("/other")
+    );
+    start(&mut r, 2);
+    feed(&mut r, &observation(2, "/binding"), &mut events);
+    feed(&mut r, &observation(1, "/alias"), &mut events);
+    assert!(finish(&mut r, true, &mut events).complete);
+    let offer = r.offers().unwrap().next().unwrap();
+    assert_eq!(
+        offer.candidate.replacement,
+        Replacement::Possible(TrackedId(1))
+    );
+    r.resolve_rebound(2, TrackedId(1), locator(2)).unwrap();
+    assert_eq!(
+        r.binding_proposal(2, TrackedId(1)).unwrap(),
+        Path::new("/alias")
+    );
 }

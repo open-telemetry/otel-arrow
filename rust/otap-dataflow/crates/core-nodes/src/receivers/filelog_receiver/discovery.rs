@@ -207,7 +207,7 @@ pub struct Observation {
 /// Which evidence a targeted lookup could establish.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BindingScope {
-    /// Optional binding-local evidence; uncertainty permits complete-pass fallback.
+    /// Optional binding-local evidence; locator-less lookup uncertainty permits fallback.
     Binding,
     /// Positive change to this binding's expected parent directory identity.
     ParentChanged,

@@ -16,11 +16,13 @@ For 10,000 tracked files and a 4,096-byte path limit:
 
 - The accepted tracked-state allowance is **10.24 MB**.
 - The proposed tracked-state allowance is **128 MB**.
-- A test filling the path buffers measured **126.83 MB** of component heap.
+- A test filling the path buffers measured **126.75 MB** of component heap.
 
 These are decimal MB. The measurement is a long-path fixture, not typical usage
 or total receiver memory. It was measured on Linux x86_64 with Rust 1.98.1 using
-the memory test linked below.
+the memory test linked below. The per-pass state is 48 bytes on this platform;
+its layout regression also checks that the tagged target fits the prior optional
+locator slot. No additional path buffer or index is needed.
 
 ## Proposed allowance
 

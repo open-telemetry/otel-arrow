@@ -234,15 +234,79 @@ impl NameEvidence {
     }
 }
 
+// A foreign locator can be observed before it is qualified for identity work.
+// Keep that bounded fact for contradiction checks without exposing a weak
+// observation as an actionable rebound or allowing it to supersede a binding.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum BindingTarget {
+    #[default]
+    None,
+    Observed(FileLocator),
+    Pending(FileLocator),
+    Resolved(FileLocator),
+}
+
+impl BindingTarget {
+    fn observed(self) -> Option<FileLocator> {
+        match self {
+            Self::None => None,
+            Self::Observed(locator) | Self::Pending(locator) | Self::Resolved(locator) => {
+                Some(locator)
+            }
+        }
+    }
+
+    fn rebound(self) -> Option<FileLocator> {
+        match self {
+            Self::Pending(locator) | Self::Resolved(locator) => Some(locator),
+            Self::None | Self::Observed(_) => None,
+        }
+    }
+
+    fn pending(self) -> Option<FileLocator> {
+        match self {
+            Self::Pending(locator) => Some(locator),
+            _ => None,
+        }
+    }
+
+    fn is_resolved(self) -> bool {
+        matches!(self, Self::Resolved(_))
+    }
+
+    fn observe(&mut self, locator: FileLocator) {
+        if matches!(self, Self::None) {
+            *self = Self::Observed(locator);
+        }
+    }
+
+    fn qualify(&mut self, locator: FileLocator, resolved: bool) -> bool {
+        let new_rebound = self.rebound() != Some(locator);
+        *self = if resolved {
+            Self::Resolved(locator)
+        } else {
+            Self::Pending(locator)
+        };
+        new_rebound
+    }
+
+    fn resolve(&mut self) -> bool {
+        if let Self::Pending(locator) = *self {
+            *self = Self::Resolved(locator);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Default)]
 struct TrackedPass {
     present: bool,
-    name_evidence: NameEvidence,
     excluded: bool,
     binding_evidence: NameEvidence,
     minimum_evidence: NameEvidence,
-    rebound: Option<FileLocator>,
-    rebound_resolved: bool,
+    binding_target: BindingTarget,
     binding_ineligible: BindingIneligibility,
     exclusion_sent: bool,
     conflict: bool,
@@ -257,6 +321,12 @@ struct TrackedPass {
     rebound_parent: u64,
     rebound_rank: u8,
     check_queued: bool,
+}
+
+impl TrackedPass {
+    fn name_evidence(&self) -> NameEvidence {
+        self.binding_evidence.max(self.minimum_evidence)
+    }
 }
 
 struct Tracked {
@@ -278,7 +348,7 @@ impl Tracked {
         !self.pass.conflict
             && !self.binding_blocked()
             && !self.pass.binding_evidence.is_named()
-            && self.pass.rebound == Some(replacement)
+            && self.pass.binding_target.rebound() == Some(replacement)
     }
 }
 
@@ -590,8 +660,8 @@ impl Reconciler {
             let tracked = &self.tracked[&predecessor];
             if tracked.file.role == BindingRole::Superseded
                 && tracked.successor.is_none()
-                && tracked.pass.rebound_resolved
-                && tracked.pass.rebound == Some(self.tracked[&id].file.locator)
+                && tracked.pass.binding_target.is_resolved()
+                && tracked.pass.binding_target.rebound() == Some(self.tracked[&id].file.locator)
             {
                 self.link_successor(predecessor, id);
             }
@@ -612,7 +682,7 @@ impl Reconciler {
         self.parents.remove(id, &self.tracked);
         self.aliases.remove(id, &self.tracked);
         let tracked = self.tracked.remove(&id).expect("validated record");
-        if tracked.pass.rebound.is_some() && !tracked.pass.rebound_resolved {
+        if tracked.pass.binding_target.pending().is_some() {
             self.unresolved_rebounds -= 1;
         }
         Ok(tracked.file)
@@ -677,7 +747,7 @@ impl Reconciler {
             for id in index.candidates(observation.path.as_os_str()) {
                 let tracked = self.tracked.get_mut(&id).expect("path index");
                 if index.matches(tracked, observation.path.as_os_str()) {
-                    if let Some(replacement) = tracked.pass.rebound {
+                    if let Some(replacement) = tracked.pass.binding_target.rebound() {
                         self.candidates.invalidate_locator(replacement);
                     }
                     tracked.pass.conflict = true;
@@ -816,10 +886,21 @@ impl Reconciler {
                 if self.bindings.matches(tracked, observation.path.as_os_str())
                     && tracked.file.active
                     && tracked.file.locator != locator
-                    && tracked.pass.binding_evidence.is_named()
                 {
-                    tracked.pass.conflict = true;
-                    path_conflict = true;
+                    if tracked.pass.binding_evidence.is_named()
+                        || tracked
+                            .pass
+                            .binding_target
+                            .observed()
+                            .is_some_and(|prior| prior != locator)
+                    {
+                        tracked.pass.conflict = true;
+                        path_conflict = true;
+                    }
+                    if !eligible {
+                        tracked.pass.parent_unstable |= tracked.parent_changed;
+                        tracked.pass.binding_target.observe(locator);
+                    }
                 }
             }
             if path_conflict {
@@ -865,7 +946,6 @@ impl Reconciler {
                 }
                 if evidence.is_named() {
                     tracked.pass.conflict |= path_conflict;
-                    tracked.pass.name_evidence.merge(evidence);
                     resident |= tracked.file.resident;
                     let at_binding = tracked
                         .file
@@ -901,7 +981,7 @@ impl Reconciler {
                     if at_binding {
                         tracked.pass.parent_unstable |= tracked.parent_changed;
                         tracked.pass.binding_evidence.merge(evidence);
-                        if tracked.pass.rebound.is_some() {
+                        if tracked.pass.binding_target.observed().is_some() {
                             tracked.pass.conflict = true;
                             pass.complete = false;
                             emit(Evidence::CoverageLost(ScanReason::Unstable));
@@ -925,17 +1005,20 @@ impl Reconciler {
                         continue;
                     }
                     if tracked.pass.binding_evidence.is_named()
-                        || tracked.pass.rebound.is_some_and(|prior| prior != locator)
+                        || tracked
+                            .pass
+                            .binding_target
+                            .observed()
+                            .is_some_and(|prior| prior != locator)
                     {
                         tracked.pass.conflict = true;
                         pass.complete = false;
                         emit(Evidence::CoverageLost(ScanReason::Unstable));
                     }
                     tracked.pass.parent_unstable |= tracked.parent_changed;
-                    let new_rebound = tracked.pass.rebound != Some(locator);
-                    tracked.pass.rebound = Some(locator);
-                    tracked.pass.rebound_resolved = tracked.file.role == BindingRole::Superseded
+                    let resolved = tracked.file.role == BindingRole::Superseded
                         && live_owner.is_some_and(|id| tracked.successor == Some((id, locator)));
+                    let new_rebound = tracked.pass.binding_target.qualify(locator, resolved);
                     tracked.pass.binding_ineligible = BindingIneligibility::Positive;
                     // Historical paths retain replacement context but do not create
                     // competing live claims after repeated incomplete rotations.
@@ -1046,7 +1129,7 @@ impl Reconciler {
         if self.pass.is_none()
             || !t.file.active
             || !t.pass.excluded
-            || t.pass.name_evidence.is_named()
+            || t.pass.name_evidence().is_named()
         {
             return None;
         }
@@ -1089,8 +1172,8 @@ impl Reconciler {
     }
 
     /// Applies targeted evidence without adding to the traversal count. Binding-local
-    /// uncertainty permits complete-pass fallback; actual environment or required
-    /// policy failures retain their receiver-wide effect.
+    /// uncertainty without a retained locator permits complete-pass fallback;
+    /// environment or required policy failures retain their receiver-wide effect.
     pub fn apply_binding_check(
         &mut self,
         generation: u64,
@@ -1248,14 +1331,19 @@ impl Reconciler {
         self.candidates.associate(candidate, predecessor)?;
         tracked.pass.parent_unstable |= tracked.parent_changed;
         if tracked.pass.binding_evidence.is_named()
-            || tracked.pass.rebound.is_some_and(|prior| prior != candidate)
+            || tracked
+                .pass
+                .binding_target
+                .observed()
+                .is_some_and(|prior| prior != candidate)
         {
             tracked.pass.conflict = true;
             pass.complete = false;
             emit(Evidence::CoverageLost(ScanReason::Unstable));
         }
-        let new_rebound = tracked.pass.rebound != Some(candidate);
-        tracked.pass.rebound = Some(candidate);
+        let resolved = tracked.pass.binding_target.is_resolved()
+            && tracked.pass.binding_target.rebound() == Some(candidate);
+        let new_rebound = tracked.pass.binding_target.qualify(candidate, resolved);
         if new_rebound
             && pass.complete
             && Self::detect_new_rebound(
@@ -1320,7 +1408,7 @@ impl Reconciler {
         self.unresolved_rebounds = self
             .tracked
             .values()
-            .filter(|t| t.pass.rebound.is_some() && !t.pass.rebound_resolved)
+            .filter(|t| t.pass.binding_target.pending().is_some())
             .count();
         let complete = pass.complete
             && completion.complete
@@ -1338,7 +1426,7 @@ impl Reconciler {
         for tracked in self.tracked.values() {
             if complete && tracked.file.active {
                 if tracked.pass.excluded
-                    && !tracked.pass.name_evidence.is_named()
+                    && !tracked.pass.name_evidence().is_named()
                     && !tracked.pass.exclusion_blocked
                     && !tracked.pass.exclusion_sent
                 {
@@ -1535,7 +1623,7 @@ fn emit_exclusion(
             .pass
             .binding_ineligible
             .allows_exclusion(environment_failed)
-        && !tracked.pass.name_evidence.is_named()
+        && !tracked.pass.name_evidence().is_named()
         && !tracked.pass.conflict
         && !tracked.binding_blocked()
         && !tracked.pass.exclusion_sent
