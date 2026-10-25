@@ -62,7 +62,8 @@ impl Reconciler {
         tracked.parent_changed = parent_changed;
         // The published alias is now the binding, not a context-free hint.
         tracked.minimum.clear();
-        tracked.pass.binding_eligible = true;
+        tracked.pass.minimum_evidence = NameEvidence::None;
+        tracked.pass.binding_evidence = NameEvidence::Full;
         tracked.successor = None;
         if tracked.previous_alias.as_os_str()
             == tracked
@@ -91,16 +92,26 @@ impl Reconciler {
             return Err(ReconcileError::Feedback);
         }
         let tracked = self.tracked.get(&id).ok_or(ReconcileError::Tracked)?;
-        if !tracked.file.active || !tracked.pass.eligible {
+        if !tracked.file.active || !tracked.pass.name_evidence.is_full() {
             return Err(ReconcileError::Feedback);
         }
-        let path = if tracked.pass.binding_eligible {
+        // Weak evidence preserves an established Live binding, but cannot be
+        // returned as publication authority or displaced by a full alias.
+        if tracked.file.role == BindingRole::Live
+            && tracked.pass.binding_evidence == NameEvidence::PolicyQualified
+        {
+            return Err(ReconcileError::Feedback);
+        }
+        let path = if tracked.pass.binding_evidence.is_full() {
             tracked
                 .file
                 .binding
                 .as_deref()
                 .ok_or(ReconcileError::Feedback)?
         } else {
+            if !tracked.pass.minimum_evidence.is_full() {
+                return Err(ReconcileError::Feedback);
+            }
             &tracked.minimum
         };
         if !super::super::native_path::valid_binding_path(path, self.limits.path_bytes) {
@@ -131,9 +142,7 @@ impl Reconciler {
             .tracked
             .get(&predecessor)
             .ok_or(ReconcileError::Tracked)?;
-        if tracked.pass.conflict
-            || tracked.binding_blocked()
-            || tracked.pass.rebound != Some(replacement)
+        if !tracked.allows_replacement(replacement)
             || self.locators.get(&replacement, &self.tracked).any(|id| {
                 self.tracked[&id].file.active && self.tracked[&id].file.role == BindingRole::Live
             })
@@ -190,7 +199,7 @@ impl Reconciler {
                 }
             }
         }
-        Ok(next.filter(|target| !tracked[target].pass.binding_eligible))
+        Ok(next.filter(|target| !tracked[target].pass.binding_evidence.is_named()))
     }
 
     // Shared traversal for immediate edge checks and the completion-time graph
@@ -392,7 +401,7 @@ impl Reconciler {
             let role_allowed = file.role == old.file.role
                 || (old.file.role == BindingRole::Unverified
                     && file.role == BindingRole::Live
-                    && old.pass.binding_eligible
+                    && old.pass.binding_evidence.is_full()
                     && !old.binding_blocked());
             if old.file.locator != file.locator
                 || old.file.binding.as_ref().map(|p| p.as_os_str())
@@ -414,10 +423,7 @@ impl Reconciler {
         }
         if let Some(id) = replacing {
             let old = self.tracked.get(&id).ok_or(ReconcileError::Tracked)?;
-            if old.pass.conflict
-                || old.binding_blocked()
-                || old.pass.rebound != Some(candidate.locator)
-            {
+            if !old.allows_replacement(candidate.locator) {
                 return Err(ReconcileError::Feedback);
             }
         }

@@ -4317,3 +4317,663 @@ fn scanner_alias_uncertainty_blocks_exclusion() {
         eprintln!("scanner alias failure verified: {expected:?}");
     }
 }
+
+fn named_observation(id: u64, path: &str, reason: Option<ScanReason>) -> Observation {
+    reason.map_or_else(
+        || observation(id, path),
+        |reason| evidence(Some(id), path, reason),
+    )
+}
+
+/// Scenario: Full or policy-qualified binding evidence contradicts traversal or owner-supplied rebounds in either order.
+/// Guarantees: Failure is immediate, supersession is refused, and a fresh pass without naming evidence still permits legitimate replacement.
+#[test]
+fn binding_names_and_rebounds_conflict_at_every_evidence_strength() {
+    for reason in [
+        None,
+        Some(ScanReason::PresenceOnly),
+        Some(ScanReason::Content),
+    ] {
+        for association in [false, true] {
+            for rebound_first in [false, true] {
+                for targeted in [false, true] {
+                    let mut r = Reconciler::new(limits()).unwrap();
+                    r.track(file(1, "/binding")).unwrap();
+                    let mut events = Vec::new();
+                    start(&mut r, 1);
+                    feed(&mut r, &observation(2, "/candidate"), &mut events);
+                    for rebound in [rebound_first, !rebound_first] {
+                        if rebound {
+                            if association {
+                                r.associate_replacement(1, TrackedId(1), locator(2), |e| {
+                                    record(e, &mut events)
+                                })
+                                .unwrap();
+                            } else {
+                                feed(&mut r, &observation(2, "/binding"), &mut events);
+                            }
+                        } else {
+                            let named = named_observation(1, "/binding", reason);
+                            if targeted {
+                                apply_test_check(&mut r, 1, &named, None, false, &mut events);
+                            } else {
+                                feed(&mut r, &named, &mut events);
+                            }
+                        }
+                    }
+                    assert!(events.contains(&"coverage".into()));
+                    assert!(!r.pass.as_ref().unwrap().complete);
+                    assert!(!finish(&mut r, true, &mut events).complete);
+                    assert_eq!(
+                        r.supersede(1, TrackedId(1), locator(2)),
+                        Err(ReconcileError::Feedback)
+                    );
+                    assert_eq!(r.tracked[&TrackedId(1)].file.role, BindingRole::Live);
+                    start(&mut r, 2);
+                    feed(&mut r, &observation(2, "/candidate"), &mut events);
+                    r.associate_replacement(2, TrackedId(1), locator(2), |e| {
+                        record(e, &mut events)
+                    })
+                    .unwrap();
+                    assert!(!finish(&mut r, false, &mut events).complete);
+                    r.supersede(2, TrackedId(1), locator(2)).unwrap();
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: A policy-qualified name accompanies an excluded alias, before or after it, with complete or incomplete traversal.
+/// Guarantees: Both exclusion paths are vetoed without granting full validation or blocking unrelated complete-pass disappearance.
+#[test]
+fn policy_names_veto_exclusion_without_granting_authority() {
+    for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for path in ["/binding", "/allowed"] {
+            for named_first in [false, true] {
+                for complete in [false, true] {
+                    let mut r = Reconciler::new(limits()).unwrap();
+                    r.track(file(1, "/binding")).unwrap();
+                    r.track(file(2, "/unseen")).unwrap();
+                    let mut events = Vec::new();
+                    start(&mut r, 1);
+                    feed(
+                        &mut r,
+                        &evidence(Some(99), "/", ScanReason::Directory),
+                        &mut events,
+                    );
+                    for named in [named_first, !named_first] {
+                        feed(
+                            &mut r,
+                            &if named {
+                                evidence(Some(1), path, reason)
+                            } else {
+                                evidence(Some(1), "/excluded", ScanReason::Excluded)
+                            },
+                            &mut events,
+                        );
+                    }
+                    assert!(r.binding_request(TrackedId(1)).is_none());
+                    apply_test_check(
+                        &mut r,
+                        1,
+                        &evidence(None, "/binding", ScanReason::Missing),
+                        Some(locator(99)),
+                        true,
+                        &mut events,
+                    );
+                    assert!(!events.contains(&"coverage".into()));
+                    assert!(!events.contains(&"excluded:1".into()));
+                    assert!(!events.contains(&"validated:1".into()));
+                    assert_eq!(finish(&mut r, complete, &mut events).complete, complete);
+                    assert!(!events.contains(&"excluded:1".into()));
+                    assert_eq!(events.contains(&"missing:2".into()), complete);
+                    assert!(r.offers().unwrap().next().is_none());
+                    assert!(r.binding_proposal(1, TrackedId(1)).is_err());
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: A binding check cannot identify any locator, or identifies a different locator through Content evidence.
+/// Guarantees: Neither protects the old reader; complete fallback still excludes it without treating Content as receiver-wide failure.
+#[test]
+fn policy_evidence_for_another_locator_does_not_veto_fallback() {
+    for observed in [None, Some(3)] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/binding")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(
+            &mut r,
+            &evidence(Some(1), "/excluded", ScanReason::Excluded),
+            &mut events,
+        );
+        let check = evidence(
+            observed,
+            "/binding",
+            if observed.is_some() {
+                ScanReason::Content
+            } else {
+                ScanReason::Coverage
+            },
+        );
+        apply_test_check(&mut r, 1, &check, None, false, &mut events);
+        assert!(!events.contains(&"excluded:1".into()));
+        assert!(finish(&mut r, true, &mut events).complete);
+        assert!(events.contains(&"excluded:1".into()));
+        assert!(r.offers().unwrap().next().is_none());
+    }
+}
+
+/// Scenario: A name seen only through policy-qualified evidence is needed as an earlier-alias hint in the next pass.
+/// Guarantees: Exclusion waits for revalidation; clean/Content results protect the reader while Missing/different-locator results expire the hint.
+#[test]
+fn policy_alias_hints_survive_without_carrying_full_authority() {
+    for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for result in 0..4 {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/binding")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(&mut r, &evidence(Some(1), "/allowed", reason), &mut events);
+            assert!(finish(&mut r, true, &mut events).complete);
+            assert!(r.binding_proposal(1, TrackedId(1)).is_err());
+            start(&mut r, 2);
+            events.clear();
+            assert_eq!(
+                r.tracked[&TrackedId(1)].pass.minimum_evidence,
+                NameEvidence::None
+            );
+            feed(
+                &mut r,
+                &evidence(Some(1), "/binding", ScanReason::Excluded),
+                &mut events,
+            );
+            assert!(!events.contains(&"excluded:1".into()));
+            assert_eq!(
+                r.binding_request(TrackedId(1)).unwrap().path,
+                Path::new("/allowed")
+            );
+            let alias = match result {
+                0 => observation(1, "/allowed"),
+                1 => evidence(Some(1), "/allowed", ScanReason::Content),
+                2 => evidence(None, "/allowed", ScanReason::Missing),
+                _ => observation(2, "/allowed"),
+            };
+            apply_test_check(&mut r, 1, &alias, None, false, &mut events);
+            assert_eq!(
+                r.tracked[&TrackedId(1)]
+                    .previous_alias
+                    .as_os_str()
+                    .is_empty(),
+                result >= 2
+            );
+            assert_eq!(events.contains(&"excluded:1".into()), result >= 2);
+            assert!(finish(&mut r, true, &mut events).complete);
+            assert_eq!(events.contains(&"excluded:1".into()), result >= 2);
+        }
+    }
+}
+
+/// Scenario: Weak and full aliases arrive in either order, at the same path or with the full path sorting later.
+/// Guarantees: Full evidence wins, equal-path upgrades do not duplicate indexes, and replaced keys leave no stale entries after publication/removal.
+#[test]
+fn alias_strength_upgrades_preserve_index_and_publication_rules() {
+    for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for full_path in ["/a", "/z"] {
+            for full_first in [false, true] {
+                let mut r = Reconciler::new(limits()).unwrap();
+                r.track(file(1, "/binding")).unwrap();
+                let mut events = Vec::new();
+                start(&mut r, 1);
+                for full in [full_first, !full_first] {
+                    feed(
+                        &mut r,
+                        &if full {
+                            observation(1, full_path)
+                        } else {
+                            evidence(Some(1), "/a", reason)
+                        },
+                        &mut events,
+                    );
+                }
+                assert_eq!(r.tracked[&TrackedId(1)].minimum, Path::new(full_path));
+                assert_eq!(
+                    r.tracked[&TrackedId(1)].pass.minimum_evidence,
+                    NameEvidence::Full
+                );
+                assert_eq!(
+                    r.aliases
+                        .get(Path::new(full_path).as_os_str(), &r.tracked)
+                        .collect::<Vec<_>>(),
+                    [TrackedId(1)]
+                );
+                if full_path != "/a" {
+                    assert!(
+                        r.aliases
+                            .get(Path::new("/a").as_os_str(), &r.tracked)
+                            .next()
+                            .is_none()
+                    );
+                    // Discarded aliases are not an unbounded conflict history.
+                    feed(&mut r, &observation(2, "/a"), &mut events);
+                }
+                assert!(finish(&mut r, true, &mut events).complete);
+                assert_eq!(
+                    r.binding_proposal(1, TrackedId(1)).unwrap(),
+                    Path::new(full_path)
+                );
+                assert!(r.rebind(1, TrackedId(1), |_| true).unwrap());
+                assert_eq!(
+                    r.tracked[&TrackedId(1)].pass.minimum_evidence,
+                    NameEvidence::None
+                );
+                drop(r.untrack(TrackedId(1)).unwrap());
+                assert!(
+                    r.aliases
+                        .get(Path::new(full_path).as_os_str(), &r.tracked)
+                        .next()
+                        .is_none()
+                );
+            }
+        }
+    }
+}
+
+/// Scenario: An established binding and an alias have different evidence strengths in either observation order.
+/// Guarantees: A weakly named Live binding is preserved without publication authority; a full binding remains usable despite a weak minimum.
+#[test]
+fn established_binding_precedence_respects_evidence_strength() {
+    for role in [
+        BindingRole::Live,
+        BindingRole::Unverified,
+        BindingRole::Superseded,
+    ] {
+        for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+            for binding_full in [false, true] {
+                for binding_first in [false, true] {
+                    let mut r = Reconciler::new(limits()).unwrap();
+                    let mut tracked = file(1, "/z");
+                    tracked.role = role;
+                    r.track(tracked).unwrap();
+                    let mut events = Vec::new();
+                    start(&mut r, 1);
+                    for binding in [binding_first, !binding_first] {
+                        let path = if binding { "/z" } else { "/a" };
+                        feed(
+                            &mut r,
+                            &named_observation(
+                                1,
+                                path,
+                                if binding == binding_full {
+                                    None
+                                } else {
+                                    Some(reason)
+                                },
+                            ),
+                            &mut events,
+                        );
+                    }
+                    assert!(finish(&mut r, true, &mut events).complete);
+                    if binding_full {
+                        assert_eq!(
+                            r.binding_proposal(1, TrackedId(1)).unwrap(),
+                            Path::new("/z")
+                        );
+                    } else if role != BindingRole::Live {
+                        assert_eq!(
+                            r.binding_proposal(1, TrackedId(1)).unwrap(),
+                            Path::new("/a")
+                        );
+                    } else {
+                        assert_eq!(
+                            r.rebind(1, TrackedId(1), |_| panic!(
+                                "weak binding authorized publication"
+                            )),
+                            Err(ReconcileError::Feedback)
+                        );
+                    }
+                    assert_eq!(
+                        r.tracked[&TrackedId(1)].file.binding.as_deref(),
+                        Some(Path::new("/z"))
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: Policy-qualified aliases conflict with another tracked alias or an untracked full candidate in either order.
+/// Guarantees: Retained-path contradictions invalidate coverage immediately and survive without granting weak publication authority.
+#[test]
+fn policy_alias_conflicts_are_order_independent() {
+    for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for other_tracked in [false, true] {
+            for weak_first in [false, true] {
+                let mut r = Reconciler::new(limits()).unwrap();
+                r.track(file(1, "/one")).unwrap();
+                if other_tracked {
+                    r.track(file(2, "/two")).unwrap();
+                }
+                let mut events = Vec::new();
+                start(&mut r, 1);
+                for weak in [weak_first, !weak_first] {
+                    feed(
+                        &mut r,
+                        &if weak {
+                            evidence(Some(1), "/shared", reason)
+                        } else {
+                            observation(2, "/shared")
+                        },
+                        &mut events,
+                    );
+                }
+                assert!(events.contains(&"coverage".into()));
+                assert!(!finish(&mut r, true, &mut events).complete);
+                assert!(r.offers().unwrap().next().is_none());
+            }
+        }
+    }
+}
+
+/// Scenario: A prior full offer is followed by weak-only evidence for nonresident and untracked locators in a fresh pass.
+/// Guarantees: Old full authority and tokens are not reused; weak names emit presence but no offer, validation or binding proposal for recovered/historical roles.
+#[test]
+fn weak_only_passes_cannot_reuse_identity_authority() {
+    for role in [BindingRole::Unverified, BindingRole::Superseded] {
+        for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            let mut tracked = file(1, "/binding");
+            tracked.role = role;
+            tracked.resident = false;
+            r.track(tracked).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(&mut r, &observation(1, "/allowed"), &mut events);
+            assert!(finish(&mut r, true, &mut events).complete);
+            let old = r.offers().unwrap().next().unwrap().token;
+            r.acknowledge(old, IdentityFeedback::Deferred, Duration::from_secs(12))
+                .unwrap();
+            start(&mut r, 2);
+            events.clear();
+            feed(&mut r, &evidence(Some(1), "/allowed", reason), &mut events);
+            feed(
+                &mut r,
+                &evidence(Some(3), "/untracked", reason),
+                &mut events,
+            );
+            assert!(finish(&mut r, true, &mut events).complete);
+            assert!(events.contains(&"present:1".into()));
+            assert!(!events.contains(&"validated:1".into()));
+            assert!(!events.contains(&"missing:1".into()));
+            assert!(r.offers().unwrap().next().is_none());
+            assert!(r.binding_proposal(2, TrackedId(1)).is_err());
+            assert_eq!(
+                r.admit(old, file(1, "/binding"), |_| panic!(
+                    "stale authority reached identity owner"
+                )),
+                Err(ReconcileError::Feedback)
+            );
+            assert_eq!(r.tracked[&TrackedId(1)].file.role, role);
+        }
+    }
+}
+
+/// Scenario: Descriptor exhaustion or cancellation retains a locator without certifying policy.
+/// Guarantees: The affected reader is not excluded, but no policy/full name, candidate or publication authority is manufactured.
+#[test]
+fn uncertain_locator_failures_veto_exclusion_without_eligibility() {
+    for reason in [ScanReason::DescriptorExhausted, ScanReason::Cancelled] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/binding")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(&mut r, &evidence(Some(1), "/maybe", reason), &mut events);
+        feed(
+            &mut r,
+            &evidence(Some(1), "/binding", ScanReason::Excluded),
+            &mut events,
+        );
+        assert_eq!(
+            r.tracked[&TrackedId(1)].pass.name_evidence,
+            NameEvidence::None
+        );
+        assert_eq!(
+            r.tracked[&TrackedId(1)].pass.binding_evidence,
+            NameEvidence::None
+        );
+        assert!(r.tracked[&TrackedId(1)].minimum.as_os_str().is_empty());
+        assert!(!events.contains(&"excluded:1".into()));
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"excluded:1".into()));
+        assert!(r.offers().unwrap().next().is_none());
+    }
+}
+
+/// Scenario: Real scanner probes produce Content after file read-open denial or PresenceOnly for an expected locator.
+/// Guarantees: Both protect an existing reader from exclusion without validation or publication authority, and content failure leaves unrelated coverage complete.
+#[test]
+fn scanner_policy_names_protect_existing_readers() {
+    use std::{io::Read, os::unix::fs::PermissionsExt};
+    struct Restore(PathBuf, std::fs::Permissions);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, self.1.clone());
+        }
+    }
+    for presence_only in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed.log");
+        let binding = dir.path().join("binding.secret");
+        std::fs::write(&allowed, b"abc").unwrap();
+        std::fs::hard_link(&allowed, &binding).unwrap();
+        let actual = FileLocator::from_metadata(&std::fs::metadata(&allowed).unwrap());
+        let mut reader = std::fs::File::open(&allowed).unwrap();
+        let _restore = Restore(
+            allowed.clone(),
+            std::fs::metadata(&allowed).unwrap().permissions(),
+        );
+        std::fs::set_permissions(&allowed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if !presence_only {
+            match std::fs::File::open(&allowed) {
+                Ok(_) => {
+                    eprintln!("Content permission subcase skipped: privileged process");
+                    continue;
+                }
+                Err(error) => assert_eq!(error.raw_os_error(), Some(libc::EACCES)),
+            }
+        }
+        let mut scanner = scanner(dir.path());
+        let budget = super::super::ProbeBudget::default();
+        let mut name = None;
+        let completion = scanner.scan_with_requests(
+            1,
+            &budget,
+            |_| {
+                if presence_only {
+                    super::super::ProbeRequest::PresenceOnly { expected: actual }
+                } else {
+                    super::super::ProbeRequest::Full
+                }
+            },
+            || false,
+            |batch| {
+                for o in batch {
+                    if o.path == allowed {
+                        name = Some(Observation {
+                            path: o.path.clone(),
+                            locator: o.locator,
+                            size: o.size,
+                            modified: o.modified,
+                            fingerprint: o.fingerprint.clone(),
+                            reason: o.reason,
+                            errno: o.errno,
+                        });
+                    }
+                }
+                true
+            },
+        );
+        assert!(completion.complete);
+        let name = name.expect("allowed name was probed");
+        assert_eq!(
+            name.reason,
+            Some(if presence_only {
+                ScanReason::PresenceOnly
+            } else {
+                ScanReason::Content
+            })
+        );
+        assert_eq!(name.locator, Some(actual));
+        if !presence_only {
+            assert_eq!(name.errno, Some(libc::EACCES));
+        }
+        let mut r = Reconciler::new(limits()).unwrap();
+        let mut tracked = file(1, binding.to_str().unwrap());
+        tracked.locator = actual;
+        r.track(tracked).unwrap();
+        r.track(file(2, "/unrelated-missing")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        feed(&mut r, &name, &mut events);
+        scanner
+            .check_binding(
+                &binding,
+                None,
+                &budget,
+                || false,
+                |check| {
+                    assert_eq!(check.observation.reason, Some(ScanReason::Excluded));
+                    feed(&mut r, check.observation, &mut events);
+                },
+            )
+            .unwrap();
+        // An occupied budget cannot poison the pass through an unnecessary
+        // exclusion-only probe once a policy-qualified name protects the reader.
+        let reservation = budget.try_reserve().unwrap();
+        assert!(r.next_binding_check().is_none());
+        assert!(finish(&mut r, true, &mut events).complete);
+        assert!(!events.contains(&"excluded:1".into()));
+        assert!(!events.contains(&"validated:1".into()));
+        assert!(events.contains(&"missing:2".into()));
+        assert!(r.offers().unwrap().next().is_none());
+        assert!(r.binding_proposal(1, TrackedId(1)).is_err());
+        drop(reservation);
+        let mut bytes = Vec::new();
+        assert_eq!(reader.read_to_end(&mut bytes).unwrap(), 3);
+        assert_eq!(bytes, b"abc");
+        eprintln!(
+            "policy-qualified scanner result verified: {:?}",
+            name.reason
+        );
+    }
+}
+
+/// Scenario: A caller supplies policy-qualified evidence without a complete native filename.
+/// Guarantees: Invalid weak names cannot become retained hints that make targeted checking fail repeatedly.
+#[test]
+fn policy_name_hints_require_complete_filenames() {
+    for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for path in ["/", "/logs/", "/logs/."] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/binding")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            assert_eq!(
+                r.observe(
+                    1,
+                    &evidence(Some(1), path, reason),
+                    Duration::from_secs(10),
+                    |e| record(e, &mut events)
+                ),
+                Err(ReconcileError::Observation)
+            );
+            assert!(r.tracked[&TrackedId(1)].minimum.as_os_str().is_empty());
+            assert!(!finish(&mut r, true, &mut events).complete);
+        }
+    }
+}
+
+/// Scenario: A weak eligible name protects one reader while another binding is positively excluded and batch roots later fail.
+/// Guarantees: Eligibility is record-local, exclusion-only work can stop, and the independent empty-worklist root failure still invalidates completion.
+#[test]
+fn policy_eligibility_is_local_and_does_not_skip_root_failures() {
+    for reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+        for weak_first in [false, true] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/binding")).unwrap();
+            r.track(file(2, "/other")).unwrap();
+            r.track(file(3, "/missing")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            for weak in [weak_first, !weak_first] {
+                feed(
+                    &mut r,
+                    &if weak {
+                        evidence(Some(1), "/allowed", reason)
+                    } else {
+                        evidence(Some(2), "/other", ScanReason::Excluded)
+                    },
+                    &mut events,
+                );
+            }
+            feed(
+                &mut r,
+                &evidence(Some(1), "/binding", ScanReason::Excluded),
+                &mut events,
+            );
+            assert!(events.contains(&"excluded:2".into()));
+            assert!(!events.contains(&"excluded:1".into()));
+            assert!(!events.contains(&"coverage".into()));
+            assert!(r.next_binding_check().is_none());
+            r.apply_binding_batch_error(
+                1,
+                &super::super::BindingBatchError {
+                    reason: ScanReason::RootUnavailable,
+                    errno: None,
+                    root: Some(Path::new("/")),
+                },
+                |e| record(e, &mut events),
+            )
+            .unwrap();
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert!(!events.contains(&"missing:3".into()));
+        }
+    }
+}
+
+/// Scenario: A binding-local descriptor failure retains the file locator after otherwise complete traversal.
+/// Guarantees: Its uncertainty vetoes fallback exclusion without manufacturing policy evidence or blocking unrelated disappearance.
+#[test]
+fn targeted_descriptor_uncertainty_survives_complete_fallback() {
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(file(1, "/binding")).unwrap();
+    r.track(file(2, "/unseen")).unwrap();
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    feed(
+        &mut r,
+        &evidence(Some(1), "/excluded", ScanReason::Excluded),
+        &mut events,
+    );
+    apply_test_check(
+        &mut r,
+        1,
+        &evidence(Some(1), "/binding", ScanReason::DescriptorExhausted),
+        Some(locator(99)),
+        false,
+        &mut events,
+    );
+    assert_eq!(
+        r.tracked[&TrackedId(1)].pass.name_evidence,
+        NameEvidence::None
+    );
+    assert_eq!(
+        r.tracked[&TrackedId(1)].pass.binding_evidence,
+        NameEvidence::None
+    );
+    assert!(finish(&mut r, true, &mut events).complete);
+    assert!(!events.contains(&"excluded:1".into()));
+    assert!(events.contains(&"missing:2".into()));
+}

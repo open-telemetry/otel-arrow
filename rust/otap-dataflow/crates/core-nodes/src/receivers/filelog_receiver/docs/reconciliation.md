@@ -71,6 +71,14 @@ already-delivered observations and failures, not just an empty channel.
 | `Excluded` | The reader can be revoked under the exclusion rules below. This is not disappearance and changes no offsets or durable records. |
 | `Disappeared` | A complete pass found no presence. This starts pending-disappearance handling; it does not establish permanent EOF. |
 
+Name evidence has two useful strengths. Full observations support identity and
+publication checks. `PresenceOnly` and `Content` prove only a policy-qualified
+name for the locator: they veto exclusion but produce no offer or `Validated`
+event, and grant no reconnection, promotion, publication or disappearance
+cancellation. Content-access failure remains local to that record. A locator on
+other failures is not proof that policy passed; preserve uncertainty without
+granting either strength.
+
 Evidence may repeat within and across passes; consume it idempotently. The
 lifecycle owner retains responsibility for retention, runtime vetoes, terminal
 framing and finalization.
@@ -84,7 +92,8 @@ stable work can remain usable during an incomplete pass.
 ### Exclusion and environment changes
 
 - A currently validated eligible binding or alias keeps the reader eligible.
-  An excluded alias alone cannot revoke it.
+  An excluded alias alone cannot revoke it. Policy-qualified names also stop
+  exclusion-only targeted work; batch roots must still be refreshed.
 - An earlier alias is only a hint: recheck it before relying on it. A definite
   miss or different locator expires the hint; busy/inaccessible checks retain it.
   An alias-check coverage failure blocks exclusion for the rest of the pass.
@@ -117,7 +126,10 @@ ineligibility. Traversal depth is a resource bound, not an exclusion rule.
 ## Reconnection and binding publication
 
 A binding is the record's distinguished path; a rebound means that path now
-names another locator. Offers are opportunities for identity checks, not
+names another locator. A named binding and a contradictory rebound invalidate
+the pass immediately, in either order, including owner-supplied associations.
+Policy-qualified evidence participates in this check without gaining publication
+authority. Offers are opportunities for identity checks, not
 permission to publish a new identity or transfer progress.
 
 | Operation | Rule |
@@ -126,7 +138,7 @@ permission to publish a new identity or transfer progress.
 | Unverified recovery | `admit` may promote to Live with fresh eligible binding evidence and no binding block. |
 | Superseded record | Reconnect in the same role. Only `rebind` restores Live, after a complete pass and all rebound feedback; it also clears the successor memo. |
 | New identity | Reject publication at any active blocked binding, regardless of role. An uncontested new identity may supersede the current Live owner during an incomplete pass, with fresh matching rebound evidence. |
-| New/reselected binding | Keep an eligible established binding; otherwise choose the minimum complete native path. Require a complete pass and resolved rebounds. |
+| New/reselected binding | Preserve a Live binding while a policy-qualified name still validates it; defer publication if it lacks full evidence. Otherwise choose a fully validated binding or minimum alias. Require a complete pass and resolved rebounds. |
 
 A complete pass requires all persistent parent latches and per-pass binding
 blocks to be clear. Unchanged-role reconnection and independent positive reading
@@ -172,8 +184,14 @@ context, never a blanket association for unavailable saved paths.
 - Full tracked capacity still allows identity matching/reconnection. Park only
   candidates proven to need a new slot. Rejected candidates can return on a
   later fresh observation.
+- The existing minimum buffer holds one alias and its strength. Full aliases
+  replace policy-only hints, even if they sort later. Equal-path upgrades change
+  only strength; weaker observations never downgrade full evidence. An earlier
+  hint carries only a name into the next pass, not current authority. Publication
+  cannot select a policy-only minimum.
 - Conflict detection indexes selected candidate paths and retained current-pass
-  minimum aliases, including resident records. It does not retain every alias
+  minimum aliases, including policy-only aliases and resident records. It does
+  not retain every alias
   ever seen. Indexes reset at `begin`; previous-pass hints are not fresh conflict
   evidence. A detected conflict stays latched even if its sample is evicted.
 - Packed records and indexes store IDs/slots, not duplicate path keys. Remove
@@ -203,8 +221,10 @@ this representation into that budget.
 Deterministic tests cover ordering, conflicts, recovery, role transitions,
 parent changes, rotation, alias policy, fairness and capacity bounds. Allocator
 tests cover warm overflow reconciliation and the complete binding-check loop.
-Admission/rebind may allocate bounded paths: there is no blanket zero-allocation
-claim. See the implementation's [binding rules][bindings] and [storage][storage]
+Warm allocation tests include weak/full alias rekeying, equal-path upgrades and
+cross-pass hint reuse. Admission/rebind may allocate bounded paths: there is no
+blanket zero-allocation claim. See the implementation's [binding
+rules][bindings] and [storage][storage]
 for detailed invariants.
 
 This is not a registered receiver. Durable recovery, worker/channel wiring,

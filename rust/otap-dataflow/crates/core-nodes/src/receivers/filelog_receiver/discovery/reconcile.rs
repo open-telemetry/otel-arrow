@@ -203,12 +203,44 @@ impl BindingIneligibility {
     }
 }
 
+// Policy-qualified names can protect an existing reader. Only full source
+// validation can authorize identity work or binding publication.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+enum NameEvidence {
+    #[default]
+    None,
+    PolicyQualified,
+    Full,
+}
+
+impl NameEvidence {
+    fn from_observation(observation: &Observation) -> Self {
+        match observation.reason {
+            None => Self::Full,
+            Some(ScanReason::PresenceOnly | ScanReason::Content) => Self::PolicyQualified,
+            // A locator on other failures does not prove that policy succeeded.
+            Some(_) => Self::None,
+        }
+    }
+
+    fn is_named(self) -> bool {
+        self != Self::None
+    }
+    fn is_full(self) -> bool {
+        self == Self::Full
+    }
+    fn merge(&mut self, other: Self) {
+        *self = (*self).max(other);
+    }
+}
+
 #[derive(Default)]
 struct TrackedPass {
     present: bool,
-    eligible: bool,
+    name_evidence: NameEvidence,
     excluded: bool,
-    binding_eligible: bool,
+    binding_evidence: NameEvidence,
+    minimum_evidence: NameEvidence,
     rebound: Option<FileLocator>,
     rebound_resolved: bool,
     binding_ineligible: BindingIneligibility,
@@ -240,6 +272,13 @@ struct Tracked {
 impl Tracked {
     fn binding_blocked(&self) -> bool {
         self.parent_changed || self.pass.parent_unstable
+    }
+
+    fn allows_replacement(&self, replacement: FileLocator) -> bool {
+        !self.pass.conflict
+            && !self.binding_blocked()
+            && !self.pass.binding_evidence.is_named()
+            && self.pass.rebound == Some(replacement)
     }
 }
 
@@ -758,14 +797,26 @@ impl Reconciler {
             .records(&locator, &self.tracked)
             .find(|tracked| tracked.file.active && tracked.file.role == BindingRole::Live)
             .map(|tracked| tracked.file.id);
-        let eligible = observation.reason.is_none();
+        let evidence = NameEvidence::from_observation(observation);
+        let eligible = evidence.is_full();
         let mut path_conflict = false;
-        if eligible {
+        if evidence.is_named() {
             path_conflict = self.candidates.check_path(observation);
             for id in self.aliases.candidates(observation.path.as_os_str()) {
                 let tracked = self.tracked.get_mut(&id).expect("alias index");
                 if self.aliases.matches(tracked, observation.path.as_os_str())
                     && tracked.file.locator != locator
+                {
+                    tracked.pass.conflict = true;
+                    path_conflict = true;
+                }
+            }
+            for id in self.bindings.candidates(observation.path.as_os_str()) {
+                let tracked = self.tracked.get_mut(&id).expect("binding index");
+                if self.bindings.matches(tracked, observation.path.as_os_str())
+                    && tracked.file.active
+                    && tracked.file.locator != locator
+                    && tracked.pass.binding_evidence.is_named()
                 {
                     tracked.pass.conflict = true;
                     path_conflict = true;
@@ -787,6 +838,14 @@ impl Reconciler {
                     emit(Evidence::Present(id));
                 }
                 tracked.pass.present = true;
+                if observation
+                    .reason
+                    .is_some_and(ScanReason::invalidates_coverage)
+                {
+                    // Resource/cancellation failures can retain a locator without
+                    // proving policy. Preserve uncertainty, never grant authority.
+                    tracked.pass.exclusion_blocked = true;
+                }
                 if observation.reason == Some(ScanReason::Excluded) {
                     tracked.pass.excluded = true;
                     if !tracked.pass.check_queued {
@@ -804,44 +863,53 @@ impl Reconciler {
                     }
                     emit_exclusion(tracked, pass.environment_failed, &mut emit);
                 }
-                if eligible {
+                if evidence.is_named() {
                     tracked.pass.conflict |= path_conflict;
-                    tracked.pass.eligible = true;
+                    tracked.pass.name_evidence.merge(evidence);
                     resident |= tracked.file.resident;
-                    if !tracked
+                    let at_binding = tracked
                         .file
                         .binding
                         .as_ref()
-                        .is_some_and(|p| p.as_os_str() == observation.path.as_os_str())
-                        && (tracked.minimum.as_os_str().is_empty()
-                            || observation.path.as_os_str() < tracked.minimum.as_os_str())
+                        .is_some_and(|p| p.as_os_str() == observation.path.as_os_str());
+                    if !at_binding
+                        && (evidence > tracked.pass.minimum_evidence
+                            || (evidence == tracked.pass.minimum_evidence
+                                && (tracked.minimum.as_os_str().is_empty()
+                                    || observation.path.as_os_str() < tracked.minimum.as_os_str())))
                     {
-                        // The index reads the existing minimum buffer; remove its
-                        // old key before mutation, then publish the new key.
-                        self.aliases.remove(id, &self.tracked);
-                        replace_path(
-                            &mut self.tracked.get_mut(&id).expect("alias owner").minimum,
-                            &observation.path,
-                            self.limits.path_bytes,
-                        );
-                        self.aliases.insert(id, &self.tracked);
+                        let path_changed =
+                            tracked.minimum.as_os_str() != observation.path.as_os_str();
+                        if path_changed {
+                            // Rekey before changing bytes. Equal-path upgrades
+                            // change only strength and never duplicate the index.
+                            self.aliases.remove(id, &self.tracked);
+                            replace_path(
+                                &mut self.tracked.get_mut(&id).expect("alias owner").minimum,
+                                &observation.path,
+                                self.limits.path_bytes,
+                            );
+                            self.aliases.insert(id, &self.tracked);
+                        }
+                        self.tracked
+                            .get_mut(&id)
+                            .expect("alias owner")
+                            .pass
+                            .minimum_evidence = evidence;
                     }
                     let tracked = self.tracked.get_mut(&id).expect("locator index");
-                    if tracked
-                        .file
-                        .binding
-                        .as_ref()
-                        .is_some_and(|path| path.as_os_str() == observation.path.as_os_str())
-                    {
+                    if at_binding {
                         tracked.pass.parent_unstable |= tracked.parent_changed;
-                        tracked.pass.binding_eligible = true;
+                        tracked.pass.binding_evidence.merge(evidence);
                         if tracked.pass.rebound.is_some() {
                             tracked.pass.conflict = true;
                             pass.complete = false;
                             emit(Evidence::CoverageLost(ScanReason::Unstable));
                         }
                     }
-                    emit(Evidence::Validated(id, observation));
+                    if eligible {
+                        emit(Evidence::Validated(id, observation));
+                    }
                 }
             }
         }
@@ -856,7 +924,7 @@ impl Reconciler {
                     if !tracked.file.active || tracked.file.locator == locator {
                         continue;
                     }
-                    if tracked.pass.binding_eligible
+                    if tracked.pass.binding_evidence.is_named()
                         || tracked.pass.rebound.is_some_and(|prior| prior != locator)
                     {
                         tracked.pass.conflict = true;
@@ -975,7 +1043,11 @@ impl Reconciler {
     #[must_use]
     pub fn binding_request(&self, id: TrackedId) -> Option<BindingRequest<'_>> {
         let t = self.tracked.get(&id)?;
-        if self.pass.is_none() || !t.file.active || !t.pass.excluded || t.pass.eligible {
+        if self.pass.is_none()
+            || !t.file.active
+            || !t.pass.excluded
+            || t.pass.name_evidence.is_named()
+        {
             return None;
         }
         if !t.previous_alias.as_os_str().is_empty() && !t.pass.alias_checked {
@@ -1175,7 +1247,9 @@ impl Reconciler {
         }
         self.candidates.associate(candidate, predecessor)?;
         tracked.pass.parent_unstable |= tracked.parent_changed;
-        if tracked.pass.rebound.is_some_and(|prior| prior != candidate) {
+        if tracked.pass.binding_evidence.is_named()
+            || tracked.pass.rebound.is_some_and(|prior| prior != candidate)
+        {
             tracked.pass.conflict = true;
             pass.complete = false;
             emit(Evidence::CoverageLost(ScanReason::Unstable));
@@ -1263,7 +1337,11 @@ impl Reconciler {
         // ordering. No consumer may interpret these as a finalization command.
         for tracked in self.tracked.values() {
             if complete && tracked.file.active {
-                if tracked.pass.excluded && !tracked.pass.eligible && !tracked.pass.exclusion_sent {
+                if tracked.pass.excluded
+                    && !tracked.pass.name_evidence.is_named()
+                    && !tracked.pass.exclusion_blocked
+                    && !tracked.pass.exclusion_sent
+                {
                     emit(Evidence::Excluded(tracked.file.id));
                 } else if !tracked.pass.present {
                     emit(Evidence::Disappeared(tracked.file.id));
@@ -1457,7 +1535,7 @@ fn emit_exclusion(
             .pass
             .binding_ineligible
             .allows_exclusion(environment_failed)
-        && !tracked.pass.eligible
+        && !tracked.pass.name_evidence.is_named()
         && !tracked.pass.conflict
         && !tracked.binding_blocked()
         && !tracked.pass.exclusion_sent
@@ -1519,6 +1597,13 @@ fn valid_observation(observation: &Observation, limits: ReconcileLimits) -> bool
             observation.size.is_none()
                 && observation.modified.is_none()
                 && observation.fingerprint.is_empty()
+                && (!matches!(
+                    observation.reason,
+                    Some(ScanReason::PresenceOnly | ScanReason::Content)
+                ) || super::native_path::valid_binding_path(
+                    &observation.path,
+                    limits.path_bytes,
+                ))
                 && (!matches!(
                     observation.reason,
                     Some(ScanReason::Directory | ScanReason::PresenceOnly | ScanReason::Content)
