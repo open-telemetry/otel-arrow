@@ -40,7 +40,7 @@ open_candidate_amplification =
 
 checkpoint_record_state =
   max_tracked_files *
-  (fingerprint_bytes + P + 34 + 384)
+  (FINGERPRINT_MAX_BYTES + P + 34 + 384)
 
 discovery_tracked_state =
   max_tracked_files * 1024
@@ -52,7 +52,10 @@ identity_reconciliation =
   + discovery_tracked_state
 ```
 
-`identity_reconciliation` must not exceed 1 GiB.
+`identity_reconciliation` must not exceed 1 GiB. Retained checkpoint and reader
+state uses the format maximum `FINGERPRINT_MAX_BYTES = 65535`, since records
+with incompatible profiles retain evidence from older configurations. Candidate
+and open-reader evidence uses the selected `fingerprint_bytes` window.
 
 The explicit 34-byte term is the committed-frontier guard. The coefficients
 cover simultaneously owned bounded inventories, fingerprint and path payload
@@ -209,7 +212,7 @@ partial-record buffer into this metadata allowance.
 ```text
 reader_table_payload =
   max_tracked_files *
-    (fingerprint_bytes + 2 * P + 1024)
+    (FINGERPRINT_MAX_BYTES + 2 * P + 1024)
   + max_read_bytes_per_turn
 ```
 
@@ -248,9 +251,18 @@ Durable artifact maxima are derived from:
 - `limits.max_tracked_files`; and
 - `identity.fingerprint_bytes`.
 
+The configured population at the selected fingerprint window must first fit all
+file and recovery ceilings below. The recovery snapshot budget then admits
+historical evidence: take the smaller of the maximum snapshot for that population
+at the format's 65535-byte fingerprint limit and the largest snapshot budget that
+fits all three file/recovery formulas. This budget does not shrink when only the
+selected fingerprint window is reduced. It does not reserve every maximum-width
+record when that would exceed the recovery ceilings. Retained records remain
+subject to the admitted snapshot-byte and tracked-record limits.
+
 The store derives:
 
-- maximum snapshot bytes;
+- maximum admitted snapshot bytes, including historical fingerprint evidence;
 - conservative maximum WAL bytes and transaction count using the checked
   interacting-threshold formulas from the behavioral specification;
 - maximum transaction bytes; and

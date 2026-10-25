@@ -2501,9 +2501,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -7702,6 +7702,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-timer",
+ "globset",
  "hashbrown 0.17.1",
  "hex",
  "http",
@@ -7719,6 +7720,7 @@ dependencies = [
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-filelog-checkpoint",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-codec",
@@ -7744,7 +7746,9 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "serde_yaml",
+ "sha2 0.11.1",
  "slotmap",
  "smallvec",
  "tempfile",
