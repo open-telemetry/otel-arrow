@@ -553,6 +553,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     /// Launch reservations retained until registration, including exits before registration.
     pub(super) launching_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    /// Failed exits awaiting error or recovery bookkeeping, bounded by in-flight callbacks.
+    pub(super) pending_instance_failures: HashSet<DeployedPipelineKey>,
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     /// Runtime failures held while an explicit operation owns their lifecycle.
@@ -615,6 +617,25 @@ pub(super) struct ControllerRuntimeState {
 }
 
 impl ControllerRuntimeState {
+    /// Includes failed-exit callbacks until their error or recovery state is published.
+    pub(super) fn has_unfinished_instances(&self) -> bool {
+        self.active_instances > 0 || !self.pending_instance_failures.is_empty()
+    }
+
+    /// Producer liveness includes launch reservations and unfinished failure processing.
+    pub(super) fn active_producer_keys(&self) -> impl Iterator<Item = &DeployedPipelineKey> {
+        self.runtime_instances
+            .iter()
+            .chain(self.launching_instances.iter())
+            .filter(|(_, instance)| matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active))
+            .map(|(key, _)| key)
+            .chain(self.pending_instance_failures.iter())
+            .filter(|key| {
+                !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                    && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+            })
+    }
+
     /// Looks up the current launch before any terminal record retained for a reused key.
     pub(super) fn runtime_instance(
         &self,
@@ -648,7 +669,7 @@ impl ControllerRuntimeState {
 
     /// Returns true if there is pending lifecycle work that prevents immediate shutdown completion.
     pub(super) fn has_pending_lifecycle_work(&self) -> bool {
-        self.active_instances > 0
+        self.has_unfinished_instances()
             || self
                 .runtime_instances
                 .values()

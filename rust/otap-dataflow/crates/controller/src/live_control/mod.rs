@@ -113,6 +113,9 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
     state_changed: Condvar,
+    /// One-shot test handoff after recording an exit but before publishing its failure.
+    #[cfg(test)]
+    after_instance_exit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Keeps observability alive until controller-owned telemetry has been handed off.
@@ -216,6 +219,7 @@ impl<
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 launching_instances: HashMap::new(),
+                pending_instance_failures: HashSet::new(),
                 runtime_recoveries: HashMap::new(),
                 deferred_runtime_recoveries: HashMap::new(),
                 pipeline_operation_reservations: HashMap::new(),
@@ -244,6 +248,8 @@ impl<
                 controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
+            #[cfg(test)]
+            after_instance_exit: Mutex::new(None),
         }
     }
 

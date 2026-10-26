@@ -8535,6 +8535,112 @@ fn launch_exit_before_registration_completes_once_without_resurrection() {
     }
 }
 
+/// Scenario: a failed exit pauses before error bookkeeping while registration or global shutdown proceeds.
+/// Guarantees: failure processing fences drain completion and key reuse until the error is published.
+#[test]
+fn launch_failure_processing_blocks_drain_until_error_is_recorded() {
+    for (register_before_exit, shutdown_while_paused) in
+        [(false, false), (true, false), (false, true)]
+    {
+        let runtime = test_runtime(&empty_engine_config());
+        let launched = launched_runtime_instance(&runtime, "g1", "p1", 0, 7);
+        let key = launched.pipeline_key.clone();
+        let bindings = Arc::clone(&launched.context_bindings);
+        let startup_ready = Arc::clone(&launched.startup_ready);
+        runtime
+            .reserve_instance_launch(&key, Arc::clone(&bindings), Arc::clone(&startup_ready))
+            .expect("launch should reserve");
+        let mut unregistered = Some(launched);
+        if register_before_exit {
+            runtime.register_launched_instance(unregistered.take().expect("reserved launch"));
+        }
+
+        let (paused_tx, paused_rx) = std_mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std_mpsc::sync_channel(1);
+        *runtime
+            .after_instance_exit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(move || {
+            paused_tx
+                .send(())
+                .expect("announce failure callback boundary");
+            resume_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("release failure callback");
+        }));
+
+        thread::scope(|scope| {
+            let exit = scope.spawn(|| {
+                runtime.note_instance_exit(
+                    key.clone(),
+                    RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+                        "paused bootstrap failure".into(),
+                    )),
+                );
+            });
+            paused_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("failure callback should pause before error publication");
+            if let Some(launched) = unregistered.take() {
+                runtime.register_launched_instance(launched);
+            }
+            if shutdown_while_paused {
+                runtime
+                    .request_shutdown_all(30)
+                    .expect("shutdown should account for the paused failure callback");
+            }
+            let all_exited = runtime.all_instances_exited();
+            let drain_completed = runtime.wait_until_all_instances_exit_for(Duration::ZERO);
+            let error_before_resume = runtime.take_runtime_error();
+            let duplicate_launch = runtime.reserve_instance_launch(&key, bindings, startup_ready);
+            if duplicate_launch.is_ok() {
+                runtime.abort_instance_launch(&key);
+            }
+            let (active_producers, pending_lifecycle_work, shutdown_coordinators) = {
+                let state = runtime
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                (
+                    state.active_producer_keys().cloned().collect::<Vec<_>>(),
+                    state.has_pending_lifecycle_work(),
+                    state.global_shutdown_coordinators,
+                )
+            };
+            resume_tx.send(()).expect("resume failure bookkeeping");
+            exit.join().expect("exit callback should finish");
+            runtime.wait_until_all_producer_instances_exit();
+            let shutdown_completed = runtime.wait_for_global_shutdown_completion();
+
+            assert_eq!(shutdown_completed, shutdown_while_paused);
+            assert_eq!(shutdown_coordinators, usize::from(shutdown_while_paused));
+            assert!(
+                !all_exited,
+                "unfinished failure processing must retain liveness"
+            );
+            assert!(!drain_completed, "drain must wait for failure bookkeeping");
+            assert!(
+                error_before_resume.is_none(),
+                "the pause must precede error publication"
+            );
+            assert!(
+                duplicate_launch.is_err(),
+                "a pending failure must fence key reuse"
+            );
+            assert_eq!(active_producers, vec![key.clone()]);
+            assert!(pending_lifecycle_work);
+            assert!(runtime.all_instances_exited());
+            assert!(
+                runtime
+                    .take_runtime_error()
+                    .expect("failure must be recorded before drain completes")
+                    .to_string()
+                    .contains("paused bootstrap failure")
+            );
+        });
+    }
+}
+
 /// Scenario: an already-exited instance reports a duplicate exit while another instance remains active.
 /// Guarantees: the original exit is retained and the unrelated instance keeps its liveness count.
 #[test]
