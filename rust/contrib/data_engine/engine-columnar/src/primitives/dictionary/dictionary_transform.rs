@@ -318,22 +318,42 @@ where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
     DictionaryKeyArray: From<PrimitiveArray<K>>,
 {
+    let (transformed_values, value_index_lookup) = values.transform_into_set(transform)?;
+
+    let value_index_lookup = match value_index_lookup {
+        None => {
+            // Note: Reaching here means nothing was remapped so we can skip
+            // building a new key array.
+            return Ok(match transformed_values.len() {
+                0 => Dictionary::new_null(key_data_type, key_length),
+                1 => Dictionary::new_scalar(
+                    key_data_type,
+                    key_length,
+                    transformed_values.into_iter().next().expect("has value"),
+                ),
+                _ => unsafe {
+                    // Unchanged indexes remain implicit and are not limited by the key type.
+                    Dictionary::new_unvalidated(
+                        DictionaryKeyArray::UniqueValues {
+                            data_type: key_data_type,
+                            length: key_length,
+                        },
+                        transformed_values.into(),
+                    )
+                },
+            });
+        }
+        Some(lookup) => lookup,
+    };
+
     let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
     let mut key_writer = key_builder.get_writer();
 
-    let (transformed_values, value_index_lookup) = values.transform_into_set(transform)?;
-
     for key_index in 0..key_length {
-        if let Some(value_index_lookup) = value_index_lookup.as_ref() {
-            if let Some(Some(transformed_value_index)) = value_index_lookup.get(&key_index) {
-                unsafe {
-                    key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
-                };
-            } else {
-                unsafe { key_writer.set_null_unchecked(key_index) };
-            }
+        if let Some(Some(transformed_value_index)) = value_index_lookup.get(&key_index) {
+            unsafe { key_writer.set_value_index_unchecked(key_index, *transformed_value_index)? };
         } else {
-            unsafe { key_writer.set_value_index_unchecked(key_index, key_index)? };
+            unsafe { key_writer.set_null_unchecked(key_index) };
         }
     }
 
@@ -409,6 +429,7 @@ mod tests {
 
     fn assert_rows(dictionary: &Dictionary<'_>, expected: &[ValueOrRef<'_>]) {
         assert_eq!(dictionary.len(), expected.len());
+        let nulls = dictionary.nulls();
         for (index, value) in expected.iter().enumerate() {
             assert_eq!(
                 dictionary.get_value(index).as_ref(),
@@ -416,7 +437,7 @@ mod tests {
                 "row {index}"
             );
             assert_eq!(
-                dictionary.nulls().is_some_and(|nulls| nulls.is_null(index)),
+                nulls.as_ref().is_some_and(|nulls| nulls.is_null(index)),
                 matches!(value, ValueOrRef::Null),
                 "row {index} validity"
             );
@@ -956,8 +977,70 @@ mod tests {
         check::<UInt16Type>(65_536);
     }
 
-    /// Scenario: Unique-value keys reach capacity with unchanged indexes, duplicates, original nulls, or produced nulls.
-    /// Guarantees: Unrepresentable indexes return errors, but produced nulls do not consume key capacity.
+    /// Scenario: Unique-value columns of every key type transform 300 distinct values without changing indexes.
+    /// Guarantees: Identity and injective transforms preserve all rows and implicit keys even beyond the tagged key width.
+    #[test]
+    fn transform_into_any_preserves_implicit_unique_value_keys() {
+        for data_type in [
+            DictionaryKeyType::Int8,
+            DictionaryKeyType::UInt8,
+            DictionaryKeyType::Int16,
+            DictionaryKeyType::UInt16,
+            DictionaryKeyType::Int32,
+            DictionaryKeyType::UInt32,
+            DictionaryKeyType::Int64,
+            DictionaryKeyType::UInt64,
+        ] {
+            for offset in [0, 1000] {
+                let values = (0..300).map(ValueOrRef::Integer).collect::<Vec<_>>();
+                let transformed = Dictionary::new_unique_values(data_type.clone(), values.into())
+                    .transform_into_any(|value| match value {
+                        ValueOrRef::Integer(value) => ValueOrRef::Integer(value + offset),
+                        other => panic!("unexpected value: {other:?}"),
+                    })
+                    .expect("implicit indexes are not limited by the key type");
+
+                assert_eq!(
+                    transformed.keys(),
+                    &DictionaryKeyArray::UniqueValues {
+                        data_type: data_type.clone(),
+                        length: 300,
+                    }
+                );
+                let expected = (0..300)
+                    .map(|index| ValueOrRef::Integer(index + offset))
+                    .collect::<Vec<_>>();
+                assert_rows(&transformed, &expected);
+            }
+        }
+    }
+
+    /// Scenario: Unique-value keys address only a prefix of a larger value array without needing remapping.
+    /// Guarantees: Preserving implicit indexes retains the original row count rather than the value count.
+    #[test]
+    fn transform_into_any_preserves_implicit_unique_value_key_length() {
+        let keys = DictionaryKeyArray::UniqueValues {
+            data_type: DictionaryKeyType::UInt8,
+            length: 2,
+        };
+        let values = vec![1, 2, 3]
+            .into_iter()
+            .map(ValueOrRef::Integer)
+            .collect::<Vec<_>>();
+        let transformed = Dictionary::new(keys.clone(), values.into())
+            .expect("valid prefix")
+            .transform_into_any(Clone::clone)
+            .expect("implicit indexes are preserved");
+
+        assert_eq!(transformed.keys(), &keys);
+        assert_rows(
+            &transformed,
+            &[ValueOrRef::Integer(1), ValueOrRef::Integer(2)],
+        );
+    }
+
+    /// Scenario: Unique-value rows exceed the tagged key capacity with implicit indexes, duplicates, or nulls.
+    /// Guarantees: Implicit indexes remain unrestricted; remapped indexes must fit, and produced nulls use no capacity.
     #[test]
     fn transform_into_any_checks_unique_value_key_capacity() {
         for (data_type, arrow_data_type, capacity) in [
@@ -969,6 +1052,36 @@ mod tests {
             let values = (0..=capacity)
                 .map(|index| ValueOrRef::Integer(index as i64))
                 .collect::<Vec<_>>();
+            for length in [capacity - 1, capacity, capacity + 1] {
+                let transformed = Dictionary::new_unique_values(
+                    data_type.clone(),
+                    values[..length].to_vec().into(),
+                )
+                .transform_into_any(Clone::clone)
+                .expect("implicit indexes are not limited by the key type");
+                assert_eq!(
+                    transformed.keys(),
+                    &DictionaryKeyArray::UniqueValues {
+                        data_type: data_type.clone(),
+                        length,
+                    }
+                );
+                assert_rows(&transformed, &values[..length]);
+            }
+
+            let collapsed = Dictionary::new_unique_values(data_type.clone(), values.clone().into())
+                .transform_into_any(|value| match value {
+                    ValueOrRef::Integer(value) => ValueOrRef::Integer(value % 2),
+                    other => panic!("unexpected value: {other:?}"),
+                })
+                .expect("remapped indexes fit even when the row count exceeds capacity");
+            let expected = (0..=capacity)
+                .map(|index| ValueOrRef::Integer((index % 2) as i64))
+                .collect::<Vec<_>>();
+            assert_rows(&collapsed, &expected);
+            assert_eq!(collapsed.keys().data_type(), data_type);
+            assert_eq!(collapsed.values().len(), 2);
+
             let mut duplicates = vec![ValueOrRef::Integer(0)];
             duplicates.extend(values.iter().cloned());
             let mut produced_null = values[..capacity].to_vec();
@@ -977,20 +1090,31 @@ mod tests {
             let mut original_null = values[..capacity].to_vec();
             original_null.push(ValueOrRef::Null);
 
-            for values in [values, duplicates, original_null] {
-                let dictionary = Dictionary::new_unique_values(data_type.clone(), values.into());
-                assert_eq!(
-                    dictionary.transform_into_any(|value| match value {
-                        ValueOrRef::Boolean(false) => ValueOrRef::Null,
-                        ValueOrRef::Null => ValueOrRef::Integer(-1),
-                        value => value.clone(),
-                    }),
-                    Err(DictionaryValueError::KeyOverflow {
-                        value_index: capacity,
-                        key_data_type: arrow_data_type.clone(),
-                    })
-                );
-            }
+            let replaced = Dictionary::new_unique_values(data_type.clone(), original_null.into())
+                .transform_into_any(|value| match value {
+                    ValueOrRef::Null => ValueOrRef::Integer(-1),
+                    value => value.clone(),
+                })
+                .expect("distinct null replacement preserves implicit indexes");
+            let mut expected = values[..capacity].to_vec();
+            expected.push(ValueOrRef::Integer(-1));
+            assert_rows(&replaced, &expected);
+            assert_eq!(
+                replaced.keys(),
+                &DictionaryKeyArray::UniqueValues {
+                    data_type: data_type.clone(),
+                    length: capacity + 1,
+                }
+            );
+
+            let dictionary = Dictionary::new_unique_values(data_type.clone(), duplicates.into());
+            assert_eq!(
+                dictionary.transform_into_any(Clone::clone),
+                Err(DictionaryValueError::KeyOverflow {
+                    value_index: capacity,
+                    key_data_type: arrow_data_type.clone(),
+                })
+            );
 
             let transformed =
                 Dictionary::new_unique_values(data_type.clone(), produced_null.into())
