@@ -27,6 +27,7 @@ use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::entity_context::inherit_node_context;
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
@@ -205,9 +206,9 @@ impl LocalTlsReloadTask {
     fn start(provider: Rc<ClientTlsProvider>) -> Self {
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
-        let handle = tokio::task::spawn_local(async move {
+        let handle = tokio::task::spawn_local(inherit_node_context(async move {
             provider.run(task_cancel.cancelled()).await;
-        });
+        }));
         Self {
             cancel,
             handle: Some(handle),
@@ -418,6 +419,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 source_detail,
             }
         })?;
+        drop(initial_tls_generation);
 
         let reload_enabled = tls_provider.as_ref().is_some_and(|provider| {
             provider.is_file_backed() && provider.reload_interval().is_some()
@@ -514,23 +516,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 armed_margin_deadline = auth_margin_deadline;
             }
 
-            // A batch parked for in-flight capacity is un-parked only once auth is
-            // ready again. Taking it while `accepting_pdata` is false would NACK it
-            // below -- exactly the outcome the gate exists to avoid -- so instead it
-            // stays parked and the loop keeps servicing auth refreshes and
-            // completions until a usable auth arrives. Shutdown is the escape
-            // hatch: it force-drains, and its arm NACKs whatever is still parked.
-            let parked_msg = if accepting_pdata {
-                pending_msg.take()
-            } else {
-                None
-            };
-
-            // Prefer auth events, then completions, then the next message.
-            let msg = if let Some(pdata) = parked_msg {
-                Message::PData(pdata)
-            } else {
-                tokio::select! {
+            // Apply ready TLS/auth updates and completions before dispatching a
+            // parked batch. The capacity guard above also protects shutdown
+            // draining, when recv_when(false) can still yield buffered pdata.
+            let msg = tokio::select! {
                     biased;
 
                     // Wake when the cached auth reaches its usability margin so the
@@ -636,6 +625,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         continue;
                     }
 
+                    // A batch stays parked while auth is unusable. Shutdown
+                    // force-drains and Nacks it if auth never becomes ready.
+                    pdata = async { pending_msg.take().expect("parked batch") },
+                        if accepting_pdata && pending_msg.is_some() => {
+                        Message::PData(pdata)
+                    }
+
                     // Inbound message. Control always flows; pdata is admitted only
                     // when `accepting_pdata` (and force-drained during shutdown).
                     msg = msg_chan.recv_when(accepting_pdata) => {
@@ -643,7 +639,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         otel_debug!("otlp.exporter.grpc.receive");
                         msg
                     }
-                }
             };
 
             match msg {

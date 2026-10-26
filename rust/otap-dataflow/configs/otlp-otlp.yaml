@@ -72,8 +72,13 @@ groups:
               #   # File-backed CA/cert/key material reloads every 5m by default.
               #   # reload_interval: "30s"           # custom polling interval
               #   # reload_interval: null            # disable client TLS reload
-              #   # Rotate related standalone files atomically. Kubernetes
-              #   # projected-volume generations are pinned per reload attempt.
+              #   # reload_interval: "0s" is rejected.
+              #   # Separate CA/cert/key replacements are not one atomic update.
+              #   # Detectable inconsistencies keep current material until a later poll.
+              #   # Kubernetes projected-volume generations are pinned per attempt;
+              #   # subPath mounts do not receive projected-volume updates.
+              #   # Invalid files or pool-build errors retain the old pool.
+              #   # Later backend TLS rejection does not roll back an installed pool.
 
         connections:
           - from: receiver

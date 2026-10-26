@@ -6,6 +6,21 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
     ExportLogsServiceResponse, logs_service_server::LogsService,
 };
 use tokio::sync::{mpsc, oneshot};
+use tracing_subscriber::prelude::*;
+
+struct ReloadPublications(mpsc::Sender<()>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReloadPublications {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().name() == "tls.client_reload.updated" {
+            self.0.try_send(()).expect("bounded publication observer");
+        }
+    }
+}
 
 struct TlsFixture {
     dir: TempDir,
@@ -381,6 +396,166 @@ fn prepared_logs(
             auth_generation: None,
         },
     }
+}
+
+/// Scenario: a full exporter parks a batch while a newer TLS generation is
+/// published, then an in-flight RPC releases capacity.
+/// Guarantees: the parked batch uses the new client identity, not the retired
+/// pool, and all three exports retain their Ack routing.
+#[test]
+fn parked_batch_installs_pending_tls_before_dispatch() {
+    run_parked_batch_rotation(false);
+}
+
+/// Scenario: shutdown starts with a full exporter, a parked batch, buffered
+/// pdata, and a newer TLS generation waiting for installation.
+/// Guarantees: draining still enforces max_in_flight, applies TLS before the
+/// parked batch, and acknowledges every buffered export before terminating.
+#[test]
+fn shutdown_drain_keeps_capacity_and_pending_tls_order() {
+    run_parked_batch_rotation(true);
+}
+
+fn run_parked_batch_rotation(shutdown_while_full: bool) {
+    let (publications, mut published) = mpsc::channel(4);
+    let subscriber = tracing_subscriber::registry().with(ReloadPublications(publications));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tracing::subscriber::with_default(subscriber, || {
+        runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+            let mut fixture = TlsFixture::new().await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+            fixture.settings.grpc_endpoint = format!(
+                "https://localhost:{}",
+                listener.local_addr().expect("server address").port()
+            );
+            let (requests, mut received) = mpsc::channel(4);
+            let (shutdown, stopped) = oneshot::channel();
+            let tls = mtls_server_config(&fixture.ca, "server");
+            // A local backend runs concurrently with the exporter and held RPCs.
+            let server = tokio::task::spawn_local(async move {
+                Server::builder()
+                    .tls_config(tls)
+                    .expect("server TLS")
+                    .add_service(LogsServiceServer::new(HeldLogsService { requests }))
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                        stopped.await.expect("server shutdown");
+                    })
+                    .await
+                    .expect("server");
+            });
+            let (pipeline_ctx, _) =
+                test_pipeline_ctx_with_interests(Interests::ACKS | Interests::NACKS);
+            let exporter = OTLPExporter {
+                config: Config {
+                    grpc: fixture.settings.clone(),
+                    max_in_flight: 1,
+                    num_connections: 1,
+                },
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx, None),
+                auth_provider: None,
+            };
+            let (pdata, pdata_rx) = mpsc::channel(1);
+            let (control, control_rx) = mpsc::channel(2);
+            let (completions, mut completed) = pipeline_completion_msg_channel(4);
+            let (_metrics, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let mut effects = EffectHandler::new(
+                test_node("parked-tls"),
+                reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
+            effects.set_pipeline_completion_msg_sender(completions);
+            let inbox = ExporterInbox::new(
+                Receiver::Shared(
+                    otel_arrow_dfe_engine::shared::message::SharedReceiver::mpsc(control_rx),
+                ),
+                Receiver::Shared(
+                    otel_arrow_dfe_engine::shared::message::SharedReceiver::mpsc(pdata_rx),
+                ),
+                0,
+                Interests::ACKS | Interests::NACKS,
+            );
+            let exporter = tokio::task::spawn_local(Box::new(exporter).start(inbox, effects));
+            pdata
+                .send(subscribed_empty_logs())
+                .await
+                .expect("first batch");
+            let first = timeout(Duration::from_secs(5), received.recv())
+                .await
+                .expect("first request deadline")
+                .expect("first request");
+            pdata
+                .send(subscribed_empty_logs())
+                .await
+                .expect("parked batch");
+            timeout(Duration::from_secs(5), async {
+                while pdata.capacity() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("second batch must be parked");
+            pdata
+                .send(subscribed_empty_logs())
+                .await
+                .expect("buffered batch");
+            let send_shutdown = || NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(5),
+                reason: "test complete".into(),
+            };
+            if shutdown_while_full {
+                control
+                    .send(send_shutdown())
+                    .await
+                    .expect("queued shutdown");
+            }
+            write_client_tls_material(fixture.dir.path(), &fixture.ca, "client-rotated");
+            timeout(Duration::from_secs(5), published.recv())
+                .await
+                .expect("reload publication deadline")
+                .expect("reload publication");
+            first.response.send(Ok(())).expect("release first RPC");
+            let second = timeout(Duration::from_secs(5), received.recv())
+                .await
+                .expect("parked request deadline")
+                .expect("parked request");
+            assert_ne!(first.identity, second.identity);
+            assert!(
+                timeout(Duration::from_millis(50), received.recv())
+                    .await
+                    .is_err(),
+                "no third RPC may start while the second uses the only slot"
+            );
+            second.response.send(Ok(())).expect("release parked RPC");
+            let third = timeout(Duration::from_secs(5), received.recv())
+                .await
+                .expect("buffered request deadline")
+                .expect("buffered request");
+            assert_eq!(second.identity, third.identity);
+            third.response.send(Ok(())).expect("release buffered RPC");
+            for _ in 0..3 {
+                wait_for_ack_or_nack(&mut completed, true, 123, "parked TLS rotation")
+                    .await
+                    .expect("export Ack");
+            }
+            if !shutdown_while_full {
+                control.send(send_shutdown()).await.expect("shutdown");
+            }
+            drop(pdata);
+            let _ = timeout(Duration::from_secs(5), exporter)
+                .await
+                .expect("exporter shutdown deadline")
+                .expect("exporter task")
+                .expect("exporter result");
+            shutdown.send(()).expect("stop server");
+            timeout(Duration::from_secs(5), server)
+                .await
+                .expect("server shutdown deadline")
+                .expect("server task");
+        }));
+    });
 }
 
 /// Scenario: an mTLS RPC remains blocked on the old pool while a new identity
