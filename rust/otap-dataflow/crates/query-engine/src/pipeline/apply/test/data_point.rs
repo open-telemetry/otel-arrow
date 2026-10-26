@@ -3902,7 +3902,10 @@ async fn test_conditional_with_missing_attr_in_predicate_expr_passes() {
     assert_metrics_eq(result, expected);
 }
 
-#[tokio::test]
+/// Scenario: a predicate condition that will resolve to be aligned with the root (metrics)
+/// record batch.
+/// Guarantees: the correct rows are successfully selected for each branch
+#[tokio::test] 
 async fn test_conditional_with_missing_resource_attr_in_predicate() {
     let query = r#"metrics | apply data_points {
         if (resource.attributes["env"] == null) {
