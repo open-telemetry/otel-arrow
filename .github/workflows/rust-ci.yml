@@ -552,6 +552,8 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Build and archive tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
         run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
