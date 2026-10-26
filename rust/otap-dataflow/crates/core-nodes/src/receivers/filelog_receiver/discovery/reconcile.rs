@@ -496,8 +496,11 @@ impl Reconciler {
         })
     }
 
-    /// Registers an identity-owner view between passes. Recovery may supply equal
-    /// historical paths, but two live bindings to one path are rejected.
+    /// Restores an identity-owner view during recovery/bootstrap between passes.
+    /// Recovery may supply equal historical paths, but two live bindings to one
+    /// path are rejected. For new admissions, use [`Self::admit`] or
+    /// [`Self::admit_batch`] to preflight tracking before durable work. Do not
+    /// commit a new admission first and then call this method: it can reject it.
     pub fn track(&mut self, mut file: TrackedFile) -> Result<(), ReconcileError> {
         self.validate_track(&file, None)?;
         file.binding = file.binding.as_ref().map(|path| path.to_path_buf());
@@ -1488,9 +1491,11 @@ impl Reconciler {
         Ok(self.candidates.offers())
     }
 
-    /// Acknowledges an offer after identity handling. Deferred candidates preserve
-    /// first discovery time. Successful admission removes the pending candidate.
-    /// New tracked state is installed separately with `track` by its owner.
+    /// Records offer feedback without validating or publishing tracked state.
+    /// Deferred candidates preserve first discovery time; Admitted removes the
+    /// pending candidate. New admissions must use [`Self::admit`] or
+    /// [`Self::admit_batch`], which publish tracking and acknowledge together.
+    /// This lower-level feedback method is not an admission commit boundary.
     pub fn acknowledge(
         &mut self,
         token: OfferToken,
@@ -1507,10 +1512,11 @@ impl Reconciler {
         Ok(())
     }
 
-    /// Validates a token before invoking identity work under an exclusive borrow.
-    /// Prefer this boundary when the callback can mutate durable state: stale
-    /// offers never invoke it, and no new pass can start during the callback.
-    /// Report successful admission, deferral, proven capacity blocking, or rejection.
+    /// Resolves offer feedback under an exclusive borrow after validating its token.
+    /// Stale offers never invoke the callback, and no new pass can start during it.
+    /// This does not preflight tracked-state publication, including capacity and
+    /// binding conflicts. Use [`Self::admit`] or [`Self::admit_batch`] for new
+    /// admissions; use this method for handling that needs only offer feedback.
     pub fn resolve_offer(
         &mut self,
         token: OfferToken,

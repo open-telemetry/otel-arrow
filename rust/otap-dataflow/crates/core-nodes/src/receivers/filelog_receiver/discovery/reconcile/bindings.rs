@@ -351,7 +351,9 @@ impl Reconciler {
         }
     }
 
-    /// Preflights one admission before invoking external identity/durability work.
+    /// Normal path for one new admission or reconnection: preflight tracked state
+    /// before invoking external identity/durability work. Use [`Self::admit_batch`]
+    /// for a group or a same-locator identity replacement.
     /// On success, successor publication, tracked state and acknowledgement change
     /// together. An existing ID reconnects its own state without a new tracked slot.
     /// The callback returns its monotonic completion time, or None to defer with no

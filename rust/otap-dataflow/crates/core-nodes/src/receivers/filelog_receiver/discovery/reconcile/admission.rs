@@ -37,7 +37,9 @@ struct Publication {
 }
 
 impl Reconciler {
+    /// Normal path for grouped admissions and same-locator identity replacement.
     /// Preflight every member, commit the exact group, then publish all members.
+    /// [`Self::admit`] delegates here for one admission without identity retirement.
     /// The exclusive borrow freezes offers and bindings throughout the callback.
     /// None means known-no-write deferral. A recoverable pending write must be
     /// resolved inside the callback; an uncertain terminal error requires stopping
