@@ -85,7 +85,7 @@ fn query_producer_to_decoded_otap_preserves_observations() {
     sample.timestamp_unix_nano = later.timestamp_unix_nano;
     sample.members.extend(later.members);
     sample.points.extend(later.points);
-    let records = into_otap(&config.counters, sample).unwrap().unwrap();
+    let records = project_sample(&config.counters, &sample).unwrap().unwrap();
     let decoded = decode(records);
     let resource = &decoded.resource_metrics[0];
     assert!(
@@ -196,6 +196,76 @@ fn unsupported_type_failure_retains_counter_path() {
     assert_eq!(failure.reason, "unsupported_type");
 }
 use windows_sys::Win32::System::Performance::PDH_INVALID_HANDLE;
+
+/// Scenario: Exact and wildcard failures retry, resolve, and a wildcard fails again with healthy retained members.
+/// Guarantees: The worker's diagnostic consumer emits one warning per episode and no recovery events on steady collection.
+#[test]
+fn collection_diagnostics_log_selector_episodes_without_reminders() {
+    assert_isolated_tracing(|| {
+        let output = CapturedEvents::default();
+        tracing::dispatcher::with_default(&output.dispatch(), || {
+            let healthy = r"\Memory\Available Bytes";
+            let missing = r"\Memory\Late Counter";
+            let template = r"\Process(worker*)\ID Process";
+            let member = r"\Prozess(worker)\Prozesskennung";
+            let wildcard = CounterConfig {
+                instance_config: InstanceConfig::Wildcard {
+                    excluded_aggregation: None,
+                },
+                ..counter(template, "process")
+            };
+            let configs = vec![
+                counter(healthy, "healthy"),
+                counter(missing, "late"),
+                wildcard,
+            ];
+            let (state, mut query) = fake_query_with_cadences(
+                configs.clone(),
+                vec![fake_counter(healthy, Number::Integer(42))],
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+            state.borrow_mut().expand_error = true;
+            let mut logs = diagnostics::SampleLogState::new("diagnostics-test".to_owned(), configs);
+            for _ in 0..3 {
+                let _ = logs.log(&query.collect().unwrap()).unwrap();
+            }
+            {
+                let mut state = state.borrow_mut();
+                state.expand_error = false;
+                state
+                    .counters
+                    .push(fake_counter(missing, Number::Integer(7)));
+                state
+                    .counters
+                    .push(fake_counter(member, Number::Integer(99)));
+                let _ = state
+                    .expansions
+                    .insert(template.to_owned(), vec![member.to_owned()]);
+            }
+            let _ = logs.log(&query.collect().unwrap()).unwrap();
+            let before_steady = output.names().len();
+            let _ = logs.log(&query.collect().unwrap()).unwrap();
+            assert_eq!(output.names().len(), before_steady);
+            state.borrow_mut().expand_error = true;
+            for _ in 0..3 {
+                let sample = query.collect().unwrap();
+                assert_eq!(sample.points.len(), 3);
+                let _ = logs.log(&sample).unwrap();
+            }
+        });
+        let captured = output.names();
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|name| **name == "windows_perf_counters_receiver.counter.fail")
+                .count(),
+            3
+        );
+        assert!(captured.contains(&"windows_perf_counters_receiver.instances.change"));
+        assert!(captured.contains(&"windows_perf_counters_receiver.recovery.change"));
+    });
+}
 
 struct InvalidHandleState {
     next_handle: usize,
@@ -400,6 +470,116 @@ fn handle_for_path(state: &InvalidHandleState, path: &str) -> usize {
         .unwrap()
 }
 
+/// Scenario: An admitted wildcard fails retirement beside a healthy peer, then the query itself becomes invalid.
+/// Guarantees: Maintenance never inherits scheduled-success evidence, while the retained seed restores membership without rediscovery and preserves the logical Sum start.
+#[test]
+fn failed_wildcard_retirement_preserves_rebuild_seed() {
+    let template = r"\Process(worker*)\Operations Delta";
+    let path = r"\Process(worker)\Operations Delta";
+    let healthy = r"\Memory\Available Bytes";
+    for fail_replacement_open in [false, true] {
+        let state = invalid_handle_state(BTreeMap::from([(
+            template.to_owned(),
+            vec![path.to_owned()],
+        )]));
+        let mut config = cumulative_sum(template, "operations", "{operation}");
+        config.instance_config = InstanceConfig::Wildcard {
+            excluded_aggregation: None,
+        };
+        let opens = Cell::new(0);
+        let mut open = |configs, limit, seed: Option<&QueryRecreationSeed>| {
+            let attempt = opens.get();
+            opens.set(attempt + 1);
+            // This adapter does not model query destruction; emulate release before replacement.
+            state.borrow_mut().active.clear();
+            if fail_replacement_open && attempt == 1 {
+                return Err(Error::Pdh {
+                    operation: PdhOperation::OpenQuery,
+                    path: "<query>".to_owned(),
+                    status: 1,
+                });
+            }
+            Query::open_with_seed(
+                InvalidHandlePdh(Rc::clone(&state)),
+                configs,
+                Duration::ZERO,
+                Duration::from_secs(3600),
+                256,
+                limit,
+                seed,
+            )
+        };
+        let retry_cap = Duration::from_secs(60);
+        let mut slot = QuerySlot::open_initial(
+            vec![config, counter(healthy, "memory")],
+            retry_cap,
+            2,
+            &mut open,
+        )
+        .unwrap();
+        let handle = handle_for_path(&state.borrow(), path);
+        {
+            let mut state = state.borrow_mut();
+            let _ = state.invalid_handles.insert(handle);
+            state.cleanup_fails = true;
+            state.timestamp = 110;
+        }
+        let failed_at = Instant::now();
+        let failed_cleanup = collect_query(&mut slot, &mut open, failed_at).unwrap();
+        assert_eq!(failed_cleanup.points.len(), 1);
+        assert_eq!(failed_cleanup.points[0].path.as_ref(), healthy);
+        assert!(slot.query.is_some());
+        state.borrow_mut().collect_status = Some(PDH_INVALID_HANDLE);
+        assert!(
+            collect_query(&mut slot, &mut open, failed_at)
+                .unwrap_err()
+                .is_invalid_query()
+        );
+        state.borrow_mut().collect_status = None;
+        assert!(slot.query.is_none());
+        let backoff = collect_query(&mut slot, &mut open, failed_at).unwrap();
+        assert!(!backoff.metadata.diagnostics.any_query_collected);
+        assert!(backoff.points.is_empty());
+        assert_eq!(backoff.members.len(), 2);
+        assert!(!backoff.metadata.failures.is_empty());
+        assert_eq!(opens.get(), 1);
+        state.borrow_mut().cleanup_fails = false;
+        let mut rebuild_at = failed_at + Duration::from_secs(1);
+        if fail_replacement_open {
+            let failed = collect_query(&mut slot, &mut open, rebuild_at).unwrap();
+            assert!(!failed.metadata.diagnostics.any_query_collected);
+            assert!(failed.points.is_empty());
+            assert!(
+                failed.metadata.failures.iter().any(|failure| {
+                    failure.reason == "PdhOpenQueryW" && failure.diagnostic_only
+                })
+            );
+            rebuild_at += Duration::from_secs(1);
+        }
+        let rebuilt = collect_query(&mut slot, &mut open, rebuild_at).unwrap();
+        assert!(!rebuilt.metadata.diagnostics.any_query_collected);
+        assert!(rebuilt.points.is_empty());
+        assert_eq!(rebuilt.metadata.diagnostics.query_rebuild_recoveries, 1);
+        state.borrow_mut().timestamp = 120;
+        let ready = collect_query(&mut slot, &mut open, rebuild_at).unwrap();
+        assert_eq!(ready.points.len(), 2);
+        assert_eq!(ready.points[0].path.as_ref(), path);
+        assert_eq!(ready.points[0].start_time_unix_nano, Some(100));
+        assert!(matches!(ready.points[0].value, SampleValue::Value(_)));
+        assert_eq!(state.borrow().expand_calls, 1);
+        assert_eq!(
+            state.borrow().add_attempts,
+            [
+                healthy.to_owned(),
+                path.to_owned(),
+                healthy.to_owned(),
+                path.to_owned()
+            ]
+        );
+        assert_eq!(state.borrow().max_active, 2);
+    }
+}
+
 /// Scenario: A wildcard lookup succeeds or fails before temporary-handle cleanup also fails.
 /// Guarantees: Healthy members survive and warnings remain once per episode; only a genuine lookup failure counts discovery failure and enables object refresh.
 #[test]
@@ -454,6 +634,66 @@ fn lookup_failure_with_pending_cleanup_preserves_discovery_classification() {
             );
         }
         assert!(state.borrow().removed.is_empty());
+    }
+}
+
+/// Scenario: Replacement priming fails either before collection or after successful collection during invalid-handle cleanup.
+/// Guarantees: Both failures produce diagnostic-only maintenance, no points or scheduled success, and no duplicated failures on the following request.
+#[test]
+fn failed_rebuild_prime_is_diagnostic_only() {
+    let path = r"\Memory\Available Bytes";
+    for fail_after_collection in [false, true] {
+        let state = invalid_handle_state(BTreeMap::new());
+        let opens = Cell::new(0);
+        let mut open = |configs, limit, seed: Option<&QueryRecreationSeed>| {
+            let attempt = opens.get();
+            opens.set(attempt + 1);
+            {
+                let mut state = state.borrow_mut();
+                state.active.clear();
+                state.collect_status = (attempt == 1 && !fail_after_collection).then_some(1);
+                state.invalidate_on_collect = attempt == 1 && fail_after_collection;
+                state.cleanup_fails = attempt == 1 && fail_after_collection;
+            }
+            Query::open_with_seed(
+                InvalidHandlePdh(Rc::clone(&state)),
+                configs,
+                Duration::ZERO,
+                Duration::from_secs(3600),
+                256,
+                limit,
+                seed,
+            )
+        };
+        let mut slot =
+            QuerySlot::open_initial(vec![counter(path, "memory")], Duration::ZERO, 1, &mut open)
+                .unwrap();
+        state.borrow_mut().collect_status = Some(PDH_INVALID_HANDLE);
+        assert!(
+            collect_query(&mut slot, &mut open, Instant::now())
+                .unwrap_err()
+                .is_invalid_query()
+        );
+        let failed_prime = collect_query(&mut slot, &mut open, Instant::now()).unwrap();
+        assert!(failed_prime.points.is_empty());
+        assert!(!failed_prime.metadata.diagnostics.any_query_collected);
+        assert!(failed_prime.metadata.diagnostics.query_pending);
+        assert!(!failed_prime.metadata.failures.is_empty());
+        assert!(
+            failed_prime
+                .metadata
+                .failures
+                .iter()
+                .all(|failure| failure.diagnostic_only)
+        );
+        state.borrow_mut().collect_status = None;
+        state.borrow_mut().invalidate_on_collect = false;
+        state.borrow_mut().cleanup_fails = false;
+        state.borrow_mut().timestamp = 120;
+        let ready = collect_query(&mut slot, &mut open, Instant::now()).unwrap();
+        assert!(ready.metadata.diagnostics.any_query_collected);
+        assert!(ready.metadata.failures.is_empty());
+        assert_eq!(ready.points.len(), 1);
     }
 }
 
@@ -1164,10 +1404,11 @@ fn pending_replacement_handoff_preserves_owner_and_pattern_quota() {
     assert_eq!(replacement.value, SampleValue::Warming);
 }
 
-/// Scenario: A departed member's removal fails twice and collection crosses each controlled cleanup deadline.
-/// Guarantees: No removal or failure repeats before a deadline; cleanup retries exactly at the deadline and eventually releases ownership.
+/// Scenario: A departed member's cleanup fails across controlled retry deadlines, succeeds, and later fails after reappearance.
+/// Guarantees: Cleanup retries only at deadlines, warns once across backoff, releases ownership, and rearms the warning for the new episode.
 #[test]
 fn pending_removal_waits_for_cleanup_backoff() {
+    let mut warnings = 0;
     let template = r"\Process(*)\Private Bytes";
     let expanded = r"\Process(worker)\Private Bytes";
     let mut config = counter(template, "private");
@@ -1175,13 +1416,14 @@ fn pending_removal_waits_for_cleanup_backoff() {
         excluded_aggregation: None,
     };
     let (state, mut query) = fake_query_with_seed(
-        vec![config],
+        vec![config.clone()],
         vec![fake_counter(expanded, Number::Integer(1))],
         Duration::from_secs(60),
         Duration::ZERO,
         1,
         None,
     );
+    let mut logs = diagnostics::SampleLogState::new("cleanup-test".to_owned(), vec![config]);
     let _ = state
         .borrow_mut()
         .expansions
@@ -1194,16 +1436,24 @@ fn pending_removal_waits_for_cleanup_backoff() {
         state.remove_error = true;
     }
     let first = query.collect_at(now).unwrap();
+    warnings += logs.log(&first).unwrap();
     let deadline = now + Duration::from_secs(1);
     let second = query
         .collect_at(deadline - Duration::from_nanos(1))
         .unwrap();
+    warnings += logs.log(&second).unwrap();
+    assert_eq!(
+        second.metadata.pending_cleanup,
+        Some(vec![(0, Arc::from(expanded))])
+    );
     assert_eq!(state.borrow().removed, [0]);
     assert_eq!(first.metadata.diagnostics.discovery_failures, 0);
     assert_eq!(first.metadata.failures.len(), 1);
     assert_eq!(second.metadata.diagnostics.discovery_failures, 0);
     assert!(second.metadata.failures.is_empty());
     let retry = query.collect_at(deadline).unwrap();
+    warnings += logs.log(&retry).unwrap();
+    assert_eq!(warnings, 1);
     assert_eq!(state.borrow().removed, [0, 0]);
     assert_eq!(retry.metadata.failures.len(), 1);
     state.borrow_mut().remove_error = false;
@@ -1211,15 +1461,116 @@ fn pending_removal_waits_for_cleanup_backoff() {
     let waiting = query
         .collect_at(next_deadline - Duration::from_nanos(1))
         .unwrap();
+    warnings += logs.log(&waiting).unwrap();
     assert_eq!(state.borrow().removed, [0, 0]);
     assert!(waiting.metadata.failures.is_empty());
     let cleaned = query.collect_at(next_deadline).unwrap();
+    warnings += logs.log(&cleaned).unwrap();
+    assert_eq!(cleaned.metadata.pending_cleanup, Some(Vec::new()));
     assert_eq!(state.borrow().removed, [0, 0, 0]);
     assert!(cleaned.metadata.failures.is_empty());
     assert!(query.admitted_members().is_empty());
+    assert_eq!(warnings, 1);
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template.to_owned(), vec![expanded.to_owned()]);
+    warnings += logs.log(&query.collect_at(next_deadline).unwrap()).unwrap();
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.expansions.insert(template.to_owned(), Vec::new());
+        state.remove_error = true;
+    }
+    warnings += logs.log(&query.collect_at(next_deadline).unwrap()).unwrap();
+    assert_eq!(warnings, 2);
 }
 
-/// Scenario: Seventeen startup patterns each discover 257 available members under the fixed MVP bounds.
+/// Scenario: Removal fails, a later collection buffers another removal failure, and cleanup succeeds before that evidence is delivered.
+/// Guarantees: Buffered evidence does not repeat the cleanup warning, healthy data survives, and a new removal episode warns again.
+#[test]
+fn buffered_removal_failure_stays_suppressed_after_cleanup() {
+    let template = r"\Process(*)\Private Bytes";
+    let expanded = r"\Process(worker)\Private Bytes";
+    let healthy = r"\Memory\Available Bytes";
+    let mut wildcard = counter(template, "private");
+    wildcard.instance_config = InstanceConfig::Wildcard {
+        excluded_aggregation: None,
+    };
+    let configs = vec![wildcard, counter(healthy, "memory")];
+    let mut logs = diagnostics::SampleLogState::new("cleanup-test".to_owned(), configs.clone());
+    let (state, mut query) = fake_query_with_seed(
+        configs,
+        vec![
+            fake_counter(expanded, Number::Integer(1)),
+            fake_counter(healthy, Number::Integer(42)),
+        ],
+        Duration::from_secs(60),
+        Duration::ZERO,
+        2,
+        None,
+    );
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template.to_owned(), vec![expanded.to_owned()]);
+    let now = Instant::now();
+    assert_eq!(logs.log(&query.collect_at(now).unwrap()).unwrap(), 0);
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.expansions.insert(template.to_owned(), Vec::new());
+        state.remove_error = true;
+    }
+    assert_eq!(logs.log(&query.collect_at(now).unwrap()).unwrap(), 1);
+    state.borrow_mut().collect_error = true;
+    let error = query.collect_at(now + Duration::from_secs(1)).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Pdh {
+            operation: PdhOperation::CollectQueryData,
+            ..
+        }
+    ));
+    assert_eq!(logs.log_error(&error).unwrap(), 1);
+    {
+        let mut state = state.borrow_mut();
+        state.collect_error = false;
+        state.remove_error = false;
+    }
+    let cleanup_deadline = now + Duration::from_secs(3);
+    let cleaned = query.collect_at(cleanup_deadline).unwrap();
+    assert_eq!(cleaned.metadata.pending_cleanup, Some(Vec::new()));
+    assert_eq!(cleaned.metadata.failures.len(), 1);
+    assert_eq!(cleaned.metadata.failures[0].reason, "PdhRemoveCounter");
+    assert_eq!(cleaned.metadata.failures[0].path.as_ref(), expanded);
+    assert_eq!(cleaned.points.len(), 1);
+    assert_eq!(cleaned.points[0].path.as_ref(), healthy);
+    assert_eq!(
+        cleaned.points[0].value,
+        SampleValue::Value(Number::Integer(42))
+    );
+    assert_eq!(logs.log(&cleaned).unwrap(), 0);
+    let _ = state
+        .borrow_mut()
+        .expansions
+        .insert(template.to_owned(), vec![expanded.to_owned()]);
+    assert_eq!(
+        logs.log(&query.collect_at(cleanup_deadline).unwrap())
+            .unwrap(),
+        0
+    );
+    {
+        let mut state = state.borrow_mut();
+        let _ = state.expansions.insert(template.to_owned(), Vec::new());
+        state.remove_error = true;
+    }
+    assert_eq!(
+        logs.log(&query.collect_at(cleanup_deadline).unwrap())
+            .unwrap(),
+        1
+    );
+}
+
+/// Scenario: Seventeen startup patterns each discover 257 available members under the fixed receiver bounds.
 /// Guarantees: Each pattern admits at most 256 and the receiver installs at most 4096 entries with explicit overflow diagnostics.
 #[test]
 fn startup_admission_enforces_fixed_pattern_and_total_bounds() {
@@ -2275,7 +2626,7 @@ fn exact_instance_parse_failure_preserves_value() {
     assert_eq!(sample.metadata.diagnostics.counter_add_failures, 0);
 }
 
-/// Scenario: One wildcard expands to the F6 limit of 256 direct counters and produces one sample.
+/// Scenario: One wildcard expands to the fixed limit of 256 direct counters and produces one sample.
 /// Guarantees: Sharing point identity changes no PDH work: discovery, setup, collection, reads, and timestamps remain one-for-one with native entries.
 #[test]
 fn high_cardinality_collection_preserves_native_call_counts() {
@@ -2560,7 +2911,7 @@ fn same_mapping_overlap_preserves_calculated_readiness() {
 /// Scenario: English exact and wildcard selectors resolve beside German and absent English inputs.
 /// Guarantees: Exact adds stay English, expanded adds use localized identity, projection preserves configured metadata, and unresolved inputs warn once.
 #[test]
-fn smoke_selector_shapes_preserve_language_and_output_sources() {
+fn selector_shapes_preserve_language_and_output_sources() {
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric;
 
@@ -2570,7 +2921,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
         r"\Processor(*)\% Processor Time",
         r"\Process(svchos?)\ID Process",
         r"\Prozessor(_Total)\Prozessorzeit (%)",
-        r"\AldoTel Smoke Missing\Missing Counter",
+        r"\Nonexistent Object\Missing Counter",
     ];
     let localized = [
         r"\Prozessor(0)\Prozessorzeit (%)",
@@ -2580,7 +2931,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
         .iter()
         .enumerate()
         .map(|(index, path)| {
-            let mut config = counter(path, &format!("smoke.{index}"));
+            let mut config = counter(path, &format!("selector.{index}"));
             config.source_mapping_index = index;
             if matches!(index, 2 | 3) {
                 config.instance_config = InstanceConfig::Wildcard {
@@ -2642,7 +2993,7 @@ fn smoke_selector_shapes_preserve_language_and_output_sources() {
                     }
             })
     );
-    let records = into_otap(&configs, sample).unwrap().unwrap();
+    let records = project_sample(&configs, &sample).unwrap().unwrap();
     let decoded = decode(records);
     for metric in &decoded.resource_metrics[0].scope_metrics[0].metrics {
         let index = configs
@@ -2699,7 +3050,7 @@ fn unresolved_exact_drives_conditional_refresh_at_discovery_only() {
         let interval = Duration::from_secs(discovery);
         let required = interval.max(Duration::from_secs(600));
         let healthy = r"\Memory\Available Bytes";
-        let missing = r"\AldoTel Smoke Missing\Missing Counter";
+        let missing = r"\Nonexistent Object\Missing Counter";
         let (state, mut query) = fake_query_with_cadences(
             vec![counter(healthy, "healthy"), counter(missing, "missing")],
             vec![fake_counter(healthy, Number::Integer(42))],
