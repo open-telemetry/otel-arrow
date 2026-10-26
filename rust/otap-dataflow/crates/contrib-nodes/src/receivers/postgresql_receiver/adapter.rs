@@ -206,6 +206,13 @@ impl DriverAdapter for PostgreSqlAdapter {
         )
     }
 
+    fn should_pause_source(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::SnapshotRowLimit { .. } | Error::SnapshotByteLimit { .. }
+        )
+    }
+
     async fn reconnect(&mut self, _: &CompiledQuery) -> Result<()> {
         let operation = self.operation.clone();
         match self.run(worker::Action::Reconnect, operation).await? {
@@ -227,10 +234,6 @@ impl DriverAdapter for PostgreSqlAdapter {
             .watermark()
             .validate_cursor(cursor)
             .map_err(|_| Error::Value)?;
-        let cursor = match cursor {
-            Cursor::Composite(cursor) => cursor,
-            Cursor::Snapshot | Cursor::Scalar(_) => return Err(Error::Config),
-        };
         let operation = self.operation.clone();
         match self
             .run(worker::Action::Execute(cursor.clone()), operation)
@@ -282,6 +285,8 @@ impl DriverAdapter for PostgreSqlAdapter {
             Error::Config
             | Error::Sql
             | Error::Metadata
+            | Error::SnapshotRowLimit { .. }
+            | Error::SnapshotByteLimit { .. }
             | Error::Credential
             | Error::TlsProvider
             | Error::TlsRoots
@@ -315,6 +320,10 @@ pub(crate) enum Error {
     Value,
     #[error("postgresql: protocol or memory limit exceeded")]
     Limit,
+    #[error("postgresql: complete snapshot exceeds query.max_rows_per_poll ({limit} rows)")]
+    SnapshotRowLimit { limit: usize },
+    #[error("postgresql: complete snapshot exceeds query.max_batch_bytes ({limit} bytes)")]
+    SnapshotByteLimit { limit: u64 },
     #[error("postgresql: credential provider unavailable, expired, or invalid")]
     Credential,
     #[error(

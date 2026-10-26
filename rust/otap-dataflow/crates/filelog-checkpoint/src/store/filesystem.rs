@@ -7,6 +7,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::BorrowedFd;
+use std::os::unix::fs::MetadataExt;
 
 use nix::dir::Dir;
 use nix::errno::Errno;
@@ -31,23 +32,11 @@ const REGULAR: OFlag = OFlag::O_RDWR
 
 /// Encodes the exact configured ID, with no normalization or case folding.
 pub(super) fn namespace_component(id: &str) -> Result<String, StoreError> {
-    if id.is_empty()
-        || id.len() > 127
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-    {
-        return Err(StoreError::InvalidConfig(
+    crate::namespace_component(id).map_err(|_| {
+        StoreError::InvalidConfig(
             "checkpoint ID must be 1..=127 ASCII alphanumeric, underscore, hyphen, or dot bytes",
-        ));
-    }
-    let mut component = String::with_capacity(id.len() * 2);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in id.bytes() {
-        component.push(char::from(HEX[usize::from(byte >> 4)]));
-        component.push(char::from(HEX[usize::from(byte & 15)]));
-    }
-    Ok(component)
+        )
+    })
 }
 
 /// Owned capability for an already provisioned checkpoint root.
@@ -196,6 +185,18 @@ impl Namespace {
     pub fn verify(&self, name: &str, file: &File) -> Result<(), StoreError> {
         self.verify_ancestry()?;
         verify_entry(&self.directory, name, file)
+    }
+
+    pub fn locator(&self) -> Result<crate::Locator, StoreError> {
+        self.verify_ancestry()?;
+        let metadata = self
+            .directory
+            .metadata()
+            .map_err(|error| io("query namespace identity", error))?;
+        Ok(crate::Locator::PosixDevIno {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
     }
 
     pub fn inventory(&self) -> Result<Inventory, StoreError> {

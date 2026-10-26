@@ -3,13 +3,18 @@
 
 use std::num::NonZeroUsize;
 
-use otel_arrow_dfe_config::ContextEntryName;
+use otel_arrow_dfe_config::{ContextEntryName, SignalType};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct Config {
     /// configuration for how to compute the partition
     pub partition_by: PartitionByConfig,
+
+    /// The signal type that will be partitioned. If this config value is present then only
+    /// batches containing signals of the configured type will be partitioned. Other batches
+    /// will be forwarded un-modified.
+    pub signal_type: Option<SignalType>,
 
     /// name of the transport header to which the partition value will be written
     pub partition_header_name: ContextEntryName,
@@ -114,6 +119,7 @@ mod test {
             config,
             Config {
                 partition_by: PartitionByConfig::OplExpression("name".to_string()),
+                signal_type: None,
                 partition_header_name: context_name("part.name"),
                 header_serialization_strategy: PartitionValueSerializeStrategy::ToBytesLossy {
                     text_as_binary_header: false,
@@ -122,6 +128,26 @@ mod test {
                 outbound_request_limit: NonZeroUsize::new(2048).unwrap(),
             }
         );
+    }
+
+    /// Scenario: Partition processor config includes each supported signal type.
+    /// Guarantees: `signal_type` deserializes to the corresponding `SignalType` variant.
+    #[test]
+    fn test_deserialize_with_signal_type_configured() {
+        for (config_sig_type, expected) in [
+            ("Logs", SignalType::Logs),
+            ("Traces", SignalType::Traces),
+            ("Metrics", SignalType::Metrics),
+        ] {
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "partition_by": { "opl_expression": "instrumentation_scope.name" },
+                "partition_header_name": "part.name",
+                "signal_type": config_sig_type,
+            }))
+            .unwrap();
+
+            assert_eq!(config.signal_type, Some(expected))
+        }
     }
 
     #[test]

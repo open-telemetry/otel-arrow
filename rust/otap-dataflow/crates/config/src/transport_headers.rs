@@ -230,7 +230,7 @@ impl PartialEq<&TransportHeader> for TransportHeaderRef<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PackedTransportHeaders {
     bytes: Box<[u8]>,
     count: usize,
@@ -243,7 +243,7 @@ pub(crate) struct CapturedTransportHeader<'name, 'value> {
     pub(crate) value: Cow<'value, [u8]>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TransportHeadersStorage {
     Owned(Vec<TransportHeader>),
     Packed(PackedTransportHeaders),
@@ -251,6 +251,25 @@ enum TransportHeadersStorage {
         base: Arc<TransportHeadersStorage>,
         appended: Vec<TransportHeader>,
     },
+}
+
+/// Shared transport-header data owned by a pdata context store.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportHeadersData {
+    storage: Arc<TransportHeadersStorage>,
+}
+
+/// Borrowed iteration over either mutable capture storage or packed pdata storage.
+#[doc(hidden)]
+pub trait TransportHeaderSource {
+    /// Iterator over borrowed headers.
+    type Iter<'a>: Iterator<Item = TransportHeaderRef<'a>>
+    where
+        Self: 'a;
+
+    /// Iterates over headers in capture order.
+    fn transport_headers(&self) -> Self::Iter<'_>;
 }
 
 impl TransportHeadersStorage {
@@ -452,6 +471,116 @@ impl TransportHeaders {
             name,
             index: 0,
         }
+    }
+
+    /// Converts this collection into shared context data.
+    ///
+    /// Owned capture storage is packed before entering pdata context. Existing
+    /// packed storage and append overlays retain their shared backing.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_data(self) -> Option<TransportHeadersData> {
+        let storage = self.storage?;
+        match storage.as_ref() {
+            TransportHeadersStorage::Owned(_) => pack_transport_headers(&storage),
+            TransportHeadersStorage::Packed(_) | TransportHeadersStorage::Overlay { .. } => {
+                Some(TransportHeadersData { storage })
+            }
+        }
+    }
+
+    /// Reconstructs a shared collection from context data.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_data(data: TransportHeadersData) -> Self {
+        Self {
+            storage: Some(data.storage),
+        }
+    }
+}
+
+fn pack_transport_headers(storage: &TransportHeadersStorage) -> Option<TransportHeadersData> {
+    let headers = TransportHeadersIter {
+        storage: Some(storage),
+        index: 0,
+    }
+    .map(TransportHeader::from)
+    .collect();
+    PackedTransportHeaders::build(headers).map(|packed| TransportHeadersData {
+        storage: Arc::new(TransportHeadersStorage::Packed(packed)),
+    })
+}
+
+impl TransportHeadersData {
+    /// Returns the number of headers.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    /// Returns whether no headers are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterates over headers in capture order.
+    #[must_use]
+    pub fn iter(&self) -> TransportHeadersIter<'_> {
+        TransportHeadersIter {
+            storage: Some(self.storage.as_ref()),
+            index: 0,
+        }
+    }
+
+    /// Returns the header at `index`.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<TransportHeaderRef<'_>> {
+        self.storage.as_ref().get(index)
+    }
+
+    /// Finds headers by exact stored name.
+    #[must_use]
+    pub fn find_by_name<'a>(&'a self, name: &'a str) -> TransportHeadersFindIter<'a> {
+        TransportHeadersFindIter {
+            storage: Some(self.storage.as_ref()),
+            name,
+            index: 0,
+        }
+    }
+
+    /// Reconstructs the public copy-on-write collection.
+    #[must_use]
+    pub fn to_transport_headers(&self) -> TransportHeaders {
+        TransportHeaders::from_data(self.clone())
+    }
+}
+
+impl TransportHeaderSource for TransportHeaders {
+    type Iter<'a> = TransportHeadersIter<'a>;
+
+    fn transport_headers(&self) -> Self::Iter<'_> {
+        self.iter()
+    }
+}
+
+impl TransportHeaderSource for TransportHeadersData {
+    type Iter<'a> = TransportHeadersIter<'a>;
+
+    fn transport_headers(&self) -> Self::Iter<'_> {
+        self.iter()
+    }
+}
+
+impl PartialEq<TransportHeaders> for TransportHeadersData {
+    fn eq(&self, other: &TransportHeaders) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl PartialEq<TransportHeadersData> for TransportHeaders {
+    fn eq(&self, other: &TransportHeadersData) -> bool {
+        other == self
     }
 }
 
@@ -1081,6 +1210,26 @@ mod tests {
         assert_eq!(changed.find_by_name("partition").count(), 2);
         let names: Vec<_> = changed.iter().map(|header| header.name.as_str()).collect();
         assert_eq!(names, ["tenant", "partition", "partition"]);
+    }
+
+    /// Scenario: packed pdata headers are reconstructed, appended, and stored again.
+    /// Guarantees: the pdata roundtrip retains the packed base instead of repacking all headers.
+    #[test]
+    fn pdata_roundtrip_preserves_append_overlay() {
+        let mut headers = TransportHeaders::new();
+        headers.replace(vec![header("tenant", "X-Tenant", b"acme")]);
+        let data = headers.into_data().expect("packed context data");
+        let packed_base = Arc::clone(&data.storage);
+        let mut changed = data.to_transport_headers();
+
+        changed.push(header("partition", "X-Partition", b"first"));
+        let changed = changed.into_data().expect("overlay context data");
+
+        let TransportHeadersStorage::Overlay { base, appended } = changed.storage.as_ref() else {
+            panic!("expected appended transport header overlay");
+        };
+        assert!(Arc::ptr_eq(base, &packed_base));
+        assert_eq!(appended.len(), 1);
     }
 
     /// Scenario: a collection with appended headers is cloned and mutated.

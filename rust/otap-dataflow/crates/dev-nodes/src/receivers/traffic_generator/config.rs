@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use otel_arrow_dfe_config::ContextEntryName;
 use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 

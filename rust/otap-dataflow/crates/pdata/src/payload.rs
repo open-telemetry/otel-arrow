@@ -388,8 +388,7 @@ impl TryFromWithOptions<OtlpProtoBytes> for OtapArrowRecords {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::otlp::BoundedBuf;
-    use crate::otlp::common::EncodeFailure;
+    use crate::otlp::{BoundedBuf, EncodeFailure};
     use crate::proto::consts::field_num::metrics::{METRIC_NAME, METRIC_UNIT};
     use crate::proto::opentelemetry::metrics::v1::{
         Gauge, NumberDataPoint, Sum, Summary, SummaryDataPoint, number_data_point::Value,

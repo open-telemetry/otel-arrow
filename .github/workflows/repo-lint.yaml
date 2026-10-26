@@ -67,6 +67,9 @@ jobs:
     - name: run sanitycheck.py unit tests
       run: python3 ./tools/test_sanitycheck.py
 
+    - name: run owner coverage unit tests
+      run: python3 .github/workflows/scripts/test_report_owner_coverage.py
+
   renovate-config-validation:
     runs-on: ubuntu-latest
 

@@ -19,7 +19,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.88.0"
+rust-version = "1.98.1"
 
 [package]
 name = "otel-arrow-dfe"
@@ -50,7 +50,6 @@ otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
-cfg-if.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -69,7 +68,7 @@ otel-arrow-dfe-core-nodes = { version = "0.62.0", path = "crates/core-nodes", de
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.62.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.62.0", path = "crates/expohisto" }
-otel-arrow-dfe-filelog-checkpoint = { path = "crates/filelog-checkpoint" }
+otel-arrow-dfe-filelog-checkpoint = { version = "0.62.0", path = "crates/filelog-checkpoint" }
 otel-arrow-dfe-otap = { version = "0.62.0", path = "crates/otap" }
 otel-arrow-dfe-wasm-guest-sdk = { path = "crates/wasm-guest-sdk", default-features = false }
 otel-arrow-dfe-scraper = { version = "0.62.0", path = "crates/scraper" }
@@ -109,7 +108,6 @@ bitflags = "2.10"
 bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
-cfg-if = "1.0.4"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
@@ -212,6 +210,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 semver = "1"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
+serde_path_to_error = "0.1.20"
 serde_json = { version = "1.0.149" }
 serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
@@ -263,13 +262,15 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["fast-rng", "v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+x509-parser = { version = "0.18.1", default-features = false }
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
+globset = "0.4.20"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=9.0.5"
 byte-unit = { version = "5.2.0", features = ["serde"] }
