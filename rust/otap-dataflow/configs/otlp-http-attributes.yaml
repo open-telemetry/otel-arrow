@@ -1,0 +1,49 @@
+# Capture explicitly selected HTTP headers and project them into resources.
+version: otel_dataflow/v1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: receiver:otlp
+            header_capture:
+              headers:
+                - match_names: [x-forwarded-host, x-azure-originalhost, host]
+            config:
+              protocols:
+                http:
+                  listening_addr: "127.0.0.1:4318"
+          attributes:
+            type: processor:attribute
+            config:
+              apply_to: [resource]
+              actions:
+                - action: insert
+                  key: server.address
+                  value:
+                    from_headers: [x-forwarded-host, x-azure-originalhost, host]
+                    transform: authority_host
+                    # First is the default; select last only for a trusted appending proxy.
+                    selection: first
+                - action: insert
+                  key: http.host
+                  value:
+                    from_headers: [x-forwarded-host, x-azure-originalhost, host]
+                    transform: authority_host
+                    selection: first
+          debug:
+            type: processor:debug
+            config:
+              verbosity: detailed
+              mode: batch
+          noop:
+            type: exporter:noop
+            config: {}
+        connections:
+          - from: receiver
+            to: attributes
+          - from: attributes
+            to: debug
+          - from: debug
+            to: noop
