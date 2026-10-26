@@ -64,6 +64,7 @@ otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true 
 otel-arrow-contrib-data-engine-recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
 tokio-util = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -101,7 +102,10 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 # which is not a valid Win32 executable (os error 193).
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
-windows-sys = { workspace = true, optional = true, features = ["Win32_System_Performance"] }
+windows-sys = { workspace = true, optional = true, features = [
+    "Win32_Globalization",
+    "Win32_System_Performance",
+] }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -199,6 +203,8 @@ windows-event-forwarding = [
     "dep:url",
     "dep:humantime-serde",
     "dep:x509-parser",
+    "dep:rustls",
+    "dep:tokio-rustls",
 ]
 user-events = [
     "dep:base64",

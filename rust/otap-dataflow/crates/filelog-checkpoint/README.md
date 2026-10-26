@@ -1,5 +1,10 @@
 # Filelog checkpoint codec, replay, and Linux store
 
+> **Experimental: not ready for production use.** This crate supports the
+> Filelog receiver, which is still under development. Its Rust API and checkpoint
+> format may change. Publishing this crate does not make the receiver available
+> or freeze the checkpoint format.
+
 `otel-arrow-dfe-filelog-checkpoint` defines the durable checkpoint format used
 by the Filelog receiver.
 
