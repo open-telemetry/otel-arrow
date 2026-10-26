@@ -24,6 +24,9 @@ example:
   defining context entries though its `store_as` verb.
 - Network information such as source address can be placed into
   context entries using network configuration, and so on.
+- Randomness and constant entries are defined inline in composite
+  entries. Their values are generated or set when a new context is
+  created, not captured from a request.
 
 For users with multitenancy requirements, we introduce a form of
 **composite context entry** capable of binding multiple context
@@ -124,6 +127,8 @@ I have the desires as A/B/C/G, in addition I may wish to:
 While some of these partitioning steps are orthogonal from context, the
 partition function creates a new context for each output and preserves
 only its explicitly selected context entries from the input context.
+Randomness entries that are not selected are generated fresh for each
+output.
 
 ## Configuration model
 
@@ -252,19 +257,24 @@ policies:
     entries:
       correlation:              # Named context entry
         - type: randomness
-          name: id              # Composite member name
+          name: id              # Randomness entry name
           value: uuid7
 ```
 
 The randomness `value` selects a generator rather than containing generated
-data. The initial supported generator is `uuid7`. Randomness members have
-configured member names but no source domain or original wire name. They add
-no presence requirement, so referenced fields and conditions still determine
-whether the composite entry is present.
+data. The initial supported generator is `uuid7`. Randomness entries have no
+original wire name.
 
-Each selected random value is generated once when its context is materialized
-and retained for that context's lifetime. Materialized values are preserved
-by context clones together with the associated declarations.
+Randomness is a primitive domain. A `type: randomness` part defines a
+randomness entry under its `name` and makes it a member of the composite.
+Entries are identified by domain and name, so composites that list the same
+randomness name share one generated value. Use distinct names for independent
+values.
+
+A randomness value is generated when a new context is created and retained for
+that context's lifetime. Context clones share it, and context transfers carry
+it without generating a new value (see [Context
+materialization](#context-materialization)).
 
 A `constant` entry is defined,
 
@@ -274,33 +284,48 @@ policies:
     entries:
       routename:                # Named context entry
         - type: constant
-          name: route_name      # Composite member name
+          name: route_name      # Constant entry name
           value: otlp-http-json
 ```
 
 Constant values are UTF-8 strings supplied directly by configuration. They
-have configured member names but no source domain or original wire name.
-Constants are always available, so only referenced fields and conditions
-determine whether a composite entry is present. Configuration values are not
-secret storage and must not contain credentials or other sensitive data.
-Selected constants are copied into the materialized context when the enclosing
-composite is present.
+have no original wire name. Configuration values are not secret storage and
+must not contain credentials or other sensitive data.
+
+Constant is also a primitive domain. A `type: constant` part defines a
+constant entry under its `name` and makes it a member of the composite.
+Definitions that use the same name with the same value define one entry.
+When definitions use the same name with different values, the unqualified
+name is ambiguous, and references must use the qualified `composite:member`
+form.
+
+In a new context, randomness and constant entries are always present, so
+only the other fields and conditions determine whether a composite entry is
+present. After a context transfer, they are present only when carried.
 
 #### Context materialization
 
-Materialization is performed through materialization bindings. At
-least two different forms of new context are provided:
+Context is produced by three kinds of bindings:
 
-- Receiver bindings build new context in stages, gathering transport
-  headers authorized identity, and network-info fields before
-  constructing the new context object. The context is materialized
-  (e.g., randomness generated) while creating the new context.
-- Processorbindings build new context by projecting the input contexts
-  into output contexts. The binding first projects one or more input
-  contexts, then materializes a single new output context.
+- **New-context bindings** create a new context. They capture the
+  source domains and generate or set the randomness and constant
+  entries the pipeline references.
+  - Receiver bindings build new context in stages, gathering transport
+    headers, authorized identity, and network-info fields before
+    constructing the new context object.
+  - Processor bindings build new context by projecting the input
+    contexts into output contexts. The binding first projects one or
+    more input contexts, then creates a single new output context.
+- **Transfer bindings** carry entries of every domain, including
+  randomness and constants, across a topic or durable storage
+  boundary. They never generate or set values. See [RFC
+  0006](./0006-transport-header-propagation.md#context-transfer).
+- **Context clones** within a pipeline share the existing context.
 
-Materialization resolves qualified composite context enties from the
-finalized primitive context entries.
+Materialization evaluates composite context entries from the finalized
+primitive context entries. Because composite evaluation only reads
+primitive entries, re-evaluating a composite after a transfer never
+generates a new random value.
 
 #### Composite context entry dimensions
 
@@ -579,6 +604,9 @@ groups:
                       min_size: 1000
                       sizer: items
 ```
+
+Each batch output is a new context. It preserves `xyz` as the partition key
+and generates a fresh `id`, so `delivery` identifies each output batch.
 
 ### Pdata context sinks
 
