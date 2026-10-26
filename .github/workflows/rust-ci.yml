@@ -536,13 +536,20 @@ jobs:
       - name: Free disk space
         run: |
           df -h /tmp "$GITHUB_WORKSPACE"
-          # These jobs do not use Conda environments or Homebrew packages.
-          for directory in /usr/share/miniconda /home/linuxbrew; do
+          if [ -d /mnt ]; then
+            df -h /mnt
+          fi
+          # Measure the tool cache, but retain language runtimes used by build tools.
+          if [ -d /opt/hostedtoolcache ]; then
+            sudo du -h --max-depth=1 /opt/hostedtoolcache
+          fi
+          # These jobs do not use CodeQL, Conda environments, or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL; do
             if [ -d "$directory" ]; then
               sudo du -sh "$directory"
             fi
           done
-          sudo rm -rf /usr/share/miniconda /home/linuxbrew
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
@@ -648,13 +655,20 @@ jobs:
       - name: Free disk space
         run: |
           df -h /tmp "$GITHUB_WORKSPACE"
-          # These jobs do not use Conda environments or Homebrew packages.
-          for directory in /usr/share/miniconda /home/linuxbrew; do
+          if [ -d /mnt ]; then
+            df -h /mnt
+          fi
+          # Measure the tool cache, but retain language runtimes used by build tools.
+          if [ -d /opt/hostedtoolcache ]; then
+            sudo du -h --max-depth=1 /opt/hostedtoolcache
+          fi
+          # These jobs do not use CodeQL, Conda environments, or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL; do
             if [ -d "$directory" ]; then
               sudo du -sh "$directory"
             fi
           done
-          sudo rm -rf /usr/share/miniconda /home/linuxbrew
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
