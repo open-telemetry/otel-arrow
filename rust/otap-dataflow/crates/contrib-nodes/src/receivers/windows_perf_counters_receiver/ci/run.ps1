@@ -3,7 +3,8 @@ $ErrorActionPreference = "Stop"
 Push-Location "rust\otap-dataflow"
 try {
     foreach ($filter in @(
-        "windows_perf_counters_receiver::pdh::tests::live::"
+        "windows_perf_counters_receiver::pdh::tests::live::",
+        "windows_perf_counters_receiver::runtime::tests::live_"
     )) {
         $output = cargo test --locked `
             -p otel-arrow-dfe-contrib-nodes `
