@@ -28,7 +28,7 @@ use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{Datelike, Local};
+use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata_codec::{
@@ -88,6 +88,19 @@ fn predicted_frame_capacity(max_items: usize, message_len: usize) -> usize {
         .saturating_add(message_len)
         .saturating_mul(max_items.max(1))
         .min(MAX_PREDICTED_BATCH_CAPACITY - BATCH_HEADER_LEN - RUN_HEADER_LEN)
+}
+
+// Chrono's Local offset is a FixedOffset, strictly less than 24 hours from UTC.
+// On UTC days 2..=364, no supported offset can cross a year boundary. Resolve
+// days 1 and 365/366 through the timezone (including December 30 in leap years).
+// This caches neither timestamps nor offsets and handles each clock sample
+// independently, including wall-clock corrections and local timezone changes.
+fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
+    if (2..365).contains(&now.ordinal()) {
+        now.year()
+    } else {
+        now.with_timezone(timezone).year()
+    }
 }
 
 /// Accumulates framed syslog messages without parsing them.
@@ -177,7 +190,7 @@ impl SyslogBatchBuilder {
 
     /// Copies a socket-backed message and captures its local receipt year.
     pub(super) fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
-        self.append_with_year(message, Local::now().year())
+        self.append_with_year(message, receipt_local_year(Utc::now(), &Local))
     }
 
     // Keep the clock at the admission boundary; decoding must never infer the
@@ -1296,6 +1309,57 @@ mod tests {
             assert!(
                 max_timer_lateness < Duration::from_millis(50),
                 "{name}: {max_timer_lateness:?}"
+            );
+        }
+    }
+
+    /// Scenario: Receipt-year inference runs on every UTC calendar day in ordinary and leap years.
+    /// Guarantees: The shortcut matches explicit timezone conversion, including near-24-hour offsets and both sides of midnight.
+    #[test]
+    fn receipt_year_matches_timezone_across_calendar() {
+        use chrono::{FixedOffset, TimeDelta};
+
+        for year in [1900, 2000, 2023, 2024] {
+            let mut day = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).single().unwrap();
+            while day.year() == year {
+                for seconds in [0, 86_399] {
+                    let now = day + TimeDelta::seconds(seconds);
+                    for offset in [-86_399, -43_200, -18_000, 0, 19_800, 50_400, 86_399] {
+                        let timezone = FixedOffset::east_opt(offset).unwrap();
+                        assert_eq!(
+                            receipt_local_year(now, &timezone),
+                            now.with_timezone(&timezone).year(),
+                            "{now}, offset {offset}"
+                        );
+                    }
+                }
+                day += TimeDelta::days(1);
+            }
+        }
+    }
+
+    /// Scenario: Clock samples move across New Year and then backward while the timezone changes.
+    /// Guarantees: Receipt years use each supplied instant and timezone, never a stale batch year or cached offset.
+    #[test]
+    fn receipt_year_preserves_boundary_and_clock_changes() {
+        use chrono::FixedOffset;
+
+        for (year, month, day, hour, offset, expected) in [
+            (2024, 1, 1, 0, -1, 2023),
+            (2024, 12, 31, 23, 3_600, 2025),
+            (2023, 1, 1, 0, -1, 2022),
+            (2024, 1, 1, 0, 3_600, 2024),
+            (2024, 12, 31, 23, -3_600, 2024),
+            (2023, 12, 31, 23, 3_600, 2024),
+            (2024, 12, 30, 23, 86_399, 2024),
+        ] {
+            let now = Utc
+                .with_ymd_and_hms(year, month, day, hour, 0, 0)
+                .single()
+                .unwrap();
+            assert_eq!(
+                receipt_local_year(now, &FixedOffset::east_opt(offset).unwrap()),
+                expected
             );
         }
     }
