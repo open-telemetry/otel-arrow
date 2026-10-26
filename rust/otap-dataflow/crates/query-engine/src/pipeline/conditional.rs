@@ -554,7 +554,6 @@ impl PipelineStage for ConditionalPipelineStage {
 
                 let eval_ctx = EvalContext::new_for_metrics_data_points(dp_type, session_ctx);
                 let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
-                println!("predicate_result = {:#?}", predicate_result);
 
                 match predicate_result {
                     None => {
@@ -580,8 +579,6 @@ impl PipelineStage for ConditionalPipelineStage {
                                 &eval_ctx,
                             )?
                         }
-
-                        println!("aligned_vec = {:#?}", scoped_value.values);
 
                         let predicate_selection_vec =
                             scoped_value_to_boolean_array(scoped_value.values, num_dp_rows)?;
