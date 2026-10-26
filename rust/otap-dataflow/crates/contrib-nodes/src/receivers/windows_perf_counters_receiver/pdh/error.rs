@@ -95,6 +95,8 @@ pub(in super::super) enum Error {
     Calculation { path: String, message: String },
     #[error("counter scaling for {path} failed: {source}")]
     Scale { path: String, source: ScaleError },
+    #[error("failed to start PDH worker thread: {0}")]
+    WorkerStart(String),
     #[error("wildcard lookup cleanup for {path} failed: {message}")]
     WildcardCleanup {
         path: String,
@@ -105,11 +107,34 @@ pub(in super::super) enum Error {
     WorkerObjectRefresh { stage: &'static str, status: u32 },
     #[error("PDH worker stop was requested")]
     WorkerStopRequested,
+    #[error("a performance-counter collection request is already pending")]
+    WorkerBusy,
+    #[error("PDH worker stopped unexpectedly")]
+    WorkerStopped,
+    #[error("PDH worker thread panicked")]
+    WorkerPanicked,
+    #[error("PDH query recovery is deferred for another {retry_after_ms} ms")]
+    QueryRecoveryPending { retry_after_ms: u128 },
 }
 
 impl Error {
     pub(super) fn is_stop(&self) -> bool {
-        matches!(self, Self::WorkerStopRequested)
+        matches!(self, Self::WorkerStopRequested | Self::WorkerStopped)
+    }
+
+    pub(in super::super) fn is_collection_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Pdh { .. }
+                | Self::CounterData { .. }
+                | Self::UnsupportedType(_)
+                | Self::CounterSetup { .. }
+                | Self::InvalidCounterToken { .. }
+                | Self::Calculation { .. }
+                | Self::Scale { .. }
+                | Self::QueryRecoveryPending { .. }
+                | Self::Timestamp(_)
+        )
     }
 
     pub(super) fn is_query_collection_failure(&self) -> bool {
@@ -117,6 +142,17 @@ impl Error {
             self,
             Self::Pdh {
                 operation: PdhOperation::CollectQueryData,
+                ..
+            }
+        )
+    }
+
+    pub(in super::super) fn is_invalid_query(&self) -> bool {
+        matches!(
+            self,
+            Self::Pdh {
+                operation: PdhOperation::CollectQueryData,
+                status: PDH_INVALID_HANDLE,
                 ..
             }
         )
@@ -130,6 +166,16 @@ impl Error {
                 ..
             }
         )
+    }
+
+    pub(super) fn is_recoverable_query_open_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Pdh {
+                operation: PdhOperation::OpenQuery,
+                ..
+            }
+        ) || self.requires_immediate_query_rebuild()
     }
 
     pub(super) fn is_invalid_counter_handle_read(&self) -> bool {
@@ -157,9 +203,14 @@ impl Error {
             Self::NoUsableCounters { .. } => "no_usable_counters",
             Self::Calculation { .. } => "calculation",
             Self::Scale { .. } => "scale",
+            Self::WorkerStart(_) => "worker_start",
             Self::WildcardCleanup { .. } => "wildcard_lookup_cleanup",
             Self::WorkerObjectRefresh { .. } => "worker_object_refresh",
             Self::WorkerStopRequested => "worker_stop_requested",
+            Self::WorkerBusy => "worker_busy",
+            Self::WorkerStopped => "worker_stopped",
+            Self::WorkerPanicked => "worker_panicked",
+            Self::QueryRecoveryPending { .. } => "query_recovery_pending",
         }
     }
 

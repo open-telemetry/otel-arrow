@@ -10,6 +10,13 @@ use arrow::util::display::array_value_to_string;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric;
 
+fn into_otap(
+    counters: &[CounterConfig],
+    sample: Sample,
+) -> Result<Option<OtapArrowRecords>, ArrowError> {
+    project_sample(counters, &sample).map_err(|error| error.0)
+}
+
 fn counter(path: &str, name: &str, unit: &str) -> CounterConfig {
     CounterConfig {
         path: path.to_owned(),
