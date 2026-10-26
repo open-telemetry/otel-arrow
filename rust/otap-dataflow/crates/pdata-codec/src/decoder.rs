@@ -162,6 +162,11 @@ impl DecodeBudget {
 /// them across suspension in `Send` caller futures. This excludes local-only
 /// state such as [`std::rc::Rc`], even when used by a local pipeline. The bound
 /// does not offload decoding: each step runs synchronously in its calling task.
+///
+/// TODO: If a future codec needs per-record rejection, introduce an explicit
+/// partial-success result with rejection accounting and delivery semantics.
+/// Until then, any decode error fails the entire batch; framing corruption must
+/// not be silently treated as a rejected record.
 pub trait PdataDecodeJob: Send {
     /// Performs one bounded portion of work, or finalizes the single output batch.
     fn step(&mut self, budget: DecodeBudget) -> Result<Option<OtapArrowRecords>, CodecError>;

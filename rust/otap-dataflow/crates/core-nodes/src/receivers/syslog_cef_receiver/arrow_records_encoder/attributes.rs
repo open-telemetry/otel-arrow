@@ -8,84 +8,58 @@ use otel_arrow_dfe_pdata::encode::record::attributes::{
     KnownKey, KnownKeyArrayBuilder, StrKeysAttributesRecordBatchBuilder,
 };
 
-/// Slots for the fixed syslog and CEF-header vocabulary; extensions use strings.
-/// Discriminants index the ID cache, not the Arrow dictionary: dictionary IDs
-/// follow the order in which keys first occur within each batch.
-#[derive(Clone, Copy)]
-pub(crate) enum KnownAttributeKey {
-    Facility,
-    Severity,
-    HostName,
-    Version,
-    AppName,
-    ProcessId,
-    ProcessIdStr,
-    MessageId,
-    StructuredData,
-    Message,
-    Tag,
-    Content,
-    CefVersion,
-    CefDeviceVendor,
-    CefDeviceProduct,
-    CefDeviceVersion,
-    CefEventClassId,
-    CefName,
-    CefSeverity,
-    InputFormat,
-}
-
-impl KnownAttributeKey {
-    const COUNT: usize = Self::InputFormat as usize + 1;
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Facility => "syslog.facility",
-            Self::Severity => "syslog.severity",
-            Self::HostName => "syslog.host_name",
-            Self::Version => "syslog.version",
-            Self::AppName => "syslog.app_name",
-            Self::ProcessId => "syslog.process_id",
-            Self::ProcessIdStr => "syslog.process_id_str",
-            Self::MessageId => "syslog.msg_id",
-            Self::StructuredData => "syslog.structured_data",
-            Self::Message => "syslog.message",
-            Self::Tag => "syslog.tag",
-            Self::Content => "syslog.content",
-            Self::CefVersion => "cef.version",
-            Self::CefDeviceVendor => "cef.device_vendor",
-            Self::CefDeviceProduct => "cef.device_product",
-            Self::CefDeviceVersion => "cef.device_version",
-            Self::CefEventClassId => "cef.device_event_class_id",
-            Self::CefName => "cef.name",
-            Self::CefSeverity => "cef.severity",
-            Self::InputFormat => "input.format",
+// Generate the enum, names, and test enumeration together so reordering or
+// adding a variant cannot separate its vocabulary slot from its attribute name.
+macro_rules! define_known_attribute_keys {
+    ($($variant:ident => $name:literal),+ $(,)?) => {
+        /// Slots for the fixed syslog and CEF-header vocabulary; extensions use strings.
+        /// These are vocabulary positions, not batch-local Arrow dictionary IDs.
+        #[derive(Clone, Copy)]
+        pub(crate) enum KnownAttributeKey {
+            $($variant),+
         }
-    }
+
+        impl KnownAttributeKey {
+            const COUNT: usize = [$($name),+].len();
+
+            #[cfg(test)]
+            const ALL: [Self; Self::COUNT] = [$(Self::$variant),+];
+
+            pub(crate) const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),+
+                }
+            }
+        }
+
+        const NAMES: [&str; KnownAttributeKey::COUNT] = [
+            $(KnownAttributeKey::$variant.as_str()),+
+        ];
+    };
 }
 
-const NAMES: [&str; KnownAttributeKey::COUNT] = [
-    KnownAttributeKey::Facility.as_str(),
-    KnownAttributeKey::Severity.as_str(),
-    KnownAttributeKey::HostName.as_str(),
-    KnownAttributeKey::Version.as_str(),
-    KnownAttributeKey::AppName.as_str(),
-    KnownAttributeKey::ProcessId.as_str(),
-    KnownAttributeKey::ProcessIdStr.as_str(),
-    KnownAttributeKey::MessageId.as_str(),
-    KnownAttributeKey::StructuredData.as_str(),
-    KnownAttributeKey::Message.as_str(),
-    KnownAttributeKey::Tag.as_str(),
-    KnownAttributeKey::Content.as_str(),
-    KnownAttributeKey::CefVersion.as_str(),
-    KnownAttributeKey::CefDeviceVendor.as_str(),
-    KnownAttributeKey::CefDeviceProduct.as_str(),
-    KnownAttributeKey::CefDeviceVersion.as_str(),
-    KnownAttributeKey::CefEventClassId.as_str(),
-    KnownAttributeKey::CefName.as_str(),
-    KnownAttributeKey::CefSeverity.as_str(),
-    KnownAttributeKey::InputFormat.as_str(),
-];
+define_known_attribute_keys! {
+    Facility => "syslog.facility",
+    Severity => "syslog.severity",
+    HostName => "syslog.host_name",
+    Version => "syslog.version",
+    AppName => "syslog.app_name",
+    ProcessId => "syslog.process_id",
+    ProcessIdStr => "syslog.process_id_str",
+    MessageId => "syslog.msg_id",
+    StructuredData => "syslog.structured_data",
+    Message => "syslog.message",
+    Tag => "syslog.tag",
+    Content => "syslog.content",
+    CefVersion => "cef.version",
+    CefDeviceVendor => "cef.device_vendor",
+    CefDeviceProduct => "cef.device_product",
+    CefDeviceVersion => "cef.device_version",
+    CefEventClassId => "cef.device_event_class_id",
+    CefName => "cef.name",
+    CefSeverity => "cef.severity",
+    InputFormat => "input.format",
+}
 
 const SLOTS: [KnownKey<{ KnownAttributeKey::COUNT }>; KnownAttributeKey::COUNT] = KnownKey::slots();
 
@@ -107,7 +81,7 @@ pub(super) fn new_builder() -> SyslogAttributesBuilder {
 mod tests {
     use super::*;
 
-    /// Scenario: Mixed fixed and dynamic attributes use repeated parents and string, integer, and empty values.
+    /// Scenario: Every fixed vocabulary slot is mixed with dynamic names, repeated parents, and varied values.
     /// Guarantees: Complete attribute records retain exact fields, encoding metadata, row order, and values.
     #[test]
     fn syslog_attributes_match_general_builder() {
@@ -115,10 +89,12 @@ mod tests {
             let mut actual = new_builder();
             let mut expected = StrKeysAttributesRecordBatchBuilder::<u16>::new();
             for parent in 0..rows {
-                actual.append_known_key(KnownAttributeKey::Facility);
-                expected.append_key(KnownAttributeKey::Facility.as_str());
-                actual.any_values_builder.append_int(i64::from(parent));
-                expected.any_values_builder.append_int(i64::from(parent));
+                for key in KnownAttributeKey::ALL {
+                    actual.append_known_key(key);
+                    expected.append_key(key.as_str());
+                    actual.any_values_builder.append_int(i64::from(parent));
+                    expected.any_values_builder.append_int(i64::from(parent));
+                }
                 actual.append_key("dynamic");
                 expected.append_key("dynamic");
                 actual.any_values_builder.append_str(b"value");
@@ -127,8 +103,8 @@ mod tests {
                 expected.append_key(KnownAttributeKey::InputFormat.as_str());
                 actual.any_values_builder.append_empty();
                 expected.any_values_builder.append_empty();
-                actual.append_parent_id_n(&parent, 3);
-                expected.append_parent_id_n(&parent, 3);
+                actual.append_parent_id_n(&parent, KnownAttributeKey::COUNT + 2);
+                expected.append_parent_id_n(&parent, KnownAttributeKey::COUNT + 2);
             }
             assert_eq!(actual.finish().unwrap(), expected.finish().unwrap());
         }
