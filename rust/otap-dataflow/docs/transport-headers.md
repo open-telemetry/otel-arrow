@@ -15,6 +15,16 @@ The feature is entirely **opt-in**. When no transport header policy is
 configured, no headers are captured or forwarded and there is zero
 runtime overhead.
 
+### Attribute enrichment
+
+Captured headers can be projected into telemetry by
+[`processor:attribute`](../crates/core-nodes/src/processors/attributes_processor/README.md)
+using ordered `from_headers` sources and an optional `authority_host` transform.
+These actions read stored context names, including any `store_as` aliases;
+they do not capture additional headers or change outbound propagation policy.
+See the [HTTP enrichment pipeline](../configs/otlp-http-attributes.yaml) for an
+explicit capture policy and resource enrichment example.
+
 ## Configuration Scope
 
 The transport header policy can be set at multiple levels of the
@@ -125,8 +135,24 @@ Each entry in `headers` is a capture rule. A header is captured
 when its wire name matches any entry in `match_names`
 (case-insensitive).
 
+Use one rule with multiple `match_names` when the names share the same capture
+settings:
+
+```yaml
+header_capture:
+  headers:
+    - match_names: [x-forwarded-host, x-azure-originalhost, host]
+```
+
+Without `store_as`, these aliases remain separately named captured headers, so
+a processor can prefer them in its configured source-name order. Use separate
+rules when names need different options, such as `sensitive`, `value_kind`, or
+`store_as`.
+
 - `match_names` (required): wire header names to match
-  (case-insensitive). Their configured spelling is preserved.
+  (case-insensitive). Multiple names can share one capture rule and its
+  settings. Without `store_as`, each captured name is stored under its own
+  lowercase name; with `store_as`, all matched names use that stored name.
 - `store_as` (optional): stored context name used for policy matching.
   Its configured spelling is preserved. When omitted, the matched
   configured wire name is lowercased during policy compilation.
