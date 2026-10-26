@@ -357,7 +357,9 @@ impl Reconciler {
     /// On success, successor publication, tracked state and acknowledgement change
     /// together. An existing ID reconnects its own state without a new tracked slot.
     /// The callback returns its monotonic completion time, or None to defer with no
-    /// state changes. Ambiguous durable writes must stop the owner, never return None.
+    /// state changes and a running durable owner. Stopped owners and ambiguous
+    /// writes must stop the caller, never return None; use [`Self::admit_batch`]
+    /// when the durable callback needs to propagate an error.
     pub fn admit(
         &mut self,
         token: OfferToken,

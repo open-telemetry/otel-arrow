@@ -324,3 +324,63 @@ fn duplicate_group_members_fail_preflight() {
     ));
     assert_eq!(r.tracked.len(), 0);
 }
+
+/// Scenario: A rotation successor is replaced at the same locator after its reader retires.
+/// Guarantees: Failed commits preserve predecessor links; successful replacement keeps later passes free of spurious pending rebounds.
+#[test]
+fn same_locator_replacement_preserves_rotation_successors() {
+    for outcome in 0..3 {
+        let mut r = reconciler(2);
+        r.track(file(1, 1, "/app", false)).unwrap();
+        begin(&mut r, 1);
+        observe(&mut r, 1, "/archive", false);
+        observe(&mut r, 2, "/app", false);
+        assert!(finish(&mut r).complete);
+        assert!(
+            r.admit(token(&r, 2), file(2, 2, "/app", false), |_| {
+                Some(Duration::from_secs(12))
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            r.tracked[&TrackedId(1)].successor,
+            Some((TrackedId(2), locator(2)))
+        );
+
+        begin(&mut r, 2);
+        observe(&mut r, 1, "/archive", false);
+        observe(&mut r, 2, "/app", false);
+        assert!(finish(&mut r).complete);
+        assert_eq!(r.rebounds().count(), 0);
+        let change = AdmissionChange {
+            token: token(&r, 2),
+            file: file(3, 2, "/app", false),
+            replace_id: Some(TrackedId(2)),
+        };
+        let result = r.admit_batch(vec![change], |_| match outcome {
+            0 => Ok(None),
+            1 => Err(std::io::Error::other("commit failed")),
+            _ => Ok(Some(Duration::from_secs(22))),
+        });
+        match outcome {
+            0 => assert!(!result.unwrap()),
+            1 => assert!(matches!(result, Err(AdmissionError::Commit(_)))),
+            _ => assert!(result.unwrap()),
+        }
+        let expected = if outcome == 2 {
+            TrackedId(3)
+        } else {
+            TrackedId(2)
+        };
+        assert_eq!(r.tracked.len(), 2);
+        assert_eq!(
+            r.tracked[&TrackedId(1)].successor,
+            Some((expected, locator(2)))
+        );
+        begin(&mut r, 3);
+        observe(&mut r, 1, "/archive", false);
+        observe(&mut r, 2, "/app", false);
+        assert!(finish(&mut r).complete);
+        assert_eq!(r.rebounds().count(), 0);
+    }
+}

@@ -366,8 +366,10 @@ its offers. Deferral or callback failure leaves the old views intact. Same-locat
 replacement carries directory baselines forward while discarding the retired
 identity's successor state. Incoming IDs must remain lifetime-unique.
 
-The callback returns `Ok(None)` only when nothing was written. A recoverable
-pending checkpoint write must be resolved inside the callback before returning
+The callback returns `Ok(None)` only when nothing was written and the durable
+owner remains running. A stopped owner must return an error, including required
+writes rejected by `CompactionRequired`; discovery must not continue against it.
+A recoverable pending checkpoint write must resolve inside the callback before
 success. On an uncertain terminal error or panic, terminate this owner instead
 of starting another pass against its old views. The generic commit error is
 returned to the lifecycle owner so it can preserve the underlying failure.

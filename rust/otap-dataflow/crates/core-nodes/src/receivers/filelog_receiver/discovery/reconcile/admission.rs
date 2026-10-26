@@ -41,7 +41,8 @@ impl Reconciler {
     /// Preflight every member, commit the exact group, then publish all members.
     /// [`Self::admit`] delegates here for one admission without identity retirement.
     /// The exclusive borrow freezes offers and bindings throughout the callback.
-    /// None means known-no-write deferral. A recoverable pending write must be
+    /// None means known-no-write deferral with the durable owner still running.
+    /// A stopped durable owner must return an error. A recoverable pending write must be
     /// resolved inside the callback; an uncertain terminal error requires stopping
     /// this reconciler. Callback panic must also terminate its owner.
     ///
@@ -200,8 +201,8 @@ impl Reconciler {
         drop(paths);
 
         // No fallible protocol validation remains after durable success.
-        for id in retired {
-            let _ = self.untrack(id).expect("preflighted retirement");
+        for id in &retired {
+            let _ = self.untrack(*id).expect("preflighted retirement");
         }
         for (change, publication) in changes.iter_mut().zip(&publications) {
             let file = TrackedFile {
@@ -220,6 +221,24 @@ impl Reconciler {
                 let new = self.tracked.get_mut(&id).expect("inserted admission");
                 new.parent = publication.parent;
                 new.parent_changed = publication.parent_changed;
+            }
+        }
+        // Existing rotation predecessors memoize the live successor's ID and
+        // locator. Identity replacement changes only that ID. Retarget those
+        // links after successful publication so later scans keep rebounds resolved.
+        // Scan once per replacement group; ordinary admissions need no extra scan.
+        if !retired.is_empty() {
+            for tracked in self.tracked.values_mut() {
+                if let Some((id, locator)) = tracked.successor
+                    && retired.contains(&id)
+                {
+                    let replacement = changes
+                        .iter()
+                        .find(|change| change.replace_id == Some(id))
+                        .expect("preflighted retirement");
+                    debug_assert_eq!(locator, replacement.file.locator);
+                    tracked.successor = Some((replacement.file.id, locator));
+                }
             }
         }
         for (change, publication) in changes.iter().zip(publications) {
