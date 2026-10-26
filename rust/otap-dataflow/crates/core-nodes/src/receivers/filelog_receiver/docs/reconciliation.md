@@ -24,42 +24,93 @@ Bounded channels connect them; there is no thread per file. Worker creation,
 timers and receiver registration are separate integration work. See the
 [receiver architecture][architecture].
 
+## Terms used in this guide
+
+| Term | Meaning |
+| --- | --- |
+| Locator | The filesystem identifier used to match observations to files. A matching locator alone does not prove that a file is safe to resume. |
+| Tracked ID | A record's runtime ID. It must remain unique for the reconciler's lifetime, even after the record is removed. |
+| Binding | The main path remembered for a tracked file. |
+| Alias | Another path observed for the same locator. |
+| Rebound | A binding now points to a different locator. The identity owner must resolve this replacement evidence. |
+| Offer | A candidate selected for the identity owner to check. An offer does not authorize a new identity or transfer reading progress. |
+| Publication | Committing a new identity or changing a record's binding after the required checks. |
+| Superseded | A record whose Live ownership has been replaced. It may still reconnect in its existing role. |
+
+### Example: a rotated log
+
+Suppose `app.log` is renamed to `app.log.1`, and a new file is created at
+`app.log`.
+
+1. The scanner observes the old file at `app.log.1` and the new file at
+   `app.log`.
+2. The reconciler matches the old locator to its tracked record and records
+   `app.log.1` as an alias. Its remembered binding, `app.log`, now points to a
+   different locator, so the reconciler reports a rebound once that target is
+   qualified.
+3. The identity owner checks the offered files and resolves the rebound. The
+   new file never inherits the old file's reading progress.
+4. Publishing a different binding for the old record requires a complete pass
+   and resolved rebound feedback. Reconnecting the old file can happen earlier
+   when fresh evidence permits it.
+
+The sections below define the checks behind those steps, including what happens
+when a scan is incomplete or a directory changes.
+
 ## Drive one pass
 
-Use one owner and never overlap passes.
+Use one owner and never overlap passes. Each pass has three stages.
 
-1. Register `TrackedFile` views. Each `TrackedId` is unique for this reconciler's
-   lifetime, even after removal; do not derive it from a path or locator.
+### 1. Collect observations
+
+1. Register `TrackedFile` views. Give each record a unique `TrackedId`. Do not
+   derive it from a path or locator, or reuse it after removal.
 2. Call `begin` with an increasing generation, monotonic time and a selection
    seed. The reconciler mixes the generation into the seed.
-3. Feed every scanner observation to `observe` in order. Process its evidence
-   synchronously before the next observation.
-4. After traversal, create one `Scanner::binding_batch`, even with no queued
-   checks. Apply a root-refresh error with `apply_binding_batch_error` or abort;
-   never discard it because the queue is empty. For a successful batch, repeat
-   `next_binding_check` -> `binding_request` -> `batch.check` ->
-   `apply_binding_check`. Results borrow scanner storage, so no path copy is
-   needed. If `check` rejects a request, call `skip_binding_checks` or abort.
-   Skipping advances the cursor but makes the pass incomplete.
-5. Call `finish` with the exact scanner completion marker. Targeted checks do
-   not count as traversal observations. Protocol errors invalidate completeness;
-   use `abort` to end a failed consumer pass.
-6. Process up to `limits.offers` candidates. Prefer `admit`: it checks the
-   transition before the identity owner's durable callback. The callback returns
-   the actual admission time, or defers without mutation.
-7. Resolve current-generation `rebounds` before publishing bindings with
-   `rebind`. Returning false from its callback defers publication.
-8. Schedule from completion plus `reconcile_delay`. Configuration validates
-   interval/jitter bounds; its jitter policy caps at 25%. The helper can return
-   zero at 100% jitter, so callers requiring a positive delay must exclude that.
+3. Feed every scanner observation to `observe` in order. Process the resulting
+   evidence synchronously before sending the next observation.
 
-The binding worklist holds each ID once per pass, with at most an earlier-alias
+### 2. Check remembered paths and finish traversal
+
+After traversal, create one `Scanner::binding_batch`. Do this even when no
+binding checks are queued: refreshing the roots can reveal a failure that
+applies to the whole receiver.
+
+1. If root refresh fails, call `apply_binding_batch_error` or abort the pass.
+   Never discard the error because the queue is empty.
+2. For a successful batch, get the next ID with `next_binding_check`, then obtain
+   its path and expected parent with `binding_request`.
+3. Call `batch.check` and pass the result to `apply_binding_check`. Results borrow
+   scanner storage, so no path copy is needed.
+4. Repeat until the worklist is exhausted. If `check` rejects a request, call
+   `skip_binding_checks` or abort. Skipping advances the cursor and makes the
+   pass incomplete.
+5. Call `finish` with the exact scanner completion marker. Targeted checks do
+   not count as traversal observations. Protocol errors invalidate completeness.
+   Use `abort` to end a failed consumer pass.
+
+The worklist holds each ID once per pass. Each ID needs at most an earlier-alias
 check and a binding check. Slow consumers apply bounded backpressure.
 
-Callbacks must not defer after an ambiguous durable write, or panic and then
-resume the owner. These APIs do not implement checkpoint recovery. Transport
-adapters must preserve ordering: permanent-EOF decisions must account for
-already-delivered observations and failures, not just an empty channel.
+### 3. Process candidates and schedule the next pass
+
+1. Process up to `limits.offers` candidates. Prefer `admit`: it checks the
+   transition before calling the identity owner's durable callback. The callback
+   returns the actual admission time, or defers without mutation.
+2. Resolve current-generation `rebounds` before publishing bindings with
+   `rebind`. Returning false from its callback defers publication.
+3. Schedule the next pass from completion plus `reconcile_delay`. Configuration
+   validates interval/jitter bounds and caps jitter at 25%. The helper itself
+   can return zero at 100% jitter, so callers requiring a positive delay must
+   exclude that setting.
+
+Callbacks must not report deferral after an ambiguous durable write. If a
+callback panics, do not resume the owner. These APIs do not implement checkpoint
+recovery.
+
+Transport adapters must preserve ordering. Before deciding permanent EOF, the
+lifecycle owner must account for observations and failures already delivered to
+it. An empty channel alone is insufficient.
 
 ## Interpret evidence
 
@@ -71,13 +122,19 @@ already-delivered observations and failures, not just an empty channel.
 | `Excluded` | The reader can be revoked under the exclusion rules below. This is not disappearance and changes no offsets or durable records. |
 | `Disappeared` | A complete pass found no presence. This starts pending-disappearance handling; it does not establish permanent EOF. |
 
-Name evidence has two useful strengths. Full observations support identity and
-publication checks. `PresenceOnly` and `Content` prove only a policy-qualified
-name for the locator: they veto exclusion but produce no offer or `Validated`
-event, and grant no reconnection, promotion, publication or disappearance
-cancellation. Content-access failure remains local to that record. A locator on
-other failures is not proof that policy passed; preserve uncertainty without
-granting either strength.
+### What a name observation proves
+
+Full observations support identity and publication checks. `PresenceOnly` and
+`Content` observations provide weaker evidence: the name passed policy checks
+and refers to the locator. They prevent exclusion, but cannot:
+
+- produce an offer or a `Validated` event
+- authorize reconnection, promotion or publication
+- cancel disappearance handling
+
+A content-access failure affects only that record. Other failures may also
+carry a locator, but that does not prove the name passed policy checks. Preserve
+the uncertainty without treating the result as either strength of name evidence.
 
 Evidence may repeat within and across passes; consume it idempotently. The
 lifecycle owner retains responsibility for retention, runtime vetoes, terminal
@@ -89,53 +146,57 @@ binding work, including locator-less failures and retained rebound associations.
 Policy/verification failures likewise invalidate dependent evidence. Unrelated
 stable work can remain usable during an incomplete pass.
 
-### Exclusion and environment changes
+### When a reader can be excluded
 
-- A currently validated eligible binding or alias keeps the reader eligible.
-  An excluded alias alone cannot revoke it. Policy-qualified names also stop
-  exclusion-only targeted work; batch roots must still be refreshed.
-- An earlier alias is only a hint: recheck it before relying on it. A definite
-  miss or different locator expires the hint; busy/inaccessible checks retain it.
-  An alias-check coverage failure blocks exclusion for the rest of the pass.
-- Positive exclusion or replacement evidence can authorize prompt exclusion.
-  A missing name needs an available, unchanged parent and valid environment
-  context. Local lookup uncertainty can use complete-pass fallback. A retained
-  locator with a resource/cancellation failure instead vetoes that record's
-  exclusion for the pass; it grants no admission authority. This deliberately
-  keeps the reader under uncertainty, including descriptor exhaustion.
-- Root/exclusion-root failures and retained parent-change latches block
-  missing-path conclusions receiver-wide, including misses recorded before the
-  failure. A successful retry does not clear that pass's failure. Unrelated
-  incomplete traversal alone does not invalidate a contextual miss.
-- A changed parent blocks the affected bindings' exclusion and publication.
-  Traversal and targeted checks use one handler for all retained siblings,
-  including inactive records. Expected identities are preserved. Restoration
-  clears persistent latches, but cannot revive evidence collected under the
-  replacement directory in that pass; recovery needs fresh evidence. Persistent
-  blocks last until expected identities return or the receiver is recreated.
-  Receiver recreation does not reset checkpoints.
+A currently validated eligible binding or alias keeps the reader eligible.
+Excluding one alias cannot revoke the reader while another eligible name
+remains. Policy-qualified names also stop targeted checks whose only purpose
+is exclusion. Batch roots must still be refreshed.
 
-All retained bindings in a directory share its expected parent and persistent
-change state. New bindings copy one member's state, even when the parent is
-unknown; admission does not scan the sibling group. First validation establishes
-the baseline for the whole family when it is unknown. Healthy targeted checks
-and repeated changes already propagated this pass avoid another family walk.
+An alias remembered from an earlier pass is only a hint. Recheck it before
+relying on it. A definite miss or a different locator expires the hint.
+Busy or inaccessible checks retain it. If an alias check loses coverage,
+exclusion is blocked for the rest of the pass.
 
-Targeted checks share traversal's ancestor policy, root verification, pin-bound
-probes and descriptor budget. Handles close before evidence is returned. A
-missing parent with valid roots remains local uncertainty, not proof of binding
-ineligibility. Traversal depth is a resource bound, not an exclusion rule.
+The evidence needed to exclude a reader depends on what the check found:
+
+| Result | Exclusion rule |
+| --- | --- |
+| Positive exclusion or replacement evidence | Can authorize prompt exclusion. |
+| Missing name | Requires an available, unchanged parent and valid environment context. |
+| Local lookup uncertainty | May use complete-pass fallback. |
+| Resource or cancellation failure carrying a retained locator | Blocks that record's exclusion for the pass, without authorizing admission. This includes descriptor exhaustion. |
+
+### When roots or parent directories change
+
+Root failures, exclusion-root failures and retained parent-change latches block
+missing-path conclusions across the receiver. This includes misses recorded
+before the failure. A successful retry cannot clear the failure for that pass.
+An unrelated incomplete traversal, however, does not invalidate a miss obtained
+with valid context.
+
+A changed parent also blocks exclusion and binding publication for its affected
+records. Traversal and targeted checks apply the change to all retained siblings,
+including inactive records, while preserving their expected parent identities.
+
+Recovery requires the expected identities to return or the receiver to be
+recreated. When an expected parent returns, its persistent latch clears, but
+evidence collected under the replacement directory in that pass remains invalid.
+Fresh evidence is required. Recreating the receiver does not reset checkpoints.
+
+Targeted checks use the same ancestor policy, root verification, pin-bound
+probes and descriptor budget as traversal. Handles close before evidence is
+returned. A missing parent with valid roots remains local uncertainty. It does
+not prove that the binding is ineligible. Traversal depth limits resource use
+and must not be treated as an exclusion rule.
 
 ## Reconnection and binding publication
 
-A binding is the record's distinguished path; a rebound means that path now
-names another locator. Weak foreign-locator observations at retained bindings
-are remembered for contradiction checks, including owner associations, in either
-order. They grant no actionable rebound or supersession authority. Binding
-reselection waits for that target to be qualified, preserving replacement
-context at the old path. Unrelated binding proposals remain available.
-Offers are opportunities for identity checks, not permission to publish a new
-identity or transfer progress.
+Reconnection resumes a known identity. Publication commits a new identity or a
+binding change. These operations have different requirements, particularly when
+a parent directory has changed or a pass is incomplete.
+
+### Requirements by operation
 
 | Operation | Rule |
 | --- | --- |
@@ -150,15 +211,19 @@ blocks to be clear. Unchanged-role reconnection and independent positive reading
 remain available during these blocks. Admission still validates ownership:
 locator reuse cannot bypass the new-identity guard.
 
-`rebind` rejects invalid/empty paths before its callback. Repeating it in the
-same generation returns the published path. Alias publication removes the index
-entry before clearing its buffer, so later checks use binding-parent context.
+`rebind` rejects invalid or empty paths before its callback. Repeating it in the
+same generation returns the published path.
 
-`Replacement::Possible` is historical start-policy context, not supersession
-authority. Keep it across deferral or predecessor retirement; combine hints by
-smallest runtime ID, including owner associations. The candidate's own durable
-state wins, and predecessor progress is never transferred. Admission chooses
-supersession authority from the current Live owner of the selected path.
+### Replacement history and rebound feedback
+
+`Replacement::Possible` records replacement history for the start policy. It
+does not authorize supersession. Keep it when work is deferred or a predecessor
+retires. Combine hints using the smallest runtime ID, including owner
+associations.
+
+The candidate's own durable state takes precedence. Never transfer progress from
+its predecessor. Admission uses the selected path's current Live owner to decide
+which record it may supersede.
 
 Rebound feedback repeats each generation, even if the replacement is resident
 and produces no offer. For example, admission at a smaller alias can leave
@@ -166,6 +231,8 @@ another path's predecessor Live. Call `resolve_rebound` each pass; `supersede`
 cannot replace it once the replacement already has a Live owner. This can
 continue until complete-pass reselection or owner retirement. Disappearance
 alone does not retire a record.
+
+### Deferred offers and saved paths
 
 For a current, unacknowledged token, blocked new-identity admission may return
 `Feedback` before its callback. The token remains usable for a `Deferred`
@@ -177,7 +244,7 @@ retryable offers. Deferred work may consume an offer slot again in later passes.
 path ordering. `associate_replacement` accepts only narrowly justified owner
 context, never a blanket association for unavailable saved paths.
 
-## Selection, storage and maintenance
+## Candidate selection
 
 - Offer retained candidates oldest-first, with arrival order breaking ties.
   Preserve age across observations.
@@ -189,33 +256,70 @@ context, never a blanket association for unavailable saved paths.
 - Full tracked capacity still allows identity matching/reconnection. Park only
   candidates proven to need a new slot. Rejected candidates can return on a
   later fresh observation.
-- The existing minimum buffer holds one alias and its strength. Full aliases
+
+## Implementation reference
+
+These details describe how the reconciler preserves the rules above while
+bounding its storage and lookup work.
+
+### Parent state shared by siblings
+
+All retained bindings in a directory share its expected parent and persistent
+change state. New bindings copy one member's state, even when the parent is
+unknown. Admission does not scan the sibling group.
+
+The first validation establishes the baseline for the whole family when it is
+unknown. Healthy targeted checks and repeated changes already propagated this
+pass avoid another family walk.
+
+### Weak observations at replaced bindings
+
+A weak observation can show a different locator at a retained binding without
+qualifying that target for replacement handling. Remember such observations and
+their owner associations for contradiction checks, regardless of arrival order.
+They authorize neither actionable rebound feedback nor supersession.
+
+Wait for the target to be qualified before reselecting that binding. This keeps
+the replacement context at the old path. Unrelated binding proposals remain
+available.
+
+### Alias buffers and indexes
+
+- The minimum-alias buffer holds one alias and its evidence strength. Full aliases
   replace policy-only hints, even if they sort later. Equal-path upgrades change
   only strength; weaker observations never downgrade full evidence. An earlier
   hint carries only a name into the next pass, not current authority. Publication
   cannot select a policy-only minimum.
 - Conflict detection indexes selected candidate paths and retained current-pass
   minimum aliases, including policy-only aliases and resident records. It does
-  not retain every alias
-  ever seen. Indexes reset at `begin`; previous-pass hints are not fresh conflict
-  evidence. A detected conflict stays latched even if its sample is evicted.
+  not retain every alias ever seen. Indexes reset at `begin`. Previous-pass hints
+  are not fresh conflict evidence. A detected conflict stays latched even if its
+  sample is evicted.
 - Binding targets share one locator slot with observed, pending and resolved
   states. Only qualified targets enter rebound feedback. Aggregate name strength
   is derived from binding and alias evidence, rather than stored again.
 - Packed records and indexes store IDs/slots, not duplicate path keys. Remove
   entries before changing paths or slots; compare full native keys after hashes.
   Shared historical keys are allowed. Alias buffers are reused and capped at L.
-- Successor links use runtime ID plus locator, so inode reuse cannot resolve old
-  rebound work. Live ownership survives reader closure. A valid one-way hardlink
-  is not a cycle: incremental connectivity filters potential cycles, a directed
-  walk confirms them, and completion sweeps dependent binding work. Failures
-  arrive immediately; incremental checks stop once the pass is incomplete.
+
+Alias publication removes the index entry before clearing its buffer, so later
+checks use binding-parent context.
+
+### Tokens, statistics and graph work
+
+Successor links use runtime ID plus locator, so inode reuse cannot resolve old
+rebound work. Live ownership survives reader closure. A valid one-way hardlink
+is not a cycle: incremental connectivity filters potential cycles, a directed
+walk confirms them, and completion sweeps dependent binding work. Failures
+arrive immediately. Incremental checks stop once the pass is incomplete.
 
 Tokens are validated directly by generation, slot, selection and acknowledgement
 state. A cursor skips acknowledged prefixes once. Statistics report pending
 count, oldest age and actual admission time; overflow counts sightings, not
 unique files. Graph walks and successor updates can visit all tracked records,
 so rotation/admission latency still needs integrated qualification.
+
+### Memory accounting
 
 Explicit limits bound records, candidates, offers, paths and fingerprints.
 Construction checks arithmetic and a standalone 1 GiB guard. `retained_bytes`

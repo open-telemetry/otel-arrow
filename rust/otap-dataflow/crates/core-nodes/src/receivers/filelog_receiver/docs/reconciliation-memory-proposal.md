@@ -20,9 +20,7 @@ For 10,000 tracked files and a 4,096-byte path limit:
 
 These are decimal MB. The measurement is a long-path fixture, not typical usage
 or total receiver memory. It was measured on Linux x86_64 with Rust 1.98.1 using
-the memory test linked below. The per-pass state is 48 bytes on this platform;
-its layout regression also checks that the tagged target fits the prior optional
-locator slot. No additional path buffer or index is needed.
+the memory test linked below.
 
 ## Proposed allowance
 
@@ -45,10 +43,15 @@ Recheck these bounds when the layout, toolchain or dependencies change.
 
 ## Decision needed before integration
 
-Task 36 must agree the discovery allowance and account for scanner, identity,
-checkpoint and reader memory without gaps or double counting. Then update the
-conformance budget and configuration admission together. This proposal does not
-approve that change or define a whole-receiver memory limit.
+Task 36 needs to settle three things before integration:
+
+1. Agree the discovery memory allowance.
+2. Account for scanner, identity, checkpoint and reader memory without gaps or
+   double counting.
+3. Update the conformance budget and configuration admission together.
+
+The proposed allowance covers the standalone discovery component. A
+whole-receiver memory limit still needs that integrated accounting and approval.
 
 Once Task 36 is resolved, record the accepted formula in the conformance and
 resource-budget documentation, and update configuration admission. Remove this
