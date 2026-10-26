@@ -221,8 +221,9 @@ pub(crate) async fn build_client(
                     return Err(ClickhouseExporterError::TlsConfig(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "TLS certificates were loaded from the tls block but the \
-                         endpoint uses http://; the configured certificates cannot \
-                         be applied over plaintext HTTP.",
+                         endpoint uses http://; use an https:// endpoint so the \
+                         configured certificates are applied, or remove the tls \
+                         block for plaintext connections",
                     )));
                 }
 
@@ -833,5 +834,272 @@ mod tests {
 
         assert!(result.is_empty());
         assert!(calls.is_empty());
+    }
+
+    // -- TLS integration tests against a local server -------------------------
+    //
+    // These tests spin up a minimal HTTPS server with tokio-rustls and issue a
+    // real ClickHouse HTTP query through the client built by `build_client`.
+    // This verifies that the TLS material (CA trust, client certificates,
+    // server_name_override) is actually applied on the wire, not just accepted
+    // during client construction.
+
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    /// Starts a minimal HTTPS server that accepts one connection and returns
+    /// a canned ClickHouse-compatible HTTP 200 response.
+    ///
+    /// When `client_ca_pem` is `Some`, the server requires and verifies client
+    /// certificates (mTLS). Otherwise it accepts any client (server-auth only).
+    ///
+    /// Returns `(socket_addr, join_handle)`. The server task completes after
+    /// handling exactly one request.
+    async fn start_clickhouse_tls_server(
+        server_cert_pem: &str,
+        server_key_pem: &str,
+        client_ca_pem: Option<&str>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let cert_chain: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
+                .collect::<Result<_, _>>()
+                .expect("parse server cert chain");
+        let key =
+            PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes()).expect("parse server key");
+
+        let builder = rustls::ServerConfig::builder();
+        let builder = if let Some(ca_pem) = client_ca_pem {
+            let mut roots = rustls::RootCertStore::empty();
+            for cert in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
+                roots.add(cert.expect("parse client CA cert")).expect("add");
+            }
+            let verifier = rustls::server::WebPkiClientVerifier::builder(roots.into())
+                .build()
+                .expect("build client verifier");
+            builder.with_client_cert_verifier(verifier)
+        } else {
+            builder.with_no_client_auth()
+        };
+
+        let server_config = builder
+            .with_single_cert(cert_chain, key)
+            .expect("build server TLS config");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind tls server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let task = tokio::spawn(async move {
+            let Ok((tcp, _)) = listener.accept().await else {
+                return;
+            };
+            let Ok(mut tls) = acceptor.accept(tcp).await else {
+                return;
+            };
+
+            // Read until end of HTTP headers.
+            let mut buf = vec![0u8; 8192];
+            let mut read = 0usize;
+            loop {
+                let n = tls.read(&mut buf[read..]).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                read += n;
+                if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            // Respond with a minimal ClickHouse-compatible 200 OK.
+            // query.execute() only needs status 200 and no
+            // X-ClickHouse-Exception-Code header.
+            let response = "HTTP/1.1 200 OK\r\n\
+                            content-length: 0\r\n\
+                            connection: close\r\n\r\n";
+            let _ = tls.write_all(response.as_bytes()).await;
+            let _ = tls.flush().await;
+        });
+
+        (addr, task)
+    }
+
+    /// Issue a `SELECT 1` query through the given client.
+    /// Returns `Ok(())` if the server accepted the request and returned 200.
+    async fn ping_clickhouse(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+        client
+            .query("SELECT 1")
+            .execute()
+            .await
+            .map_err(|e| e.into())
+    }
+
+    /// Scenario: a client configured with a custom CA connects to a local TLS
+    /// server whose certificate is signed by that CA.
+    /// Guarantees: the CA trust chain is actually verified on the wire -- the
+    /// TLS handshake succeeds and a query round-trips through HTTPS.
+    #[tokio::test]
+    async fn tls_ca_only_connects_to_local_server() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("ClickHouse TLS Test CA");
+        let server_leaf = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ServerAuth),
+        );
+
+        let (addr, server) =
+            start_clickhouse_tls_server(&server_leaf.cert_pem, &server_leaf.key_pem, None).await;
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            ..Default::default()
+        };
+        let config = test_config_with_tls(&format!("https://localhost:{}", addr.port()), Some(tls));
+        let client = build_client(&config, "default")
+            .await
+            .expect("build_client");
+
+        ping_clickhouse(&client)
+            .await
+            .expect("TLS query should succeed");
+        server.abort();
+    }
+
+    /// Scenario: a client configured with mTLS (CA + client cert/key) connects
+    /// to a local TLS server that requires client certificates.
+    /// Guarantees: the client certificate is presented during the handshake and
+    /// accepted by the server, proving that mTLS material is wired correctly.
+    #[tokio::test]
+    async fn mtls_connects_to_local_server() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("ClickHouse mTLS Test CA");
+        let server_leaf = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ServerAuth),
+        );
+        let client_leaf = ca.issue_leaf(
+            "clickhouse-client",
+            Some("clickhouse-client"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ClientAuth),
+        );
+
+        let (addr, server) = start_clickhouse_tls_server(
+            &server_leaf.cert_pem,
+            &server_leaf.key_pem,
+            Some(&ca.cert_pem),
+        )
+        .await;
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            config: TlsConfig {
+                cert_pem: Some(client_leaf.cert_pem),
+                key_pem: Some(client_leaf.key_pem),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = test_config_with_tls(&format!("https://localhost:{}", addr.port()), Some(tls));
+        let client = build_client(&config, "default")
+            .await
+            .expect("build_client");
+
+        ping_clickhouse(&client)
+            .await
+            .expect("mTLS query should succeed");
+        server.abort();
+    }
+
+    /// Scenario: a client without a client certificate connects to a local TLS
+    /// server that requires mTLS.
+    /// Guarantees: the server rejects the handshake and the query fails,
+    /// confirming that the mTLS requirement is enforced.
+    #[tokio::test]
+    async fn mtls_rejected_without_client_cert() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("ClickHouse mTLS Reject CA");
+        let server_leaf = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ServerAuth),
+        );
+
+        // Server requires client certs, but client does not present one.
+        let (addr, server) = start_clickhouse_tls_server(
+            &server_leaf.cert_pem,
+            &server_leaf.key_pem,
+            Some(&ca.cert_pem),
+        )
+        .await;
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            ..Default::default()
+        };
+        let config = test_config_with_tls(&format!("https://localhost:{}", addr.port()), Some(tls));
+        let client = build_client(&config, "default")
+            .await
+            .expect("build_client");
+
+        let result = ping_clickhouse(&client).await;
+        assert!(
+            result.is_err(),
+            "query without client cert should fail when server requires mTLS"
+        );
+        server.abort();
+    }
+
+    /// Scenario: a client connects to a local TLS server by IP address, using
+    /// server_name_override to set the expected SNI hostname.
+    /// Guarantees: the server_name_override is applied during the TLS handshake
+    /// so that certificate verification succeeds despite the URL containing an
+    /// IP address instead of a hostname.
+    #[tokio::test]
+    async fn server_name_override_connects_to_local_server() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("ClickHouse SNI Test CA");
+        // Server cert has SAN=localhost, but we connect via 127.0.0.1.
+        let server_leaf = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ServerAuth),
+        );
+
+        let (addr, server) =
+            start_clickhouse_tls_server(&server_leaf.cert_pem, &server_leaf.key_pem, None).await;
+
+        let tls = TlsClientConfig {
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            // Override SNI so the cert's SAN "localhost" matches.
+            server_name: Some("localhost".to_string()),
+            ..Default::default()
+        };
+        // Connect via IP -- without the override this would fail because the
+        // cert SAN is "localhost", not "127.0.0.1".
+        let config = test_config_with_tls(&format!("https://127.0.0.1:{}", addr.port()), Some(tls));
+        let client = build_client(&config, "default")
+            .await
+            .expect("build_client");
+
+        ping_clickhouse(&client)
+            .await
+            .expect("query with server_name_override should succeed");
+        server.abort();
     }
 }
