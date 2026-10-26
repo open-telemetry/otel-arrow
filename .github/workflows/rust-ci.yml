@@ -535,9 +535,18 @@ jobs:
           save-if: false
       - name: Free disk space
         run: |
+          df -h /tmp "$GITHUB_WORKSPACE"
+          # These jobs do not use Conda environments or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew; do
+            if [ -d "$directory" ]; then
+              sudo du -sh "$directory"
+            fi
+          done
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+          df -h /tmp "$GITHUB_WORKSPACE"
       - name: Install nightly wasm guest target
         run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
       - name: Check the reference WASM guest
@@ -638,9 +647,18 @@ jobs:
           tool: cargo-nextest
       - name: Free disk space
         run: |
+          df -h /tmp "$GITHUB_WORKSPACE"
+          # These jobs do not use Conda environments or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew; do
+            if [ -d "$directory" ]; then
+              sudo du -sh "$directory"
+            fi
+          done
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+          df -h /tmp "$GITHUB_WORKSPACE"
       - name: Build the test collector
         run: make otelarrowcol
       - name: Install nightly wasm guest target
