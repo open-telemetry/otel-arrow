@@ -8,14 +8,14 @@ change_type: bug_fix
 component: dependencies
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Fix a cryptographic timing vulnerability in the engine's dependencies (RUSTSEC-2026-0385).
+note: Fix a potential cryptographic timing side channel by updating ctutils to 0.4.4 (RUSTSEC-2026-0385).
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [4490]
+issues: [4517]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: No configuration changes are required.
+subtext:

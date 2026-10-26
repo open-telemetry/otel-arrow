@@ -35,7 +35,7 @@ fn cumulative_start_time_resets_after_clock_rollback() {
         if has_data {
             assert_eq!(sample.points[0].start_time_unix_nano, Some(expected_start));
             assert!(
-                into_otap(std::slice::from_ref(&config), sample)
+                project_sample(std::slice::from_ref(&config), &sample)
                     .unwrap()
                     .is_some()
             );
