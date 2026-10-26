@@ -255,7 +255,7 @@ pub(super) fn eval_datafusion_expr_value(
                     if *missing_data_passes {
                         return Ok(Some(ScopedValue {
                             values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                            scope: scope.clone(),
+                            scope: DataScope::StaticScalar,
                             ids: None,
                             parent_ids: None,
                         }));
