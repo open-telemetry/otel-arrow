@@ -206,19 +206,26 @@ flowchart LR
 5. **Stream.** `token_stream()` subscribes to the `watch` channel and yields each
    subsequent published token. The initial `None` is filtered out.
 
-For managed identity, the credential call runs on Tokio's blocking pool behind
-one async mutex owned by the extension instance. The mutex stores the lazily
-constructed credential and also serves as the admission gate. Its owned guard
-is acquired before work is submitted and moves into the worker, so it remains
-held until the worker exits, even if the awaiting task is cancelled. The worker
-constructs the credential once,
-reuses it for later refreshes, and polls the SDK token future away from the
-thread-per-core executor. This is required for Azure Arc credentials, whose SDK
-path includes synchronous agent detection and challenge-file reads.
+For managed identity, the credential call runs on a dedicated worker thread
+with its own current-thread Tokio runtime, started lazily by the extension
+instance. One async mutex stores the worker handle and serves as the admission
+gate. Its owned guard is acquired before a request is submitted and moves into
+the request, so it remains held until the worker finishes, even if the awaiting
+task is cancelled. The worker constructs the credential once, reuses it for
+later refreshes, and polls the SDK token future away from the thread-per-core
+executor. This is required for Azure Arc credentials, whose SDK path includes
+synchronous agent detection and challenge-file reads.
+
+The worker is deliberately outside the pipeline runtime's blocking pool:
+dropping a Tokio runtime waits for its running `spawn_blocking` tasks, so a
+worker stuck in Arc filesystem I/O would otherwise delay pipeline teardown
+indefinitely. The worker thread is detached and exits after its current
+request once the extension drops the worker handle. If the worker panics, the
+next acquisition starts a replacement.
 
 Cancellation stops waiting for a managed identity result but cannot terminate
-the `spawn_blocking` worker. The worker deliberately retains admission until it
-exits so cancellation and refresh retries cannot create an unbounded worker
+the worker's in-progress call. The worker deliberately retains admission until
+it finishes so cancellation and refresh retries cannot create an unbounded work
 queue. `startup_timeout` bounds readiness waiting, not worker lifetime. The
 current Azure SDK configures Arc acquisition with six retries and a 72-second
 retry budget; its default HTTP transport applies a 20-second connection timeout
@@ -484,9 +491,10 @@ Metrics are recorded in both the background refresh loop and the slow-path
    on the control channel. The refresh loop returns the final metric snapshot as
    its terminal state and drops the credential and `watch` sender. Async
    credential futures are cancelled when the refresh task is dropped. An
-   in-flight managed identity blocking worker cannot be forcibly cancelled; the
-   refresh task stops awaiting it, while the worker retains admission and
-   continues until the Azure SDK call returns.
+   in-flight managed identity acquisition cannot be forcibly cancelled; the
+   refresh task stops awaiting it, while the dedicated worker retains admission
+   and continues until the Azure SDK call returns. Pipeline runtime teardown
+   does not wait for that worker.
 
 ### Live reconfiguration
 

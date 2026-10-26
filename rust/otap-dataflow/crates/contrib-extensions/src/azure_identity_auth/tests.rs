@@ -466,6 +466,48 @@ async fn cancelled_managed_identity_fetch_retains_worker_admission() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+/// Scenario: A pipeline runtime is dropped while managed-identity acquisition is blocked.
+/// Guarantees: Runtime teardown completes promptly instead of waiting for the blocked worker.
+#[test]
+fn runtime_drop_does_not_wait_for_blocked_managed_identity_worker() {
+    let gate = Arc::new(BlockingGate::default());
+    gate.start_watchdog();
+    let credential_gate = Arc::clone(&gate);
+    let auth = Auth::from_managed_identity_factory(
+        move || {
+            Ok(Arc::new(BlockingCredential {
+                gate: Arc::clone(&credential_gate),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }))
+        },
+        "test_scope".to_string(),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("pipeline runtime");
+    runtime.block_on(async {
+        let _fetch = tokio::spawn(async move { auth.fetch().await });
+        while !gate.started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let dropping = std::time::Instant::now();
+    drop(runtime);
+    let elapsed = dropping.elapsed();
+
+    assert!(
+        !*gate.released.lock().expect("gate lock"),
+        "runtime teardown waited until the watchdog released the blocked worker"
+    );
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "runtime teardown took {elapsed:?}"
+    );
+    gate.release();
+}
+
 fn make_tracker() -> BackgroundProviderMetricsTracker<AzureIdentityAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<AzureIdentityAuthMetrics>(EmptyAttributes());

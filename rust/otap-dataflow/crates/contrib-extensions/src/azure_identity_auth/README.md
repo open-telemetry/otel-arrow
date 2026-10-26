@@ -114,16 +114,18 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 
 ### Managed identity execution bounds
 
-Managed identity credential construction and acquisition run on one Tokio
-blocking worker per extension instance. One lock both stores the credential
-and admits workers. It is acquired before the worker is submitted and held
-until the worker exits, even if the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
+Managed identity credential construction and acquisition run on one dedicated
+worker thread per extension instance. The worker has its own Tokio runtime, so
+dropping the pipeline runtime does not wait for an in-progress acquisition.
+One lock stores the worker handle and admits requests. It is acquired before a
+request is submitted and held until the worker finishes that request, even if
+the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
 detection and challenge-file access off the thread-per-core executor without
-allowing cancellation or repeated refresh attempts to create unbounded workers.
+allowing cancellation or repeated refresh attempts to create unbounded work.
 
 `startup_timeout` bounds how long pipeline startup waits for the first token;
-it does not terminate an in-progress blocking worker. Tokio cannot forcibly
-cancel `spawn_blocking` work safely. The Azure SDK version used by this crate
+it does not terminate an in-progress acquisition. Blocking work cannot be
+forcibly cancelled safely. The Azure SDK version used by this crate
 configures Arc acquisition with six retries and a 72-second retry budget, while
 its default HTTP transport uses a 20-second connection timeout and a 60-second
 read timeout per attempt. Retry elapsed time is checked between attempts, so
@@ -133,7 +135,9 @@ cancellation mechanism.
 
 If startup or shutdown cancels an acquisition, the worker continues until the
 SDK call returns and retains admission in the meantime. Subsequent attempts
-wait for that worker instead of starting another one.
+wait for that worker instead of starting another one. Pipeline teardown does
+not wait for it; the detached worker exits after its current call once the
+extension is dropped.
 
 ## Authentication methods
 
