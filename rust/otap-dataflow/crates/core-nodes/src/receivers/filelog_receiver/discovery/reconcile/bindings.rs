@@ -359,96 +359,20 @@ impl Reconciler {
     pub fn admit(
         &mut self,
         token: OfferToken,
-        mut file: TrackedFile,
+        file: TrackedFile,
         commit: impl FnOnce(&Candidate) -> Option<Duration>,
     ) -> Result<bool, ReconcileError> {
-        if self.pass.is_some() {
-            return Err(ReconcileError::Phase);
+        let changes = vec![AdmissionChange {
+            token,
+            file,
+            replace_id: None,
+        }];
+        match self.admit_batch(changes, |candidates| {
+            Ok::<_, std::convert::Infallible>(commit(candidates[0]))
+        }) {
+            Ok(done) => Ok(done),
+            Err(AdmissionError::Preflight(error)) => Err(error),
+            Err(AdmissionError::Commit(never)) => match never {},
         }
-        let offer = self.candidates.offer(token)?;
-        let candidate = offer.candidate;
-        let new_identity = !self.tracked.contains_key(&file.id);
-        // Locator equality is only an offer hint, not proof of continuity.
-        // Historical and recovered bindings retain parent-publication guards
-        // even when no Live predecessor exists to be superseded.
-        if new_identity
-            && self
-                .bindings
-                .records(candidate.path.as_os_str(), &self.tracked)
-                .any(|tracked| tracked.file.active && tracked.binding_blocked())
-        {
-            return Err(ReconcileError::Feedback);
-        }
-        // Historical replacement context controls start policy, not ownership.
-        // Only the current Live owner of the chosen path can be superseded or
-        // exempted from duplicate-binding preflight. Other rebounds remain work
-        // for the identity owner, even when their paths alias this candidate.
-        let replacing = if new_identity {
-            self.bindings
-                .records(candidate.path.as_os_str(), &self.tracked)
-                .find(|tracked| tracked.file.active && tracked.file.role == BindingRole::Live)
-                .map(|tracked| tracked.file.id)
-        } else {
-            None
-        };
-        if file.locator != candidate.locator {
-            return Err(ReconcileError::Tracked);
-        }
-        if let Some(old) = self.tracked.get(&file.id) {
-            // Recovery may validate an Unverified claim here. A Superseded
-            // claim must use rebind's complete-pass and rebound barriers,
-            // including publication at the unchanged historical path.
-            let role_allowed = file.role == old.file.role
-                || (old.file.role == BindingRole::Unverified
-                    && file.role == BindingRole::Live
-                    && old.pass.binding_evidence.is_full()
-                    && !old.binding_blocked());
-            if old.file.locator != file.locator
-                || old.file.binding.as_ref().map(|p| p.as_os_str())
-                    != file.binding.as_ref().map(|p| p.as_os_str())
-                || !role_allowed
-            {
-                return Err(ReconcileError::Tracked);
-            }
-            self.validate_binding(&file, None)?;
-        } else {
-            self.validate_track(&file, replacing)?;
-            if file
-                .binding
-                .as_ref()
-                .is_none_or(|p| p.as_os_str() != candidate.path.as_os_str())
-            {
-                return Err(ReconcileError::Tracked);
-            }
-        }
-        if let Some(id) = replacing {
-            let old = self.tracked.get(&id).ok_or(ReconcileError::Tracked)?;
-            if !old.allows_replacement(candidate.locator) {
-                return Err(ReconcileError::Feedback);
-            }
-        }
-        // Do not retain caller-provided unbounded spare path capacity.
-        file.binding = file.binding.as_ref().map(|path| path.to_path_buf());
-        // Everything that can reject the transition is checked before the callback.
-        let Some(admitted_at) = commit(candidate) else {
-            return Ok(false);
-        };
-        if let Some(old) = self.tracked.get_mut(&file.id) {
-            old.file = file;
-        } else {
-            let id = file.id;
-            self.insert_tracked(file);
-            if let Some(predecessor) = replacing {
-                self.tracked
-                    .get_mut(&predecessor)
-                    .expect("preflighted predecessor")
-                    .file
-                    .role = BindingRole::Superseded;
-                self.link_successor(predecessor, id);
-            }
-        }
-        self.acknowledge(token, IdentityFeedback::Admitted, admitted_at)
-            .expect("exclusive current offer");
-        Ok(true)
     }
 }

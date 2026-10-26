@@ -350,3 +350,40 @@ transport storage without double counting.
 [memory]: reconciliation-memory-proposal.md
 [bindings]: ../discovery/reconcile/bindings.rs
 [storage]: ../discovery/reconcile/storage.rs
+
+## Atomic admission groups
+
+`admit_batch` accepts selected `AdmissionChange` entries. Each contains a
+current offer token, its resulting tracked view, and an optional `replace_id` for
+same-locator logical-identity supersession. The resulting tracked population is
+checked across the group; such supersession is net-zero, whereas ordinary
+move/create keeps its predecessor and needs another slot.
+
+The method checks every member, prospective Live path claims and group capacity
+before invoking the durable callback. It holds its exclusive borrow throughout
+that callback. Only durable success publishes the whole group and acknowledges
+its offers. Deferral or callback failure leaves the old views intact. Same-locator
+replacement carries directory baselines forward while discarding the retired
+identity's successor state. Incoming IDs must remain lifetime-unique.
+
+The callback returns `Ok(None)` only when nothing was written. A recoverable
+pending checkpoint write must be resolved inside the callback before returning
+success. On an uncertain terminal error or panic, terminate this owner instead
+of starting another pass against its old views. The generic commit error is
+returned to the lifecycle owner so it can preserve the underlying failure.
+
+Select fitting work before calling this method. It never silently drops members
+after preflight. Groups with cross-dependent retirement and path replacement are
+rejected before the callback and should be split into ordered groups. A group can
+reconnect a rotation predecessor and admit its successor; the resulting Live
+claim belongs only to the successor, independent of member order.
+
+The legacy `admit` method uses the same boundary for one member. Recovery bootstrap
+can still use `track`; `resolve_offer` alone is not a tracking preflight for new
+identities. Do not commit first and call `track` afterward.
+
+Temporary group sets and publication metadata are bounded by the offer limit;
+path keys borrow the bounded incoming paths, and no authoritative table is cloned.
+Include this transient state in integrated memory accounting. This extension does
+not create workers, implement checkpoint retry scheduling, or qualify the complete
+receiver pipeline.

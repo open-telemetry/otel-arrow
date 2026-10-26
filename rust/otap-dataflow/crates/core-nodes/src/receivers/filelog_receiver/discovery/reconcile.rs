@@ -8,12 +8,14 @@
 //! lifecycle owners must serialize their decisions with this synchronous stream;
 //! a scan completion is not proof of permanent absence.
 
+mod admission;
 mod bindings;
 mod candidates;
 mod storage;
 #[cfg(test)]
 mod tests;
 
+pub use admission::{AdmissionChange, AdmissionError};
 pub use candidates::{Candidate, CandidateOffer, IdentityFeedback, OfferToken, Replacement};
 
 use super::{FileLocator, Observation, ScanCompletion, ScanReason};

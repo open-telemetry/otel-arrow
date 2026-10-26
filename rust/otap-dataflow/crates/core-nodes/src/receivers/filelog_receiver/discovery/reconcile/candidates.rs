@@ -66,7 +66,7 @@ pub enum IdentityFeedback {
 }
 
 /// A one-pass, one-offer acknowledgement token. Fields are intentionally private.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct OfferToken {
     generation: u64,
     slot: usize,
