@@ -150,6 +150,8 @@ acquisition successes/failures, credential publications, and successful
 acquisition latency in milliseconds. Shared acquisition events identify only
 the stage (`identity`, `client`, `username`, `password`, or `acquisition`) and a
 bounded error category, never secret values or raw SDK diagnostics.
+Credential construction and token-acquisition failures use `identity`; vault
+responses retain the affected `username` or `password` stage.
 
 Raw SDK errors, response bodies, tokens, and their source chains are discarded
 before formatting errors or telemetry. Cached credential Debug output is

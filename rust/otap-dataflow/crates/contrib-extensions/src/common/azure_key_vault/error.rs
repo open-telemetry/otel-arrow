@@ -9,7 +9,7 @@ use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 /// Which part of startup acquisition failed, without exposing secret names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum Stage {
-    /// Azure identity initialization.
+    /// Azure identity initialization or token acquisition.
     Identity,
     /// Key Vault client initialization.
     Client,
@@ -114,6 +114,10 @@ impl Error {
     /// Drops all raw SDK error data, including its source chain and response.
     #[must_use]
     pub fn from_sdk(stage: Stage, error: azure_core::Error) -> Self {
+        let stage = match error.kind() {
+            ErrorKind::Credential => Stage::Identity,
+            _ => stage,
+        };
         let kind = match error.kind() {
             ErrorKind::Credential => FailureKind::Authentication,
             ErrorKind::HttpResponse { status, .. } => match u16::from(*status) {

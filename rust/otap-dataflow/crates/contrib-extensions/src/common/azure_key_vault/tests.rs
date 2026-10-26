@@ -142,7 +142,7 @@ fn rejects_unknown_options_and_zero_timeout() {
 }
 
 /// Scenario: SDK failures contain tokens, response messages, and service error codes.
-/// Guarantees: Only typed status/category and acquisition stage survive conversion.
+/// Guarantees: Only bounded diagnostics survive; credential failures identify identity and other failures retain the read stage.
 #[test]
 fn classifies_sdk_errors_without_retaining_sensitive_data() {
     use super::error::{Error, FailureKind, Stage};
@@ -177,20 +177,29 @@ fn classifies_sdk_errors_without_retaining_sensitive_data() {
         assert!(!output.contains("bearer-token"));
         assert!(!output.contains("sensitive-service-error-code"));
     }
-    for (kind, expected) in [
-        (ErrorKind::Credential, FailureKind::Authentication),
-        (ErrorKind::Connection, FailureKind::Transient),
-        (ErrorKind::Io, FailureKind::Transient),
-        (ErrorKind::DataConversion, FailureKind::InvalidResponse),
-        (ErrorKind::Other, FailureKind::Service),
-    ] {
-        let safe = Error::from_sdk(
-            Stage::Username,
-            azure_core::Error::with_message(kind, "sensitive-token"),
-        );
-        assert_eq!(safe.kind, expected);
-        assert!(!format!("{safe:?} {safe}").contains("sensitive-token"));
-        safe.log_failure();
+    for stage in [Stage::Username, Stage::Password] {
+        for (kind, expected) in [
+            (ErrorKind::Credential, FailureKind::Authentication),
+            (ErrorKind::Connection, FailureKind::Transient),
+            (ErrorKind::Io, FailureKind::Transient),
+            (ErrorKind::DataConversion, FailureKind::InvalidResponse),
+            (ErrorKind::Other, FailureKind::Service),
+        ] {
+            let expected_stage = if matches!(kind, ErrorKind::Credential) {
+                Stage::Identity
+            } else {
+                stage
+            };
+            let safe = Error::from_sdk(
+                stage,
+                azure_core::Error::with_message(kind, "sensitive-token"),
+            );
+            assert_eq!(safe.kind, expected);
+            assert_eq!(safe.stage, expected_stage);
+            assert!(std::error::Error::source(&safe).is_none());
+            assert!(!format!("{safe:?} {safe}").contains("sensitive-token"));
+            safe.log_failure();
+        }
     }
 }
 
@@ -288,10 +297,10 @@ async fn sdk_classifies_both_secret_failures_and_redacts_response_bodies() {
 }
 
 /// Scenario: Identity acquisition fails or a vault challenges for an unrelated resource.
-/// Guarantees: Safe authentication/challenge errors are returned and an untrusted challenge receives no token.
+/// Guarantees: Token failures identify the identity stage without raw diagnostics, and an untrusted challenge receives no token.
 #[tokio::test]
 async fn sdk_authentication_and_challenge_validation_are_safe() {
-    use super::error::FailureKind;
+    use super::error::{FailureKind, Stage};
     use super::testing::*;
     use azure_core::http::RetryOptions;
     use std::sync::Arc;
@@ -308,6 +317,7 @@ async fn sdk_authentication_and_challenge_validation_are_safe() {
     );
     let error = source.fetch_pair().await.unwrap_err();
     assert_eq!(error.kind, FailureKind::Authentication);
+    assert_eq!(error.stage, Stage::Identity);
     assert_eq!(transport.request_count(), 1);
     assert!(!format!("{error:?} {error}").contains(TOKEN));
 
@@ -516,6 +526,7 @@ async fn sdk_and_operational_telemetry_redact_sensitive_material() {
     .with_subscriber(subscriber)
     .await;
     let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("stage=\"identity\""));
     assert!(logs.contains("stage=\"password\""));
     assert!(logs.contains("authorization"));
     assert!(logs.contains("authentication"));
