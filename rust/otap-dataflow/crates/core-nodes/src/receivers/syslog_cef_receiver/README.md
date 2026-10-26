@@ -87,7 +87,8 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `newline`.
 
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
-defaults to `100`, and `batch.max_size` defaults to `100`.
+defaults to `100`, and `batch.max_size` defaults to `100` (values above `256`
+are capped). Receiver batches may flush earlier to respect the hard byte limit.
 
 The receiver supports pressure-aware `messages` rate limiting when the
 engine-level memory limiter is configured. UDP counts one datagram as one
@@ -131,6 +132,16 @@ Syslog over TLS:
 - Configurable handshake timeout
 
 ## Message Parsing
+
+The receiver validates transport framing and rejects zero-length messages, then
+forwards non-empty messages in the `syslog-batch` encoded pdata format.
+Format detection and parsing remain lazy until a downstream component requests
+native OTAP records. This keeps transparent forwarding and codec-native
+batching on the original message bytes. Each message retains the local year at
+receipt for RFC 3164 timestamp inference, including CEF wrapped in RFC 3164.
+Delayed decoding and batching across New Year do not change that year; local
+timezone and DST resolution still use the event date. Observed timestamps remain
+those recorded when the receiver seals each batch.
 
 ### Automatic Format Detection
 
@@ -385,15 +396,16 @@ connection handling within the same thread.
 
 ### Batching Strategy
 
-To optimize throughput and reduce per-message overhead, the receiver batches
-messages into Apache Arrow record batches before sending downstream:
+To optimize throughput and reduce per-message overhead, the receiver frames
+original messages into independently decodable pdata batches before sending
+downstream:
 
 ```text
 +-------------------------------------------------------------------+
 |                         Batching Logic                            |
 +-------------------------------------------------------------------+
 |                                                                   |
-|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch sent      |
+|   Messages arrive  -->  SyslogBatchBuilder  -->  Batch sent       |
 |                              |                                    |
 |   Flush conditions:          |                                    |
 |   +- Size: max_size messages +------------------------------->    |
@@ -404,7 +416,10 @@ messages into Apache Arrow record batches before sending downstream:
 
 A batch is flushed when either:
 
-- **`batch.max_size`** messages have accumulated (default: 100), or
+- **`batch.max_size`** messages have accumulated (default: 100, capped at
+  256), or
+- The encoded buffer cannot reserve space for another 16 KiB message within
+  its 256 KiB limit, or
 - **`batch.max_batch_duration_ms`** milliseconds have elapsed since the last flush
   (default: 100 ms), or
 - The connection closes (TCP) or the receiver shuts down
@@ -414,11 +429,78 @@ Both thresholds are optionally configurable via the `batch` section (see
 of in-memory data that could be lost on a crash, at the expense of more
 frequent (and smaller) downstream sends.
 
+The syslog codec also caps each output and synchronous OTAP conversion at
+**256 messages and 256 KiB of encoded framing**, with **16 KiB per message**.
+Codec-native batching splits on either limit even when a batch processor requests
+larger outputs. Split-budget fallback may retain a whole input only if it fits
+these hard limits; otherwise batching fails recoverably rather than emitting an
+oversized decode. Message bytes, order, receipt years, and ownership are preserved.
+
+These limits mitigate uninterrupted parsing and Arrow finalization work. They do
+not guarantee a wall-clock latency or make codec execution cooperative. A future
+execution change will add scheduling opportunities within decoding and finalization.
+
+The opt-in scheduling-latency test arms a timer on the same runtime thread as
+maximum-sized RFC 3164, raw, and attribute-heavy CEF decodes. It measures parsing
+and Arrow finalization without inserting yields. Run it in release mode on an
+otherwise idle pinned CPU (replace `<cpu>`):
+
+```sh
+cd rust/otap-dataflow
+cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency --no-run
+taskset -c <cpu> cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
+```
+
+The 50 ms assertion is a regression threshold for that controlled test, not a
+latency guarantee for arbitrary inputs, hardware, or a busy pipeline.
+
 This batching strategy balances:
 
 - **Latency**: Configurable max delay for low-volume streams
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
+
+### Migrating downstream batch settings
+
+Previously, the receiver emitted native OTAP, so a downstream batch processor
+using the default `format: preserve` applied its `otap` settings to syslog.
+The receiver now emits encoded `syslog-batch` inputs, which use codec defaults
+unless that processor configures `codecs.syslog-batch`.
+
+Before, a syslog-only pipeline could use:
+
+```yaml
+type: processor:batch
+config:
+  format: preserve
+  otap:
+    min_size: 50
+    max_size: 200
+    sizer: items
+```
+
+To apply those limits while retaining encoded syslog, use:
+
+```yaml
+type: processor:batch
+config:
+  format: preserve
+  codecs:
+    syslog-batch:
+      min_size: 50
+      max_size: 200
+      sizer: items
+```
+
+These are settings on the downstream batch processor, not the receiver's
+`batch` section. Keep an `otap` block as well if the processor also handles
+native OTAP traffic. The syslog codec supports item sizing only. Its hard
+256-message and 256-KiB caps still apply, so copying a larger previous target
+does not restore larger encoded outputs.
+
+Alternatively, set `format: otap` and keep the original `otap` block to retain
+native OTAP batching. That materializes receiver batches before merging them;
+the encoded syslog caps do not limit subsequent native OTAP batch sizes.
 
 ### Pressure-aware rate admission
 
@@ -443,10 +525,11 @@ keeps the connection open and emits at most one warning per connection. V1
 creates one bucket per receiver instance and does not provide scheduling
 fairness.
 
-### Arrow Columnar Format
+### Native OTAP Conversion
 
-The receiver converts syslog messages directly into Apache Arrow columnar
-format, which provides:
+When a processor or exporter requests native OTAP, the syslog codec parses the
+framed messages and converts them into Apache Arrow columnar format. This
+provides:
 
 - **Efficient compression**: Columnar layout enables better compression ratios
 - **Zero-copy processing**: Downstream processors can operate on Arrow buffers
@@ -466,8 +549,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 Each UDP datagram or emitted TCP frame records one shared receiver observation
 when receiver-local handling terminates. TCP payload size excludes the newline
-delimiter. Processing duration covers active admission, parsing, and record
-append work. It excludes batch buffering and pipeline handoff.
+delimiter. Processing duration covers active admission and encoded-frame
+append work. It excludes batch buffering, deferred parsing and Arrow
+construction, and pipeline handoff.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
@@ -475,8 +559,10 @@ append work. It excludes batch buffering and pipeline handoff.
 | `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
 | `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
-`outcome=success` means receiver-local admission, parsing, and record append
- completed. `outcome=refused` means memory-pressure or rate-limit admission
+`outcome=success` means receiver-local admission and encoded-frame append
+completed. It does not certify that content parsing or Arrow construction
+will succeed when requested downstream. `outcome=refused` means memory-pressure
+or rate-limit admission
 rejected the message, or the framed input was rejected as invalid. The current
 implementation does not emit `outcome=failure`; that outcome is reserved for
 other receiver-local processing errors. Batch buffering, batch construction,
@@ -507,7 +593,7 @@ never measurement attributes.
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timed out while connection tasks were still active. |
 | `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed for an incoming connection. |
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed and the connection was closed. |
-| `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Arrow records could not be built from a parsed batch; the batch was dropped. |
+| `syslog_cef_receiver.batch.seal_failed` | `warn` | An encoded syslog batch could not be sealed or admitted; the batch was dropped. |
 | `syslog_cef_receiver.memory_pressure.disconnect` | `warn` | A TCP connection was closed because process-wide memory pressure was active. |
 | `syslog_cef_receiver.rate_limit.drop` | `warn` | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 

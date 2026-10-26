@@ -527,6 +527,9 @@ fn aggregate_program_fallback() {
         limit,
     )
     .expect("forward-only payload fits");
+    let program = BoundaryPattern {
+        program: Arc::new(program),
+    };
     assert_eq!(
         program.execution_policy(),
         ExecutionPolicy::NoLazyDfa {
@@ -664,5 +667,92 @@ fn confirmed_engine_paths_agree() {
                 );
             }
         }
+    }
+}
+
+/// Scenario: A glob set contains many short patterns rather than large regex programs.
+/// Guarantees: Its program allowance follows syntax size instead of granting 10 MiB per pattern.
+#[test]
+fn short_glob_set_program_budget() {
+    let hirs: Vec<_> = (0..1024)
+        .map(|i| {
+            regex_syntax::ParserBuilder::new()
+                .unicode(false)
+                .build()
+                .parse(&format!("^file{i}$"))
+                .unwrap()
+        })
+        .collect();
+    let bound = memory::glob_program_bound(&hirs).unwrap();
+    assert!(bound < MAX_PROGRAM_BYTES);
+    let patterns: Vec<_> = (0..1024).map(|i| format!("^file{i}$")).collect();
+    let refs: Vec<_> = patterns.iter().map(String::as_str).collect();
+    let (_, estimate) = compile_indexed_globs(&refs).unwrap();
+    assert!(estimate.program_payload_bytes <= bound);
+}
+
+/// Scenario: 256 distinct complex globs reach the 4096-byte individual and 1 MiB aggregate text limits.
+/// Guarantees: The meta compiler accepts classes, alternatives and recursion within its syntax-derived program bound and preserves matching.
+#[test]
+fn large_complex_glob_set_program_budget() {
+    let mut regexes = Vec::new();
+    let mut candidates = Vec::new();
+    let unit = "{ab,cd}[a-z]?";
+    let mut total_bytes = 0;
+    for index in 0..256 {
+        let prefix = format!("/logs/{{app{index:03},worker{index:03}}}/**/");
+        let remaining = 4096 - prefix.len() - ".log".len();
+        let repeats = remaining / unit.len();
+        let padding = "x".repeat(remaining % unit.len());
+        let pattern = format!("{prefix}{}{padding}.log", unit.repeat(repeats));
+        assert_eq!(pattern.len(), 4096);
+        total_bytes += pattern.len();
+        regexes.push(
+            globset::GlobBuilder::new(&pattern)
+                .literal_separator(true)
+                .backslash_escape(false)
+                .build()
+                .unwrap()
+                .regex()
+                .to_owned(),
+        );
+        if index == 0 || index == 255 {
+            candidates.push(format!(
+                "/logs/app{index:03}/sub/{}{padding}.log",
+                "abza".repeat(repeats)
+            ));
+        }
+    }
+    assert_eq!(total_bytes, 1024 * 1024);
+    let hirs: Vec<_> = regexes
+        .iter()
+        .map(|regex| {
+            regex_syntax::ParserBuilder::new()
+                .utf8(false)
+                .unicode(false)
+                .dot_matches_new_line(true)
+                .build()
+                .parse(regex)
+                .unwrap()
+        })
+        .collect();
+    let bound = memory::glob_program_bound(&hirs).unwrap();
+    drop(hirs);
+    let refs: Vec<_> = regexes.iter().map(String::as_str).collect();
+    let (regex, estimate) = compile_glob_regex(&refs).unwrap();
+    assert!(estimate.program_payload_bytes <= bound);
+    let mut cache = regex.create_cache();
+    for candidate in candidates {
+        assert!(
+            regex
+                .search_half_with(&mut cache, &Input::new(candidate.as_bytes()))
+                .is_some()
+        );
+        let miss = candidate.replace(".log", ".txt");
+        assert!(
+            regex
+                .search_half_with(&mut cache, &Input::new(miss.as_bytes()))
+                .is_none()
+        );
     }
 }
