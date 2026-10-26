@@ -123,6 +123,8 @@ pub enum Admission {
 /// Reader metadata and the logical lease. Does not retain an open source handle.
 #[derive(Debug)]
 pub struct ReaderSeed {
+    /// Original admission decision, retained through pending-write recovery.
+    pub decision: Decision,
     /// Durable logical key.
     pub file_id: cp::FileId,
     /// Epoch protecting progress against stream resets.
@@ -171,7 +173,6 @@ pub struct PreparedAdmission {
     generation: u64,
     identity_revision: u64,
     touched: Option<RecordStamp>,
-    decision: Decision,
     seed: ReaderSeed,
     operations: Vec<cp::Operation>,
     mtime_unavailable: bool,
@@ -185,7 +186,7 @@ impl PreparedAdmission {
     /// Selected policy, including superseded identity and explicit loss/quarantine.
     #[must_use]
     pub fn decision(&self) -> Decision {
-        self.decision
+        self.seed.decision
     }
     /// Reports inability to apply the age filter without silently excluding data.
     #[must_use]
@@ -211,11 +212,24 @@ pub enum CommittedAdmission {
     Reader(ReaderSeed),
     /// Newly registered mismatch was quarantined atomically, even if cleanup failed.
     Quarantined {
+        /// Original mismatch decision, including the superseded identity.
+        decision: Decision,
         /// Durable quarantine identity, always reportable.
         file_id: cp::FileId,
         /// A cleanup failure has stopped the owner; never treat it as uncommitted.
         release_error: Option<LeaseError>,
     },
+}
+
+impl CommittedAdmission {
+    /// Original decision for health reporting, on direct or recovered completion.
+    #[must_use]
+    pub fn decision(&self) -> Decision {
+        match self {
+            Self::Reader(seed) => seed.decision,
+            Self::Quarantined { decision, .. } => *decision,
+        }
+    }
 }
 
 /// Required progress synchronization and optional maintenance are separate outcomes.
@@ -298,11 +312,10 @@ impl IdentityOwner {
         inputs: &ValidatedInputs,
     ) -> Result<Self, IdentityError> {
         let config = inputs.settings();
-        let replay = cp::ReplayConfig::new(
-            config.limits.max_tracked_files as u32,
-            inputs.resources().snapshot_bytes,
-            inputs.profile(),
-        )?;
+        let replay = inputs
+            .store_config()
+            .map_err(|_| IdentityError::ConfigurationMismatch)?
+            .replay;
         if !store
             .state()?
             .matches_configuration(inputs.checkpoint_id(), replay)
@@ -418,7 +431,12 @@ impl IdentityOwner {
                 decision::Blocked::Profile(id) => Admission::ProfileBlocked(id),
             });
         }
-        if exact.is_none() && state.records().len() >= self.tracked_limit {
+        // With age filtering enabled, resolve association and fresh handle mtime
+        // before reporting capacity: an unrelated old file needs no durable slot.
+        if exact.is_none()
+            && self.policy.ignore_older_than.is_zero()
+            && state.records().len() >= self.tracked_limit
+        {
             return Ok(Admission::NeedsCapacity);
         }
         let Some(_reservation) = budget.try_reserve() else {
@@ -585,8 +603,8 @@ impl IdentityOwner {
             generation: state.generation(),
             identity_revision: self.identity_revision,
             touched: exact.map(RecordStamp::from),
-            decision,
             seed: ReaderSeed {
+                decision,
                 file_id,
                 epoch,
                 offset,

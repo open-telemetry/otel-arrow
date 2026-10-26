@@ -195,7 +195,7 @@ impl IdentityOwner {
         for plan in plans {
             self.validate_plan(&plan)?;
             if matches!(
-                plan.decision,
+                plan.decision(),
                 Decision::Register {
                     superseded: None,
                     ..
@@ -246,7 +246,7 @@ impl IdentityOwner {
             .iter()
             .filter(|plan| {
                 matches!(
-                    plan.decision,
+                    plan.decision(),
                     Decision::Register {
                         superseded: None,
                         ..
@@ -267,16 +267,17 @@ impl IdentityOwner {
         let mut operations = Vec::new();
         let mut admissions = Vec::with_capacity(plans.len());
         for plan in plans {
+            let decision = plan.decision();
             operations.extend(plan.operations);
             admissions.push(Completion {
-                seed: plan.seed,
                 quarantine: matches!(
-                    plan.decision,
+                    decision,
                     Decision::Register {
                         anchor: Anchor::Quarantine,
                         ..
                     }
                 ),
+                seed: plan.seed,
             });
         }
         if operations.is_empty() {
@@ -310,6 +311,7 @@ impl IdentityOwner {
             self.stopped = true;
         }
         CommittedAdmission::Quarantined {
+            decision: seed.decision,
             file_id: seed.file_id,
             release_error,
         }

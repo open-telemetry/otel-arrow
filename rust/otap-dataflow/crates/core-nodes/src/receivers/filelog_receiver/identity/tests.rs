@@ -250,6 +250,7 @@ fn mismatch_policies_and_quarantine_persistence() {
             CommittedAdmission::Quarantined {
                 file_id: id,
                 release_error,
+                ..
             } => {
                 assert!(release_error.is_none());
                 assert_eq!(policy, RecoveryMismatch::Fail);
@@ -2204,4 +2205,134 @@ fn required_sync_failure_remains_terminal() {
         owner.resolve_pending(),
         Err(IdentityError::Stopped)
     ));
+}
+
+/// Scenario: A full durable table receives old and eligible unrelated files, plus old associated and recognized replacement files.
+/// Guarantees: Only unrelated old files are ignored; eligible, fingerprint/path-associated and recognized replacement files still require capacity without mutating state.
+#[test]
+fn full_capacity_preserves_age_and_association_precedence() {
+    let f = Fixture::new();
+    let inputs = f.inputs(|c| {
+        c.limits.max_tracked_files = 1;
+        c.limits.max_open_files = 1;
+        c.ignore_older_than = Duration::from_secs(10);
+    });
+    let mut owner = f.owner(&inputs);
+    let path = f.write("app", b"tracked");
+    let reader = commit(&mut owner, &path, Context::Replacement);
+    let set_age = |path: &Path, seconds| {
+        File::open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(now() - Duration::from_secs(seconds)))
+            .unwrap();
+    };
+    let unrelated = f.write("unrelated", b"different");
+    set_age(&unrelated, 11);
+    assert!(matches!(
+        prepare(&mut owner, &unrelated, Context::Unrelated).unwrap(),
+        Admission::Ignored
+    ));
+    set_age(&unrelated, 10);
+    assert!(matches!(
+        prepare(&mut owner, &unrelated, Context::Unrelated).unwrap(),
+        Admission::NeedsCapacity
+    ));
+    set_age(&unrelated, 11);
+    assert!(matches!(
+        prepare(&mut owner, &unrelated, Context::Replacement).unwrap(),
+        Admission::NeedsCapacity
+    ));
+    let copy = f.write("copy", b"tracked copy");
+    set_age(&copy, 11);
+    assert!(matches!(
+        prepare(&mut owner, &copy, Context::Unrelated).unwrap(),
+        Admission::NeedsCapacity
+    ));
+    fs::rename(&path, f.source.path().join("archive")).unwrap();
+    fs::write(&path, b"new stream").unwrap();
+    set_age(&path, 11);
+    assert!(matches!(
+        prepare(&mut owner, &path, Context::Unrelated).unwrap(),
+        Admission::NeedsCapacity
+    ));
+    assert_eq!(owner.state().unwrap().last_sequence(), 1);
+    assert_eq!(owner.state().unwrap().records().len(), 1);
+    assert!(owner.state().unwrap().get(&reader.file_id).is_some());
+    assert_eq!(f.registry.len().unwrap(), 1);
+}
+
+/// Scenario: Same-locator reset under each mismatch policy completes directly or after a partial checkpoint write.
+/// Guarantees: Reader and quarantine results preserve the original reset decision and superseded ID exactly once, including after pending resolution.
+#[test]
+fn completion_preserves_decision_through_pending_resolution() {
+    for policy in [
+        RecoveryMismatch::Beginning,
+        RecoveryMismatch::SkipToEnd,
+        RecoveryMismatch::Fail,
+    ] {
+        for pending in [false, true] {
+            let f = Fixture::new();
+            let inputs = f.inputs(|c| c.identity.on_recovery_mismatch = policy);
+            let mut owner = f.owner(&inputs);
+            let path = f.write("app", b"old stream");
+            let reader = commit(&mut owner, &path, Context::Unrelated);
+            assert!(matches!(
+                reader.decision,
+                Decision::Register {
+                    reset: false,
+                    superseded: None,
+                    ..
+                }
+            ));
+            let old = reader.file_id;
+            drop(reader);
+            fs::write(&path, b"replacement").unwrap();
+            let plan = ready(prepare(&mut owner, &path, Context::Unrelated).unwrap());
+            let expected = plan.decision();
+            assert!(
+                matches!(expected, Decision::Register { reset: true, superseded: Some(id), .. } if id == old)
+            );
+            let result = if pending {
+                owner.store.inject_write_failure_after(12);
+                assert!(matches!(
+                    owner.commit(plan),
+                    Err(IdentityError::PendingWrite(_))
+                ));
+                assert_eq!(f.registry.len().unwrap(), 1);
+                let mut resolved = owner.resolve_pending().unwrap();
+                assert_eq!(resolved.admissions.len(), 1);
+                assert!(matches!(
+                    owner.resolve_pending(),
+                    Err(IdentityError::NoPendingWrite)
+                ));
+                resolved.admissions.pop().unwrap()
+            } else {
+                owner.commit(plan).unwrap()
+            };
+            assert_eq!(result.decision(), expected);
+            match &result {
+                CommittedAdmission::Reader(seed) => {
+                    assert_ne!(policy, RecoveryMismatch::Fail);
+                    assert_eq!(seed.decision, expected);
+                }
+                CommittedAdmission::Quarantined { release_error, .. } => {
+                    assert_eq!(policy, RecoveryMismatch::Fail);
+                    assert!(release_error.is_none());
+                }
+            }
+            assert_eq!(owner.state().unwrap().last_sequence(), 2);
+            assert!(!owner.has_pending_write());
+            drop(result);
+            assert!(f.registry.is_empty().unwrap());
+        }
+    }
+}
+
+/// Scenario: Separate production callers request the process lease registry.
+/// Guarantees: Both handles share the same registry without creating independent ownership domains or modifying global lease state.
+#[test]
+fn production_registry_is_shared() {
+    let first = lease::LeaseRegistry::process();
+    let second = lease::LeaseRegistry::process();
+    assert!(Arc::ptr_eq(&first, &second));
 }

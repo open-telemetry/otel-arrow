@@ -88,6 +88,9 @@ Smaller windows, including the 16-byte minimum, increase false associations.
 Independent files can share timestamps or headers; a larger window reduces but
 does not eliminate that ambiguity. Under `beginning`, false association can
 replay existing content; under `fail`, it can quarantine a new unrelated file.
+Under `skip_to_end`, association starts at EOF and can skip unread copied bytes.
+An identical retained full path also associates a changed locator, even without
+matching fingerprints, and can quarantine the replacement under `fail`.
 No association transfers the old file's ID, epoch or committed offset.
 
 ## Memory checks

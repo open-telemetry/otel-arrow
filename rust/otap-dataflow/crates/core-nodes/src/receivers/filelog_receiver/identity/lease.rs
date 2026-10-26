@@ -10,8 +10,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-static PROCESS_LEASES: LazyLock<Arc<LeaseRegistry>> =
-    LazyLock::new(|| Arc::new(LeaseRegistry::default()));
+static PROCESS_LEASES: LazyLock<Arc<LeaseRegistry>> = LazyLock::new(|| {
+    Arc::new(LeaseRegistry {
+        state: Mutex::default(),
+    })
+});
 
 /// Acquisition/release never performs I/O or waits for source ownership.
 #[derive(Debug, thiserror::Error)]
@@ -49,7 +52,8 @@ struct State {
 ///
 /// Production uses `process`; tests may inject isolated registries. B-tree nodes
 /// are reclaimed on release, avoiding retained hash-table capacity after churn.
-#[derive(Debug, Default)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Default))]
 pub struct LeaseRegistry {
     state: Mutex<State>,
 }
@@ -376,7 +380,7 @@ mod quarantine_tests {
             panic!("cleanup failure");
         });
         assert!(
-            matches!(owner.complete_quarantine(seed), CommittedAdmission::Quarantined { file_id, release_error: Some(LeaseError::Integrity) } if file_id == id)
+            matches!(owner.complete_quarantine(seed), CommittedAdmission::Quarantined { file_id, release_error: Some(LeaseError::Integrity), .. } if file_id == id)
         );
         assert!(matches!(owner.state(), Err(IdentityError::Stopped)));
         assert_eq!(

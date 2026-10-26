@@ -77,7 +77,9 @@ Do not treat a successful standalone batch test as evidence of that integration.
 selects a partial subset after discovery has approved the group.
 
 `ResolvedWrite.admissions` is empty for progress and maintenance transactions;
-for admission it contains the original reader/quarantine results. A committed
+for admission it contains the original reader/quarantine results.
+`CommittedAdmission::decision()` preserves the original reset and superseded-ID
+information for health reporting after direct commit or pending resolution. A committed
 quarantine reports its ID even if lease cleanup fails; `release_error` is then
 present and the owner is stopped. Do not schedule returned readers if ownership
 cleanup has stopped the owner.
@@ -211,6 +213,8 @@ compaction, remaining time is approximately the smaller of:
 Defaults are 10,000 transactions and 64 MiB. Registration, resets, metadata
 updates and quarantine also consume that budget. The current store uses these
 configured append caps directly. WAL recovery memory bounds do not enlarge them.
+Optional fingerprint-growth transactions consume this budget too and can bring
+`CompactionRequired` forward, leaving less capacity for required progress.
 
 For an illustrative 10 Acks/second with one append per Ack, excluding startup
 and other transactions:
