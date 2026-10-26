@@ -475,6 +475,21 @@ fn validate_decode_limits(count: usize, bytes: usize) -> Result<(), SyslogFramin
     Ok(())
 }
 
+// Both execution modes share parsing, error translation, and receipt context.
+// Returning the message length lets incremental decoding budget the same frame
+// without retaining parsed data or allocating another envelope.
+fn append_syslog_frame(
+    builder: &mut ReceivedArrowRecordsBuilder,
+    frame: Result<Frame<'_>, SyslogFramingError>,
+) -> Result<usize, CodecError> {
+    let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
+    let parsed = parser::parse(frame.message)
+        .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
+        .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+    builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
+    Ok(frame.message.len())
+}
+
 #[derive(Default)]
 struct SyslogDecoder;
 
@@ -497,11 +512,7 @@ impl PdataDecoder for SyslogDecoder {
             .map_err(|error| operation_error(CodecOperation::Decode, error))?;
         let mut builder = ReceivedArrowRecordsBuilder::default();
         for frame in frames {
-            let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            let parsed = parser::parse(frame.message)
-                .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
-                .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
+            let _ = append_syslog_frame(&mut builder, frame)?;
         }
         builder
             .build()
@@ -562,19 +573,14 @@ impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
                     .map(Some)
                     .map_err(|error| operation_error(CodecOperation::Decode, error));
             };
-            let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            let parsed = parser::parse(frame.message)
-                .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
-                .map_err(|error| operation_error(CodecOperation::Decode, error))?;
             let builder = self.builder.as_mut().ok_or_else(|| {
                 operation_error(
                     CodecOperation::Decode,
                     framing_error("decode job already finished"),
                 )
             })?;
-            builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
+            bytes += append_syslog_frame(builder, frame)?;
             records += 1;
-            bytes += frame.message.len();
             if records >= budget.max_records()
                 || bytes >= budget.max_bytes()
                 || (records.is_multiple_of(16) && started.elapsed() >= budget.max_duration())
@@ -1388,8 +1394,72 @@ mod tests {
         }
     }
 
-    /// Scenario: A timer shares one runtime thread with maximum-sized cooperative syslog decoding.
-    /// Guarantees: The opt-in release check covers complete conversion and timer lateness for item- and byte-limited batches.
+    // Rearm after each sample instead of replaying missed ticks. Completion
+    // carries its own timestamp: account for an overdue final tick, but exclude
+    // unrelated scheduling delays after the conversion has already completed.
+    async fn probe_scheduling_lateness(
+        mut completed: tokio::sync::oneshot::Receiver<tokio::time::Instant>,
+        period: std::time::Duration,
+    ) -> std::time::Duration {
+        use tokio::time::{Instant, sleep_until};
+
+        assert!(!period.is_zero());
+        let mut deadline = Instant::now() + period;
+        let mut max_lateness = std::time::Duration::ZERO;
+        loop {
+            tokio::select! {
+                biased;
+                finished = &mut completed => {
+                    let finished = finished.expect("conversion always reports its completion time");
+                    return max_lateness.max(finished.saturating_duration_since(deadline));
+                }
+                _ = sleep_until(deadline) => {
+                    let observed = Instant::now();
+                    max_lateness = max_lateness.max(observed.saturating_duration_since(deadline));
+                    deadline = observed + period;
+                }
+            }
+        }
+    }
+
+    /// Scenario: A conversion completes late after an earlier periodic probe tick was serviced.
+    /// Guarantees: The probe continues after its first observation and accounts for a final overdue tick even when completion is already ready.
+    #[tokio::test(start_paused = true)]
+    async fn scheduling_probe_covers_late_completion_after_earlier_tick() {
+        use std::time::Duration;
+
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let mut probe = Box::pin(probe_scheduling_lateness(
+            completion,
+            Duration::from_millis(1),
+        ));
+        assert!(futures::poll!(probe.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_millis(2)).await;
+        assert!(futures::poll!(probe.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_millis(20)).await;
+        finished.send(tokio::time::Instant::now()).unwrap();
+        assert_eq!(probe.await, Duration::from_millis(19));
+    }
+
+    /// Scenario: Conversion finishes before its first probe deadline, but the observer is polled much later.
+    /// Guarantees: Lateness after completion is excluded instead of being attributed to conversion or finalization.
+    #[tokio::test(start_paused = true)]
+    async fn scheduling_probe_excludes_delay_after_completion() {
+        use std::time::Duration;
+
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let mut probe = Box::pin(probe_scheduling_lateness(
+            completion,
+            Duration::from_millis(1),
+        ));
+        assert!(futures::poll!(probe.as_mut()).is_pending());
+        finished.send(tokio::time::Instant::now()).unwrap();
+        tokio::time::advance(Duration::from_millis(20)).await;
+        assert_eq!(probe.await, Duration::ZERO);
+    }
+
+    /// Scenario: A periodic timer shares one runtime thread with maximum-sized cooperative syslog decoding.
+    /// Guarantees: The opt-in release check measures worst timer lateness throughout parsing and finalization for item- and byte-limited batches.
     #[tokio::test(flavor = "current_thread")]
     #[ignore = "wall-clock check: run in release mode on an otherwise idle pinned CPU"]
     async fn bounded_decode_scheduling_latency() {
@@ -1429,11 +1499,8 @@ mod tests {
             for _ in 0..24 {
                 let payload: OtapPayload =
                     codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
-                let deadline = tokio::time::Instant::now() + Duration::from_millis(1);
-                let timer = async {
-                    tokio::time::sleep_until(deadline).await;
-                    tokio::time::Instant::now().saturating_duration_since(deadline)
-                };
+                let (finished, completion) = tokio::sync::oneshot::channel();
+                let timer = probe_scheduling_lateness(completion, Duration::from_millis(1));
                 let decode = async {
                     let start = Instant::now();
                     // Exercise the same scheduler-aware boundary as effect handlers,
@@ -1443,11 +1510,13 @@ mod tests {
                         .await
                         .unwrap();
                     let elapsed = start.elapsed();
-                    let _ = std::hint::black_box(&records);
-                    elapsed
+                    finished.send(tokio::time::Instant::now()).unwrap();
+                    (elapsed, records)
                 };
-                // Poll the timer first so it is armed before decoding starts.
-                let (lateness, elapsed) = tokio::join!(biased; timer, decode);
+                // Arm the probe before decoding. Retain records until it exits
+                // so destruction is outside conversion and finalization timing.
+                let (lateness, (elapsed, records)) = tokio::join!(biased; timer, decode);
+                let _ = std::hint::black_box(&records);
                 max_decode = max_decode.max(elapsed);
                 max_timer_lateness = max_timer_lateness.max(lateness);
             }

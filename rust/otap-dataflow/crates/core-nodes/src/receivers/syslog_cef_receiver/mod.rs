@@ -238,18 +238,16 @@ enum BoundedReadResult {
 /// retains no clock or timezone cache across reads; clock corrections and year
 /// changes are observed by the next nonempty refill, including partial EOF input.
 struct ReceiptReader<R, C> {
-    inner: R,
+    inner: BufReader<R>,
     clock: C,
-    remaining: usize,
     received_local_year: Option<i32>,
 }
 
-impl<R, C: FnMut() -> i32> ReceiptReader<R, C> {
-    fn new(inner: R, clock: C) -> Self {
+impl<R: AsyncRead, C: FnMut() -> i32> ReceiptReader<R, C> {
+    fn new(inner: BufReader<R>, clock: C) -> Self {
         Self {
             inner,
             clock,
-            remaining: 0,
             received_local_year: None,
         }
     }
@@ -257,17 +255,21 @@ impl<R, C: FnMut() -> i32> ReceiptReader<R, C> {
     fn receipt_year(&self) -> Option<i32> {
         self.received_local_year
     }
+
+    fn buffer(&self) -> &[u8] {
+        self.inner.buffer()
+    }
 }
 
-impl<R: AsyncBufRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncBufRead for ReceiptReader<R, C> {
+impl<R: AsyncRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncBufRead for ReceiptReader<R, C> {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
         let this = self.get_mut();
+        let refill = this.inner.buffer().is_empty();
         match Pin::new(&mut this.inner).poll_fill_buf(cx) {
             Poll::Ready(Ok(bytes)) => {
-                if this.remaining == 0 && !bytes.is_empty() {
+                if refill && !bytes.is_empty() {
                     this.received_local_year = Some((this.clock)());
                 }
-                this.remaining = bytes.len();
                 Poll::Ready(Ok(bytes))
             }
             other => other,
@@ -276,12 +278,11 @@ impl<R: AsyncBufRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncBufRead for Receip
 
     fn consume(self: Pin<&mut Self>, amount: usize) {
         let this = self.get_mut();
-        this.remaining = this.remaining.saturating_sub(amount);
         Pin::new(&mut this.inner).consume(amount);
     }
 }
 
-impl<R: AsyncBufRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncRead for ReceiptReader<R, C> {
+impl<R: AsyncRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncRead for ReceiptReader<R, C> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -299,12 +300,6 @@ impl<R: AsyncBufRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncRead for ReceiptRe
         buf.put_slice(&available[..count]);
         self.consume(count);
         Poll::Ready(Ok(()))
-    }
-}
-
-impl<R: AsyncRead, C> ReceiptReader<BufReader<R>, C> {
-    fn buffer(&self) -> &[u8] {
-        self.inner.buffer()
     }
 }
 
@@ -3272,6 +3267,31 @@ mod tcp_frame_reader_tests {
             BoundedReadResult::Eof
         ));
         assert_eq!(line, b"partial");
+        assert_eq!(reader.receipt_year(), Some(2025));
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// Scenario: Direct async reads cross two refills, including zero-length reads and empty EOF.
+    /// Guarantees: AsyncRead cannot bypass receipt sampling or resample already buffered bytes and empty reads.
+    #[tokio::test]
+    async fn tcp_receipt_context_tracks_direct_async_reads() {
+        let calls = Cell::new(0);
+        let mut reader = ReceiptReader::new(BufReader::with_capacity(4, &b"abcdEFGH"[..]), || {
+            calls.set(calls.get() + 1);
+            2023 + calls.get()
+        });
+        assert_eq!(reader.read(&mut []).await.unwrap(), 0);
+        assert_eq!(reader.receipt_year(), None);
+        assert_eq!(calls.get(), 0);
+        for (expected, year) in [(b"ab".as_slice(), 2024), (b"cd", 2024), (b"EFGH", 2025)] {
+            let mut bytes = vec![0; expected.len()];
+            let _ = reader.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(bytes, expected);
+            assert_eq!(reader.receipt_year(), Some(year));
+        }
+        assert_eq!(calls.get(), 2);
+        assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
+        assert_eq!(reader.read(&mut []).await.unwrap(), 0);
         assert_eq!(reader.receipt_year(), Some(2025));
         assert_eq!(calls.get(), 2);
     }
