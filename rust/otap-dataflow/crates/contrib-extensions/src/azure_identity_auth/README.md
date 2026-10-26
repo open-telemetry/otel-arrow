@@ -115,9 +115,9 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 ### Managed identity execution bounds
 
 Managed identity credential construction and acquisition run on one Tokio
-blocking worker per extension instance. The worker acquires its admission
-permit before it is submitted and holds that permit until it exits, even if
-the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
+blocking worker per extension instance. One lock both stores the credential
+and admits workers. It is acquired before the worker is submitted and held
+until the worker exits, even if the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
 detection and challenge-file access off the thread-per-core executor without
 allowing cancellation or repeated refresh attempts to create unbounded workers.
 

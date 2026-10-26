@@ -207,9 +207,11 @@ flowchart LR
    subsequent published token. The initial `None` is filtered out.
 
 For managed identity, the credential call runs on Tokio's blocking pool behind
-a one-permit admission gate owned by the extension instance. The permit is
-acquired before work is submitted and remains held until the worker exits, even
-if the awaiting task is cancelled. The worker constructs the credential once,
+one async mutex owned by the extension instance. The mutex stores the lazily
+constructed credential and also serves as the admission gate. Its owned guard
+is acquired before work is submitted and moves into the worker, so it remains
+held until the worker exits, even if the awaiting task is cancelled. The worker
+constructs the credential once,
 reuses it for later refreshes, and polls the SDK token future away from the
 thread-per-core executor. This is required for Azure Arc credentials, whose SDK
 path includes synchronous agent detection and challenge-file reads.

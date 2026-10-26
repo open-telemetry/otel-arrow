@@ -86,6 +86,11 @@ Geneva ingestion credentials from GCS, then keeps its existing ingestion-token
 and routing cache. A valid cached Geneva credential allows uploads to continue
 without consulting the Entra provider.
 
+Each Entra token lookup is limited to five seconds. A timeout fails the lookup
+instead of indefinitely blocking uploads or shutdown. The exporter does not
+serialize concurrent token lookups; acquisition coalescing remains the identity
+extension's responsibility. Provider futures must be cancellation-safe.
+
 Azure Arc uses the same `managed_identity` method. Arc detection and the HIMDS
 challenge-response remain in the Azure Identity SDK; the Geneva exporter does
 not contain Arc-specific identity logic.

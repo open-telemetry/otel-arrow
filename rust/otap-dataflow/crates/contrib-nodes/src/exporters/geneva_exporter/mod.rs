@@ -876,20 +876,17 @@ impl Config {
     }
 
     /// Build the `geneva-uploader` `GenevaClientConfig` from this exporter
-    /// configuration.
+    /// configuration and an already-resolved uploader authentication method.
     ///
     /// This is the adapter owned by this crate: it maps the local, serde-facing
-    /// config types onto the uploader's client config, including the auth
-    /// method, MSI resource, and the per-signal logs/spans default table names
-    /// and routing mappings. It is factored out of
-    /// [`GenevaExporter::from_config`] so the pure `Config` ->
+    /// config types onto the uploader's client config, including the MSI
+    /// resource and the per-signal logs/spans default table names and routing
+    /// mappings. Callers resolve `auth_method` first because capability-backed
+    /// methods cannot be derived from configuration alone. It is factored out
+    /// of [`GenevaExporter::from_config`] so the pure `Config` ->
     /// `GenevaClientConfig` conversion can be unit-tested without initializing
     /// a live `GenevaClient`.
-    fn to_geneva_client_config(&self) -> GenevaClientConfig {
-        self.to_geneva_client_config_with_auth(self.auth.uploader_auth_method())
-    }
-
-    fn to_geneva_client_config_with_auth(&self, auth_method: AuthMethod) -> GenevaClientConfig {
+    fn to_geneva_client_config(&self, auth_method: AuthMethod) -> GenevaClientConfig {
         // Create LogsConfig and TracesConfig from the configuration
         let logs_config = self
             .logs
@@ -923,6 +920,13 @@ impl Config {
             spans: traces_config,
             obo_event_map: self.obo.clone().map(Into::into),
         }
+    }
+
+    /// Build the uploader client config for agent-fed authentication.
+    fn to_agent_fed_geneva_client_config(&self) -> GenevaClientConfig {
+        // `with_agent_fed_source` ignores `auth_method`; this value only
+        // satisfies the shared uploader configuration type.
+        self.to_geneva_client_config(AuthMethod::SystemManagedIdentity)
     }
 }
 
@@ -977,30 +981,39 @@ pub enum AuthConfig {
 }
 
 impl AuthConfig {
-    fn uploader_auth_method(&self) -> AuthMethod {
+    /// Returns the uploader authentication method fully described by
+    /// configuration.
+    ///
+    /// Capability-backed methods return an error because their credentials
+    /// must be resolved from a bound capability during client construction.
+    fn configured_auth_method(&self) -> Result<AuthMethod, ConfigError> {
         match self {
-            Self::Certificate { path, password } => AuthMethod::Certificate {
+            Self::Certificate { path, password } => Ok(AuthMethod::Certificate {
                 path: PathBuf::from(path),
                 password: password.clone(),
-            },
-            Self::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
-            Self::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
+            }),
+            Self::SystemManagedIdentity { .. } => Ok(AuthMethod::SystemManagedIdentity),
+            Self::UserManagedIdentity { client_id, .. } => Ok(AuthMethod::UserManagedIdentity {
                 client_id: client_id.clone(),
-            },
+            }),
             Self::UserManagedIdentityByArmResourceId { resource_id, .. } => {
-                AuthMethod::UserManagedIdentityByResourceId {
+                Ok(AuthMethod::UserManagedIdentityByResourceId {
                     resource_id: resource_id.clone(),
-                }
+                })
             }
-            Self::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
+            Self::WorkloadIdentity { msi_resource } => Ok(AuthMethod::WorkloadIdentity {
                 resource: msi_resource.clone(),
-            },
-            // Client construction replaces this placeholder with the resolved
-            // bearer-token capability adapter.
-            Self::ExternalToken { .. } => AuthMethod::SystemManagedIdentity,
-            // `with_agent_fed_source` ignores this field. The placeholder only
-            // satisfies the shared uploader configuration type.
-            Self::AgentFed => AuthMethod::SystemManagedIdentity,
+            }),
+            Self::ExternalToken { .. } => Err(ConfigError::InvalidUserConfig {
+                error: "external-token Geneva auth requires a resolved bearer_token_provider \
+                        capability"
+                    .to_owned(),
+            }),
+            Self::AgentFed => Err(ConfigError::InvalidUserConfig {
+                error: "agent-fed Geneva auth requires a resolved \
+                        agent_fed_credential_provider capability"
+                    .to_owned(),
+            }),
         }
     }
 
@@ -1123,7 +1136,7 @@ fn create_geneva_client(
     validate_geneva_client_prerequisites(config, node_config, ensure_crypto_provider)?;
     match &config.auth {
         AuthConfig::AgentFed => {
-            let client_config = config.to_geneva_client_config();
+            let client_config = config.to_agent_fed_geneva_client_config();
             let source = resolve_agent_fed_source(capabilities)?;
             GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(|error| {
                 ConfigError::InvalidUserConfig {
@@ -1137,7 +1150,7 @@ fn create_geneva_client(
                 resource: resource.clone(),
                 provider: Arc::new(provider),
             };
-            let client_config = config.to_geneva_client_config_with_auth(auth_method);
+            let client_config = config.to_geneva_client_config(auth_method);
             GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
                 error: format!("Failed to initialize external-token Geneva client: {error}"),
             })
@@ -1147,7 +1160,8 @@ fn create_geneva_client(
         | AuthConfig::UserManagedIdentity { .. }
         | AuthConfig::UserManagedIdentityByArmResourceId { .. }
         | AuthConfig::WorkloadIdentity { .. } => {
-            let client_config = config.to_geneva_client_config();
+            let client_config =
+                config.to_geneva_client_config(config.auth.configured_auth_method()?);
             GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
                 error: format!("Failed to initialize Geneva client: {error}"),
             })
@@ -2284,9 +2298,11 @@ mod tests {
                 )]),
             )),
         });
-        let client =
-            GenevaClient::with_agent_fed_source(config.to_geneva_client_config(), source.clone())
-                .expect("test client");
+        let client = GenevaClient::with_agent_fed_source(
+            config.to_agent_fed_geneva_client_config(),
+            source.clone(),
+        )
+        .expect("test client");
         let mut records = OtapArrowRecords::Logs(Default::default());
         records
             .set(ArrowPayloadType::Logs, create_test_logs_batch())
@@ -2860,7 +2876,7 @@ mod tests {
         let parsed = Config::parse(&config).expect("valid combined agent-fed config");
         assert!(matches!(parsed.auth, AuthConfig::AgentFed));
 
-        let client_config = parsed.to_geneva_client_config();
+        let client_config = parsed.to_agent_fed_geneva_client_config();
         assert!(client_config.endpoint.is_empty());
         assert!(client_config.region.is_empty());
         assert!(client_config.msi_resource.is_none());
@@ -2991,6 +3007,27 @@ mod tests {
 
         let _ = create_geneva_client(&config, &node_config, &capabilities)
             .expect("shared bearer-token provider should construct the client");
+    }
+
+    /// Scenario: Capability-backed auth methods are mapped without resolving their capability.
+    /// Guarantees: External-token and agent-fed auth fail explicitly instead of being represented
+    /// as system-managed identity.
+    #[test]
+    fn capability_backed_auth_methods_require_resolution() {
+        let external_token =
+            Config::parse(&external_token_test_config()).expect("external-token config");
+        let error = external_token
+            .auth
+            .configured_auth_method()
+            .expect_err("external-token auth must not map without its capability");
+        assert!(error.to_string().contains("bearer_token_provider"));
+
+        let agent_fed = Config::parse(&agent_fed_test_config()).expect("agent-fed config");
+        let error = agent_fed
+            .auth
+            .configured_auth_method()
+            .expect_err("agent-fed auth must not map without its capability");
+        assert!(error.to_string().contains("agent_fed_credential_provider"));
     }
 
     /// Scenario: A shared bearer-token capability authenticates a GCS request and two uploads.
@@ -4630,7 +4667,7 @@ mod tests {
                 .map(String::as_str),
             Some("audit-group")
         );
-        let client_config = parsed.to_geneva_client_config();
+        let client_config = configured_client_config(&parsed);
 
         // Scalar fields propagate unchanged.
         assert_eq!(client_config.endpoint, "https://geneva.example");
@@ -4777,7 +4814,7 @@ mod tests {
         });
 
         let parsed: Config = serde_json::from_value(config).expect("config should parse");
-        let client_config = parsed.to_geneva_client_config();
+        let client_config = configured_client_config(&parsed);
 
         let obo = client_config
             .obo_event_map
@@ -4803,8 +4840,17 @@ mod tests {
     #[test]
     fn test_config_to_geneva_client_config_without_obo_is_none() {
         let parsed: Config = serde_json::from_value(test_config()).expect("config should parse");
-        let client_config = parsed.to_geneva_client_config();
+        let client_config = configured_client_config(&parsed);
         assert!(client_config.obo_event_map.is_none());
+    }
+
+    fn configured_client_config(config: &Config) -> GenevaClientConfig {
+        config.to_geneva_client_config(
+            config
+                .auth
+                .configured_auth_method()
+                .expect("configured auth method"),
+        )
     }
 
     /// Scenario: An `obo` entry supplies an empty (whitespace-only) identity.

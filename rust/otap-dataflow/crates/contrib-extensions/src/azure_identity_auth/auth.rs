@@ -3,7 +3,7 @@
 
 //! Azure credential construction and token acquisition.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use azure_identity::{
     WorkloadIdentityCredentialOptions,
 };
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
-use tokio::sync::Semaphore;
+use tokio::sync::Mutex;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;
@@ -39,7 +39,6 @@ type CredentialFactory =
 struct ManagedIdentityExecution {
     credential: Arc<Mutex<Option<Arc<dyn TokenCredential>>>>,
     credential_factory: Arc<CredentialFactory>,
-    admission: Arc<Semaphore>,
 }
 
 impl ManagedIdentityExecution {
@@ -47,34 +46,22 @@ impl ManagedIdentityExecution {
         Self {
             credential: Arc::new(Mutex::new(None)),
             credential_factory,
-            admission: Arc::new(Semaphore::new(1)),
         }
     }
 
     async fn get_token(&self, scope: String) -> Result<AccessToken, Error> {
-        let permit = Arc::clone(&self.admission)
-            .acquire_owned()
-            .await
-            .map_err(|error| Error::ManagedIdentityWorker {
-                message: format!("acquisition admission closed: {error}"),
-            })?;
+        // The owned guard is both credential storage and admission control. It
+        // moves into the worker so a cancelled caller cannot admit another
+        // worker until this one exits.
+        let mut credential = Arc::clone(&self.credential).lock_owned().await;
         let runtime = tokio::runtime::Handle::current();
         let credential_factory = Arc::clone(&self.credential_factory);
-        let credential = Arc::clone(&self.credential);
 
         tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            let credential = {
-                let mut guard = credential
-                    .lock()
-                    .map_err(|_| Error::ManagedIdentityWorker {
-                        message: "credential state lock was poisoned".to_string(),
-                    })?;
-                if guard.is_none() {
-                    *guard = Some(credential_factory()?);
-                }
-                guard.as_ref().cloned().expect("credential is initialized")
-            };
+            if credential.is_none() {
+                *credential = Some(credential_factory()?);
+            }
+            let credential = credential.as_ref().expect("credential is initialized");
 
             runtime
                 .block_on(
