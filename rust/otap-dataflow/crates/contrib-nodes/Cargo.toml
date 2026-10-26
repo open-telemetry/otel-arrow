@@ -51,7 +51,6 @@ rustls-pki-types = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
-humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -102,7 +101,6 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
 windows-sys = { workspace = true, optional = true, features = [
-    "Win32_Globalization",
     "Win32_System_Performance",
 ] }
 
@@ -210,7 +208,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
-windows-perf-counters = ["dep:humantime", "dep:humantime-serde", "dep:windows-sys"]
+windows-perf-counters = ["dep:humantime-serde", "dep:windows-sys"]
 
 # Processors.
 condense-attributes = []
