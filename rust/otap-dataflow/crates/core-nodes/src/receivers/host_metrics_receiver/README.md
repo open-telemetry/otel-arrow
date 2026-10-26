@@ -143,7 +143,7 @@ Attributes:
 
 | Attribute | Values | Description |
 | --- | --- | --- |
-| `outcome` | `completed`, `failed`, `overrun` | Outcome of the scrape tick. |
+| `outcome` | `completed`, `failed`, `timeout`, `dropped`, `cancelled` | Terminal outcome of an accepted scrape. |
 
 #### `receiver.host_metrics.errors`
 
@@ -165,11 +165,58 @@ Non-dimensioned operational and timing metrics.
 
 | Scope | Instrument | Unit | Description |
 | --- | --- | --- | --- |
-| `receiver.host_metrics` | `scrapes.started` | `{scrape}` | Number of scrape ticks started. |
+| `receiver.host_metrics` | `scrapes.started` | `{scrape}` | Number of scrape ticks started (accepted by worker). |
+| `receiver.host_metrics` | `scrapes.skipped` | `{scrape}` | Scheduled ticks skipped because the worker was busy. |
 | `receiver.host_metrics` | `families.scraped` | `{family}` | Number of due metric families processed. |
 | `receiver.host_metrics` | `batches.sent` | `{batch}` | Number of batches sent downstream. |
 | `receiver.host_metrics` | `scrape.duration.ns` | `ns` | Wall-clock scrape duration. |
 | `receiver.host_metrics` | `scrape.lag.ns` | `ns` | Delay between scheduled and actual scrape start. |
+
+### Telemetry Migration (Old to New)
+
+All legacy flat counters were emitted under the `receiver.host_metrics` scope.
+They are replaced by the dimensioned metric sets above.
+
+| Legacy Metric | New Metric | Attribute |
+| --- | --- | --- |
+| `receiver.host_metrics.scrapes.started` | `receiver.host_metrics` / `scrapes.started` | -- |
+| `receiver.host_metrics.scrapes.completed` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=completed` |
+| `receiver.host_metrics.scrapes.failed` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=failed`, plus `outcome=timeout` for the legacy failure rate |
+| `receiver.host_metrics.scrapes.overrun` | `receiver.host_metrics` / `scrapes.skipped` | -- |
+| `receiver.host_metrics.scrapes.overrun` | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=timeout` |
+| *(new - previously uncounted)* | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=dropped` |
+| *(new)* | `receiver.host_metrics.scrapes` / `scrapes` | `outcome=cancelled` |
+| `receiver.host_metrics.families.scraped` | `receiver.host_metrics` / `families.scraped` | -- |
+| `receiver.host_metrics.batches.sent` | `receiver.host_metrics` / `batches.sent` | -- |
+| `receiver.host_metrics.scrape.duration.ns` | `receiver.host_metrics` / `scrape.duration.ns` | -- |
+| `receiver.host_metrics.scrape.lag.ns` | `receiver.host_metrics` / `scrape.lag.ns` | -- |
+| `receiver.host_metrics.scraper.failures` | `receiver.host_metrics.errors` / `errors` | `error.type=scraper_failure` |
+| `receiver.host_metrics.partial.errors` | `receiver.host_metrics.errors` / `errors` | `error.type=partial_error` |
+| `receiver.host_metrics.source.read.errors` | `receiver.host_metrics.errors` / `errors` | `error.type=source_read_error` |
+| `receiver.host_metrics.send.failures` | `receiver.host_metrics.errors` / `errors` | `error.type=send_failure` |
+
+Population notes:
+
+- The legacy `receiver.host_metrics.scrapes.overrun` counter covered two cases
+  that are now recorded separately: ticks skipped because the scraper worker was
+  busy map to `receiver.host_metrics` / `scrapes.skipped`, while accepted
+  scrapes that exceeded their timeout map to `scrapes` with `outcome=timeout`.
+  Their sum reproduces the legacy `scrapes.overrun` value.
+- The legacy `receiver.host_metrics.scrapes.failed` counter also counted
+  accepted scrapes that timed out. A failure-rate query that must preserve the
+  legacy meaning should sum `outcome=failed` and `outcome=timeout`;
+  `outcome=failed` alone excludes timeouts. Worker-start failures remain
+  outside this population and only appear under `error.type=scraper_failure`.
+- The legacy `receiver.host_metrics.source.read.errors` counter included both
+  fatal read failures and the per-tick partial error count. Fatal read failures
+  now map to `error.type=source_read_error`; per-family partial read errors now
+  map to `error.type=partial_error` only.
+- Batches dropped to downstream backpressure previously recorded no scrape
+  outcome at all; they now map to `outcome=dropped`. Worker-start failures
+  previously also incremented the legacy `receiver.host_metrics.scrapes.failed`
+  counter; they now appear only in the error set under
+  `error.type=scraper_failure` and stay outside the accepted-scrape outcome
+  population.
 
 ### Events
 
@@ -178,7 +225,7 @@ Non-dimensioned operational and timing metrics.
 | `host_metrics_receiver.drain_ingress` | `info` | Receiver ingress drain started. |
 | `host_metrics_receiver.shutdown` | `info` | Receiver shutdown completed. |
 | `host_metrics.scraper_busy` | `warn` | A scrape tick was skipped because the previous scrape was still running. |
-| `host_metrics.dropped_backpressure` | `warn` | A host metrics batch was dropped because downstream was unavailable or full. |
+| `host_metrics.dropped_backpressure` | `warn` | A host metrics batch was dropped because the downstream channel was full. |
 | `host_metrics.scrape_failed` | `warn` | A scrape failed. |
 | `host_metrics.scraper_stopped` | `warn` | The scraper worker stopped unexpectedly. |
 | `host_metrics.scrape_timeout` | `warn` | A scrape exceeded its configured timeout. |
