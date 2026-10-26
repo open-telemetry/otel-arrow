@@ -3811,9 +3811,58 @@ async fn test_conditional_data_point_by_attribute() {
 }
 
 /// Scenario: The branch condition predicate involves an attribute that is missing for all rows
+/// and the rows without this attribute should not pass the
 /// Guarantees: all rows are handled by the desired branch
 #[tokio::test]
 async fn test_conditional_with_missing_attr_in_predicate_expr() {
+    let query = r#"metrics | apply data_points {
+        if (lower_case(attributes["env"]) == "prod") {
+            set flags = 100
+        } else {
+            set flags = 200
+        }
+    }"#;
+
+    let input = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(1u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("PROD"))])
+                        .finish(),
+                    NumberDataPoint::build().flags(2u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = to_metrics_data(vec![
+        Metric::build()
+            .name("gauge")
+            .data_gauge(Gauge {
+                data_points: vec![
+                    NumberDataPoint::build()
+                        .flags(100u32)
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("PROD"))])
+                        .finish(),
+                    NumberDataPoint::build().flags(200u32).finish(),
+                ],
+            })
+            .finish(),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
+/// Scenario: The branch condition predicate involves an attribute that is missing for all rows
+/// and the rows without this attribute should pass the predicate
+/// Guarantees: all rows are handled by the desired branch
+#[tokio::test]
+async fn test_conditional_with_missing_attr_in_predicate_expr_passes() {
     let query = r#"metrics | apply data_points {
         if (lower_case(attributes["env"]) != "prod") {
             set flags = 100
