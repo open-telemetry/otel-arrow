@@ -1,90 +1,128 @@
-# Proposed Task 12 identity clarifications
+# Proposed changes and clarifications for file identity
 
-Status: implementation follow-up for review after discovery design PR #4443
-merges. That PR was still open at `d9781ee3f122647b050840f93869ea8bb068aa31`
-when checked. This document does not amend it or assert that the changes below
-were already unambiguously required by the accepted specification.
+**Status: proposal for review, not an approved specification change.**
 
-The Task 12 follow-up implements these safer semantics on its feature branch.
-The normative specification and conformance matrix should adopt the agreed
-wording together before claiming Phase 1 conformance.
+Task 12 already implements the behavior described below. One part differs from
+the literal specification: how to handle an I/O error while checking saved file
+progress. Another part makes fingerprint matching more precise.
 
-## Environmental frontier failures
+This is a follow-up for review after discovery design PR #4443 merges. It does
+not change that PR or the checkpoint wire format. Before claiming Phase 1
+conformance, update the binding specification, conformance matrix and tests
+together with the wording reviewers agree on.
 
-The current frontier section says that failure to read the window follows the
-identity-mismatch policy. That includes environmental I/O failures literally;
-the narrower rule below is a recorded behavioral clarification/change.
+## 1. A read error does not prove that a file changed
 
-Proposed rule:
+Before resuming a file, Filelog checks a small byte window near the saved offset.
+This is the **frontier window**: it helps check whether the saved progress still
+belongs to the file being opened.
 
-- A digest mismatch, offset beyond size, or EOF before collecting the required
-  frontier bytes is failed continuity evidence and follows mismatch policy.
-- A source I/O error is not evidence of replacement. Preserve the record, ID,
-  offset, epoch, prefix and frontier; return the original error for caller-owned
-  environmental retry or failure handling. Do not supersede or quarantine solely
-  because of that error.
-- Interrupted reads may retry with a bounded budget and cancellation checks.
-  Budget exhaustion remains a source error, never a continuity mismatch.
+The current specification says that failure to read this window follows the
+identity-mismatch policy. Read literally, that includes an I/O error, such as a
+disk error.
 
-Regression cases cover EIO, WouldBlock, Interrupted followed by success,
-Interrupted budget exhaustion, cancellation between retries, successful partial
-reads and early EOF. Fault injection wraps a real SourceFile behind a private
-read-evidence seam; it does not add a public source backend framework.
+Task 12 makes a distinction:
 
-## Changed-locator association
+| What happened | Proposed behavior |
+| --- | --- |
+| The bytes do not match the saved digest | Apply the identity-mismatch policy. |
+| The saved offset is beyond the file size, or EOF prevents reading the full window | Apply the identity-mismatch policy. |
+| Reading fails with an I/O error | Keep the saved identity and progress. Return the original error for worker retry or failure handling. |
+| A read is interrupted | Retry within a bounded budget, checking cancellation between attempts. If the budget runs out, return a source error. |
 
-The baseline conformance includes short and full equal fingerprints and favors
-replay of copied bytes over skipping them. The implementation restores that
-conservative policy rather than adopting the earlier path-only proposal.
+For example, suppose the saved offset is 1,000 and the disk returns an error
+while Filelog checks the window. That error tells us the read failed. It does
+not tell us that the file was replaced. Resetting or quarantining the identity
+on that evidence alone could discard valid recovery state.
 
-The explicit comparison is a nonempty equal common raw prefix at the same
-`ignored_header_bytes` offset. It permits short files and evidence that grew;
-empty fingerprints do not associate. Retained Active records participate.
-A full native path match also associates, using kind, full length and digest.
-Neither kind of association transfers identity or progress across locators.
-The candidate's own exact-locator record and validated replacement context keep
-their existing precedence.
+On an I/O error, preserve the record, file ID, offset, epoch, prefix and frontier.
+Do not replace the identity or quarantine it solely because of the error.
+Repeated errors do not turn into proof of replacement.
 
-Common headers can falsely associate independent files, particularly with small
-fingerprint windows. Association bypasses start_at and ignore_older_than and
-selects mismatch policy; the config guide must state this, including possible
-quarantine under fail. Neither a larger threshold nor requiring the old locator
-to be absent resolves the general ambiguity. Copytruncate can leave that locator
-present, and incomplete inventories cannot prove disappearance.
+**This is a behavior change that needs specification approval**, even though it
+is intended to protect saved progress.
 
-This is a comparison clarification for review, not a claim that fingerprints
-uniquely identify files or guarantee lossless copytruncate capture. The
-frontier-I/O change above still requires normative wording to be reconciled.
+Tests cover EIO, WouldBlock, successful retries after Interrupted, retry-budget
+exhaustion, cancellation between retries, partial reads that complete, and early
+EOF. They inject failures through a private helper around a real `SourceFile`;
+there is no new public source-backend framework.
 
-## Additional conformance cases
+## 2. How a file at a different locator can be associated
 
-- Ordinary progress on another file between prepare and commit does not invalidate
-  admission; changes to the exact record's progress do.
-- Any non-progress mutation or finalization advances identity revision. In
-  particular, finalization cannot masquerade as harmless ordinary progress.
-- Rejected pre-write operations advance neither identity revision nor durable
-  progress, and never require retaining an uncertain-write lease.
-- A committed quarantine and a subsequent cleanup failure are both reported;
-  the owner stops, but the durable outcome is not hidden as an uncommitted error.
-- Growth after empty registration is queued from verified reader evidence and
-  persisted in bounded non-progress groups at a sync boundary, not one fsync per
-  resumed file. Progress and growth never mix in one WAL transaction.
-- Quarantined/ProfileBlocked checkpoint status is not current path validation,
-  policy eligibility, or a successful reader reconnection.
+A locator identifies a file on the local filesystem. When a candidate has a
+different locator, Filelog may still find evidence that it is related to a
+saved Active record, for example after a copy.
 
-No wire-format change or modification to #4443 is proposed here.
+This is **association**, not proof that the files are the same stream. It chooses
+which starting policy to use. It never transfers the old file ID or progress.
 
-## Directional-prefix alternative not adopted
+The baseline conformance cases include both short and full matching fingerprints.
+They favor rereading copied bytes over accidentally skipping unread bytes. Task
+12 keeps that preference rather than using the earlier path-only proposal.
 
-A proposed alternative requires the candidate to cover the entire stored
-fingerprint. That reduces matches between a tiny candidate and a long stored
-prefix, but it is not capture-equivalent even for append-only sources. A complete
-copy can be created first, then the original grows and a longer fingerprint is
-persisted before the original is unlinked. After restart, the shorter copy may
-contain the only surviving unread bytes. The directional rule rejects it.
+The proposed comparison rule is:
 
-A regression covers that ordering explicitly. Keep the conservative common-
-prefix rule for this MVP. Narrowing it requires accepting that capture gap or
-additional evidence, not an assumption that all copies postdate the latest
-fingerprint observation. Size-threshold growth throttling remains a separate
-optimization; it is not required to fix the confirmed failure paths.
+- Consider retained Active records only.
+- A full native path matches when its kind, complete length and digest match.
+- For fingerprints, start at the same `ignored_header_bytes` offset and compare
+  as many bytes as the shorter fingerprint contains. All those bytes must match,
+  and there must be at least one byte. Short files and prefixes that grew can
+  match; empty fingerprints cannot.
+- Keep the existing precedence: the candidate's own exact-locator record and
+  validated replacement context come before association.
+
+Association uses `on_recovery_mismatch` instead of `start_at` or
+`ignore_older_than`. That has a tradeoff: unrelated files can share headers or
+prefixes, especially when the stored fingerprint is short. Under `fail`, a false
+association can quarantine an unrelated file. The configuration guide must make
+these effects clear.
+
+A larger fingerprint threshold does not remove all ambiguity. Requiring the old
+locator to disappear is not sufficient either: copytruncate leaves the original
+file in place, and an incomplete scan cannot prove that a file disappeared.
+
+This rule clarifies the comparison. It does not claim that fingerprints uniquely
+identify files or guarantee lossless copytruncate capture.
+
+### Why not require the candidate to contain the whole saved fingerprint?
+
+That alternative would reduce some false matches, but could skip surviving data:
+
+1. A file is copied while it is short.
+2. The original grows, and Filelog saves a longer fingerprint for it.
+3. The original is deleted.
+4. After restart, the shorter copy contains the only surviving unread bytes.
+
+The copy cannot match the entire longer fingerprint, so that alternative rejects
+its association. This can happen even when the original was only ever appended
+to. A regression test covers this order of events.
+
+Keep common-prefix matching for the MVP. Narrowing it requires either accepting
+this capture gap or collecting additional evidence. We cannot assume that every
+copy was made after the latest fingerprint was saved.
+
+## 3. Behaviors to include in conformance tests
+
+These cases make the admission and checkpoint contracts explicit:
+
+- **Progress during admission:** ordinary progress on another file does not
+  invalidate a prepared admission. Changes to the exact record's progress do.
+- **Identity changes:** every non-progress mutation and finalization advances
+  the identity revision, the counter used to reject stale plans. Finalization
+  must not be treated as ordinary progress.
+- **Rejected writes:** an operation rejected before writing advances neither
+  the revision nor durable progress. It does not require keeping a lease for an
+  uncertain write.
+- **Quarantine cleanup:** report a committed quarantine even if cleanup then
+  fails. Report the cleanup failure too and stop the owner; do not describe the
+  quarantine as an uncommitted operation.
+- **Fingerprint growth:** after empty-file registration, queue verified prefix
+  growth and persist it in bounded non-progress groups at a sync boundary.
+  Avoid one growth fsync per resumed file. Progress and growth never share a
+  WAL transaction.
+- **Early blocked results:** `Quarantined` and `ProfileBlocked` report checkpoint
+  state. They do not prove current path validity, policy eligibility or a
+  successful reader reconnection.
+
+Throttling fingerprint growth at size thresholds remains an optional performance
+improvement. It is not required to fix the confirmed failure paths.
