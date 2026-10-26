@@ -274,7 +274,15 @@ impl<P: MatchPolicy> Scanner<P> {
         if cancelled() {
             return Err(Failure::coverage(ScanReason::Cancelled, None));
         }
-        let recheck = open_parent(&mut self.scratch.native)?;
+        let recheck = open_parent(&mut self.scratch.native).map_err(|mut failure| {
+            // An alias parent that vanished after probing is unstable evidence,
+            // not a definite miss that can expire the remembered alias. Keep the
+            // established binding's optional complete-pass fallback unchanged.
+            if expected_parent.is_none() && failure.reason == ScanReason::Missing {
+                failure.reason = ScanReason::Unstable;
+            }
+            failure
+        })?;
         let current_parent = FileLocator::from_metadata(
             &recheck
                 .metadata()

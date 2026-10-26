@@ -3528,16 +3528,14 @@ fn blocked_binding_allows_own_locator_reconnection_in_all_path_orders() {
                 ))
                 .is_err()
             );
-            if paths.iter().min() == Some(&"/logs/app") {
-                let mut new_identity = file(2, "/logs/app");
-                new_identity.locator = locator(1);
-                assert_eq!(
-                    r.admit(token, new_identity, |_| panic!(
-                        "new identity reached durable owner"
-                    )),
-                    Err(ReconcileError::Feedback)
-                );
-            }
+            let mut new_identity = file(2, paths.iter().min().unwrap());
+            new_identity.locator = locator(1);
+            assert_eq!(
+                r.admit(token, new_identity, |_| panic!(
+                    "new identity reached durable owner"
+                )),
+                Err(ReconcileError::Feedback)
+            );
             assert!(
                 r.admit(token, file(1, "/logs/app"), |_| Some(Duration::from_secs(
                     generation * 10 + 2
@@ -5335,4 +5333,270 @@ fn weak_target_preserves_replacement_context_until_qualified() {
         r.binding_proposal(2, TrackedId(1)).unwrap(),
         Path::new("/alias")
     );
+}
+
+/// Scenario: A qualified replacement has a smaller alias and its binding names the original owner or another replacement in either order.
+/// Guarantees: Every current-pass conflicting replacement is withheld, including aliases observed after the conflict; independent work and fresh-pass recovery remain available.
+#[test]
+fn current_binding_conflicts_withhold_candidates_across_alias_orders() {
+    for other in [1, 3] {
+        for replacement_first in [false, true] {
+            for alias_first in [false, true] {
+                let mut r = Reconciler::new(limits()).unwrap();
+                r.track(file(1, "/bound")).unwrap();
+                let mut events = Vec::new();
+                start(&mut r, 1);
+                if alias_first {
+                    feed(&mut r, &observation(2, "/alias"), &mut events);
+                }
+                for inode in if replacement_first {
+                    [2, other]
+                } else {
+                    [other, 2]
+                } {
+                    feed(&mut r, &observation(inode, "/bound"), &mut events);
+                }
+                if !alias_first {
+                    feed(&mut r, &observation(2, "/alias"), &mut events);
+                }
+                feed(&mut r, &observation(99, "/independent"), &mut events);
+                assert!(!finish(&mut r, true, &mut events).complete);
+                assert_eq!(
+                    r.offers()
+                        .unwrap()
+                        .map(|o| o.candidate.locator)
+                        .collect::<Vec<_>>(),
+                    [locator(99)]
+                );
+                start(&mut r, 2);
+                feed(&mut r, &observation(2, "/alias"), &mut events);
+                assert!(finish(&mut r, true, &mut events).complete);
+                assert_eq!(
+                    r.offers()
+                        .unwrap()
+                        .map(|o| o.candidate.locator)
+                        .collect::<Vec<_>>(),
+                    [locator(2)]
+                );
+            }
+        }
+    }
+}
+
+/// Scenario: Two owner-associated candidates contradict the same predecessor in either order.
+/// Guarantees: Both the overwritten and retained qualified targets are withheld while an unrelated candidate remains offered.
+#[test]
+fn conflicting_associations_withhold_both_current_targets() {
+    for reverse in [false, true] {
+        let mut r = Reconciler::new(limits()).unwrap();
+        r.track(file(1, "/bound")).unwrap();
+        let mut events = Vec::new();
+        start(&mut r, 1);
+        for (inode, path) in [(2, "/b"), (3, "/c"), (99, "/independent")] {
+            feed(&mut r, &observation(inode, path), &mut events);
+        }
+        for inode in if reverse { [3, 2] } else { [2, 3] } {
+            r.associate_replacement(1, TrackedId(1), locator(inode), |e| record(e, &mut events))
+                .unwrap();
+        }
+        assert!(!finish(&mut r, true, &mut events).complete);
+        assert_eq!(
+            r.offers()
+                .unwrap()
+                .map(|o| o.candidate.locator)
+                .collect::<Vec<_>>(),
+            [locator(99)]
+        );
+    }
+}
+
+/// Scenario: A locator-less binding failure precedes or follows qualification, with the candidate's smaller alias arriving first or last.
+/// Guarantees: Final filtering blocks current qualified targets even when their candidate arrives after the failure.
+#[test]
+fn binding_failure_blocks_qualified_targets_in_all_orders() {
+    for reason in [
+        ScanReason::Unstable,
+        ScanReason::Policy,
+        ScanReason::VerificationUnavailable,
+    ] {
+        for failure_first in [false, true] {
+            for alias_first in [false, true] {
+                let mut r = Reconciler::new(limits()).unwrap();
+                r.track(file(1, "/bound")).unwrap();
+                let mut events = Vec::new();
+                start(&mut r, 1);
+                if alias_first {
+                    feed(&mut r, &observation(2, "/alias"), &mut events);
+                }
+                for failure in [failure_first, !failure_first] {
+                    let o = if failure {
+                        evidence(None, "/bound", reason)
+                    } else {
+                        observation(2, "/bound")
+                    };
+                    feed(&mut r, &o, &mut events);
+                }
+                if !alias_first {
+                    feed(&mut r, &observation(2, "/alias"), &mut events);
+                }
+                assert!(!finish(&mut r, true, &mut events).complete);
+                assert!(r.offers().unwrap().next().is_none());
+            }
+        }
+    }
+}
+
+/// Scenario: A weak foreign name at a failed binding also has an independent full alias, with or without subsequent binding qualification.
+/// Guarantees: Weak-only targets do not suppress independent work; upgrading the target makes it subject to the current binding conflict.
+#[test]
+fn weak_target_only_blocks_independent_alias_after_qualification() {
+    for upgrade in [false, true] {
+        for weak_reason in [ScanReason::Content, ScanReason::PresenceOnly] {
+            let mut r = Reconciler::new(limits()).unwrap();
+            r.track(file(1, "/bound")).unwrap();
+            let mut events = Vec::new();
+            start(&mut r, 1);
+            feed(
+                &mut r,
+                &evidence(Some(2), "/bound", weak_reason),
+                &mut events,
+            );
+            feed(
+                &mut r,
+                &evidence(None, "/bound", ScanReason::Unstable),
+                &mut events,
+            );
+            feed(&mut r, &observation(2, "/alias"), &mut events);
+            if upgrade {
+                feed(&mut r, &observation(2, "/bound"), &mut events);
+            }
+            assert!(!finish(&mut r, true, &mut events).complete);
+            assert_eq!(r.offers().unwrap().count(), usize::from(!upgrade));
+        }
+    }
+}
+
+/// Scenario: An earlier alias is probed successfully, then its parent is renamed at the pre-recheck cancellation boundary.
+/// Guarantees: The real scanner reports instability rather than a definite miss, preserving the alias hint and preventing prompt or complete-pass exclusion.
+#[test]
+fn alias_parent_disappearance_after_probe_preserves_uncertainty() {
+    use super::super::{BindingScope, MatchPolicy, ProbeBudget, ScanConfig, ScanLimits, Scanner};
+    use std::cell::Cell;
+    struct ProbeObserved<'a> {
+        budget: &'a ProbeBudget,
+        observed: &'a Cell<bool>,
+    }
+    impl MatchPolicy for ProbeObserved<'_> {
+        fn includes(&self, _: &Path) -> bool {
+            true
+        }
+        fn may_descend(&self, _: &Path) -> bool {
+            true
+        }
+        fn excludes(&self, _: &Path) -> bool {
+            // Policy evaluation while the source-probe reservation is held proves
+            // that the probe reached a pinned source, not just lexical filtering.
+            if self.budget.try_reserve().is_none() {
+                self.observed.set(true);
+            }
+            false
+        }
+        fn excludes_subtree(&self, _: &Path) -> bool {
+            false
+        }
+        fn excludes_mapped(&self, _: usize, _: &Path) -> bool {
+            false
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("aliases");
+    let moved = dir.path().join("moved");
+    std::fs::create_dir(&parent).unwrap();
+    let alias = parent.join("a.log");
+    let binding = dir.path().join("a.secret");
+    std::fs::write(&alias, b"abc").unwrap();
+    std::fs::hard_link(&alias, &binding).unwrap();
+    let actual = FileLocator::from_metadata(&std::fs::metadata(&alias).unwrap());
+    let mut tracked = file(1, binding.to_str().unwrap());
+    tracked.locator = actual;
+    let mut r = Reconciler::new(limits()).unwrap();
+    r.track(tracked).unwrap();
+    let budget = ProbeBudget::default();
+    let mut scanner = scanner(dir.path());
+    let mut events = Vec::new();
+    start(&mut r, 1);
+    scanner
+        .check_binding(
+            &alias,
+            None,
+            &budget,
+            || false,
+            |check| {
+                assert!(check.observation.reason.is_none());
+                feed(&mut r, check.observation, &mut events);
+            },
+        )
+        .unwrap();
+    assert!(finish(&mut r, true, &mut events).complete);
+    start(&mut r, 2);
+    scanner
+        .check_binding(
+            &binding,
+            None,
+            &budget,
+            || false,
+            |check| {
+                assert_eq!(check.observation.reason, Some(ScanReason::Excluded));
+                feed(&mut r, check.observation, &mut events);
+            },
+        )
+        .unwrap();
+    assert!(!events.contains(&"excluded:1".into()));
+    let observed = Cell::new(false);
+    let renamed = Cell::new(false);
+    let mut scanner = Scanner::new(
+        ScanConfig {
+            include_roots: vec![dir.path().to_owned()],
+            exclusion_roots: vec![],
+            symlinks: super::super::super::source::SymlinkPolicy::Reject,
+            limits: ScanLimits {
+                fingerprint_bytes: 16,
+                ..ScanLimits::default()
+            },
+            checkpoint_namespace: locator(u64::MAX),
+        },
+        ProbeObserved {
+            budget: &budget,
+            observed: &observed,
+        },
+    )
+    .unwrap();
+    let mut batch = scanner
+        .binding_batch(&budget, || {
+            // The reservation is released when probe returns. Rename at this exact
+            // boundary, before the scanner reopens the parent, without a timing race.
+            if observed.get() && !renamed.get() && budget.try_reserve().is_some() {
+                std::fs::rename(&parent, &moved).unwrap();
+                renamed.set(true);
+            }
+            false
+        })
+        .unwrap();
+    let request = r.binding_request(TrackedId(1)).unwrap();
+    assert_eq!(request.path, alias);
+    let check = batch.check(request.path, request.parent).unwrap();
+    assert!(observed.get() && renamed.get());
+    assert_eq!(check.scope, BindingScope::Binding);
+    assert_eq!(check.observation.reason, Some(ScanReason::Unstable));
+    assert_eq!(check.observation.errno, Some(libc::ENOENT));
+    r.apply_binding_check(2, TrackedId(1), check, Duration::from_secs(20), |e| {
+        record(e, &mut events)
+    })
+    .unwrap();
+    assert!(events.contains(&"coverage".into()));
+    assert!(!events.contains(&"excluded:1".into()));
+    assert!(!finish(&mut r, true, &mut events).complete);
+    assert!(!events.contains(&"excluded:1".into()));
+    assert_eq!(r.tracked[&TrackedId(1)].previous_alias, alias);
+    assert!(budget.try_reserve().is_some());
 }

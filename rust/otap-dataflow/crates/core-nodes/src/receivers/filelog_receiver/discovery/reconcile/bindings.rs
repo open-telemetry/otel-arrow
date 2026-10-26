@@ -26,9 +26,13 @@ impl Reconciler {
     }
 
     /// Publishes a complete-pass deterministic binding after all prior rebounds
-    /// are resolved. The owner must perform its durable update before calling this
-    /// method's callback. The exclusive borrow prevents a new pass or feedback
-    /// from invalidating the proposal during the commit. False defers publication.
+    /// are resolved. This method validates the proposal before invoking `commit`.
+    /// Perform the durable update inside that callback and return true only after
+    /// durable success. Return false only for known-no-write deferral. An ambiguous
+    /// durable write or callback panic must terminate the owner.
+    /// The exclusive borrow prevents a new pass or feedback from invalidating the
+    /// proposal between preflight and publication. Do not commit before calling
+    /// this method: preflight can reject the proposed binding.
     pub fn rebind(
         &mut self,
         generation: u64,

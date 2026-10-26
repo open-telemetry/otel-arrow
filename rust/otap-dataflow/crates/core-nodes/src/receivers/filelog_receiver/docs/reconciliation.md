@@ -179,10 +179,25 @@ A changed parent also blocks exclusion and binding publication for its affected
 records. Traversal and targeted checks apply the change to all retained siblings,
 including inactive records, while preserving their expected parent identities.
 
-Recovery requires the expected identities to return or the receiver to be
-recreated. When an expected parent returns, its persistent latch clears, but
-evidence collected under the replacement directory in that pass remains invalid.
-Fresh evidence is required. Recreating the receiver does not reset checkpoints.
+When an expected parent returns, its persistent latch clears, but evidence
+collected under the replacement directory in that pass remains invalid. Fresh
+evidence is required. Explicit retirement by the identity owner removes that
+record's latch along with the record. Recreating the receiver also clears runtime
+parent baselines without resetting checkpoints.
+
+A permanent subdirectory replacement can therefore leave every later pass
+incomplete while any affected record remains tracked, even if it is inactive.
+This prevents receiver-wide disappearance conclusions, binding reselection and
+eviction of unseen pending candidates. Known-identity reconnection and independent
+positive reading can continue. Marking a record inactive does not clear its latch.
+
+Before receiver integration, explicitly decide whether requiring receiver
+recreation for this case is an acceptable Phase 1 limitation and define its
+supported recovery path. Otherwise, design and validate a narrower recovery rule
+that preserves identity checks and rejects stale evidence. This standalone
+implementation documents the conservative behavior; it does not establish that
+the availability tradeoff has been accepted. Do not clear latches or retire
+records solely to force a complete pass.
 
 Targeted checks use the same ancestor policy, root verification, pin-bound
 probes and descriptor budget as traversal. Handles close before evidence is

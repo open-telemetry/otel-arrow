@@ -77,6 +77,17 @@ impl Reconciler {
                 return Err(ReconcileError::Tracked.into());
             }
             let new_id = !self.tracked.contains_key(&change.file.id);
+            // A different alias cannot bypass same-locator replacement checks.
+            // Reject before capacity admission or any durable work, regardless of
+            // the existing record's role or availability of its saved binding.
+            if new_id
+                && self
+                    .locators
+                    .records(&change.file.locator, &self.tracked)
+                    .any(|old| old.file.active && Some(old.file.id) != change.replace_id)
+            {
+                return Err(ReconcileError::Feedback.into());
+            }
             added += usize::from(new_id);
             if let Some(old_id) = change.replace_id {
                 let old = self.tracked.get(&old_id).ok_or(ReconcileError::Tracked)?;

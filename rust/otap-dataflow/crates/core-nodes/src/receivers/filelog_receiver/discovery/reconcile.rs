@@ -1023,6 +1023,13 @@ impl Reconciler {
                     tracked.pass.parent_unstable |= tracked.parent_changed;
                     let resolved = tracked.file.role == BindingRole::Superseded
                         && live_owner.is_some_and(|id| tracked.successor == Some((id, locator)));
+                    if let Some(previous) = tracked.pass.binding_target.rebound()
+                        && previous != locator
+                    {
+                        // Preserve invalidation before the conflicting target is
+                        // overwritten. The final sweep covers the retained target.
+                        self.candidates.invalidate_locator(previous);
+                    }
                     let new_rebound = tracked.pass.binding_target.qualify(locator, resolved);
                     tracked.pass.binding_ineligible = BindingIneligibility::Positive;
                     // Historical paths retain replacement context but do not create
@@ -1348,6 +1355,11 @@ impl Reconciler {
         }
         let resolved = tracked.pass.binding_target.is_resolved()
             && tracked.pass.binding_target.rebound() == Some(candidate);
+        if let Some(previous) = tracked.pass.binding_target.rebound()
+            && previous != candidate
+        {
+            self.candidates.invalidate_locator(previous);
+        }
         let new_rebound = tracked.pass.binding_target.qualify(candidate, resolved);
         if new_rebound
             && pass.complete
@@ -1390,6 +1402,18 @@ impl Reconciler {
         }
         let pass = self.pass.take().expect("checked active pass");
         self.detect_binding_cycles();
+        // Current-pass qualified targets depend on their binding evidence even
+        // when their selected candidate path is another alias. Sweep after all
+        // observations so candidates arriving after a failure are covered too.
+        // Weak-only targets and historical Replacement hints grant no rebound
+        // authority and must not suppress independently validated candidates.
+        for tracked in self.tracked.values() {
+            if tracked.pass.conflict
+                && let Some(target) = tracked.pass.binding_target.rebound()
+            {
+                self.candidates.invalidate_locator(target);
+            }
+        }
         self.candidates.block_conflicts(|candidate| {
             // An offer can reconnect an existing record even when another
             // historical binding at this path has a parent block. Admission

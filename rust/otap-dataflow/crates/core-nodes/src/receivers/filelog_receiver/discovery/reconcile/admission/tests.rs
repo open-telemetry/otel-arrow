@@ -384,3 +384,82 @@ fn same_locator_replacement_preserves_rotation_successors() {
         assert_eq!(r.rebounds().count(), 0);
     }
 }
+
+/// Scenario: A new ID claims an active locator through an alias, with each binding role, an absent binding, and full or spare capacity.
+/// Guarantees: Preflight rejects before durability or capacity errors; the offer remains available for explicit same-locator replacement.
+#[test]
+fn active_locator_requires_explicit_identity_replacement() {
+    for capacity in [1, 2] {
+        for role in [
+            BindingRole::Live,
+            BindingRole::Unverified,
+            BindingRole::Superseded,
+        ] {
+            for has_binding in [false, true] {
+                for reverse in [false, true] {
+                    let mut r = reconciler(capacity);
+                    let mut old = file(1, 1, "/logs/app", false);
+                    old.role = role;
+                    if !has_binding {
+                        old.binding = None;
+                    }
+                    r.track(old).unwrap();
+                    begin(&mut r, 1);
+                    for path in if reverse {
+                        ["/logs/app", "/logs.old/app"]
+                    } else {
+                        ["/logs.old/app", "/logs/app"]
+                    } {
+                        observe(&mut r, 1, path, false);
+                    }
+                    assert!(finish(&mut r).complete);
+                    let token = token(&r, 1);
+                    assert_eq!(
+                        r.admit(token, file(2, 1, "/logs.old/app", true), |_| {
+                            panic!("duplicate active locator reached durable callback")
+                        }),
+                        Err(ReconcileError::Feedback)
+                    );
+                    assert_eq!(r.tracked.len(), 1);
+                    assert!(r.tracked(TrackedId(1)).is_some());
+                    assert_eq!(r.offers().unwrap().count(), 1);
+                    assert!(
+                        r.admit_batch(
+                            vec![AdmissionChange {
+                                token,
+                                file: file(2, 1, "/logs.old/app", true),
+                                replace_id: Some(TrackedId(1)),
+                            }],
+                            success
+                        )
+                        .unwrap()
+                    );
+                    assert!(r.tracked(TrackedId(1)).is_none());
+                    assert_eq!(r.tracked.len(), 1);
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: A retired reader's inactive record retains a locator later used by a new identity.
+/// Guarantees: Historical inactive state does not prevent a distinct active admission or get implicitly removed.
+#[test]
+fn inactive_locator_does_not_require_replacement() {
+    let mut r = reconciler(2);
+    let mut old = file(1, 1, "/old", false);
+    old.active = false;
+    r.track(old).unwrap();
+    begin(&mut r, 1);
+    observe(&mut r, 1, "/new", false);
+    assert!(finish(&mut r).complete);
+    let token = token(&r, 1);
+    assert!(
+        r.admit(token, file(2, 1, "/new", true), |_| Some(
+            Duration::from_secs(12)
+        ))
+        .unwrap()
+    );
+    assert!(!r.tracked(TrackedId(1)).unwrap().active);
+    assert!(r.tracked(TrackedId(2)).unwrap().active);
+}
