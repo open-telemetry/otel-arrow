@@ -3902,6 +3902,97 @@ async fn test_conditional_with_missing_attr_in_predicate_expr_passes() {
     assert_metrics_eq(result, expected);
 }
 
+#[tokio::test]
+async fn test_conditional_with_missing_resource_attr_in_predicate() {
+    let query = r#"metrics | apply data_points {
+        if (resource.attributes["env"] == null) {
+            set flags = 100
+        } else {
+            set flags = 200
+        }
+    }"#;
+
+    let input = MetricsData::new(vec![
+        ResourceMetrics::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
+                .finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("gauge1")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build().flags(1u32).finish(),
+                                NumberDataPoint::build().flags(2u32).finish(),
+                            ],
+                        })
+                        .finish(),
+                ],
+            )],
+        ),
+        ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("gauge2")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build().flags(3u32).finish(),
+                                NumberDataPoint::build().flags(4u32).finish(),
+                            ],
+                        })
+                        .finish(),
+                ],
+            )],
+        ),
+    ]);
+
+    let result = exec_metrics_query(query, input).await;
+
+    let expected = MetricsData::new(vec![
+        ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("gauge1")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build().flags(200u32).finish(),
+                                NumberDataPoint::build().flags(200u32).finish(),
+                            ],
+                        })
+                        .finish(),
+                ],
+            )],
+        ),
+        ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("gauge2")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build().flags(100u32).finish(),
+                                NumberDataPoint::build().flags(100u32).finish(),
+                            ],
+                        })
+                        .finish(),
+                ],
+            )],
+        ),
+    ]);
+
+    assert_metrics_eq(result, expected);
+}
+
 /// Scenario: A conditional inside data_points that assigns a new attribute in one branch.
 /// Guarantees: Data points in the matching branch receive the new attribute while data points
 /// in the default branch do not.

@@ -27,9 +27,9 @@ use crate::error::Result;
 use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
-use crate::pipeline::expr::eval::{EvalContext, align_attrs_to_record};
+use crate::pipeline::expr::eval::{EvalContext, align_attrs_to_record, align_value_to_record};
 use crate::pipeline::expr::types::MetricDataPointType;
-use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr};
 use crate::pipeline::filter::data_points::{
     filter_metric_data_points, remove_all_metric_data_points,
 };
@@ -562,23 +562,32 @@ impl PipelineStage for ConditionalPipelineStage {
                         remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
                     }
                     Some(mut scoped_value) => {
-                        let predicate_scope_attrs_id = match scoped_value.scope {
+                        match scoped_value.scope {
                             DataScope::Attribute(attrs_id, _, _)
-                            | DataScope::AttributesAll(attrs_id) => Some(attrs_id),
-                            // already aligned to the record / scalar, no alignment needed ..
-                            DataScope::Record(_)
-                            | DataScope::RootParent(_)
-                            | DataScope::StaticScalar => None,
-                        };
+                            | DataScope::AttributesAll(attrs_id) => {
+                                scoped_value = align_attrs_to_record(
+                                    scoped_value,
+                                    attrs_id,
+                                    &otap_batch,
+                                    &eval_ctx,
+                                )?
+                            }
 
-                        if let Some(attrs_id) = predicate_scope_attrs_id {
-                            scoped_value = align_attrs_to_record(
-                                scoped_value,
-                                attrs_id,
-                                &otap_batch,
-                                &eval_ctx,
-                            )?
-                        }
+                            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                                if let Some(dp_rb) = otap_batch.get(dp_type.payload_type()) {
+                                    scoped_value = align_value_to_record(
+                                        scoped_value,
+                                        RecordScope::Child(ChildRecordKind::DataPoint),
+                                        dp_rb,
+                                        &otap_batch,
+                                    )?
+                                }
+                            }
+                            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint))
+                            | DataScope::StaticScalar => {
+                                // no alignment needed
+                            }
+                        };
 
                         let predicate_selection_vec =
                             scoped_value_to_boolean_array(scoped_value.values, num_dp_rows)?;
