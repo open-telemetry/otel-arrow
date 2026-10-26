@@ -59,7 +59,10 @@ impl ClickHouseWriter {
         // Inserts use `insert_arrow(table)`, which binds the table's database from the client (the
         // generated `INSERT INTO \`table\` FORMAT ArrowStream` is unqualified), so the runtime
         // client must point at the configured database.
-        let client = build_client(config, &config.database).await?;
+        //
+        // Reuse the bootstrap client's transport and connection pool rather than
+        // calling build_client a second time.
+        let client = bootstrap_client.with_database(&config.database);
         Ok(Self {
             client,
             payload_destination_tables,
@@ -114,29 +117,6 @@ impl ClickHouseWriter {
     }
 }
 
-/// Returns `true` when the TLS config block carries certificate material
-/// (custom CA or client identity) that requires an HTTPS endpoint.
-fn has_tls_material(tls: &otel_arrow_dfe_config::tls::TlsClientConfig) -> bool {
-    let has_ca = tls.ca_file.is_some()
-        || tls
-            .ca_pem
-            .as_ref()
-            .is_some_and(|pem| !pem.trim().is_empty());
-    let has_client_cert = tls.config.cert_file.is_some()
-        || tls
-            .config
-            .cert_pem
-            .as_ref()
-            .is_some_and(|pem| !pem.trim().is_empty());
-    let has_client_key = tls.config.key_file.is_some()
-        || tls
-            .config
-            .key_pem
-            .as_ref()
-            .is_some_and(|pem| !pem.trim().is_empty());
-    has_ca || has_client_cert || has_client_key
-}
-
 /// Pool idle timeout applied to every hyper client we construct.
 ///
 /// The ClickHouse server default `keep_alive_timeout` is 3 s. We use a
@@ -146,6 +126,20 @@ const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 
 /// TCP keepalive interval for ClickHouse HTTP connections.
 const TCP_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Build an `HttpConnector` pre-configured for use as the TCP layer
+/// beneath an HTTPS connector.
+///
+/// Sets `enforce_http(false)` so hyper allows `https://` URLs through
+/// the raw connector (TLS is handled by the wrapping
+/// [`hyper_rustls::HttpsConnector`]), and enables TCP keepalive so
+/// that silently-dead connections are detected during long inserts.
+fn build_https_base_connector() -> hyper_util::client::legacy::connect::HttpConnector {
+    let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+    http.enforce_http(false);
+    http.set_keepalive(Some(TCP_KEEPALIVE));
+    http
+}
 
 /// Build a plaintext-only hyper client (no TLS) wrapped in a ClickHouse
 /// [`Client`].
@@ -170,10 +164,14 @@ fn build_plaintext_client() -> Client {
 ///
 /// # TLS paths
 ///
-/// When a `tls` block is present and the shared TLS loader returns certificate
-/// material, a custom hyper HTTPS client is built with the configured CA trust
-/// anchors and optional client certificate (mTLS).  The connector uses
-/// `https_only()` so that configured certificates are always applied.
+/// When a `tls` block is present, the shared TLS loader decides whether
+/// certificate material is available.  If the loader returns material, the
+/// endpoint **must** be `https://` -- an `http://` endpoint is rejected at
+/// startup because hyper-rustls would silently ignore the configured
+/// certificates over plaintext.  A custom hyper HTTPS client is built with
+/// the loaded CA trust anchors and optional client certificate (mTLS).  The
+/// connector uses `https_only()` so that configured certificates are always
+/// applied.
 ///
 /// When a `tls` block is present with `insecure: true` and no custom CA, the
 /// shared loader returns `None` and a plaintext-only hyper client is used,
@@ -203,25 +201,9 @@ pub(crate) async fn build_client(
             )));
         }
 
-        // Reject http:// endpoints that carry real TLS material (custom CA,
-        // client certs) without insecure=true.  Unlike tonic (which can
-        // upgrade an http:// endpoint to TLS internally), hyper-rustls
-        // enforces TLS only when the request URL uses https://, so the
-        // configured certificates would be silently ignored on plaintext
-        // connections.
-        if !config.endpoint.starts_with("https://")
-            && tls_config.insecure != Some(true)
-            && has_tls_material(tls_config)
-        {
-            return Err(ClickhouseExporterError::TlsConfig(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "TLS certificates (ca_file, ca_pem, cert_file, cert_pem, key_file, \
-                 key_pem) require an https:// endpoint; the configured certificates \
-                 cannot be applied over plaintext HTTP. Use an https:// endpoint, or \
-                 set tls.insecure=true to explicitly disable TLS",
-            )));
-        }
-
+        // Let the shared TLS loader decide whether material is present.
+        // Checking the loader result (rather than inspecting individual
+        // fields) catches every combination the loader recognises.
         match otel_arrow_dfe_otap::tls_utils::build_rustls_client_config(
             Some(tls_config),
             &config.endpoint,
@@ -230,6 +212,20 @@ pub(crate) async fn build_client(
         .map_err(ClickhouseExporterError::TlsConfig)?
         {
             Some((rustls_config, server_name_override)) => {
+                // The loader produced TLS material. Reject http://
+                // endpoints: hyper-rustls enforces TLS only when the
+                // request URL uses https://, so the configured
+                // certificates would be silently ignored on plaintext
+                // connections.
+                if !config.endpoint.starts_with("https://") {
+                    return Err(ClickhouseExporterError::TlsConfig(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "TLS certificates were loaded from the tls block but the \
+                         endpoint uses http://; the configured certificates cannot \
+                         be applied over plaintext HTTP.",
+                    )));
+                }
+
                 // TLS material was loaded -- enforce HTTPS so the configured
                 // certificates are actually used. With https_only() the
                 // connector rejects plaintext requests, preventing credentials
@@ -255,7 +251,9 @@ pub(crate) async fn build_client(
                     );
                 }
 
-                let https_connector = connector_builder.enable_http1().build();
+                let https_connector = connector_builder
+                    .enable_http1()
+                    .wrap_connector(build_https_base_connector());
 
                 let hyper_client = hyper_util::client::legacy::Client::builder(
                     hyper_util::rt::TokioExecutor::new(),
@@ -285,7 +283,7 @@ pub(crate) async fn build_client(
                     .with_tls_config(rustls_config)
                     .https_only()
                     .enable_http1()
-                    .build();
+                    .wrap_connector(build_https_base_connector());
 
                 let hyper_client = hyper_util::client::legacy::Client::builder(
                     hyper_util::rt::TokioExecutor::new(),
@@ -516,6 +514,108 @@ mod tests {
         assert!(
             result.is_err(),
             "http:// with TLS material should error: {result:?}"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("https://"),
+            "error should mention https://: {err_msg}",
+        );
+    }
+
+    /// Scenario: build_client with insecure=true and a custom CA on an http://
+    /// endpoint. The shared TLS loader recognises the CA and returns TLS
+    /// material, but the endpoint is plaintext.
+    /// Guarantees: the misconfiguration is rejected at startup instead of
+    /// building an HTTPS-only connector that would fail on the first request.
+    #[tokio::test]
+    async fn build_client_insecure_with_ca_on_http_errors() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("Test CA");
+
+        let tls = TlsClientConfig {
+            insecure: Some(true),
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("http://localhost:8123", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_err(),
+            "insecure=true with CA on http:// should error: {result:?}"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("http://"),
+            "error should mention http://: {err_msg}",
+        );
+        assert!(
+            err_msg.contains("https://"),
+            "error should mention https://: {err_msg}",
+        );
+    }
+
+    /// Scenario: build_client with insecure=true and client identity (mTLS
+    /// material) on an http:// endpoint. The shared TLS loader builds
+    /// material for the client cert/key, but the endpoint is plaintext.
+    /// Guarantees: the misconfiguration is rejected at startup, preventing
+    /// client credentials from being silently unused.
+    #[tokio::test]
+    async fn build_client_insecure_with_client_cert_on_http_errors() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("Test CA");
+        let client_cert = ca.issue_leaf(
+            "client",
+            Some("client"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ClientAuth),
+        );
+
+        let tls = TlsClientConfig {
+            insecure: Some(true),
+            ca_pem: Some(ca.cert_pem.clone()),
+            include_system_ca_certs_pool: Some(false),
+            config: TlsConfig {
+                cert_pem: Some(client_cert.cert_pem),
+                key_pem: Some(client_cert.key_pem),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let config = test_config_with_tls("http://localhost:8123", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_err(),
+            "insecure=true with client cert on http:// should error: {result:?}"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("https://"),
+            "error should mention https://: {err_msg}",
+        );
+    }
+
+    /// Scenario: build_client with an empty tls block (all defaults) on an
+    /// http:// endpoint. The shared TLS loader builds material using
+    /// system CA trust anchors (include_system_ca_certs_pool defaults to
+    /// true), so the loader returns Some(...).
+    /// Guarantees: the misconfiguration is rejected because TLS material
+    /// cannot be applied over plaintext HTTP. Users who want plaintext
+    /// should either remove the tls block or set tls.insecure=true.
+    #[tokio::test]
+    async fn build_client_empty_tls_block_on_http_errors() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let tls = TlsClientConfig::default();
+
+        let config = test_config_with_tls("http://localhost:8123", Some(tls));
+        let result = build_client(&config, "default").await;
+        assert!(
+            result.is_err(),
+            "empty tls block on http:// should error: {result:?}"
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(

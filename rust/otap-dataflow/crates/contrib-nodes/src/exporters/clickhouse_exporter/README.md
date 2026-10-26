@@ -147,16 +147,18 @@ automatically through the built-in rustls features. Add a `tls` block to
 configure custom CA certificates and/or client certificates for mTLS.
 
 ```yaml
-exporters:
-  clickhouse:
-    endpoint: https://clickhouse.example.com:8443
-    database: otap
-    username: clickhouse
-    password: "${env:CLICKHOUSE_PASSWORD}"
-    tls:
-      ca_file: /certs/ca.crt
-      cert_file: /certs/client.crt
-      key_file: /certs/client.key
+nodes:
+  exporter:
+    type: "exporter:clickhouse"
+    config:
+      endpoint: "https://clickhouse.example.com:8443"
+      database: otap
+      username: clickhouse
+      password: "${env:CLICKHOUSE_PASSWORD}"
+      tls:
+        ca_file: /certs/ca.crt
+        cert_file: /certs/client.crt
+        key_file: /certs/client.key
 ```
 
 Available `tls` fields:
@@ -181,6 +183,16 @@ For mTLS, both a client certificate and key must be provided. The `tls`
 configuration uses the same shared `TlsClientConfig` struct as other
 exporters (e.g. the OTLP gRPC exporter), so the field names and behavior
 are consistent across the data plane.
+
+**Important notes:**
+
+- TLS requires an `https://` endpoint. An `http://` endpoint with TLS
+  material (custom CA, client certificates) is rejected at startup.
+- The exporter uses the workspace's crypto provider selected via the
+  `crypto-*` Cargo features (ring, aws-lc, openssl, or symcrypt).
+- Certificates are loaded once at startup. The `reload_interval` field is
+  not currently supported; certificate rotation requires restarting the
+  data plane. See [#4165](https://github.com/open-telemetry/otel-arrow/issues/4165).
 
 ## Schema Shape
 
