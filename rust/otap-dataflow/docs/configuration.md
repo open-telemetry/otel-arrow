@@ -273,13 +273,17 @@ policies:
                 name: stored_name
 ```
 
-The selected `workspace` header is emitted as `workspace_id` only when it exists
-and at least one captured `environment` value exactly matches `production`.
-Every configured match condition must pass. Header names are ASCII
-case-insensitive; values are exact byte matches. Other composite members are
-not evaluated for this transport-header binding. The selected source and every
-condition header must be captured; the example stores `x-workspace` as
-`workspace` and `x-environment` as `environment`.
+The selected `workspace` header is emitted as `workspace_id` only when the
+whole composite is present at the receiver boundary. Every value-bearing
+member must be available and every configured match condition must pass.
+Header names are ASCII case-insensitive; values are exact byte matches. The
+selected source and every condition header must be captured; the example
+stores `x-workspace` as `workspace` and `x-environment` as `environment`.
+
+Qualified selectors can also propagate configured `constant` and `randomness`
+members. These members have no original wire name, so `name: preserve` uses
+their configured member name. Authorized-identity members cannot be propagated
+as transport headers.
 
 Qualified composite selectors cannot share a primitive source with another
 qualified or unqualified entry. Repeated unqualified entries, including ASCII
@@ -287,7 +291,7 @@ case variants, are accepted as equivalent. Unknown composites, unknown members,
 authorized-identity members, and conflicting source bindings are rejected
 during startup. Exporter overrides retain precedence and can independently
 select the primitive header. See
-[Transport header policies](transport-headers.md#conditional-composite-members)
+[Transport header policies](transport-headers.md#composite-members)
 for complete matching, naming, and override semantics.
 
 ### Pipeline Core Allocation

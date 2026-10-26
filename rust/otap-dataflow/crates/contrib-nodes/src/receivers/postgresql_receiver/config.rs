@@ -9,7 +9,7 @@ use super::{
 };
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, OnNack, OnPermanentNack, OutputConfig,
-    PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
+    PollingConfig, ScalarValue, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
 use std::{net::IpAddr, path::Path, time::Duration};
@@ -81,11 +81,18 @@ pub(crate) struct Query {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Watermark {
+    Snapshot {},
+    Scalar {
+        column: String,
+        bind: String,
+        initial: ScalarValue,
+    },
     Composite {
         timestamp: Timestamp,
         tie_breaker: Tie,
     },
 }
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Timestamp {
@@ -226,37 +233,63 @@ impl PostgreSqlReceiverConfig {
         if !(60..=86400).contains(&query.interval.as_secs()) || query.interval.subsec_nanos() != 0 {
             return Err(Error::Config);
         }
-        let Watermark::Composite {
-            timestamp,
-            tie_breaker,
-        } = &mut self.watermark;
-        validate_name(&timestamp.column, 63)?;
-        validate_name(&tie_breaker.column, 63)?;
-        if !timestamp.timezone.eq_ignore_ascii_case("UTC") {
-            return Err(Error::Config);
-        }
-        timestamp.timezone = "UTC".into();
-        timestamp.initial =
-            super::value::normalize_cursor_time(&timestamp.initial).map_err(|_| Error::Config)?;
+        let watermark = match &mut self.watermark {
+            Watermark::Snapshot {} => WatermarkConfig::Snapshot {},
+            Watermark::Scalar {
+                column,
+                bind,
+                initial,
+            } => {
+                validate_name(column, 63)?;
+                match initial {
+                    ScalarValue::Int64(_) => {}
+                    ScalarValue::Timestamp(text) => {
+                        *text =
+                            super::value::normalize_cursor_time(text).map_err(|_| Error::Config)?;
+                    }
+                    ScalarValue::UInt64(_) | ScalarValue::String(_) => {
+                        return Err(Error::Config);
+                    }
+                }
+                WatermarkConfig::Scalar {
+                    column: column.clone(),
+                    bind: bind.clone(),
+                    initial: initial.clone(),
+                }
+            }
+            Watermark::Composite {
+                timestamp,
+                tie_breaker,
+            } => {
+                validate_name(&timestamp.column, 63)?;
+                validate_name(&tie_breaker.column, 63)?;
+                if !timestamp.timezone.eq_ignore_ascii_case("UTC") {
+                    return Err(Error::Config);
+                }
+                timestamp.timezone = "UTC".into();
+                timestamp.initial = super::value::normalize_cursor_time(&timestamp.initial)
+                    .map_err(|_| Error::Config)?;
+                WatermarkConfig::Composite {
+                    timestamp: TimestampCursorConfig {
+                        column: timestamp.column.clone(),
+                        bind: timestamp.bind.clone(),
+                        initial: timestamp.initial.clone(),
+                        timezone: timestamp.timezone.clone(),
+                    },
+                    tie_breaker: TieBreakerCursorConfig {
+                        column: tie_breaker.column.clone(),
+                        bind: tie_breaker.bind.clone(),
+                        initial: tie_breaker.initial,
+                    },
+                }
+            }
+        };
         let checkpoint = CheckpointConfig {
             directory: self.checkpoint.directory.clone(),
             on_nack: self.checkpoint.on_nack,
             on_permanent_nack: self.checkpoint.on_permanent_nack,
             nack_backoff: self.checkpoint.nack_backoff,
             max_consecutive_failures: self.checkpoint.max_consecutive_failures,
-        };
-        let watermark = WatermarkConfig::Composite {
-            timestamp: TimestampCursorConfig {
-                column: timestamp.column.clone(),
-                bind: timestamp.bind.clone(),
-                initial: timestamp.initial.clone(),
-                timezone: timestamp.timezone.clone(),
-            },
-            tie_breaker: TieBreakerCursorConfig {
-                column: tie_breaker.column.clone(),
-                bind: tie_breaker.bind.clone(),
-                initial: tie_breaker.initial,
-            },
         };
         // Shared compilation validates the configured page/fetch/byte bounds
         // and catch-up settings, using the same contract as the Oracle receiver.
@@ -273,7 +306,23 @@ impl PostgreSqlReceiverConfig {
             &watermark,
             &checkpoint,
             OutputConfig {
-                timestamp_column: Some(timestamp.column.clone()),
+                timestamp_column: match &watermark {
+                    WatermarkConfig::Composite { timestamp, .. } => Some(timestamp.column.clone()),
+                    WatermarkConfig::Scalar {
+                        column,
+                        initial: ScalarValue::Timestamp(_),
+                        ..
+                    } => Some(column.clone()),
+                    WatermarkConfig::Snapshot {}
+                    | WatermarkConfig::Scalar {
+                        initial: ScalarValue::Int64(_),
+                        ..
+                    }
+                    | WatermarkConfig::Scalar {
+                        initial: ScalarValue::UInt64(_) | ScalarValue::String(_),
+                        ..
+                    } => None,
+                },
                 validation_columns: vec![],
             },
         )

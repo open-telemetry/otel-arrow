@@ -70,9 +70,12 @@ pub enum FileAccessError {
     /// The supplied name is not a single non-dot directory entry.
     #[error("source name must be one nonempty directory entry, excluding . and ..")]
     InvalidName,
-    /// The opened object was not a regular file; no content was read.
+    /// The opened object was neither a regular file nor a directory; no content was read.
     #[error("opened source is not a regular file")]
     NotRegular,
+    /// The pin names a directory; discovery may still require subtree traversal.
+    #[error("opened source is a directory")]
+    IsDirectory,
     /// The selected locator changed before open completed.
     #[error("opened source locator does not match the selection: {actual:?}")]
     LocatorChanged {
@@ -131,7 +134,8 @@ impl SourceFile {
     ///
     /// Reserve two shared transient descriptor slots. Success returns one read
     /// handle with fresh metadata; errors and cancellation close acquired handles.
-    /// The directory stays caller-owned. A rejected symlink returns `NotRegular`.
+    /// The directory stays caller-owned. A rejected symlink returns `NotRegular`;
+    /// an opened directory returns `IsDirectory`.
     pub fn open_at(
         directory: &File,
         name: &CStr,
@@ -157,48 +161,8 @@ impl SourceFile {
         mut cancelled: impl FnMut() -> bool,
         reopen: impl FnOnce(&File) -> io::Result<File>,
     ) -> Result<Self, FileAccessError> {
-        check_cancelled(&mut cancelled)?;
-        let bytes = name.to_bytes();
-        if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
-            return Err(FileAccessError::InvalidName);
-        }
-
-        let mut flags = OFlag::O_PATH | OFlag::O_CLOEXEC;
-        if symlinks == SymlinkPolicy::Reject {
-            flags |= OFlag::O_NOFOLLOW;
-        }
-        let pinned =
-            File::from(openat(directory, name, flags, Mode::empty()).map_err(io::Error::from)?);
-        check_cancelled(&mut cancelled)?;
-        let pinned_metadata = pinned.metadata()?;
-        if !pinned_metadata.is_file() {
-            return Err(FileAccessError::NotRegular);
-        }
-        let pinned_locator = FileLocator::from_metadata(&pinned_metadata);
-        if let Some(expected) = expected
-            && expected != pinned_locator
-        {
-            return Err(FileAccessError::LocatorChanged {
-                actual: pinned_locator,
-            });
-        }
-
-        check_cancelled(&mut cancelled)?;
-        reject_kernel_control_filesystem(
-            fstatfs(&pinned).map_err(io::Error::from)?.filesystem_type(),
-        )?;
-        check_cancelled(&mut cancelled)?;
-        let file = reopen(&pinned).map_err(FileAccessError::PinnedReopen)?;
-        check_cancelled(&mut cancelled)?;
-        let opened_metadata = file.metadata()?;
-        let actual = FileLocator::from_metadata(&opened_metadata);
-        if !opened_metadata.is_file() || actual != pinned_locator {
-            return Err(FileAccessError::ReopenedMismatch { actual });
-        }
-        Ok(Self {
-            file,
-            opened_metadata,
-        })
+        PinnedSource::open_at(directory, name, symlinks, expected, &mut cancelled)?
+            .into_source_with_reopen(cancelled, reopen)
     }
 
     /// Returns the locator observed from the opened descriptor.
@@ -250,6 +214,111 @@ impl SourceFile {
     }
 }
 
+/// A validated path-only pin. No source content has been opened or read.
+///
+/// Discovery evaluates policy while this pin remains alive, then consumes it
+/// with [`Self::into_source`]. Callers hold the shared two-slot reservation
+/// through conversion and until the resulting discovery probe is closed.
+#[derive(Debug)]
+pub struct PinnedSource {
+    file: File,
+    metadata: Metadata,
+}
+
+impl PinnedSource {
+    /// Pins one native entry and validates regular-file type, locator and filesystem.
+    pub fn open_at(
+        directory: &File,
+        name: &CStr,
+        symlinks: SymlinkPolicy,
+        expected: Option<FileLocator>,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, FileAccessError> {
+        check_cancelled(&mut cancelled)?;
+        let bytes = name.to_bytes();
+        if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+            return Err(FileAccessError::InvalidName);
+        }
+
+        let mut flags = OFlag::O_PATH | OFlag::O_CLOEXEC;
+        if symlinks == SymlinkPolicy::Reject {
+            flags |= OFlag::O_NOFOLLOW;
+        }
+        let pinned =
+            File::from(openat(directory, name, flags, Mode::empty()).map_err(io::Error::from)?);
+        check_cancelled(&mut cancelled)?;
+        let pinned_metadata = pinned.metadata()?;
+        if pinned_metadata.is_dir() {
+            return Err(FileAccessError::IsDirectory);
+        }
+        if !pinned_metadata.is_file() {
+            return Err(FileAccessError::NotRegular);
+        }
+        let pinned_locator = FileLocator::from_metadata(&pinned_metadata);
+        if let Some(expected) = expected
+            && expected != pinned_locator
+        {
+            return Err(FileAccessError::LocatorChanged {
+                actual: pinned_locator,
+            });
+        }
+
+        check_cancelled(&mut cancelled)?;
+        reject_kernel_control_filesystem(
+            fstatfs(&pinned).map_err(io::Error::from)?.filesystem_type(),
+        )?;
+        Ok(Self {
+            file: pinned,
+            metadata: pinned_metadata,
+        })
+    }
+
+    /// Returns handle-derived metadata without another syscall.
+    #[must_use]
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Returns the pinned object's runtime locator, not durable identity.
+    #[must_use]
+    pub fn locator(&self) -> FileLocator {
+        FileLocator::from_metadata(&self.metadata)
+    }
+
+    /// Borrows the pin for Linux policy verification without duplicating it.
+    pub(crate) fn file(&self) -> &File {
+        &self.file
+    }
+
+    /// Converts an eligible pin through trusted procfs without a pathname retry.
+    pub fn into_source(
+        self,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<SourceFile, FileAccessError> {
+        self.into_source_with_reopen(cancelled, reopen_pinned)
+    }
+
+    fn into_source_with_reopen(
+        self,
+        mut cancelled: impl FnMut() -> bool,
+        reopen: impl FnOnce(&File) -> io::Result<File>,
+    ) -> Result<SourceFile, FileAccessError> {
+        check_cancelled(&mut cancelled)?;
+        let pinned_locator = self.locator();
+        let file = reopen(&self.file).map_err(FileAccessError::PinnedReopen)?;
+        check_cancelled(&mut cancelled)?;
+        let opened_metadata = file.metadata()?;
+        let actual = FileLocator::from_metadata(&opened_metadata);
+        if !opened_metadata.is_file() || actual != pinned_locator {
+            return Err(FileAccessError::ReopenedMismatch { actual });
+        }
+        Ok(SourceFile {
+            file,
+            opened_metadata,
+        })
+    }
+}
+
 fn reject_kernel_control_filesystem(kind: FsType) -> Result<(), FileAccessError> {
     let filesystem = match kind {
         PROC_SUPER_MAGIC => "procfs",
@@ -285,7 +354,7 @@ fn reopen_pinned(pinned: &File) -> io::Result<File> {
 
 // Ten decimal digits cover every u32. Prefix, digits and NUL fit in 32 bytes;
 // only the borrowed suffix is used, so the buffer can be reused without clearing.
-fn proc_fd_path(mut fd: u32, buffer: &mut [u8; 32]) -> &CStr {
+pub(crate) fn proc_fd_path(mut fd: u32, buffer: &mut [u8; 32]) -> &CStr {
     const PREFIX: &[u8] = b"/proc/self/fd/";
     let mut start = buffer.len() - 1;
     buffer[start] = 0;

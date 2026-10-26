@@ -38,16 +38,22 @@ impl ArrowRecordsBuilder {
         }
     }
 
-    pub(crate) const fn len(&self) -> u16 {
-        // Current log record ID is incremented for each new log appended
-        // so it can be used to get the number of logs in the builder.
-        self.curr_log_id
-    }
-
     /// Appends a parsed syslog message to the builder.
     pub fn append_syslog(&mut self, syslog_message: ParsedSyslogMessage<'_>) {
+        self.append_syslog_inner(syslog_message, None);
+    }
+
+    fn append_syslog_inner(
+        &mut self,
+        syslog_message: ParsedSyslogMessage<'_>,
+        received_local_year: Option<i32>,
+    ) {
+        let timestamp = match received_local_year {
+            Some(year) => syslog_message.timestamp_with_year(year),
+            None => syslog_message.timestamp(),
+        };
         self.logs
-            .append_time_unix_nano(syslog_message.timestamp().map(|v| v as i64).unwrap_or(0));
+            .append_time_unix_nano(timestamp.map(|v| v as i64).unwrap_or(0));
 
         let (severity_number, severity_text) =
             syslog_message.severity().unwrap_or((0, "UNSPECIFIED"));
@@ -77,8 +83,15 @@ impl ArrowRecordsBuilder {
         self.curr_log_id += 1;
     }
 
-    /// Builds the Arrow record batches from the accumulated syslog messages.
+    /// Builds records, assigning one observed timestamp at build time.
     pub fn build(mut self) -> Result<OtapArrowRecords> {
+        let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        self.logs
+            .append_observed_time_unix_nano_n(observed_time, self.curr_log_id.into());
+        self.finish()
+    }
+
+    fn finish(mut self) -> Result<OtapArrowRecords> {
         let log_record_count = self.curr_log_id.into();
 
         // All the logs belong to the same resource and scope
@@ -97,9 +110,6 @@ impl ArrowRecordsBuilder {
             .scope
             .append_dropped_attributes_count_n(0, log_record_count);
 
-        let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        self.logs
-            .append_observed_time_unix_nano_n(observed_time, log_record_count);
         self.logs.append_schema_url_n(None, log_record_count);
         self.logs
             .append_dropped_attributes_count_n(0, log_record_count);
@@ -120,6 +130,35 @@ impl ArrowRecordsBuilder {
         }
 
         Ok(otap_batch)
+    }
+}
+
+/// Builds codec-decoded records whose original observed timestamps are known.
+///
+/// This wrapper appends timestamps directly to Arrow. Keeping it separate from
+/// the eager builder preserves that builder's build-time timestamp semantics and
+/// prevents mixing explicit timestamps with deferred defaults in one batch.
+#[derive(Default)]
+pub(crate) struct ReceivedArrowRecordsBuilder {
+    inner: ArrowRecordsBuilder,
+}
+
+impl ReceivedArrowRecordsBuilder {
+    pub(crate) fn append_syslog(
+        &mut self,
+        syslog_message: ParsedSyslogMessage<'_>,
+        observed_time: i64,
+        received_local_year: i32,
+    ) {
+        self.inner
+            .append_syslog_inner(syslog_message, Some(received_local_year));
+        self.inner
+            .logs
+            .append_observed_time_unix_nano(observed_time);
+    }
+
+    pub(crate) fn build(self) -> Result<OtapArrowRecords> {
+        self.inner.finish()
     }
 }
 
@@ -177,6 +216,26 @@ mod tests {
         );
     }
 
+    /// Scenario: Codec decoding supplies distinct observed timestamps, including zero and negative values.
+    /// Guarantees: Direct Arrow appends preserve every supplied value without substituting build-time defaults.
+    #[test]
+    fn received_builder_preserves_observed_timestamps() {
+        let mut builder = ReceivedArrowRecordsBuilder::default();
+        let expected = [-7, 0, 42];
+        for observed in expected {
+            builder.append_syslog(parse(b"message").unwrap(), observed, 2024);
+        }
+        let records = builder.build().unwrap();
+        let logs = records.get(ArrowPayloadType::Logs).unwrap();
+        let observed = logs
+            .column_by_name("observed_time_unix_nano")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+            .unwrap();
+        assert_eq!(observed.values().as_ref(), expected.as_slice());
+    }
+
     fn otap_logs_to_otlp(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut buffer = ProtoBuffer::default();
@@ -186,6 +245,8 @@ mod tests {
         ExportLogsServiceRequest::decode(buffer.as_ref()).unwrap()
     }
 
+    /// Scenario: The eager builder converts RFC 5424 messages without supplied receipt context.
+    /// Guarantees: Arrow fields remain correct and every observed timestamp is assigned at build time.
     #[test]
     fn test_rfc5424_syslog_to_arrow_structure() {
         // This test validates that RFC 5424 syslog messages are correctly converted to Arrow format
@@ -193,9 +254,6 @@ mod tests {
         // It verifies the schema, column data types, and actual values in each column.
 
         let mut builder = ArrowRecordsBuilder::new();
-
-        // Capture start time before processing messages
-        let start_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
         // Sample RFC 5424 syslog messages
         let syslog_messages = vec![
@@ -210,7 +268,8 @@ mod tests {
             builder.append_syslog(parsed);
         }
 
-        // Build arrow records and capture end time
+        // The eager path must assign observed timestamps at build, not append.
+        let start_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let arrow_records = builder.build().unwrap();
         let end_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
 
@@ -358,6 +417,12 @@ mod tests {
                 .expect("Observed time should be TimestampNanosecondArray");
 
             validate_observed_timestamp_range(start_time, end_time, observed_time_array, 3);
+            assert!(
+                observed_time_array
+                    .values()
+                    .iter()
+                    .all(|time| *time == observed_time_array.value(0))
+            );
 
             // Check attributes record batch using Arrow APIs directly
             if let Some(attrs_batch) = arrow_records.get(ArrowPayloadType::LogAttrs) {

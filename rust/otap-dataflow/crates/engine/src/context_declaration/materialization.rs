@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Runtime materialization for selected constant and randomness composites.
+//! Runtime materialization for selected composite context entries.
 //!
 //! This module resolves the existing logical [`ContextProjection`] model. It
 //! intentionally does not provide general consumer bindings, indexed lookups,
@@ -15,6 +15,7 @@ use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind,
 };
 use otel_arrow_dfe_config::error::Error;
+use otel_arrow_dfe_config::transport_headers::{TransportHeaders, TransportHeadersData, ValueKind};
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::{
@@ -22,7 +23,7 @@ use super::{
     ContextMemberSource, ContextProjection,
 };
 
-/// Immutable plan for materializing selected composites with domainless members.
+/// Immutable plan for materializing selected composites.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ContextMaterializationPlan {
     layout: Arc<ContextLayout>,
@@ -30,20 +31,9 @@ pub struct ContextMaterializationPlan {
 }
 
 impl ContextMaterializationPlan {
-    /// Compiles selected constant/randomness composites and their referenced fields.
+    /// Compiles selected composites and their referenced fields.
     pub fn compile(declarations: &[ContextEntryDeclaration]) -> Result<Self, Error> {
-        let mut declarations = declarations
-            .iter()
-            .filter(|declaration| {
-                declaration.definition.0.iter().any(|part| {
-                    matches!(
-                        part,
-                        ContextEntryPart::Constant { .. } | ContextEntryPart::Randomness { .. }
-                    )
-                })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut declarations = declarations.to_vec();
         declarations.sort_by(|left, right| {
             left.name
                 .cmp(&right.name)
@@ -317,9 +307,10 @@ impl MaterializedContextEntry {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct MaterializedContextStorage {
-    entries: Box<[MaterializedContextEntry]>,
+    transport_headers: Option<TransportHeadersData>,
+    entries: Arc<[MaterializedContextEntry]>,
 }
 
 /// Immutable composites materialized for one pdata context.
@@ -343,7 +334,7 @@ impl MaterializedContext {
     /// Returns whether no composites are materialized.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.storage.is_none()
+        self.entries().is_empty()
     }
 
     /// Returns all present composites in canonical name order.
@@ -361,6 +352,53 @@ impl MaterializedContext {
             .binary_search_by(|entry| entry.name.cmp(name))
             .ok()
             .map(|index| &self.entries()[index])
+    }
+
+    /// Returns captured transport headers stored in this context.
+    #[must_use]
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
+        self.storage
+            .as_deref()
+            .and_then(|storage| storage.transport_headers.as_ref())
+    }
+
+    /// Replaces captured transport headers while retaining materialized entries.
+    pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
+        let transport_headers = headers.into_data();
+        if self.storage.is_none() {
+            if transport_headers.is_none() {
+                return;
+            }
+            self.storage = Some(Arc::new(MaterializedContextStorage {
+                transport_headers,
+                entries: Arc::from([]),
+            }));
+            return;
+        }
+        let storage = Arc::make_mut(
+            self.storage
+                .as_mut()
+                .expect("materialized context storage is present"),
+        );
+        storage.transport_headers = transport_headers;
+        if storage.transport_headers.is_none() && storage.entries.is_empty() {
+            self.storage = None;
+        }
+    }
+
+    /// Takes captured transport headers while retaining materialized entries.
+    #[must_use]
+    pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
+        let storage = self.storage.as_mut()?;
+        let storage = Arc::make_mut(storage);
+        let headers = storage
+            .transport_headers
+            .take()
+            .map(TransportHeaders::from_data);
+        if storage.entries.is_empty() {
+            self.storage = None;
+        }
+        headers
     }
 
     fn is_materialized(
@@ -401,7 +439,78 @@ impl MaterializedContext {
             .iter()
             .map(|field| source.values(field))
             .collect::<Vec<_>>();
-        let mut entries = self.entries().to_vec();
+        self.materialize_fields(plan, fields);
+    }
+
+    /// Materializes composites using transport headers already stored in this context.
+    pub fn materialize_with_stored_transport(
+        &mut self,
+        plan: &ContextMaterializationPlan,
+        source: &impl ContextValueSource,
+    ) {
+        if plan.is_empty() {
+            return;
+        }
+        if plan
+            .entries()
+            .all(|(entry, declaration)| self.is_materialized(entry, declaration))
+        {
+            return;
+        }
+        let fields = plan
+            .layout
+            .fields()
+            .iter()
+            .map(|field| match field.domain {
+                ContextDomain::TransportHeader => self.transport_values(field),
+                ContextDomain::AuthorizedIdentity => source.values(field),
+            })
+            .collect::<Vec<_>>();
+        self.materialize_fields(plan, fields);
+    }
+
+    fn transport_values(&self, field: &ContextFieldLayout) -> Option<MaterializedContextValues> {
+        let values = self
+            .transport_headers()?
+            .iter()
+            .filter(|header| {
+                header
+                    .name
+                    .as_str()
+                    .eq_ignore_ascii_case(field.name.as_str())
+            })
+            .map(|header| {
+                MaterializedContextValue::new(
+                    Some(Box::from(header.wire_name())),
+                    match header.value.value_kind {
+                        ValueKind::Text => ContextValueKind::Text,
+                        ValueKind::Binary => ContextValueKind::Binary,
+                    },
+                    header.value.bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            return None;
+        }
+        let cardinality = if values.len() == 1 {
+            ContextValueCardinality::One
+        } else {
+            ContextValueCardinality::Many
+        };
+        MaterializedContextValues::new(cardinality, values.into_boxed_slice())
+    }
+
+    fn materialize_fields(
+        &mut self,
+        plan: &ContextMaterializationPlan,
+        fields: Vec<Option<MaterializedContextValues>>,
+    ) {
+        let storage = self
+            .storage
+            .get_or_insert_with(|| Arc::new(MaterializedContextStorage::default()));
+        let storage = Arc::make_mut(storage);
+        let mut entries = storage.entries.as_ref().to_vec();
         for (entry, declaration) in plan.entries() {
             if let Some(index) = entries
                 .iter()
@@ -460,11 +569,10 @@ impl MaterializedContext {
             });
         }
         entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-        self.storage = (!entries.is_empty()).then(|| {
-            Arc::new(MaterializedContextStorage {
-                entries: entries.into_boxed_slice(),
-            })
-        });
+        storage.entries = entries.into();
+        if storage.transport_headers.is_none() && storage.entries.is_empty() {
+            self.storage = None;
+        }
     }
 
     /// Resolves a materialized composite projection.
@@ -531,6 +639,7 @@ impl<'a> MaterializedContextProjection<'a> {
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
     use std::collections::BTreeMap;
 
     fn name(value: &str) -> ContextEntryName {
@@ -603,6 +712,69 @@ mod tests {
                 .expect("valid UUID")
                 .get_version_num(),
             7
+        );
+    }
+
+    /// Scenario: a detached context appends a partition header beside a materialized composite.
+    /// Guarantees: the original headers remain unchanged while both contexts share the
+    /// materialized entry backing and the detached context retains its snapshot.
+    #[test]
+    fn stores_transport_headers_with_materialized_entries() {
+        let plan = ContextMaterializationPlan::compile(&[declaration(vec![
+            ContextEntryPart::TransportHeader {
+                name: name("workspace"),
+                store_as: Some(name("workspace_id")),
+            },
+            ContextEntryPart::Constant {
+                name: name("route"),
+                value: "otlp-grpc".to_owned(),
+            },
+        ])])
+        .expect("plan compiles");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::captured(
+            name("workspace"),
+            "x-workspace",
+            true,
+            ValueKind::Text,
+            b"acme".as_slice(),
+        ));
+        let mut context = MaterializedContext::default();
+        context.set_transport_headers(headers.clone());
+        context.materialize_with_stored_transport(&plan, &TestSource::default());
+
+        let entry = context.entry(&name("request")).expect("entry is present");
+        assert_eq!(
+            entry
+                .member(&name("workspace_id"))
+                .expect("workspace member")
+                .values()
+                .values()[0]
+                .bytes(),
+            b"acme"
+        );
+        let original_entries =
+            Arc::clone(&context.storage.as_ref().expect("context storage").entries);
+
+        let mut detached = context.clone();
+        let mut detached_headers = detached.take_transport_headers().expect("detached headers");
+        assert_eq!(detached_headers, headers);
+        detached_headers.push(TransportHeader::text(name("partition"), b"first"));
+        detached.set_transport_headers(detached_headers);
+
+        let detached_storage = detached.storage.as_ref().expect("detached storage");
+        assert!(Arc::ptr_eq(&original_entries, &detached_storage.entries));
+        assert!(detached.entry(&name("request")).is_some());
+        assert_eq!(
+            detached
+                .transport_headers()
+                .expect("detached headers")
+                .len(),
+            2
+        );
+        assert_eq!(
+            context.transport_headers().expect("original headers"),
+            &headers
         );
     }
 

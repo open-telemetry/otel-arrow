@@ -2501,9 +2501,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -5309,22 +5309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-tls"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "native-tls",
- "tokio",
- "tokio-native-tls",
- "tower-service",
-]
-
-[[package]]
 name = "hyper-util"
 version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5983,8 +5967,6 @@ dependencies = [
  "percent-encoding",
  "referencing",
  "regex",
- "reqwest 0.13.5",
- "rustls",
  "serde",
  "serde_json",
  "unicode-general-category",
@@ -7196,15 +7178,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "openssl-src"
-version = "300.6.1+3.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7212,7 +7185,6 @@ checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -7618,6 +7590,7 @@ dependencies = [
  "prost 0.14.4",
  "quick-xml 0.41.0",
  "rand 0.10.3",
+ "rcgen",
  "rdkafka",
  "regex",
  "reqwest 0.13.5",
@@ -7652,6 +7625,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "wiremock",
+ "x509-parser",
  "xxhash-rust",
 ]
 
@@ -7728,6 +7702,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-timer",
+ "globset",
  "hashbrown 0.17.1",
  "hex",
  "http",
@@ -7745,6 +7720,7 @@ dependencies = [
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-filelog-checkpoint",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-codec",
@@ -7766,10 +7742,13 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "reqwest 0.13.5",
+ "rustix",
  "secrecy",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "serde_yaml",
+ "sha2 0.11.1",
  "slotmap",
  "smallvec",
  "tempfile",
@@ -9737,12 +9716,10 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-rustls",
- "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
  "mime",
- "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "rustls",
@@ -9753,7 +9730,6 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-native-tls",
  "tokio-rustls",
  "tokio-util",
  "tower",
@@ -11344,16 +11320,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-native-tls"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
-dependencies = [
- "native-tls",
- "tokio",
-]
-
-[[package]]
 name = "tokio-postgres"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12050,7 +12016,6 @@ dependencies = [
  "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots",
 ]
 
 [[package]]
@@ -12624,8 +12589,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_common"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "dirs",
  "flate2",
@@ -12633,9 +12598,9 @@ dependencies = [
  "log",
  "miette",
  "once_cell",
- "openssl",
  "paris",
  "regex",
+ "reqwest 0.13.5",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -12649,8 +12614,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_diff"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "serde_json",
  "similar",
@@ -12659,8 +12624,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_forge"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "convert_case 0.11.0",
  "dirs",
@@ -12694,8 +12659,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_resolved_schema"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "log",
  "schemars 1.2.3",
@@ -12708,8 +12673,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_resolver"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "globset",
  "itertools 0.15.0",
@@ -12732,8 +12697,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_semconv"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "glob",
  "globset",
@@ -12756,8 +12721,8 @@ dependencies = [
 
 [[package]]
 name = "weaver_version"
-version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
+version = "0.28.0"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93#51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93"
 dependencies = [
  "schemars 1.2.3",
  "semver",
@@ -12792,15 +12757,6 @@ name = "webpki-root-certs"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "1.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
