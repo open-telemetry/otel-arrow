@@ -2,6 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Metrics for the host metrics receiver node.
+//!
+//! ### Counter Algebra and Operational Semantics
+//!
+//! The outcome population on `receiver.host_metrics.scrapes` (`scrapes`) applies strictly
+//! to **accepted** scrapes (each accepted scrape starts with `receiver.host_metrics.scrapes.started`):
+//!
+//! ```text
+//! receiver.host_metrics.scrapes.started == sum(
+//!     receiver.host_metrics.scrapes{outcome="completed"},
+//!     receiver.host_metrics.scrapes{outcome="failed"},
+//!     receiver.host_metrics.scrapes{outcome="timeout"},
+//!     receiver.host_metrics.scrapes{outcome="dropped"},
+//!     receiver.host_metrics.scrapes{outcome="cancelled"}
+//! )
+//! ```
+//!
+//! Ticks that could not be accepted because the worker was already busy processing a prior
+//! scrape are counted separately in `receiver.host_metrics.scrapes.skipped` and do not enter
+//! the accepted outcome population. Worker-start failures are recorded under
+//! `receiver.host_metrics.errors{error.type="scraper_failure"}`.
 
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::error::Error;
@@ -12,15 +32,19 @@ use otel_arrow_dfe_telemetry::metrics::{
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-/// Outcome of a host metrics scrape attempt.
+/// Outcome of an accepted host metrics scrape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum ScrapeOutcome {
     /// Scrape tick built and sent a metrics batch downstream.
     Completed,
-    /// Fatal scrape failure occurred.
+    /// Fatal scrape failure occurred during read, encode, or delivery.
     Failed,
-    /// Scrape tick skipped or timed out before completion.
-    Overrun,
+    /// Accepted scrape timed out before completion.
+    Timeout,
+    /// Scrape batch was dropped before delivery due to downstream channel backpressure.
+    Dropped,
+    /// In-flight scrape was cancelled during receiver shutdown or drain.
+    Cancelled,
 }
 
 /// Attributes for scrape outcome metrics.
@@ -84,6 +108,9 @@ pub struct HostMetricsGeneralMetrics {
     /// Number of scrape ticks started.
     #[metric(unit = "{scrape}")]
     pub scrapes_started: Counter<u64>,
+    /// Number of scheduled scrape ticks skipped because the worker was busy.
+    #[metric(unit = "{scrape}")]
+    pub scrapes_skipped: Counter<u64>,
     /// Number of due metric families processed.
     #[metric(unit = "{family}")]
     pub families_scraped: Counter<u64>,
@@ -179,10 +206,12 @@ mod tests {
 
         let mut metrics = HostMetricsReceiverMetrics::register(&pipeline_ctx);
 
-        // Record scrape outcomes
+        // Record accepted scrape outcomes
         metrics.record_scrape_outcome(ScrapeOutcome::Completed);
         metrics.record_scrape_outcome(ScrapeOutcome::Failed);
-        metrics.record_scrape_outcome(ScrapeOutcome::Overrun);
+        metrics.record_scrape_outcome(ScrapeOutcome::Timeout);
+        metrics.record_scrape_outcome(ScrapeOutcome::Dropped);
+        metrics.record_scrape_outcome(ScrapeOutcome::Cancelled);
 
         // Record error categories
         metrics.record_error(HostMetricsErrorType::ScraperFailure);
@@ -192,6 +221,7 @@ mod tests {
 
         // Record general counters and timings
         metrics.general.scrapes_started.add(5);
+        metrics.general.scrapes_skipped.add(1);
         metrics.general.families_scraped.add(9);
         metrics.general.batches_sent.add(4);
         metrics.general.scrape_duration_ns.record(1_500_000.0);
@@ -203,6 +233,140 @@ mod tests {
             "terminal snapshots should contain recorded metric sets"
         );
 
+        struct Expected<'a> {
+            scope: &'a str,
+            instrument: &'a str,
+            unit: &'a str,
+            attr: Option<(&'a str, &'a str)>,
+            value: u64,
+        }
+
+        let cases = [
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "completed")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "failed")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "timeout")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "dropped")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "cancelled")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.errors",
+                instrument: "errors",
+                unit: "{error}",
+                attr: Some(("error.type", "scraper_failure")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.errors",
+                instrument: "errors",
+                unit: "{error}",
+                attr: Some(("error.type", "partial_error")),
+                value: 3,
+            },
+            Expected {
+                scope: "receiver.host_metrics.errors",
+                instrument: "errors",
+                unit: "{error}",
+                attr: Some(("error.type", "source_read_error")),
+                value: 2,
+            },
+            Expected {
+                scope: "receiver.host_metrics.errors",
+                instrument: "errors",
+                unit: "{error}",
+                attr: Some(("error.type", "send_failure")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics",
+                instrument: "scrapes.started",
+                unit: "{scrape}",
+                attr: None,
+                value: 5,
+            },
+            Expected {
+                scope: "receiver.host_metrics",
+                instrument: "scrapes.skipped",
+                unit: "{scrape}",
+                attr: None,
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics",
+                instrument: "families.scraped",
+                unit: "{family}",
+                attr: None,
+                value: 9,
+            },
+            Expected {
+                scope: "receiver.host_metrics",
+                instrument: "batches.sent",
+                unit: "{batch}",
+                attr: None,
+                value: 4,
+            },
+        ];
+
+        for c in cases {
+            let snap = snapshots
+                .iter()
+                .find(|s| {
+                    s.descriptor().name == c.scope
+                        && match c.attr {
+                            Some((k, v)) => s.measurement_attribute_value(k) == Some(v),
+                            None => true,
+                        }
+                        && s.descriptor()
+                            .metrics
+                            .iter()
+                            .any(|m| m.name == c.instrument)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "snapshot `{}` ({}) with attr {:?} not found",
+                        c.scope, c.instrument, c.attr
+                    )
+                });
+
+            let idx = snap
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|m| m.name == c.instrument)
+                .unwrap();
+
+            assert_eq!(snap.descriptor().metrics[idx].unit, c.unit);
+            assert_eq!(snap.get_metrics()[idx].to_u64_lossy(), c.value);
+        }
+
         // Subsequent snapshot should be empty since hot values were flushed
         let empty_snapshots = metrics.terminal_snapshots();
         assert!(
@@ -212,7 +376,7 @@ mod tests {
     }
 
     /// Scenario: Host metrics receiver metrics are reported through a MetricsReporter.
-    /// Guarantees: All metric sets report without error and clear dirty tracking.
+    /// Guarantees: Every touched metric bucket is exported exactly once and hot values are cleared afterward.
     #[test]
     fn test_host_metrics_receiver_metrics_reporting() {
         let registry_handle = TelemetryRegistryHandle::new();
@@ -221,12 +385,28 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let mut metrics = HostMetricsReceiverMetrics::register(&pipeline_ctx);
-        let (_rx, mut reporter) = MetricsReporter::create_new_and_receiver(16);
+        let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(16);
 
         metrics.record_scrape_outcome(ScrapeOutcome::Completed);
+        metrics.record_scrape_outcome(ScrapeOutcome::Dropped);
+        metrics.record_scrape_outcome(ScrapeOutcome::Timeout);
         metrics.record_error(HostMetricsErrorType::SourceReadError);
         metrics.general.scrapes_started.add(1);
+        metrics.general.scrapes_skipped.add(1);
 
         assert!(metrics.report(&mut reporter).is_ok());
+
+        // Three scrape outcome buckets, one error bucket, and one general bucket.
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "all touched metric buckets should be exported exactly once"
+        );
+
+        // Reporting flushes hot values so no stale buckets remain for terminal collection.
+        assert!(
+            metrics.terminal_snapshots().is_empty(),
+            "reported metric sets should not retain hot values"
+        );
     }
 }
