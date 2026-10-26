@@ -1,6 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: "Add scalar and snapshot watermark modes to the PostgreSQL receiver."
-issues: [4166]
-subtext: |
-  Scalar mode resumes from one unique integer or timestamp key. Snapshot mode emits each complete query result on every polling interval.

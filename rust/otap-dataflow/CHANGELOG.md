@@ -12,6 +12,55 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.63.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Migrated ETW receiver telemetry from flat counters to dimensioned metric populations with enum attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Update dashboards to use the restructured metrics: receiver.etw.events (received, forwarded), receiver.etw.drops (events, by reason), receiver.etw.decode (errors), and receiver.etw.session (events.lost, buffers.written, buffers.lost by delivery).
+- `query-engine`: OTAP query-engine now validates fields in expressions are valid for signal type ([#4070](https://github.com/open-telemetry/otel-arrow/issues/4070))
+  Transform/partition OPL/KQL now rejects fields invalid for the signal type. Partition processor
+  accepts `signal_type` for validation and batch selection.
+  Migration: Fix invalid field references and set `signal_type` for signal-specific partitions.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade weaver to v0.28.0. This allows the traffic generator to parse semantic conventions registries that use `unref`. ([#4405](https://github.com/open-telemetry/otel-arrow/issues/4405))
+  Weaver v0.28.0 adds support for the `unref` signal refinement now used by the
+  upstream semantic-conventions registry. Weaver's git transport no longer picks
+  a rustls crypto provider, so one must be installed before loading a remote
+  registry.
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4444](https://github.com/open-telemetry/otel-arrow/issues/4444))
+- `engine`: Propagate materialized constant and UUID v7 context members as outbound transport headers. ([#3919](https://github.com/open-telemetry/otel-arrow/issues/3919), [#4202](https://github.com/open-telemetry/otel-arrow/issues/4202))
+  Qualified selectors use receiver-materialized composite snapshots, preserving presence conditions, header names, value kinds, duplicates, and ordering.
+- `pdata`: Support encoded telemetry through pluggable codecs, preserving OTLP pass-through and lazy conversion to OTAP. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  OTLP/OTAP exporters and record-mutating processors retain original input for permanent Nacks when decoding fails, instead of stopping the pipeline.
+- `pipeline`: Enable verified TLS by default for the PostgreSQL receiver, with optional private CA files and an explicit plaintext opt-out. ([#4166](https://github.com/open-telemetry/otel-arrow/issues/4166))
+  Build with one crypto-* feature. Platform roots and connection.tls.ca_file are verified; transient TLS I/O retries without advancing checkpoints.
+  Set connection.tls.enabled=false only for isolated development databases that do not support TLS.
+
+- `pipeline`: Add scalar and snapshot watermark modes to the PostgreSQL receiver. ([#4166](https://github.com/open-telemetry/otel-arrow/issues/4166))
+  Scalar mode resumes from one unique integer or timestamp key. Snapshot mode emits each complete query result on every polling interval.
+
+- `pipeline`: Syslog receiver preserves original messages in encoded pdata until native processing is required. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  RFC 3164 retains its receipt year. Syslog batches are capped at 256 messages/256 KiB. With format: preserve, move downstream batching limits from otap to config.codecs.syslog-batch (items only). See the syslog receiver README for migration examples.
+- `pipeline`: Reduce CPU usage when receiving syslog messages and converting RFC 3164 timestamps, including wrapped CEF. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  Use fixed-format timestamp parsing and avoid unnecessary local-time conversion when capturing receipt years, without timestamp caching. Existing timestamp, receipt-year, timezone, and DST behavior is preserved.
+- `query-engine`: OTAP query-engine now supports metric data point fields as target (LHS) of assignment operations. ([#4070](https://github.com/open-telemetry/otel-arrow/issues/4070))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `dependencies`: Fix a potential cryptographic timing side channel by updating ctutils to 0.4.4 (RUSTSEC-2026-0385). ([#4517](https://github.com/open-telemetry/otel-arrow/issues/4517))
+- `engine`: Reject full-config reconciliation while any pipeline has an in-flight rollout. ([#3865](https://github.com/open-telemetry/otel-arrow/issues/3865))
+  Previously a full-config reconcile that omitted a pipeline with an active rollout (delete_missing false) could overwrite the recorded config with a stale snapshot once the rollout completed. Such requests now fail with a rollout-conflict error instead.
+- `engine`: Reject full-config changes that cannot be applied to the running process. ([#3847](https://github.com/open-telemetry/otel-arrow/issues/3847))
+  Mixed requests are rejected before planning. Error messages distinguish restart-required settings from mutations that callers must move to pipeline scope.
+- `query-engine`: `coalesce` now falls back to later arguments when an earlier argument is absent from every record in a batch, instead of returning null for every record. ([#4300](https://github.com/open-telemetry/otel-arrow/issues/4300))
+  This includes `coalesce(attributes["x"], "default")` and `coalesce(body, "default")` when no record has `x` or a body. Equality comparisons (`==`, `!=`) between two values that are both absent from a batch no longer fail with a join error.
+
+<!-- previous-version -->
+
 ## v0.62.0
 
 ### :stop_sign: Breaking changes :stop_sign:
