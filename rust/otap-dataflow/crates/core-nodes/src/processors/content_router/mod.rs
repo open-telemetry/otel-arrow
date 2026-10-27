@@ -1969,8 +1969,8 @@ mod tests {
                             "pdata admission should pause after parking the full route"
                         );
 
-                        // In production the engine would not deliver pdata
-                        // while accept_pdata() is false. This test calls
+                        // The engine does not deliver pdata while
+                        // accept_pdata() is false. This test calls
                         // process() directly to verify the closed-route
                         // NACK fires independently.
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
