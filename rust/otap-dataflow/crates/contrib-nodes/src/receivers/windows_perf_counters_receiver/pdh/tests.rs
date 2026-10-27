@@ -686,6 +686,63 @@ async fn shutdown_closes_query_or_stops_waiting_at_deadline() {
     assert_eq!(worker.shutdown(deadline()).await, Stopped::Failed);
 }
 
+/// Scenario: The worker closes its query on shutdown, but a thread-local destructor on the worker
+/// thread then blocks until released.
+/// Guarantees: Shutdown waits for the thread to exit, not only for the query to close, and still
+/// returns at the deadline without blocking the async runtime; the thread exits once released.
+#[tokio::test]
+async fn shutdown_deadline_covers_thread_exit() {
+    struct Hold {
+        release: mpsc::Receiver<()>,
+        exited: mpsc::Sender<()>,
+    }
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            let _ = self.release.recv();
+            let _ = self.exited.send(());
+        }
+    }
+    thread_local! {
+        static HOLD: std::cell::RefCell<Option<Hold>> = const { std::cell::RefCell::new(None) };
+    }
+    let (release, release_rx) = mpsc::channel();
+    let (exited_tx, exited) = mpsc::channel();
+    let (closed_tx, closed) = mpsc::channel();
+    let state = fake();
+    state.lock().unwrap().closed = Some(closed_tx);
+    let mut hold = Some(Hold {
+        release: release_rx,
+        exited: exited_tx,
+    });
+    let mut open = opener(&state);
+    let open = move || {
+        if let Some(hold) = hold.take() {
+            HOLD.with(|slot| *slot.borrow_mut() = Some(hold));
+        }
+        open()
+    };
+    let config = counters(json!([
+        {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
+    ]));
+    let (worker, started) = Worker::start(config, open).unwrap();
+    let _ = started.await.unwrap();
+    // Bounds a regression that joins on the async runtime: the join then returns once released.
+    let watchdog = release.clone();
+    let _ = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        let _ = watchdog.send(());
+    });
+    let soon = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+    assert_eq!(worker.shutdown(soon).await, Stopped::TimedOut);
+    closed
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the worker closes its query before thread exit");
+    release.send(()).unwrap();
+    exited
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the released worker thread exits");
+}
+
 /// Scenario: Array sizes at, under and over the 64 MiB cap, as each PDH sizing call reports them,
 /// are converted to a buffer length.
 /// Guarantees: Each over-cap size fails before any allocation; sizes up to the cap round up to

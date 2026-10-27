@@ -7,7 +7,6 @@ use super::super::config::CounterConfig;
 use super::query::Collector;
 use super::{Pdh, Report};
 use std::sync::mpsc;
-use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 
 enum Command {
@@ -29,13 +28,15 @@ pub(in super::super) enum Stopped {
 /// Client for the worker thread. PDH calls block, so they never run on the async runtime.
 pub(in super::super) struct Worker {
     commands: mpsc::Sender<Command>,
-    done: oneshot::Receiver<()>,
-    thread: JoinHandle<()>,
+    /// Sent once the worker thread has fully exited, thread-local destructors included: `true`
+    /// for a clean exit and `false` after a panic.
+    exited: oneshot::Receiver<bool>,
 }
 
 impl Worker {
-    /// Spawns the worker, which opens, adds, and primes the queries. Returns at once with a
-    /// receiver for the start report, so the caller can keep serving control messages.
+    /// Spawns the worker, which opens, adds, and primes the queries, and a thread that waits for
+    /// it to exit. Returns at once with a receiver for the start report, so the caller can keep
+    /// serving control messages.
     pub(in super::super) fn start<P, F>(
         counters: Vec<CounterConfig>,
         open: F,
@@ -46,7 +47,7 @@ impl Worker {
     {
         let (commands, receiver) = mpsc::channel();
         let (started_tx, started) = oneshot::channel();
-        let (done_tx, done) = oneshot::channel();
+        let (exited_tx, exited) = oneshot::channel();
         let thread = std::thread::Builder::new()
             .name("windows-perf-counters-pdh".to_owned())
             .spawn(move || {
@@ -55,16 +56,14 @@ impl Worker {
                 while let Ok(Command::Scrape(reply)) = receiver.recv() {
                     let _ = reply.send(collector.scrape());
                 }
-                // Close the queries before reporting completion.
-                drop(collector);
-                let _ = done_tx.send(());
             })?;
-        let worker = Self {
-            commands,
-            done,
-            thread,
-        };
-        Ok((worker, started))
+        // Joining blocks, so it runs on its own thread rather than on the async runtime.
+        let _ = std::thread::Builder::new()
+            .name("windows-perf-counters-pdh-join".to_owned())
+            .spawn(move || {
+                let _ = exited_tx.send(thread.join().is_ok());
+            })?;
+        Ok((Self { commands, exited }, started))
     }
 
     /// Requests one scrape. The receiver errors if the worker has stopped.
@@ -76,21 +75,11 @@ impl Worker {
 
     /// Stops the worker after any start or scrape in progress, waiting until the deadline.
     pub(in super::super) async fn shutdown(self, deadline: tokio::time::Instant) -> Stopped {
-        let Self {
-            commands,
-            done,
-            thread,
-        } = self;
-        let _ = commands.send(Command::Stop);
-        let completed = match tokio::time::timeout_at(deadline, done).await {
-            Err(_) => return Stopped::TimedOut,
-            Ok(result) => result.is_ok(),
-        };
-        // The thread has finished or panicked, so this join returns promptly.
-        if completed && thread.join().is_ok() {
-            Stopped::Cleanly
-        } else {
-            Stopped::Failed
+        let _ = self.commands.send(Command::Stop);
+        match tokio::time::timeout_at(deadline, self.exited).await {
+            Ok(Ok(true)) => Stopped::Cleanly,
+            Ok(_) => Stopped::Failed,
+            Err(_) => Stopped::TimedOut,
         }
     }
 }
