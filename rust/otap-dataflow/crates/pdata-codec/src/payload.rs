@@ -212,7 +212,7 @@ impl PdataPayload {
         Self::from_storage(PayloadStorage::Encoded(encoded))
     }
 
-    /// Caches a count established by codec-owned counting or batching logic.
+    /// Caches a count established by codec-owned construction, counting, or batching.
     /// Incorrect counts can cause premature completion, so nodes cannot set this.
     #[must_use]
     pub(crate) fn with_item_count(mut self, item_count: usize) -> Self {
