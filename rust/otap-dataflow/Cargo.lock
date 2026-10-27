@@ -4105,9 +4105,9 @@ dependencies = [
 
 [[package]]
 name = "geneva-uploader"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca9af86a5e39e8c97c170e4b02446ba5e79c99582e92014197e4e0c52c57e2f"
+checksum = "055717a557b5bb391e7c8cd3c71f2ec3a5ebc1f6e2ebc15f64b8dde66d11dceb"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -4120,7 +4120,7 @@ dependencies = [
  "opentelemetry-proto",
  "otel-arrow-dfe-pdata-views",
  "p12-keystore",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -9036,7 +9036,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.12.1",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph 0.8.3",
@@ -9070,7 +9070,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -10925,7 +10925,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -11763,7 +11763,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.9.5",
+ "rand 0.10.3",
 ]
 
 [[package]]
