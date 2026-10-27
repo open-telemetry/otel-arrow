@@ -376,6 +376,9 @@ Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 Internal telemetry settings are declared at `engine.telemetry`. The
 `reporting_interval` controls the metric-set snapshot cadence and supplies the
 internal telemetry receiver's default registry drain and export interval.
+`metric_unregister_grace_period` (default `0s`) keeps the metric sets of
+components that shut down visible to metric readers, such as the admin metrics
+endpoint, for that long, so a scraper can observe their final values.
 
 The internal telemetry receiver's `signals` field defaults to `[logs,
 metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs

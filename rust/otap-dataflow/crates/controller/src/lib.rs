@@ -1481,6 +1481,8 @@ impl<
         // observed state store and the internal telemetry system, and by the
         // controller context below.
         let telemetry_registry = TelemetryRegistryHandle::new();
+        telemetry_registry
+            .set_metric_unregister_grace(engine.telemetry.metric_unregister_grace_period);
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let controller_ctx = match state_directory {
             Some(root) => controller_ctx.with_state_directory(root),
