@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793131644299,
+  "lastUpdate": 1793140462870,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -72833,6 +72833,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 105.83,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "09bf0c49d7b5f1182c5ac41db828b5a3a57e55cb",
+          "message": "chore(filelog): add bounded discovery reconciliation (#4519)\n\n## Description:\n\nImplements Task `7b` in #2844: the step between scanning files and\ndeciding which files to open or resume.\n\nThe scanner reports what it finds during each discovery pass. This\nchange keeps bounded in-memory state for known files and pending\ncandidates, compares new observations with that state, and selects\ncandidates for the identity owner. It stores metadata and paths - not\nlog contents or open file handles.\n\nThe `reconciler`:\n\n- Processes observations before scan completion. An incomplete scan\ncannot establish that an unseen file disappeared.\n- Distinguishes exclusions from disappearance and reports conflicting\nevidence immediately.\n- Handles aliases and replacement candidates while keeping reconnection\nseparate from publishing a new identity or binding.\n- Preserves expected directory identities when a parent changes.\nExisting files can reconnect through validated names while affected\npublication remains blocked.\n- Limits tracked records, pending candidates and offers, and gives\noverflow candidates opportunities even when tracked capacity is full.\n- Validates admission groups before durable work, then publishes tracked\nstate only after success.\n\nThis is a standalone component, not yet wired into the receiver.\n\nReceiver integration and acceptance of the proposed discovery memory\nallowance remain separate tasks.",
+          "timestamp": "2026-10-27T21:33:59Z",
+          "tree_id": "15bbf2ddb6f4d1e950b6525da964e1e5aa423c4e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/09bf0c49d7b5f1182c5ac41db828b5a3a57e55cb"
+        },
+        "date": 1793140442937,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 2.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
             "unit": "MB"
           }
         ]
