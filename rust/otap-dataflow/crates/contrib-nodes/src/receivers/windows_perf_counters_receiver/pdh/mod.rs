@@ -41,12 +41,13 @@ pub(super) struct Value {
 pub(super) struct Point {
     /// Index of the configured counter.
     pub(super) counter: usize,
-    /// Instance name after duplicate suffixing; `None` when empty or a lone aggregate.
+    /// Instance name after duplicate suffixing; `None` when empty or a lone aggregate that was not
+    /// opted in.
     pub(super) instance: Option<String>,
     pub(super) value: f64,
     /// When the query was collected.
     pub(super) time_unix_nano: i64,
-    /// When the query that produced the value was opened.
+    /// When the receiver started collecting; never after `time_unix_nano`.
     pub(super) start_time_unix_nano: i64,
 }
 

@@ -92,7 +92,7 @@ fn omits_empty_samples() {
 
 /// Scenario: One scrape holds wildcard Gauge points, an exact Sum point and a non-instanced Gauge.
 /// Guarantees: Points carry the collection time and double values; only the Sum carries the
-/// query-open start time as a cumulative non-monotonic Sum; static attributes and the returned
+/// point's start time as a cumulative non-monotonic Sum; static attributes and the returned
 /// instance name are attached; non-instanced counters get no instance attribute; the resource
 /// is tagged `os.type=windows`.
 #[test]
@@ -171,7 +171,7 @@ fn projects_gauge_sum_and_attributes() {
 
 /// Scenario: Sums are configured with each temporality and monotonic flag.
 /// Guarantees: The Sum carries the configured temporality and monotonic flag, and the value is unchanged;
-/// only a cumulative Sum carries the query-open start time, as Go sets none for delta.
+/// only a cumulative Sum carries the point's start time.
 #[test]
 fn projects_sum_temporality_and_monotonic_flags() {
     for (aggregation, monotonic, temporality) in [

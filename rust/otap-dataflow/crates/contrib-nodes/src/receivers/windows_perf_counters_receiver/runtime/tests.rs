@@ -377,7 +377,8 @@ fn string_attributes(
 /// start time, delta Sums do not), exact and "*" instance values, `_Total` only when opted in, a
 /// `#1` suffix on the duplicate process name, no instance on the non-instanced counter, static
 /// attributes, and nothing for the missing counter; the `recreate_query` Sum keeps publishing and
-/// its start time advances with every batch; shutdown completes.
+/// its start time stays the same in every batch, moving back only to an earlier point time;
+/// shutdown completes.
 #[test]
 #[ignore = "requires Windows performance counters"]
 fn live_receiver_end_to_end() {
@@ -465,7 +466,7 @@ fn live_receiver_end_to_end() {
                                     .iter()
                                     .all(|p| p.start_time_unix_nano == start)
                             );
-                            recreated_starts.push(start);
+                            recreated_starts.push((start, sum.data_points[0].time_unix_nano));
                             &sum.data_points
                         }
                         ("proc.threads", Some(Data::Sum(sum))) => {
@@ -510,7 +511,9 @@ fn live_receiver_end_to_end() {
             assert_eq!(seen.get("proc.threads"), Some(&processes));
             assert!(recreated_starts.len() >= 2, "{recreated_starts:?}");
             assert!(
-                recreated_starts.windows(2).all(|pair| pair[1] > pair[0]),
+                recreated_starts
+                    .windows(2)
+                    .all(|pair| pair[1].0 == pair[0].0.min(pair[1].1)),
                 "{recreated_starts:?}"
             );
             ctx.send_control_msg(NodeControlMsg::Shutdown {

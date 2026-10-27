@@ -22,6 +22,8 @@ const READ_FAILED: u32 = 0xC000_0BBD;
 struct State {
     opens: usize,
     closes: usize,
+    /// Notified on each close.
+    closed: Option<mpsc::Sender<()>>,
     fail_open: bool,
     adds: Vec<String>,
     missing: HashSet<String>,
@@ -41,10 +43,14 @@ struct FakePdh {
 
 impl Drop for FakePdh {
     fn drop(&mut self) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .closes += 1;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closes += 1;
+        if let Some(closed) = &state.closed {
+            let _ = closed.send(());
+        }
     }
 }
 
@@ -150,7 +156,6 @@ fn names(report: &Report) -> Vec<Option<&str>> {
 
 const MEMORY: &str = r"\Memory\Available Bytes";
 const SYSTEM: &str = r"\System\Threads";
-const PROCESSES: &str = r"\Process(*)\ID Process";
 const PROCESSOR: &str = r"\Processor(*)\% Processor Time";
 
 /// Scenario: One path is missing at start, still missing on the next scrape, then becomes available.
@@ -351,95 +356,108 @@ fn negative_denominator_collects_once_more() {
     assert_eq!(state.lock().unwrap().opens, 3);
 }
 
-/// Scenario: A wildcard array repeats a name, and one repeat has an invalid CStatus.
-/// Guarantees: Invalid items are dropped first, then the first occurrence keeps its name and later
-/// ones get "#1", "#2" in returned order, as in Go.
+/// Scenario: Processor counters with `*`, `*` beside a listed `_Total`, a custom aggregation_name,
+/// a pattern beside an exact `_Total`, or an opted-in aggregate read arrays with repeated names,
+/// invalid CStatus items, a returned literal `a#1`, repeated `_Total`s, and a lone `_Total`.
+/// Guarantees: Invalid items are skipped; repeats of a name get the lowest free "#1", "#2", ... in
+/// returned order, skipping returned names. The aggregate is the last raw occurrence of its name,
+/// even when that item is invalid: it is dropped, or unnamed when it is the only kept item, unless it
+/// is listed; every earlier occurrence is a real instance named normally.
 #[test]
-fn suffixes_duplicate_names_after_filtering() {
+fn names_instances_of_an_array_read() {
+    const OK: u32 = PDH_CSTATUS_VALID_DATA;
+    const BAD: u32 = PDH_CSTATUS_INVALID_DATA;
     let state = fake();
-    set_array(
-        &state,
-        PROCESSES,
-        Ok(vec![
-            item("svchost", PDH_CSTATUS_INVALID_DATA, 0.0),
-            item("svchost", PDH_CSTATUS_VALID_DATA, 1.0),
-            item("app", PDH_CSTATUS_VALID_DATA, 2.0),
-            item("svchost", PDH_CSTATUS_VALID_DATA, 3.0),
-            item("svchost", PDH_CSTATUS_VALID_DATA, 4.0),
-        ]),
-    );
-    let config = counters(json!([
-        {"object": "Process", "instances": "*", "counters": [{"name": "ID Process"}]}
-    ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
-    assert_eq!(
-        points(&collector.scrape()),
-        [
-            (0, Some("svchost"), 1.0),
-            (0, Some("app"), 2.0),
-            (0, Some("svchost#1"), 3.0),
-            (0, Some("svchost#2"), 4.0),
-        ]
-    );
-}
-
-/// Scenario: Default `*` arrays hold an invalid `_Total` beside a valid one, and two valid `_Total`s.
-/// Guarantees: Go's order holds: filter, clear a lone aggregate's name, suffix duplicates, then
-/// drop the aggregate, so a filtered-to-lone `_Total` is published without an instance and a
-/// suffixed `_Total#1` is not dropped.
-#[test]
-fn clears_lone_aggregate_then_suffixes_then_drops() {
-    let state = fake();
-    let config = counters(json!([
-        {"object": "Processor", "instances": "*", "counters": [{"name": "% Processor Time"}]}
-    ]));
-    for (array, expected) in [
+    let pattern = r"\Processor(_T*)\% Processor Time";
+    let exact = r"\Processor(_Total)\% Processor Time";
+    for (instances, aggregation_name, array, expected) in [
         (
+            json!("*"),
+            "",
             vec![
-                item("_Total", PDH_CSTATUS_INVALID_DATA, 1.0),
-                item("_Total", PDH_CSTATUS_VALID_DATA, 2.0),
+                ("a", BAD, 0.0),
+                ("a", OK, 1.0),
+                ("b", OK, 2.0),
+                ("a", OK, 3.0),
+                ("a", OK, 4.0),
             ],
+            vec![
+                (0, Some("a"), 1.0),
+                (0, Some("b"), 2.0),
+                (0, Some("a#1"), 3.0),
+                (0, Some("a#2"), 4.0),
+            ],
+        ),
+        (
+            json!("*"),
+            "",
+            vec![("a", OK, 1.0), ("a", OK, 2.0), ("a#1", OK, 3.0)],
+            vec![
+                (0, Some("a"), 1.0),
+                (0, Some("a#2"), 2.0),
+                (0, Some("a#1"), 3.0),
+            ],
+        ),
+        (
+            json!("*"),
+            "",
+            vec![("_Total", BAD, 1.0), ("_Total", OK, 2.0)],
             vec![(0, None, 2.0)],
         ),
         (
-            vec![
-                item("_Total", PDH_CSTATUS_VALID_DATA, 1.0),
-                item("_Total", PDH_CSTATUS_VALID_DATA, 2.0),
-            ],
-            vec![(0, Some("_Total#1"), 2.0)],
+            json!("*"),
+            "",
+            vec![("_Total", OK, 1.0), ("_Total", OK, 2.0)],
+            vec![(0, Some("_Total"), 1.0)],
         ),
-    ] {
-        set_array(&state, PROCESSOR, Ok(array));
-        let (mut collector, _) = Collector::start(config.clone(), opener(&state));
-        assert_eq!(points(&collector.scrape()), expected);
-    }
-}
-
-/// Scenario: `*` is read with the default aggregate, with `_Total` also listed, and with a custom
-/// aggregation_name.
-/// Guarantees: The aggregate is dropped unless it is listed alongside `*`; a custom name changes
-/// which instance is the aggregate.
-#[test]
-fn excludes_aggregate_unless_listed() {
-    let state = fake();
-    set_array(
-        &state,
-        PROCESSOR,
-        Ok(vec![
-            item("0", PDH_CSTATUS_VALID_DATA, 1.0),
-            item("_Total", PDH_CSTATUS_VALID_DATA, 2.0),
-            item("1", PDH_CSTATUS_VALID_DATA, 3.0),
-        ]),
-    );
-    for (instances, aggregation_name, expected) in [
-        (json!("*"), "", vec![Some("0"), Some("1")]),
+        (
+            json!("*"),
+            "",
+            vec![("_Total", OK, 1.0), ("_Total", BAD, 2.0)],
+            vec![(0, Some("_Total"), 1.0)],
+        ),
+        (
+            json!("*"),
+            "",
+            vec![("0", OK, 1.0), ("_Total", OK, 2.0), ("1", OK, 3.0)],
+            vec![(0, Some("0"), 1.0), (0, Some("1"), 3.0)],
+        ),
         (
             json!(["*", "_Total"]),
             "",
-            vec![Some("0"), Some("_Total"), Some("1")],
+            vec![("0", OK, 1.0), ("_Total", OK, 2.0), ("1", OK, 3.0)],
+            vec![
+                (0, Some("0"), 1.0),
+                (0, Some("_Total"), 2.0),
+                (0, Some("1"), 3.0),
+            ],
         ),
-        (json!("*"), "1", vec![Some("0"), Some("_Total")]),
+        (
+            json!("*"),
+            "1",
+            vec![("0", OK, 1.0), ("_Total", OK, 2.0), ("1", OK, 3.0)],
+            vec![(0, Some("0"), 1.0), (0, Some("_Total"), 2.0)],
+        ),
+        (
+            json!(["_T*", "_Total"]),
+            "",
+            vec![("_Total", OK, 5.0)],
+            vec![(0, None, 5.0), (1, None, 5.0)],
+        ),
+        (
+            json!(["*", "_Total"]),
+            "_Total",
+            vec![("_Total", OK, 5.0)],
+            vec![(0, Some("_Total"), 5.0)],
+        ),
     ] {
+        let array: Vec<_> = array
+            .into_iter()
+            .map(|(name, status, number)| item(name, status, number))
+            .collect();
+        for path in [PROCESSOR, pattern, exact] {
+            set_array(&state, path, Ok(array.clone()));
+        }
         let config = counters(json!([{
             "object": "Processor",
             "instances": instances,
@@ -447,88 +465,70 @@ fn excludes_aggregate_unless_listed() {
             "counters": [{"name": "% Processor Time"}]
         }]));
         let (mut collector, _) = Collector::start(config, opener(&state));
-        assert_eq!(names(&collector.scrape()), expected);
+        assert_eq!(
+            points(&collector.scrape()),
+            expected,
+            "{instances} {array:?}"
+        );
     }
 }
 
-/// Scenario: A wildcard returns only the aggregate instance, and an exact `_Total` path is read.
-/// Guarantees: A lone aggregate is published without an instance attribute in both forms; with the
-/// aggregate opted in it keeps its name.
+/// Scenario: The receiver's start time is after the read time, as after a backward clock step,
+/// and the next read is later.
+/// Guarantees: The start time moves back to the read time, so a point's start time never follows
+/// its time; a later read keeps the moved start time unless its own time is earlier still.
 #[test]
-fn lone_aggregate_has_no_instance() {
-    let state = fake();
-    let pattern = r"\Processor(_T*)\% Processor Time";
-    let exact = r"\Processor(_Total)\% Processor Time";
-    set_array(
-        &state,
-        pattern,
-        Ok(vec![item("_Total", PDH_CSTATUS_VALID_DATA, 5.0)]),
-    );
-    set_array(
-        &state,
-        PROCESSOR,
-        Ok(vec![item("_Total", PDH_CSTATUS_VALID_DATA, 5.0)]),
-    );
-    set_array(
-        &state,
-        exact,
-        Ok(vec![item("_Total", PDH_CSTATUS_VALID_DATA, 6.0)]),
-    );
-    let config = counters(json!([
-        {"object": "Processor", "instances": ["_T*", "_Total"],
-         "counters": [{"name": "% Processor Time"}]},
-        {"object": "Processor", "instances": ["*", "_Total"],
-         "counters": [{"name": "% Processor Time", "metric": ""}], "aggregation_name": "_Total"}
-    ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
-    assert_eq!(
-        points(&collector.scrape()),
-        [(0, None, 5.0), (1, None, 6.0), (2, Some("_Total"), 5.0)]
-    );
-}
-
-/// Scenario: A collection fails, then succeeds again.
-/// Guarantees: The failing scrape reports the status and drops the query; the next scrape closes
-/// and reopens it, re-adds every path and primes without publishing; the scrape after that
-/// publishes with a start time no earlier than the reopen.
-#[test]
-fn reopens_query_after_collect_failure() {
+fn start_time_moves_back_with_the_clock() {
     let state = fake();
     set_single(&state, MEMORY, 1.0);
     let config = counters(json!([
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
     ]));
     let (mut collector, _) = Collector::start(config, opener(&state));
-    let first = collector.scrape().points.remove(0);
+    collector.start_time_unix_nano = i64::MAX;
+    let moved = collector.scrape().points.remove(0);
+    assert_eq!(moved.start_time_unix_nano, moved.time_unix_nano);
+    let later = collector.scrape().points.remove(0);
+    assert_eq!(
+        later.start_time_unix_nano,
+        moved.time_unix_nano.min(later.time_unix_nano)
+    );
+}
 
-    state.lock().unwrap().collect_status = Some(COLLECT_FAILED);
-    let failed = collector.scrape();
-    assert_eq!(failed.collect_failures, [(0, COLLECT_FAILED)]);
-    assert!(failed.points.is_empty() && failed.collected.is_empty());
-    assert_eq!(failed.active_counters, 0);
+/// Scenario: At startup, a counter's query fails to open; in a second start, it fails to prime.
+/// Guarantees: Both are reported in the start report as collect failures for that counter, the
+/// failed query is closed, and nothing is published.
+#[test]
+fn start_open_or_prime_failure_is_a_collect_failure() {
+    let config = counters(json!([
+        {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
+    ]));
+    let state = fake();
+    state.lock().unwrap().fail_open = true;
+    let (_, start) = Collector::start(config.clone(), opener(&state));
+    assert_eq!(start.collect_failures, [(0, OPEN_FAILED)]);
+    assert_eq!(start.active_counters, 0);
+
+    let state = fake();
+    state
+        .lock()
+        .unwrap()
+        .collect_script
+        .push_back(COLLECT_FAILED);
+    let (_, start) = Collector::start(config, opener(&state));
+    assert_eq!(start.collect_failures, [(0, COLLECT_FAILED)]);
+    assert!(start.points.is_empty() && start.collected.is_empty());
+    assert_eq!(start.active_counters, 0);
     assert_eq!(state.lock().unwrap().closes, 1);
-
-    state.lock().unwrap().collect_status = None;
-    let reopened = collector.scrape();
-    assert!(reopened.collect_failures.is_empty() && reopened.points.is_empty());
-    assert_eq!(reopened.added, [0]);
-    {
-        let state = state.lock().unwrap();
-        assert_eq!((state.opens, state.closes), (2, 1));
-        assert_eq!(state.adds, [MEMORY, MEMORY]);
-    }
-
-    let after = collector.scrape().points.remove(0);
-    assert!(after.start_time_unix_nano > first.start_time_unix_nano);
-    assert!(after.start_time_unix_nano >= first.time_unix_nano);
 }
 
 /// Scenario: Two counters; the first counter's collection fails in one scrape while the second's
 /// succeeds.
 /// Guarantees: Each counter has its own query, so the healthy counter still collects and publishes
 /// in the failing scrape and its query is never reopened; the failure is reported for the failed
-/// counter only; only that counter's query is reopened, re-added and primed on the next scrape,
-/// and priming is not reported as a collection.
+/// counter only; only that counter's query is closed, then reopened, re-added and primed without
+/// publishing on the next scrape, and priming is not reported as a collection; reopening keeps the
+/// start time, since it does not reset the OS counter.
 #[test]
 fn collect_failure_stops_only_its_counter() {
     let state = fake();
@@ -541,6 +541,7 @@ fn collect_failure_stops_only_its_counter() {
     let (mut collector, start) = Collector::start(config, opener(&state));
     assert_eq!(start.active_counters, 2);
     assert_eq!(state.lock().unwrap().opens, 2);
+    collector.start_time_unix_nano = 1;
 
     // Queries collect in configuration order, so this fails only the first counter's query.
     state
@@ -565,17 +566,22 @@ fn collect_failure_stops_only_its_counter() {
         assert_eq!((state.opens, state.closes), (3, 1));
         assert_eq!(state.adds, [MEMORY, SYSTEM, MEMORY]);
     }
-    assert_eq!(
-        points(&collector.scrape()),
-        [(0, None, 1.0), (1, None, 2.0)]
+    let after = collector.scrape();
+    assert_eq!(points(&after), [(0, None, 1.0), (1, None, 2.0)]);
+    assert!(
+        after
+            .points
+            .iter()
+            .all(|point| point.start_time_unix_nano == 1)
     );
 }
 
 /// Scenario: One counter uses recreate_query beside a counter without it; replacement later fails
-/// to open.
+/// to open, then fails to add the path.
 /// Guarantees: The recreate counter's query is replaced after every scrape (open, add, prime,
-/// swap, close old) with a new start time, while the other counter's query is untouched; a failed
-/// replacement is reported and the old query keeps publishing.
+/// swap, close old) without changing its start time, while the other counter's query is
+/// untouched; a failed replacement is reported, a partly built one is closed, and the old query
+/// keeps publishing.
 #[test]
 fn recreates_query_after_each_scrape() {
     let state = fake();
@@ -588,6 +594,7 @@ fn recreates_query_after_each_scrape() {
     let (mut collector, start) = Collector::start(config, opener(&state));
     assert_eq!(start.active_counters, 2);
     assert_eq!(state.lock().unwrap().opens, 2);
+    collector.start_time_unix_nano = 1;
 
     let first = collector.scrape();
     assert_eq!(points(&first), [(0, None, 1.0), (1, None, 2.0)]);
@@ -599,11 +606,12 @@ fn recreates_query_after_each_scrape() {
     }
     let second = collector.scrape();
     assert_eq!(points(&second), [(0, None, 1.0), (1, None, 2.0)]);
-    assert_eq!(
-        second.points[0].start_time_unix_nano,
-        first.points[0].start_time_unix_nano
+    assert!(
+        second
+            .points
+            .iter()
+            .all(|point| point.start_time_unix_nano == 1)
     );
-    assert!(second.points[1].start_time_unix_nano > first.points[1].start_time_unix_nano);
     assert_eq!(state.lock().unwrap().closes, 2);
 
     state.lock().unwrap().fail_open = true;
@@ -615,6 +623,21 @@ fn recreates_query_after_each_scrape() {
     assert_eq!(points(&kept), [(0, None, 1.0), (1, None, 2.0)]);
     assert_eq!(kept.active_counters, 2);
     assert_eq!(state.lock().unwrap().closes, 2);
+
+    {
+        let mut state = state.lock().unwrap();
+        state.fail_open = false;
+        let _ = state.missing.insert(SYSTEM.to_owned());
+    }
+    let add_failed = collector.scrape();
+    assert_eq!(add_failed.recreate_failures, [(1, MISSING)]);
+    assert_eq!(points(&add_failed), [(0, None, 1.0), (1, None, 2.0)]);
+    assert_eq!(add_failed.active_counters, 2);
+    assert_eq!(state.lock().unwrap().closes, 3, "replacement closed");
+    assert_eq!(
+        points(&collector.scrape()),
+        [(0, None, 1.0), (1, None, 2.0)]
+    );
 }
 
 /// Scenario: The worker is stopped while idle, while a collection is blocked, and after it panicked
@@ -638,12 +661,22 @@ async fn shutdown_closes_query_or_stops_waiting_at_deadline() {
     let (worker, started) = Worker::start(config.clone(), opener(&state)).unwrap();
     let _ = started.await.unwrap();
     let (release, gate) = mpsc::channel();
-    state.lock().unwrap().gate = Some(gate);
+    let (closed_tx, closed) = mpsc::channel();
+    {
+        let mut state = state.lock().unwrap();
+        state.gate = Some(gate);
+        state.closed = Some(closed_tx);
+    }
     let _pending = worker.scrape();
     let soon = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
     assert_eq!(worker.shutdown(soon).await, Stopped::TimedOut);
     assert_eq!(state.lock().unwrap().closes, 0);
     release.send(()).unwrap();
+    // The released worker finishes its scrape, then stops and closes the query.
+    closed
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the released worker closes its query");
+    assert_eq!(state.lock().unwrap().closes, 1);
 
     // No array is scripted for the path, so the fake panics on the first read.
     let state = fake();
@@ -808,8 +841,9 @@ mod live {
     }
 
     /// Scenario: A rate counter with recreate_query is scraped twice beside a counter without it.
-    /// Guarantees: Each scrape publishes the recreated counter from its freshly primed replacement,
-    /// with a newer start time, and the other counter keeps publishing.
+    /// Guarantees: The first scrape reads the startup query and swaps in a primed replacement, which
+    /// the second scrape reads without a recreate failure; the start time is kept, moving back only
+    /// to an earlier read time, and the other counter keeps publishing.
     #[test]
     #[ignore = "requires Windows performance counters"]
     fn live_recreate_query() {
@@ -835,7 +869,13 @@ mod live {
                 .unwrap()
                 .start_time_unix_nano
         };
-        assert!(start(&second) > start(&first));
+        let time = second
+            .points
+            .iter()
+            .find(|point| point.counter == 1)
+            .unwrap()
+            .time_unix_nano;
+        assert_eq!(start(&second), start(&first).min(time));
     }
 
     /// Scenario: A native worker is started, scraped and stopped.
