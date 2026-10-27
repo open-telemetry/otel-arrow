@@ -31,8 +31,9 @@
 //! - [`config`] -- receiver-level [`Config`](config::Config) and
 //!   [`MicrosoftJsonReceiverMetrics`](config::MicrosoftJsonReceiverMetrics),
 //!   endpoint configuration, and field-mapping deserialization types.
-//! - `field_mapping` (planned) -- YAML-driven field-mapping engine: compiled
+//! - `field_mapping` -- YAML-driven field-mapping engine: compiled
 //!   representation, event overrides, and validation.
+//! - `event_mapping` -- bounded JSON-to-log mapping, independent of Arrow and HTTP.
 //! - `arrow_builder` (planned) -- config-driven Arrow record-batch builder that
 //!   converts JSON events into OTel log records.
 //! - `handler` (planned) -- per-connection HTTP request handler, CORS helpers, and
@@ -63,9 +64,14 @@ use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
+mod bounded;
 pub mod config;
 mod error;
+mod event_mapping;
+mod field_mapping;
 mod ikey_filter;
+#[cfg(test)]
+mod mapping_tests;
 
 pub use config::Config;
 pub use error::Error;

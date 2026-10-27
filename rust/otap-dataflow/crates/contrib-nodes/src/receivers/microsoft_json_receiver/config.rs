@@ -770,8 +770,10 @@ pub(crate) struct FieldRule {
     /// becomes `"ext.dt.traceId"` after flattening).
     pub path: String,
 
-    /// Where to place the resolved value.  If omitted (only valid when
-    /// `children` is set), defaults to `Drop`.
+    /// Where to place the resolved value. May be omitted for containers with
+    /// children or rules carrying validation, allowed-key, required-field or
+    /// additional-target metadata. Such rules preserve normal unmapped behavior;
+    /// use an explicit `Drop` target to suppress unmapped values.
     #[serde(default)]
     pub target: Option<MappingTarget>,
 
@@ -1151,7 +1153,7 @@ impl ValueTransform {
 
 /// Find the first `-` that is immediately followed by an ASCII digit and
 /// split there. E.g. `"1DS-Web-JS-4.4.1"` -> `("1DS-Web-JS", "4.4.1")`.
-fn split_dash_semver(raw: &str) -> (&str, &str) {
+pub(super) fn split_dash_semver(raw: &str) -> (&str, &str) {
     let bytes = raw.as_bytes();
     for i in 0..bytes.len().saturating_sub(1) {
         if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {

@@ -52,8 +52,8 @@
 //! - Unmatched keys are accepted (open policy). End with `"*": { action: reject }`
 //!   for a closed allow-list.
 //!
-//! The receiver skeleton does not yet invoke this module during construction
-//! or request handling.
+//! Endpoint compilation and the standalone mapper invoke this module. The
+//! receiver skeleton does not yet invoke them during construction or requests.
 
 #![allow(dead_code)]
 
@@ -99,6 +99,12 @@ enum ValidatorKind {
 }
 
 impl IkeyValidator {
+    /// Conservative comparison cost for a complete scan of the configured rules.
+    pub fn comparison_work(&self) -> usize {
+        match &self.kind {
+            ValidatorKind::Rules(rules) => rules.comparison_work,
+        }
+    }
     /// Create a validator from compiled rules.
     pub fn from_rules(filter: CompiledRulesFilter) -> Self {
         Self {
@@ -205,6 +211,7 @@ pub(crate) enum IkeyAction {
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledRulesFilter {
     rules: Vec<CompiledRule>,
+    comparison_work: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -306,7 +313,20 @@ impl CompiledRulesFilter {
                 }
             })
             .collect();
-        Self { rules }
+        let comparison_work = keys.iter().fold(0usize, |work, (pattern, rule)| {
+            rule.allowed_events
+                .iter()
+                .chain(&rule.allowed_origins)
+                .fold(
+                    work.saturating_add(pattern.len()).saturating_add(1),
+                    |work, value| work.saturating_add(value.len()).saturating_add(1),
+                )
+                .saturating_add(rule.remap_ikey.as_ref().map_or(0, String::len))
+        });
+        Self {
+            rules,
+            comparison_work,
+        }
     }
 
     fn check(
@@ -379,7 +399,7 @@ pub(crate) fn compile_source(
 ) -> Result<(Option<IkeyValidator>, Option<PathBuf>), String> {
     if let Some(ref file_path) = source.filter_file {
         let resolved = match config_dir {
-            Some(dir) => resolve_filter_path(file_path, dir)?,
+            Some(dir) => resolve_config_path(file_path, dir)?,
             None => PathBuf::from(file_path),
         };
         let config = load_filter_file(&resolved)?;
@@ -397,7 +417,7 @@ pub(crate) fn compile_source(
 
 // The source receiver uses an engine-level resolver that is not yet ported.
 // Keep the same confinement at this file-loading boundary.
-fn resolve_filter_path(file_path: &str, config_dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_config_path(file_path: &str, config_dir: &Path) -> Result<PathBuf, String> {
     let requested = Path::new(file_path);
     if requested.components().any(|component| {
         matches!(
@@ -406,7 +426,7 @@ fn resolve_filter_path(file_path: &str, config_dir: &Path) -> Result<PathBuf, St
         )
     }) {
         return Err(format!(
-            "iKey filter path '{file_path}' must be relative to the config directory without '..' components"
+            "configuration path '{file_path}' must be relative to the config directory without '..' components"
         ));
     }
 
@@ -419,10 +439,10 @@ fn resolve_filter_path(file_path: &str, config_dir: &Path) -> Result<PathBuf, St
     let resolved = base
         .join(requested)
         .canonicalize()
-        .map_err(|error| format!("failed to resolve iKey filter file '{file_path}': {error}"))?;
+        .map_err(|error| format!("failed to resolve configuration file '{file_path}': {error}"))?;
     if !resolved.starts_with(&base) {
         return Err(format!(
-            "iKey filter path '{file_path}' escapes config directory {}",
+            "configuration path '{file_path}' escapes config directory {}",
             config_dir.display()
         ));
     }
@@ -431,7 +451,7 @@ fn resolve_filter_path(file_path: &str, config_dir: &Path) -> Result<PathBuf, St
 
 /// Load and parse an external iKey filter YAML file.
 pub(crate) fn load_filter_file(path: &Path) -> Result<IkeyFilterFileConfig, String> {
-    let content = std::fs::read_to_string(path)
+    let content = super::bounded::read_config(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     serde_yaml::from_str::<IkeyFilterFileConfig>(&content)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))
@@ -916,10 +936,10 @@ keys:
         let absolute = dir.path().join("rules.yaml");
         std::fs::write(&absolute, "keys: {}").expect("write filter");
         for path in [absolute.to_str().expect("UTF-8 temp path"), "../rules.yaml"] {
-            let error = resolve_filter_path(path, dir.path()).expect_err("invalid path");
+            let error = resolve_config_path(path, dir.path()).expect_err("invalid path");
             assert!(error.contains("must be relative"), "{error}");
         }
-        let error = resolve_filter_path("missing.yaml", dir.path()).expect_err("missing file");
+        let error = resolve_config_path("missing.yaml", dir.path()).expect_err("missing file");
         assert!(error.contains("failed to resolve"), "{error}");
     }
 
@@ -944,7 +964,7 @@ keys:
             assert!(output.status.success(), "{output:?}");
         }
         let relative = Path::new("linked").join("rules.yaml");
-        let error = resolve_filter_path(
+        let error = resolve_config_path(
             relative.to_str().expect("UTF-8 relative path"),
             config.path(),
         )
