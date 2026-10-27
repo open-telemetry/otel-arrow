@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793125072000,
+  "lastUpdate": 1793126089953,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -72396,6 +72396,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 118.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "473f985ef06fdb2b7f08132fab058ce88a618852",
+          "message": "chore(deps): update rust crate zstd to 0.14 [security] (#4529)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [zstd](https://redirect.github.com/gyscos/zstd-rs) |\nworkspace.dependencies | minor | `0.13` → `0.14` |\n\n---\n\n### Data from an abandoned stream leaks into the next stream on a reused\ncontext\n\n[RUSTSEC-2026-0391](https://rustsec.org/advisories/RUSTSEC-2026-0391.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThe `with_context` constructors of the stream encoders and decoders used\nthe\nborrowed context as it was. When a stream was abandoned on a context,\nfor\nexample an encoder dropped before `finish()` after an error, whatever it\nleft there was carried into the next stream: the input buffered by the\nprevious encoder (up to 128 KiB, or all of it with `zstdmt`) became the\nstart of the next frame, and a decoder returned undelivered output of\nthe\nprevious stream.\n\nAn application reusing one context for data that must stay separate,\nsuch\nas different users' requests, could disclose one user's plaintext to\nanother. Whoever supplies the data can cause the abandonment with\ninvalid\ninput.\n\nThe flaw was corrected by resetting the context's session in\n`with_context`.\n\n#### Severity\nUnknown\n\n#### References\n- [https://crates.io/crates/zstd](https://crates.io/crates/zstd)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0391.html](https://rustsec.org/advisories/RUSTSEC-2026-0391.html)\n-\n[https://github.com/gyscos/zstd-rs/commit/74ace2dcdca62a2ce0f034895d6079458311e003](https://redirect.github.com/gyscos/zstd-rs/commit/74ace2dcdca62a2ce0f034895d6079458311e003)\n-\n[https://github.com/gyscos/zstd-rs/pull/384](https://redirect.github.com/gyscos/zstd-rs/pull/384)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0391) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Release Notes\n\n<details>\n<summary>gyscos/zstd-rs (zstd)</summary>\n\n###\n[`v0.14.3`](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.2...v0.14.3)\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.2...v0.14.3)\n\n###\n[`v0.14.2`](https://redirect.github.com/gyscos/zstd-rs/releases/tag/v0.14.2)\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.1...v0.14.2)\n\n##### zstd 0.14.2\n\nThis release adds decoder APIs that let archive libraries recover their\nreaders\nwithout consuming more compressed input or losing ownership on\ninitialization\nerrors.\n\n- Add `stream::read::Decoder::into_inner()`, which returns the\nunderlying reader\nat its current position without additional I/O. This supports raw\ncopying of\ncompressed archive entries. Addresses\n[#&#8203;381](https://redirect.github.com/gyscos/zstd-rs/issues/381)\nand the regression reported in\n[#&#8203;380](https://redirect.github.com/gyscos/zstd-rs/issues/380).\n- Add `Decoder::try_new`, `try_with_buffer`, `try_with_dictionary`,\n`try_with_prepared_dictionary`, and `try_with_ref_prefix`. These return\n`Result<Self, (R, io::Error)>`, preserving the original reader if\ndecoder\ninitialization fails. Addresses\n[#&#8203;382](https://redirect.github.com/gyscos/zstd-rs/issues/382).\n- Return an I/O error if a streaming decoder cannot allocate its\ndecompression\n  context, instead of panicking.\n- Clarify that `finish_frame()` can stop before the end of a frame when\ndecoded\n  output remains unread.\n\n`Decoder::finish()` keeps its 0.14 behavior: it attempts to consume\nremaining\nframe input before returning the reader. Archive libraries that need to\nrecover\ncompressed bytes should use `into_inner()` and adopt the new `try_*`\nconstructors\nwhere they need to retain the reader after initialization failure.\nExisting\nconstructor signatures remain unchanged.\n\nRust 1.64 remains supported.\n\n###\n[`v0.14.1`](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.0...v0.14.1)\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.0...v0.14.1)\n\n###\n[`v0.14.0`](https://redirect.github.com/gyscos/zstd-rs/releases/tag/v0.14.0)\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.13.3...v0.14.0)\n\n##### Breaking\n\n- The `with_prepared_dictionary()` constructors now borrow the\ndictionary for as long as the stream\n([#&#8203;372](https://redirect.github.com/gyscos/zstd-rs/pull/372)).\nThe dictionary is registered with the underlying context by pointer, so\ndropping it early left the stream with a dangling pointer - reachable\nfrom safe code.\n- The project is now licensed under BSD-3-Clause\n([#&#8203;360](https://redirect.github.com/gyscos/zstd-rs/pull/360),\n[#&#8203;314](https://redirect.github.com/gyscos/zstd-rs/issues/314)).\n- Requires zstd-safe 8.0.0.\n\n##### Fixed\n\n- `Decoder::finish()` now consumes the rest of the frame, so the reader\nis handed back positioned just after it\n([#&#8203;251](https://redirect.github.com/gyscos/zstd-rs/pull/251),\n[#&#8203;255](https://redirect.github.com/gyscos/zstd-rs/issues/255)).\nzstd can produce the last of the decoded data before it has read the\nframe epilogue, so a caller who stops reading once it has the bytes it\nwanted used to get its reader back pointing inside the frame. Note that\n`finish()` may now read from the underlying reader;\n`Decoder::finish_frame()` is the same operation with the error surfaced.\n- `Read::read()` with an empty buffer returns `Ok(0)` instead of an\nerror\n([#&#8203;318](https://redirect.github.com/gyscos/zstd-rs/issues/318)).\n\n##### New\n\n- `Decoder::finish_frame()`, to consume the rest of the current frame\nexplicitly.\n- `bulk::Compressor::set_pledged_src_size()`\n([#&#8203;320](https://redirect.github.com/gyscos/zstd-rs/issues/320)).\n- The missing `with_context` constructors\n([#&#8203;338](https://redirect.github.com/gyscos/zstd-rs/pull/338)).\n- `cmake` and `vendored` features, forwarded to `zstd-safe`.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - At any time (no schedule defined)\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xODQuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjE4NC4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJhcmVhOnNlY3VyaXR5IiwiZGVwZW5kZW5jaWVzIl19-->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2026-10-27T17:40:50Z",
+          "tree_id": "05a9b217655b5f70c39a98fe3e6f8dd2246fdb0b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/473f985ef06fdb2b7f08132fab058ce88a618852"
+        },
+        "date": 1793126059075,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.15,
             "unit": "MB"
           },
           {
