@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793119991258,
+  "lastUpdate": 1793125072000,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -72217,6 +72217,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "54870357+MSNev@users.noreply.github.com",
+            "name": "Nev",
+            "username": "MSNev"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d5c03974d08cc30430f7da9bb02d3b83e0761a98",
+          "message": "chore(microsoft-json): Initial skeleton and config contracts for the Microsoft Json Receiver (#4465)\n\n# Chore Summary\n\nThis is **Phase 1 of the Microsoft JSON receiver**, introducing the\ncomponent skeleton, configuration contracts, standalone\ninstrumentation-key filtering, documentation, and configuration\nexamples.\n\n`urn:microsoft:receiver:json`\n\nThe receiver remains **explicitly non-operational** after this phase.\nConstruction deserializes and validates receiver-level configuration,\nthen returns `NotImplemented`. It does not open a listener, load\nendpoint files, process requests, construct Arrow records, or register\nruntime metrics.\n\nLater phases will introduce HTTP ingestion, endpoint compilation,\nJSON-to-OTAP conversion, and runtime integration incrementally.\n\n## Signals Supported\n\n- **Logs** — intended output signal; no telemetry is ingested in this\nphase.\n\n## Includes\n\n- Component registration, inventory metadata, and ownership information.\n- Dedicated `microsoft-json` Cargo feature, forwarded by the root\npackage and included through `contrib-receivers` and `contrib-nodes`.\n- Receiver-level configuration and validation for listener address,\nrequest limits, concurrency, timeouts, origins, endpoint references, and\nenrichment settings.\n- Endpoint configuration schemas covering:\n  - Methods, content types, body formats, GET query handling, and CORS.\n  - Header extraction and query-parameter promotion.\n- Nested and wildcard field mappings, multiple targets, and value\ntransforms.\n- Timestamps, event names, trace context, severity, resources, scope,\nbody, and attributes.\n- Field validation, required-field defaults, event overrides, and\nunmapped-field policies.\n  - Environment-variable resource attributes.\n- Standalone iKey rule compilation and evaluation, including ordered\nfirst-match rules, event allow-lists, origin restrictions,\naccept/reject/ignore actions, and key remapping.\n- External iKey rule loading with explicit errors and\nconfiguration-directory path confinement when a directory is supplied.\n- GUID-aware comparison for embedded envelope keys, supporting compact\nbrowser SDK keys and hyphenated iKeys without changing exact-key filter\nsemantics.\n- Shared receiver-boundary metric integration scaffolding and\nprotocol-specific diagnostic definitions; neither is activated by the\nskeleton.\n- Receiver-local examples for OneCollector / 1DS, expanded Azure Monitor\nbrowser events, envelope preservation, a local console pipeline, and a\ncomplete Azure Monitor exporter pipeline with resource mappings.\n- Focused tests for configuration, filtering, transforms, example\ncontracts, and validation-before-`NotImplemented` behavior.\n\n## Configuration and Correctness Requirements\n\n- Invalid receiver-level configuration fails before the\nunimplemented-runtime error.\n- Unknown configuration options are rejected, including nested mapping\ntargets, transforms, and detailed segment settings.\n- Duplicate iKey patterns are rejected rather than silently overriding\nrules.\n- External filter errors are propagated without falling back to inline\nrules.\n- Expanded browser mappings use explicit telemetry severity levels\nrather than inferring severity from envelope type.\n- Expanded examples preserve unhandled exception details in the\nstructured body rather than passing them through a truncating string\ncatch-all.\n- Browser telemetry is documented as unauthenticated. CORS and\ninstrumentation keys are not sender authentication.\n\n## Explicit Exclusions from this PR\n\n- HTTP listener and request handling, including decompression and CORS\nexecution.\n- Endpoint-file loading, semantic compilation, and field-mapping\nexecution during receiver startup.\n- JSON-to-OTAP Arrow construction and runtime enrichment.\n- Runtime admission control, backpressure, downstream handoff, and\nACK/NACK behavior.\n- Runtime metrics emission and shutdown handling.\n- Azure Monitor exporter implementation changes or reconstruction of\noriginal nested envelopes from JSON-string attributes.\n\n## Related issue\n\nPhase 1 of open-telemetry/otel-arrow#4384. This PR establishes the\nfoundation and does **not** close the issue.\n\n## Validation\n\nRun from `rust/otap-dataflow`:\n\n- `cargo check -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features microsoft-json,azure-monitor --locked --offline` - passed.\n- `cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features microsoft-json,azure-monitor --lib microsoft_json_receiver\n--locked --offline` - passed\n- `cargo clippy -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features microsoft-json,azure-monitor --lib --tests --locked --offline\n-- -D warnings` - passed.\n- `cargo xtask check` - passed, including workspace formatting, Clippy,\nand tests.\n- `npx markdownlint-cli2\nrust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/README.md`\n- passed\n- `git diff --check` - passed\n\nDocumentation lint and focused ASCII/whitespace checks passed. The\nrepository Python sanity check could not run because Python was\nunavailable in the local environment.\n\nTests validate configuration contracts and standalone helpers; they do\nnot demonstrate HTTP ingestion or end-to-end mapping interoperability.\n\n## User-facing changes\n\nNone operational. This phase adds an opt-in, non-operational component\nfoundation and documents intended future behavior. No changelog entry is\nincluded for this preparatory `chore` PR.\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-10-27T17:21:26Z",
+          "tree_id": "b36a9fafcafc2665cf0d73dc61aebc065a760013",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d5c03974d08cc30430f7da9bb02d3b83e0761a98"
+        },
+        "date": 1793125038457,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
             "unit": "MB"
           },
           {
