@@ -27,8 +27,8 @@
 //!
 //! - `reject_immediately` (default): emit an immediate retryable route-local
 //!   NACK when the selected route is full
-//! - `backpressure`: park one message per blocked output port and keep
-//!   admitting pdata until every selectable route currently has a parked full
+//! - `backpressure`: park one message per blocked output port and pause
+//!   pdata admission as soon as any selectable route has a parked full
 //!   message
 //!
 //! A selected route that is closed is always rejected immediately with a
@@ -72,7 +72,6 @@ use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -250,37 +249,6 @@ impl SignalTypeRouter {
         }
     }
 
-    /// Refresh the set of outputs that can currently participate in
-    /// router-level backpressure.
-    ///
-    /// The default output only participates when it is a real fallback for at
-    /// least one currently unwired named route.
-    fn observe_backpressure_candidates(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) {
-        let connected: HashSet<_> = effect_handler.connected_ports().into_iter().collect();
-        let mut candidates = HashSet::new();
-        let named_ports = [
-            PortName::from(PORT_LOGS),
-            PortName::from(PORT_METRICS),
-            PortName::from(PORT_TRACES),
-        ];
-        let default_reachable = named_ports.iter().any(|port| !connected.contains(port));
-
-        for port in named_ports {
-            if connected.contains(&port) {
-                let _ = candidates.insert(port);
-            }
-        }
-
-        if default_reachable && let Some(default_port) = effect_handler.default_port() {
-            let _ = candidates.insert(default_port.clone());
-        }
-
-        self.admission.observe_pause_candidate_ports(candidates);
-    }
-
     /// Convert scheduler-specific wakeup failures into processor errors.
     fn wakeup_error(
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -390,7 +358,6 @@ impl SignalTypeRouter {
     ) -> Result<(), EngineError> {
         // `Full` is policy-driven. The scheduler decides whether this message
         // is rejected now or parked for wakeup-driven re-probing.
-        self.observe_backpressure_candidates(effect_handler);
         match self
             .admission
             .handle_selected_route_full(port.clone(), data, context, effect_handler)
@@ -824,11 +791,12 @@ mod tests {
 
         /// Scenario: the selected `logs` route is full under `backpressure`,
         /// while the selected `metrics` route remains healthy.
-        /// Guarantees: the blocked logs message is parked locally, metrics keep
-        /// flowing, and the parked logs message is forwarded once the logs
-        /// route becomes writable again.
+        /// Guarantees: pdata admission pauses immediately after parking the
+        /// blocked logs message, no NACK is emitted for the parked message,
+        /// control messages still flow while paused, and the parked message
+        /// is forwarded once the logs route becomes writable again.
         #[test]
-        fn test_backpressure_keeps_other_signal_types_live_until_all_selectable_routes_block() {
+        fn test_backpressure_pauses_on_any_blocked_route_and_resumes_after_recovery() {
             let test_runtime = TestRuntime::new();
             let node_id = test_node(test_runtime.config().name.clone());
             let config = make_policy_config(OnFullPolicy::Backpressure);
@@ -854,7 +822,7 @@ mod tests {
                 )
                 .expect("logs sender should attach");
 
-            let (tx_metrics, rx_metrics) = mpsc::Channel::new(1);
+            let (tx_metrics, _rx_metrics) = mpsc::Channel::new(1);
             wrapper
                 .set_pdata_sender(
                     node_id,
@@ -870,144 +838,48 @@ mod tests {
                         let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                         ctx.set_pipeline_completion_sender(completion_tx);
 
+                        // Park a logs message on the full logs route.
                         ctx.process(Message::PData(subscribed_pdata(
                             OtapArrowRecords::Logs(Logs::default()),
                             101,
                         )))
                         .await
                         .expect("backpressure should park the blocked logs route");
-                        assert!(ctx.accept_pdata());
+
+                        // Pdata admission pauses immediately -- even though
+                        // the metrics route is healthy.
+                        assert!(
+                            !ctx.accept_pdata(),
+                            "pdata admission should pause as soon as any route is parked"
+                        );
+
+                        // No NACK should have been emitted for the parked message.
                         assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
 
-                        ctx.process(Message::PData(OtapPdata::new_default(
-                            OtapArrowRecords::Metrics(Default::default()).into(),
-                        )))
-                        .await
-                        .expect("healthy metrics route should still be admitted");
-                        let _ = rx_metrics
-                            .recv()
-                            .await
-                            .expect("metrics route should receive immediately");
+                        // Control traffic still flows while pdata is paused.
+                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
+                            "control traffic should continue while pdata admission is paused",
+                        );
 
+                        // Drain the prefill so the logs route has capacity again.
                         let _ = rx_logs
                             .recv()
                             .await
                             .expect("prefill should drain before retry wakeup");
+
+                        // Fire the wakeup -- the parked logs message should forward.
                         assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
                         let _ = rx_logs
                             .recv()
                             .await
                             .expect("logs route should receive parked message after recovery");
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-                    })
-                });
 
-            validation.validate(|_| async {});
-        }
-
-        /// Scenario: every selectable route becomes full under router-level
-        /// `backpressure`.
-        /// Guarantees: the router parks one message per blocked output port and
-        /// pauses pdata admission only after every selectable route is parked.
-        #[test]
-        fn test_backpressure_pauses_only_after_every_selectable_route_is_parked() {
-            let test_runtime = TestRuntime::new();
-            let node_id = test_node(test_runtime.config().name.clone());
-            let config = make_policy_config(OnFullPolicy::Backpressure);
-            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(SIGNAL_TYPE_ROUTER_URN));
-            let mut wrapper = ProcessorWrapper::local(
-                SignalTypeRouter::new(config),
-                node_id.clone(),
-                user_cfg,
-                test_runtime.config(),
-            );
-
-            let (tx_logs, rx_logs) = mpsc::Channel::new(1);
-            tx_logs
-                .send(OtapPdata::new_default(
-                    OtapArrowRecords::Logs(Logs::default()).into(),
-                ))
-                .expect("prefill should occupy logs route");
-            wrapper
-                .set_pdata_sender(
-                    node_id.clone(),
-                    PORT_LOGS.into(),
-                    Sender::Local(LocalSender::mpsc(tx_logs)),
-                )
-                .expect("logs sender should attach");
-
-            let (tx_metrics, rx_metrics) = mpsc::Channel::new(1);
-            tx_metrics
-                .send(OtapPdata::new_default(
-                    OtapArrowRecords::Metrics(Default::default()).into(),
-                ))
-                .expect("prefill should occupy metrics route");
-            wrapper
-                .set_pdata_sender(
-                    node_id,
-                    PORT_METRICS.into(),
-                    Sender::Local(LocalSender::mpsc(tx_metrics)),
-                )
-                .expect("metrics sender should attach");
-
-            let validation = test_runtime
-                .set_processor(wrapper)
-                .run_test(move |mut ctx| {
-                    Box::pin(async move {
-                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
-                        ctx.set_pipeline_completion_sender(completion_tx);
-
-                        ctx.process(Message::PData(subscribed_pdata(
-                            OtapArrowRecords::Logs(Logs::default()),
-                            102,
-                        )))
-                        .await
-                        .expect("backpressure should park the blocked logs route");
-                        assert!(ctx.accept_pdata());
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-
-                        ctx.process(Message::PData(subscribed_pdata(
-                            OtapArrowRecords::Metrics(Default::default()),
-                            103,
-                        )))
-                        .await
-                        .expect("backpressure should park the blocked metrics route");
-                        assert!(!ctx.accept_pdata());
-                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
-                            "control traffic should continue while pdata admission is paused",
-                        );
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-
-                        let _ = rx_logs
-                            .recv()
-                            .await
-                            .expect("prefill should drain before wakeup");
-                        let _ = rx_metrics
-                            .recv()
-                            .await
-                            .expect("prefill should drain before wakeup");
-                        let (mut got_logs, mut got_metrics) = (false, false);
-                        for _ in 0..2 {
-                            assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
-                            if !got_logs {
-                                got_logs = rx_logs.try_recv().is_ok();
-                            }
-                            if !got_metrics {
-                                got_metrics = rx_metrics.try_recv().is_ok();
-                            }
-                            if got_logs && got_metrics {
-                                break;
-                            }
-                        }
+                        // Admission reopens and no NACK was produced.
                         assert!(
-                            got_logs,
-                            "logs route should receive parked message after recovery"
+                            ctx.accept_pdata(),
+                            "pdata admission should reopen after recovery"
                         );
-                        assert!(
-                            got_metrics,
-                            "metrics route should receive parked message after recovery"
-                        );
-                        assert!(ctx.accept_pdata());
+                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
                     })
                 });
 
@@ -1018,9 +890,8 @@ mod tests {
         /// while a different selectable route resolves to an output that is
         /// already closed.
         /// Guarantees: the closed route still emits an immediate route-local
-        /// NACK, and it does not count toward the "all selectable routes are
-        /// parked full" condition that pauses pdata admission under
-        /// `backpressure`.
+        /// NACK, pdata admission is already paused because the full route is
+        /// parked, and recovery proceeds normally after the full route drains.
         #[test]
         fn test_backpressure_excludes_closed_routes_from_all_routes_blocked_accounting() {
             let test_runtime = TestRuntime::new();
@@ -1071,8 +942,15 @@ mod tests {
                         )))
                         .await
                         .expect("backpressure should park the blocked logs route");
-                        assert!(ctx.accept_pdata());
+                        assert!(
+                            !ctx.accept_pdata(),
+                            "pdata admission should pause after parking the full logs route"
+                        );
 
+                        // The engine does not deliver pdata while
+                        // accept_pdata() is false. This test calls
+                        // process() directly to verify the closed-route
+                        // NACK fires independently.
                         ctx.process(Message::PData(subscribed_pdata(
                             OtapArrowRecords::Metrics(Default::default()),
                             104,
@@ -1081,7 +959,10 @@ mod tests {
                         .expect("closed metrics route should complete locally");
                         let nack = expect_nack(&mut completion_rx, 104).await;
                         assert_eq!(nack.cause, NackCause::RouteClosed);
-                        assert!(ctx.accept_pdata());
+                        assert!(
+                            !ctx.accept_pdata(),
+                            "closed route NACK should not reopen pdata admission while a full route is parked"
+                        );
 
                         let _ = rx_logs
                             .recv()
@@ -1099,12 +980,12 @@ mod tests {
             validation.validate(|_| async {});
         }
 
-        /// Scenario: blocked routes are parked locally when shutdown starts.
-        /// Guarantees: parked messages are retryable-NACKed with
+        /// Scenario: a blocked route is parked locally when shutdown starts.
+        /// Guarantees: the parked message is retryable-NACKed with
         /// `cause = NodeShutdown` instead of being left behind in router-local
         /// state.
         #[test]
-        fn test_shutdown_nacks_parked_messages_with_node_shutdown_cause() {
+        fn test_shutdown_nacks_parked_message_with_node_shutdown_cause() {
             let test_runtime = TestRuntime::new();
             let node_id = test_node(test_runtime.config().name.clone());
             let config = make_policy_config(OnFullPolicy::Backpressure);
@@ -1124,25 +1005,11 @@ mod tests {
                 .expect("prefill should occupy logs route");
             wrapper
                 .set_pdata_sender(
-                    node_id.clone(),
+                    node_id,
                     PORT_LOGS.into(),
                     Sender::Local(LocalSender::mpsc(tx_logs)),
                 )
                 .expect("logs sender should attach");
-
-            let (tx_metrics, _rx_metrics) = mpsc::Channel::new(1);
-            tx_metrics
-                .send(OtapPdata::new_default(
-                    OtapArrowRecords::Metrics(Default::default()).into(),
-                ))
-                .expect("prefill should occupy metrics route");
-            wrapper
-                .set_pdata_sender(
-                    node_id,
-                    PORT_METRICS.into(),
-                    Sender::Local(LocalSender::mpsc(tx_metrics)),
-                )
-                .expect("metrics sender should attach");
 
             let validation = test_runtime
                 .set_processor(wrapper)
@@ -1157,12 +1024,7 @@ mod tests {
                         )))
                         .await
                         .expect("backpressure should park the blocked logs route");
-                        ctx.process(Message::PData(subscribed_pdata(
-                            OtapArrowRecords::Metrics(Default::default()),
-                            106,
-                        )))
-                        .await
-                        .expect("backpressure should park the blocked metrics route");
+
                         ctx.process(Message::Control(NodeControlMsg::Shutdown {
                             deadline: Instant::now(),
                             reason: "test shutdown".to_string(),
@@ -1170,21 +1032,14 @@ mod tests {
                         .await
                         .expect("shutdown should drain parked router state");
 
-                        let (first_id, first_nack) = recv_nack(&mut completion_rx).await;
-                        let (second_id, second_nack) = recv_nack(&mut completion_rx).await;
-                        let mut ids = [first_id, second_id];
-                        ids.sort_unstable();
-                        assert_eq!(ids, [105, 106]);
-
-                        for nack in [first_nack, second_nack] {
-                            assert_eq!(nack.cause, NackCause::NodeShutdown);
-                            assert!(
-                                nack.reason.contains("test shutdown"),
-                                "shutdown reason should be preserved: {}",
-                                nack.reason
-                            );
-                            assert!(!nack.permanent);
-                        }
+                        let nack = expect_nack(&mut completion_rx, 105).await;
+                        assert_eq!(nack.cause, NackCause::NodeShutdown);
+                        assert!(
+                            nack.reason.contains("test shutdown"),
+                            "shutdown reason should be preserved: {}",
+                            nack.reason
+                        );
+                        assert!(!nack.permanent);
                     })
                 });
 
