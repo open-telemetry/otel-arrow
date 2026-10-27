@@ -30,7 +30,7 @@ pub(in super::super) enum Stopped {
 pub(in super::super) struct Worker {
     commands: mpsc::Sender<Command>,
     done: oneshot::Receiver<()>,
-    thread: Option<JoinHandle<()>>,
+    thread: JoinHandle<()>,
 }
 
 impl Worker {
@@ -62,7 +62,7 @@ impl Worker {
         let worker = Self {
             commands,
             done,
-            thread: Some(thread),
+            thread,
         };
         Ok((worker, started))
     }
@@ -75,18 +75,19 @@ impl Worker {
     }
 
     /// Stops the worker after any start or scrape in progress, waiting until the deadline.
-    pub(in super::super) async fn shutdown(mut self, deadline: tokio::time::Instant) -> Stopped {
-        let _ = self.commands.send(Command::Stop);
-        let completed = match tokio::time::timeout_at(deadline, &mut self.done).await {
+    pub(in super::super) async fn shutdown(self, deadline: tokio::time::Instant) -> Stopped {
+        let Self {
+            commands,
+            done,
+            thread,
+        } = self;
+        let _ = commands.send(Command::Stop);
+        let completed = match tokio::time::timeout_at(deadline, done).await {
             Err(_) => return Stopped::TimedOut,
             Ok(result) => result.is_ok(),
         };
         // The thread has finished or panicked, so this join returns promptly.
-        let joined = self
-            .thread
-            .take()
-            .is_none_or(|thread| thread.join().is_ok());
-        if completed && joined {
+        if completed && thread.join().is_ok() {
             Stopped::Cleanly
         } else {
             Stopped::Failed
