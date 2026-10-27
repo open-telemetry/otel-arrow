@@ -7767,7 +7767,7 @@ dependencies = [
  "weaver_resolver",
  "weaver_semconv",
  "xxhash-rust",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -7820,7 +7820,7 @@ dependencies = [
  "weaver_resolved_schema",
  "weaver_resolver",
  "weaver_semconv",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -7964,7 +7964,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
