@@ -116,15 +116,17 @@ steps:
                 "${before}" "${after}" "${seconds}" >
                 results/clickhouse/validation/{{validation_file}}.window.csv
 
-  - name: Stop Load Generator
+  # Drain and remove each df-engine pipeline group, upstream first. Deleting a
+  # group (rather than calling groups/shutdown) keeps the engine process and its
+  # admin endpoint alive, so the final counts of the stopped pipelines remain
+  # scrapeable for engine.telemetry.metric_unregister_grace_period.
+  - name: Stop Load Generator Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8085/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(60) | int + 5}}
               raise_for_status: false
               on_error:
@@ -132,15 +134,13 @@ steps:
     action:
       no_op: {}
 
-  - name: Stop Engine
+  - name: Stop Engine Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8086/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(60) | int + 5}}
               raise_for_status: false
               on_error:
@@ -148,10 +148,11 @@ steps:
     action:
       no_op: {}
 
-  - name: Wait For Metrics Update
+  # Let a few scrapes observe the final post-drain counts.
+  - name: Wait For Final Metrics
     action:
       wait:
-        delay_seconds: 1
+        delay_seconds: {{final_metrics_wait_secs | default(3)}}
 
   - name: Stop Monitoring All
     action:
@@ -182,6 +183,32 @@ steps:
                 printf 'logs_persisted_final\n%s\n' "${rows}" >
                 results/clickhouse/validation/{{validation_file}} &&
                 echo "ClickHouse {{clickhouse_database}} persisted ${rows} log rows"
+
+  # Shut down the (now empty) engines so the processes exit gracefully.
+  - name: Shutdown Engines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+          - send_http_request:
+              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
 
   - name: Destroy All
     action:

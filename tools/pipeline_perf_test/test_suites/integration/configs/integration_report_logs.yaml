@@ -101,6 +101,8 @@ queries:
             COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
+              -- 'logs_produced' is reported directly by the python load generator.
+              'logs_produced',
               'logs_bytes_produced',
               'failed',
               'bytes_sent',
