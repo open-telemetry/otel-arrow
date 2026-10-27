@@ -25,16 +25,16 @@ pub use propagation::PreparedHeaderPropagationPolicy;
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::context_policy::{
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
+};
+use otel_arrow_dfe_config::context::transport_policy::{
+    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
-use otel_arrow_dfe_config::transport_headers_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
-};
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -1043,9 +1043,9 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy as HeaderPropagationConfig;
-    use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
+    use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
+    use otel_arrow_dfe_config::context::transport_policy::HeaderPropagationPolicy as HeaderPropagationConfig;
+    use otel_arrow_dfe_config::context::transport_policy::{CaptureDefaults, CaptureRule};
 
     /// Typed component configuration used to exercise declaration validation.
     #[derive(serde::Deserialize)]
@@ -1324,7 +1324,7 @@ groups:
 
     /// Builds a conditional test composite with aliased header and identity members.
     fn mixed_composite() -> ConfigContextEntryDeclaration {
-        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+        use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
 
         ConfigContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -1340,7 +1340,7 @@ groups:
 
     /// Builds a test composite containing one constant and one header member.
     fn constant_composite() -> ConfigContextEntryDeclaration {
-        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+        use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
 
         ConfigContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -1355,7 +1355,7 @@ groups:
 
     /// Builds a test composite containing one randomness member.
     fn randomness_composite() -> ConfigContextEntryDeclaration {
-        use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
+        use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
 
         ConfigContextEntryDeclaration {
             scope: ContextScope::Engine,
@@ -2196,7 +2196,7 @@ groups:
     /// Guarantees: wrapper compilation resolves the visible declaration before installing policy.
     #[test]
     fn wrapper_compiles_conditional_composite_header_propagation() {
-        let context: otel_arrow_dfe_config::context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: otel_arrow_dfe_config::context::policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant:
@@ -2211,7 +2211,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ConfigContextEntryDeclaration {
-            scope: otel_arrow_dfe_config::context_policy::ContextScope::Engine,
+            scope: otel_arrow_dfe_config::context::policy::ContextScope::Engine,
             name,
             definition,
         };

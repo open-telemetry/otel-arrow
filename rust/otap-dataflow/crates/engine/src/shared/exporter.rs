@@ -32,12 +32,12 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::{Message, SharedExporterInbox};
 use crate::node::NodeId;
+use crate::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;

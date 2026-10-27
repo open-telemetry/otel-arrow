@@ -29,7 +29,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::byte_units;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
 use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
