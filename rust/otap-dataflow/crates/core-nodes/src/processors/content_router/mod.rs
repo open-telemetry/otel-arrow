@@ -1821,14 +1821,10 @@ mod tests {
         /// `backpressure`, while another selected route (`tenant_a`) remains
         /// healthy.
         /// Guarantees: pdata admission pauses immediately after parking the
-        /// blocked `tenant_c` message, control messages still flow while
-        /// paused, no NACK is emitted for the parked message, and the parked
+        /// blocked `tenant_c` message, no NACK is emitted for the parked
+        /// message, control messages still flow while paused, and the parked
         /// message is forwarded once the `tenant_c` route becomes writable
-        /// again. Because `accept_pdata()` returns `false` as soon as any
-        /// route is parked, a second message targeting the same blocked port
-        /// cannot arrive -- this structurally eliminates the double-hit NACK
-        /// that was possible under the previous "pause after all routes
-        /// blocked" semantics.
+        /// again.
         #[test]
         fn test_backpressure_pauses_on_any_blocked_route_and_resumes_after_recovery() {
             let test_runtime = TestRuntime::new();
@@ -1973,10 +1969,10 @@ mod tests {
                             "pdata admission should pause after parking the full route"
                         );
 
-                        // The closed tenant_a route is reached via a
-                        // control-like path (the test runtime bypasses
-                        // accept_pdata gating) to verify the closed-route
-                        // NACK still fires.
+                        // In production the engine would not deliver pdata
+                        // while accept_pdata() is false. This test calls
+                        // process() directly to verify the closed-route
+                        // NACK fires independently.
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
                             .await
                             .expect("closed route should still complete locally");
