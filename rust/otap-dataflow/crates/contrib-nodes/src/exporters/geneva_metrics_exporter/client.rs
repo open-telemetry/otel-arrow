@@ -14,6 +14,7 @@ const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
 pub(crate) struct MetricsPublisher {
     client: Client,
     endpoint: String,
+    timeout: Duration,
 }
 
 #[derive(Debug, Error)]
@@ -70,7 +71,12 @@ impl MetricsPublisher {
         Ok(Self {
             client,
             endpoint: endpoint.to_owned(),
+            timeout,
         })
+    }
+
+    pub(crate) fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     pub(crate) fn publish(

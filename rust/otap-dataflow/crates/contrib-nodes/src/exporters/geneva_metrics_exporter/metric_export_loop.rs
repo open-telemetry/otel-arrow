@@ -47,6 +47,7 @@ struct InFlightPublication {
     data: OtapPdata,
     auth_generation: u64,
     request: LocalBoxFuture<'static, Result<(), PublishError>>,
+    deadline: tokio::time::Instant,
     attempt: ExporterAttempt,
     remaining: std::vec::IntoIter<EncodedPacket>,
 }
@@ -214,6 +215,7 @@ impl GenevaMetricsExporter {
             data,
             auth_generation,
             request,
+            deadline: tokio::time::Instant::now() + self.publisher.timeout(),
             attempt,
             remaining,
         }))
@@ -348,11 +350,15 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
         let mut armed_margin_deadline: Option<Instant> = None;
         let mut in_flight: Option<Box<InFlightPublication>> = None;
         let mut pending_completion: Option<CompletionFuture> = None;
+        let mut shutdown_drain_deadline: Option<Instant> = None;
 
         loop {
             let has_in_flight = in_flight.is_some();
             let has_pending_completion = pending_completion.is_some();
-            let accepting_pdata = self.auth.is_ready() && !has_in_flight && !has_pending_completion;
+            let accepting_pdata = self.auth.is_ready()
+                && !has_in_flight
+                && !has_pending_completion
+                && shutdown_drain_deadline.is_none();
             let auth_margin_deadline = self.auth.refresh_deadline();
             if auth_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = auth_margin_deadline {
@@ -407,15 +413,17 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     continue;
                 }
 
-                msg = msg_chan.recv_when(accepting_pdata) => msg?,
+                msg = msg_chan.recv_when(accepting_pdata || shutdown_drain_deadline.is_some()) => msg?,
             };
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    let work_deadline =
+                        shutdown_drain_deadline.map_or(deadline, |local| local.min(deadline));
                     self.finish_shutdown_work(
                         in_flight.take(),
                         pending_completion.take(),
-                        deadline,
+                        work_deadline,
                         &effect_handler,
                     )
                     .await?;
@@ -432,24 +440,34 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     }
                 }
                 Message::PData(mut data) => {
-                    let shutdown_deadline = msg_chan.shutdown_deadline();
-                    if has_in_flight || has_pending_completion {
-                        let deadline = shutdown_deadline
-                            .expect("closed admission only delivers pdata during shutdown");
-                        self.finish_shutdown_work(
-                            in_flight.take(),
-                            pending_completion.take(),
-                            deadline,
-                            &effect_handler,
-                        )
-                        .await?;
-                    }
-                    if let Some(deadline) = shutdown_deadline {
+                    if !accepting_pdata {
+                        // Closed admission only delivers pdata during shutdown.
+                        // The inbox hides the pipeline deadline until draining
+                        // completes, so share one local timeout across the drain.
+                        let deadline = *shutdown_drain_deadline.get_or_insert_with(|| {
+                            in_flight.as_ref().map_or_else(
+                                || {
+                                    (tokio::time::Instant::now() + self.publisher.timeout())
+                                        .into_std()
+                                },
+                                |publication| publication.deadline.into_std(),
+                            )
+                        });
+                        let at_capacity = has_in_flight || has_pending_completion;
+                        if at_capacity {
+                            self.finish_shutdown_work(
+                                in_flight.take(),
+                                pending_completion.take(),
+                                deadline,
+                                &effect_handler,
+                            )
+                            .await?;
+                        }
                         if data.signal_type() == SignalType::Metrics {
                             self.wait_for_shutdown_auth(tokio::time::Instant::from_std(deadline))
                                 .await;
                         }
-                        if Instant::now() >= deadline {
+                        if tokio::time::Instant::now() >= tokio::time::Instant::from_std(deadline) {
                             let mut attempt = self.metrics.attempt(data.signal_type());
                             attempt.set_item_count_with(|| data.num_items() as u64);
                             self.record_refusal(attempt);
@@ -1167,9 +1185,9 @@ mod tests {
         assert_eq!(terminal_state.deadline(), deadline);
     }
 
-    /// Scenario: Shutdown force-drains pdata while one HTTP publication is stalled beyond the deadline.
+    /// Scenario: Shutdown force-drains pdata while one HTTP publication is stalled beyond the pipeline deadline.
     /// Guarantees: Only one request is in flight, force-drained pdata is retryably NACKed,
-    /// the stalled request is cancelled, and the terminal state preserves the deadline.
+    /// local timeout bounds publication work, and the terminal state preserves the pipeline deadline.
     #[tokio::test]
     async fn shutdown_bounds_stalled_publication_and_force_drained_pdata() {
         let server = MockServer::start().await;
@@ -1179,7 +1197,7 @@ mod tests {
             .mount(&server)
             .await;
         let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_secs(5), provider);
+        let exporter = exporter_with_timeout(&server.uri(), Duration::from_millis(200), provider);
         let (effect_handler, mut completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
         let control_guard = control_tx.clone();
@@ -1206,17 +1224,21 @@ mod tests {
                 .await
                 .expect("shutdown should be queued");
 
-            match completions
-                .recv()
-                .await
-                .expect("force-drained pdata completion should arrive")
-            {
-                PipelineCompletionMsg::DeliverNack { nack } => {
-                    assert!(!nack.permanent);
-                    assert!(nack.reason.contains(SHUTDOWN_AT_CAPACITY_MESSAGE));
-                }
-                PipelineCompletionMsg::DeliverAck { .. } => {
-                    panic!("force-drained pdata should not be ACKed")
+            loop {
+                match completions
+                    .recv()
+                    .await
+                    .expect("force-drained pdata completion should arrive")
+                {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        assert!(!nack.permanent);
+                        if nack.reason.contains(SHUTDOWN_AT_CAPACITY_MESSAGE) {
+                            break;
+                        }
+                    }
+                    PipelineCompletionMsg::DeliverAck { .. } => {
+                        panic!("stalled or force-drained pdata should not be ACKed")
+                    }
                 }
             }
 
@@ -1228,7 +1250,7 @@ mod tests {
             tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
         })
         .await
-        .expect("exporter should stop at the supplied shutdown deadline");
+        .expect("exporter should stop within its local drain timeout");
         drop(control_guard);
         drop(pdata_guard);
         let terminal_state = start_result.expect("exporter should shut down cleanly");
@@ -1236,7 +1258,7 @@ mod tests {
     }
 
     /// Scenario: Shutdown begins with a stalled HTTP request and a full, undrained completion channel.
-    /// Guarantees: Completion backpressure cannot keep the exporter alive past the shutdown deadline.
+    /// Guarantees: The local drain timeout bounds completion backpressure even before the pipeline deadline is visible.
     #[tokio::test]
     async fn shutdown_bounds_undrained_completion_channel() {
         let server = MockServer::start().await;
@@ -1246,7 +1268,7 @@ mod tests {
             .mount(&server)
             .await;
         let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_secs(5), provider);
+        let exporter = exporter_with_timeout(&server.uri(), Duration::from_millis(200), provider);
         let (effect_handler, _completions) = completion_harness_with_capacity(1);
         occupy_completion_channel(&effect_handler).await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
@@ -1290,12 +1312,12 @@ mod tests {
         assert_eq!(terminal_state.deadline(), deadline);
         assert!(
             shutdown_started_at.elapsed() < Duration::from_secs(1),
-            "shutdown should remain bounded by the supplied deadline"
+            "shutdown should remain bounded by the local drain timeout"
         );
     }
 
     /// Scenario: Shutdown force-drains pdata while authentication is unavailable and the completion channel is full.
-    /// Guarantees: The retryable authentication NACK cannot block shutdown past the supplied deadline.
+    /// Guarantees: The shared local drain timeout bounds authentication and retryable NACK backpressure.
     #[tokio::test]
     async fn shutdown_bounds_auth_unready_completion_backpressure() {
         let server = MockServer::start().await;
@@ -1305,7 +1327,7 @@ mod tests {
             .mount(&server)
             .await;
         let (provider, _controller) = TestTokenProvider::new(None);
-        let exporter = exporter(&server.uri(), provider);
+        let exporter = exporter_with_timeout(&server.uri(), Duration::from_millis(200), provider);
         let (effect_handler, _completions) = completion_harness_with_capacity(1);
         occupy_completion_channel(&effect_handler).await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
@@ -1343,8 +1365,47 @@ mod tests {
         assert_eq!(terminal_state.deadline(), deadline);
         assert!(
             shutdown_started_at.elapsed() < Duration::from_secs(1),
-            "shutdown should remain bounded by the supplied deadline"
+            "shutdown should remain bounded by the local drain timeout"
         );
+    }
+
+    /// Scenario: Shutdown drains two inputs without authentication while completion delivery is blocked.
+    /// Guarantees: One local timeout bounds the entire drain and final completion wait without changing the terminal pipeline deadline.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_draining_shares_local_timeout_across_buffered_input() {
+        let (provider, _controller) = TestTokenProvider::new(None);
+        let drain_timeout = Duration::from_secs(3);
+        let exporter = exporter_with_timeout("http://127.0.0.1:1", drain_timeout, provider);
+        let (effect_handler, _completions) = completion_harness_with_capacity(1);
+        occupy_completion_channel(&effect_handler).await;
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+        for call_id in [1, 2] {
+            pdata_tx
+                .send_async(metrics_pdata(call_id))
+                .await
+                .expect("input should be buffered before shutdown");
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "test shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown should be queued");
+        drop(pdata_tx);
+
+        let started_at = tokio::time::Instant::now();
+        let terminal_state = tokio::time::timeout(
+            Duration::from_secs(10),
+            Box::new(exporter).start(msg_chan, effect_handler),
+        )
+        .await
+        .expect("one local timeout should bound the entire shutdown drain")
+        .expect("exporter should shut down cleanly");
+
+        assert_eq!(started_at.elapsed(), drain_timeout);
+        assert_eq!(terminal_state.deadline(), deadline);
     }
 
     /// Scenario: An HTTP request completes before shutdown while its ACK is blocked by a full completion channel.

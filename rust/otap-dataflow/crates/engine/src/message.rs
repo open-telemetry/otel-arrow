@@ -411,7 +411,6 @@ where
             // We only probe when the buffer is empty -- try_recv on an empty
             // channel distinguishes Closed from Empty without consuming data.
             if !accept_pdata
-                && self.shutting_down_deadline.is_none()
                 && self
                     .pdata_rx
                     .as_ref()
@@ -817,15 +816,6 @@ pub struct ExporterInbox<
 }
 
 impl<PData, ControlRx, PDataRx> ExporterInbox<PData, ControlRx, PDataRx> {
-    /// Returns the latched shutdown deadline while buffered pdata is draining.
-    ///
-    /// Exporters waiting for publication capacity must bound that wait by this
-    /// deadline, since the Shutdown message is held until draining completes.
-    #[must_use]
-    pub fn shutdown_deadline(&self) -> Option<Instant> {
-        self.core.shutting_down_deadline
-    }
-
     #[must_use]
     pub(crate) fn new_internal(
         control_rx: ControlRx,

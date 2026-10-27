@@ -36,6 +36,10 @@ request.
 Requests are split into packets of at most 20,000,000 bytes and ACKed only after
 all packets succeed. Retrying a failed request can resend successful packets.
 
+During shutdown, buffered metrics are drained within a shared HTTP-timeout budget.
+This may exceed the pipeline shutdown deadline. Metrics that cannot start
+publication within the budget are retryably NACKed.
+
 ## Testing
 
 Run the current Geneva metrics tests with:
