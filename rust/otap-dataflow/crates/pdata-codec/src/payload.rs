@@ -3,7 +3,7 @@
 
 //! Inline runtime storage and representation-independent pdata capabilities.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 
 use bytes::{Bytes, BytesMut};
 use otel_arrow_dfe_config::SignalType;
@@ -53,12 +53,22 @@ impl PayloadStorage {
 }
 
 /// Logical pdata representation identity, independent of private storage details.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub enum PdataFormat {
     /// Native mutable OTAP records.
     Otap,
     /// Independently encoded bytes understood by a registered codec.
     Encoded(ResolvedCodec),
+}
+
+impl PartialEq for PdataFormat {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Otap, Self::Otap) => true,
+            (Self::Encoded(left), Self::Encoded(right)) => left.encoding() == right.encoding(),
+            _ => false,
+        }
+    }
 }
 
 impl PdataFormat {
@@ -404,6 +414,84 @@ impl PdataPayload {
         }
     }
 
+    /// Materializes native records, offering scheduling points for incremental codecs.
+    ///
+    /// The original envelope and its caches stay available until successful
+    /// completion. Failure returns the exact encoded input, not partial records.
+    pub async fn try_into_otap_cooperative<Y: Future<Output = ()>>(
+        self,
+        codecs: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
+        match &self.storage {
+            PayloadStorage::OtapRecords(_) => self.try_into_otap(codecs),
+            PayloadStorage::Encoded(encoded) => codecs
+                .decode_cooperative(encoded, yield_to_runtime)
+                .await
+                .map_err(|source| decode_error(source, self)),
+        }
+    }
+
+    /// Borrows accepted encodings, otherwise incrementally decodes temporary OTAP.
+    pub async fn view_cooperative<'a, Y: Future<Output = ()>>(
+        &'a self,
+        codecs: &CodecService,
+        accepted_encodings: &AcceptedEncodings,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<PdataView<'a>, CodecError> {
+        match &self.storage {
+            PayloadStorage::Encoded(encoded) if !accepted_encodings.accepts(encoded.codec()) => {
+                codecs
+                    .decode_cooperative(encoded, yield_to_runtime)
+                    .await
+                    .map(|records| PdataView::Native(Cow::Owned(records)))
+            }
+            _ => self.view(codecs, accepted_encodings),
+        }
+    }
+
+    /// Prepares output after cooperative cross-codec decoding when necessary.
+    /// No prepared-output borrow crosses a scheduling point.
+    pub async fn with_encoded_output_cooperative<R, Y: Future<Output = ()>>(
+        &mut self,
+        codecs: &CodecService,
+        plan: &EncodingPlan,
+        consume: impl FnOnce(EncodeOutput<'_>) -> R,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<R, CodecError> {
+        plan.codec().require_encoder(self.signal_type())?;
+        match &self.storage {
+            PayloadStorage::Encoded(encoded)
+                if encoded.encoding() == plan.codec().encoding()
+                    && codecs.allows_encoded_forwarding(plan, encoded.signal_type())? =>
+            {
+                plan.validate_encoded_size(encoded.bytes().len())?;
+                Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
+            }
+            PayloadStorage::Encoded(encoded) => {
+                let mut records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
+                codecs.with_encoded_output(&mut records, plan, consume)
+            }
+            _ => self.with_encoded_output(codecs, plan, consume),
+        }
+    }
+
+    /// Replaces encoded input only after cooperative materialization succeeds.
+    ///
+    /// Batching retains its borrowed input and caches on failure or cancellation;
+    /// native input stays untouched without cloning records or creating a codec.
+    pub(crate) async fn materialize_otap_cooperative<Y: Future<Output = ()>>(
+        &mut self,
+        codecs: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        if let PayloadStorage::Encoded(encoded) = &self.storage {
+            let records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
+            *self = records.into();
+        }
+        Ok(())
+    }
+
     /// Returns a representation-independent read-only view.
     pub fn view<'a>(
         &'a self,
@@ -425,7 +513,10 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
-            PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
+            PayloadStorage::Encoded(encoded)
+                if encoded.encoding() == plan.codec().encoding()
+                    && codecs.allows_encoded_forwarding(plan, encoded.signal_type())? =>
+            {
                 plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
             }
@@ -507,7 +598,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords
         match value.storage {
             PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::Encoded(encoded) => {
-                let service = CodecService::new().map_err(CodecError::from)?;
+                let service = CodecService::new()?;
                 Ok(service.decode(&encoded)?)
             }
         }
@@ -527,7 +618,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
                 Self::new_from_bytes(encoded.signal_type(), encoded.into_bytes()),
             ),
             PayloadStorage::Encoded(encoded) => {
-                let service = CodecService::new().map_err(CodecError::from)?;
+                let service = CodecService::new()?;
                 let records = service.decode(&encoded)?;
                 Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
                     OtapArrowRecords,
@@ -753,7 +844,8 @@ mod tests {
             let service = CodecServiceBuilder::from_global_registry()
                 .unwrap()
                 .with_decode_policy(DecodePolicy::new(validation))
-                .build();
+                .build()
+                .unwrap();
             let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
             for input in &inputs {
                 let bytes = input.bytes();

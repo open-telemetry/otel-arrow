@@ -20,9 +20,11 @@
 //! adjacent runs only when both observed timestamp and receipt year match,
 //! without parsing syslog contents.
 //!
-//! Synchronous materialization is capped at 256 messages and 256 KiB of framing
-//! (16 KiB per message). Receiver admission and native batching enforce these
-//! same limits until cooperative codec execution is available.
+//! Receiver admission, native batching, and materialization share hard limits
+//! of 8,192 messages and 2 MiB of framing (16 KiB per message). Small inputs
+//! decode synchronously; larger inputs use an owned incremental job that yields
+//! between bounded parsing steps and produces one complete Arrow batch. Arrow
+//! finalization remains synchronous, so step budgets are not latency guarantees.
 
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
@@ -47,11 +49,18 @@ const MAGIC: &[u8; 4] = b"SLG1";
 const BATCH_HEADER_LEN: usize = 8;
 const RUN_HEADER_LEN: usize = 16;
 const FRAME_HEADER_LEN: usize = 4;
-// Bound one synchronous parse/build/finalize operation until cooperative codec
-// execution is available. These are hard limits, not configurable batch targets.
-pub(super) const MAX_BATCH_ITEMS: usize = 256;
-const MAX_BATCH_BYTES: usize = 256 * 1024;
+// Hard admission limits bound each complete input independently of configurable
+// batch targets and the per-step cooperative decode budget.
+pub(super) const MAX_BATCH_ITEMS: usize = 8192;
+pub(super) const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024;
+// Small inputs avoid allocating a resumable decode job.
+const MAX_SYNC_BATCH_ITEMS: usize = 256;
+const MAX_SYNC_BATCH_BYTES: usize = 256 * 1024;
 const MAX_PREDICTED_BATCH_CAPACITY: usize = 32 * 1024;
+// Learn from the most recent batch, not a high-water mark. A hint carries no
+// buffer and is applied only after another message arrives. The cap and sealing
+// trim below bound over-reservation after a burst turns into sparse traffic.
+const MAX_LEARNED_BATCH_CAPACITY: usize = 1024 * 1024;
 
 const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
     min_size: Some(100),
@@ -95,7 +104,7 @@ fn predicted_frame_capacity(max_items: usize, message_len: usize) -> usize {
 // days 1 and 365/366 through the timezone (including December 30 in leap years).
 // This caches neither timestamps nor offsets and handles each clock sample
 // independently, including wall-clock corrections and local timezone changes.
-fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
+pub(super) fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
     if (2..365).contains(&now.ordinal()) {
         now.year()
     } else {
@@ -108,6 +117,7 @@ pub(super) struct SyslogBatchBuilder {
     bytes: BytesMut,
     item_count: u32,
     max_items_hint: usize,
+    reservation_hint: usize,
     run_year: Option<i32>,
     run_count: u32,
     run_count_offset: usize,
@@ -161,6 +171,7 @@ impl SyslogBatchBuilder {
             bytes,
             item_count: 0,
             max_items_hint: max_items_hint.clamp(1, MAX_BATCH_ITEMS),
+            reservation_hint: 0,
             run_year: None,
             run_count: 0,
             run_count_offset: 0,
@@ -193,10 +204,10 @@ impl SyslogBatchBuilder {
         self.append_with_year(message, receipt_local_year(Utc::now(), &Local))
     }
 
-    // Keep the clock at the admission boundary; decoding must never infer the
-    // year from its own clock or the later batch-seal timestamp. A per-message
-    // year also handles receiver batches spanning midnight on New Year.
-    fn append_with_year(
+    // Retain the transport receipt context; decoding must never infer the year
+    // from its own clock or the later batch-seal timestamp. TCP supplies the
+    // completing read's year; UDP captures it independently for each message.
+    pub(super) fn append_with_year(
         &mut self,
         message: &[u8],
         received_local_year: i32,
@@ -233,8 +244,9 @@ impl SyslogBatchBuilder {
             self.run_year = Some(received_local_year);
         }
         if self.is_empty() {
-            self.bytes
-                .reserve(predicted_frame_capacity(self.max_items_hint, message.len()));
+            let predicted = predicted_frame_capacity(self.max_items_hint, message.len());
+            let learned = self.reservation_hint.saturating_sub(self.bytes.len());
+            self.bytes.reserve(predicted.max(learned));
         }
         self.item_count = item_count;
         // A run is no larger than the checked total item count above.
@@ -247,7 +259,8 @@ impl SyslogBatchBuilder {
     /// Replaces this builder while retaining its configured item-count hint.
     #[must_use]
     pub(super) fn take(&mut self) -> Self {
-        let replacement = Self::with_max_items(self.max_items_hint);
+        let mut replacement = Self::with_max_items(self.max_items_hint);
+        replacement.reservation_hint = self.bytes.len().min(MAX_LEARNED_BATCH_CAPACITY);
         std::mem::replace(self, replacement)
     }
 
@@ -272,6 +285,13 @@ impl SyslogBatchBuilder {
         for offset in std::iter::once(BATCH_HEADER_LEN).chain(self.additional_run_offsets) {
             self.bytes[offset..offset + 8].copy_from_slice(&observed_time.to_be_bytes());
         }
+        // Do not queue a tiny timer-flushed payload backed by a learned large
+        // allocation. The next builder's hint also decays to this actual size.
+        if self.bytes.capacity() > MAX_PREDICTED_BATCH_CAPACITY
+            && self.bytes.len() < self.bytes.capacity() / 4
+        {
+            self.bytes = BytesMut::from(self.bytes.as_ref());
+        }
         let item_count = self.item_count as usize;
         Ok(SyslogBatch {
             bytes: self.bytes.freeze(),
@@ -290,6 +310,11 @@ struct Frame<'a> {
 
 struct FrameIter<'a> {
     bytes: &'a [u8],
+    state: FrameState,
+}
+
+#[derive(Clone, Copy)]
+struct FrameState {
     cursor: usize,
     remaining: usize,
     run_remaining: usize,
@@ -298,21 +323,19 @@ struct FrameIter<'a> {
     finished: bool,
 }
 
-impl<'a> Iterator for FrameIter<'a> {
-    type Item = Result<Frame<'a>, SyslogFramingError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl FrameState {
+    fn next<'a>(&mut self, bytes: &'a [u8]) -> Option<Result<Frame<'a>, SyslogFramingError>> {
         if self.finished {
             return None;
         }
         if self.remaining == 0 {
             self.finished = true;
-            return (self.cursor != self.bytes.len())
+            return (self.cursor != bytes.len())
                 .then(|| Err(framing_error("trailing bytes after syslog batch frames")));
         }
         if self.run_remaining == 0 {
             let run_header_end = match self.cursor.checked_add(RUN_HEADER_LEN) {
-                Some(end) if end <= self.bytes.len() => end,
+                Some(end) if end <= bytes.len() => end,
                 Some(_) => {
                     self.finished = true;
                     return Some(Err(framing_error("truncated syslog timestamp run")));
@@ -322,9 +345,9 @@ impl<'a> Iterator for FrameIter<'a> {
                     return Some(Err(framing_error("syslog timestamp run overflow")));
                 }
             };
-            self.observed_time = read_i64(&self.bytes[self.cursor..self.cursor + 8]);
-            self.run_remaining = read_u32(&self.bytes[self.cursor + 8..self.cursor + 12]) as usize;
-            let year = &self.bytes[self.cursor + 12..run_header_end];
+            self.observed_time = read_i64(&bytes[self.cursor..self.cursor + 8]);
+            self.run_remaining = read_u32(&bytes[self.cursor + 8..self.cursor + 12]) as usize;
+            let year = &bytes[self.cursor + 12..run_header_end];
             self.received_local_year = i32::from_be_bytes([year[0], year[1], year[2], year[3]]);
             self.cursor = run_header_end;
             if self.run_remaining == 0 || self.run_remaining > self.remaining {
@@ -336,7 +359,7 @@ impl<'a> Iterator for FrameIter<'a> {
         }
         let start = self.cursor;
         let header_end = match start.checked_add(FRAME_HEADER_LEN) {
-            Some(header_end) if header_end <= self.bytes.len() => header_end,
+            Some(header_end) if header_end <= bytes.len() => header_end,
             Some(_) => {
                 self.finished = true;
                 return Some(Err(framing_error("truncated syslog frame header")));
@@ -346,14 +369,14 @@ impl<'a> Iterator for FrameIter<'a> {
                 return Some(Err(framing_error("syslog frame header overflow")));
             }
         };
-        let message_len = read_u32(&self.bytes[start..header_end]) as usize;
+        let message_len = read_u32(&bytes[start..header_end]) as usize;
         if message_len > MAX_MESSAGE_SIZE {
             self.finished = true;
             return Some(Err(framing_error("syslog message exceeds 16 KiB")));
         }
         let message_start = header_end;
         let end = match message_start.checked_add(message_len) {
-            Some(end) if end <= self.bytes.len() => end,
+            Some(end) if end <= bytes.len() => end,
             Some(_) => {
                 self.finished = true;
                 return Some(Err(framing_error("truncated syslog frame body")));
@@ -369,9 +392,17 @@ impl<'a> Iterator for FrameIter<'a> {
         Some(Ok(Frame {
             observed_time: self.observed_time,
             received_local_year: self.received_local_year,
-            message: &self.bytes[message_start..end],
-            encoded: &self.bytes[start..end],
+            message: &bytes[message_start..end],
+            encoded: &bytes[start..end],
         }))
+    }
+}
+
+impl<'a> Iterator for FrameIter<'a> {
+    type Item = Result<Frame<'a>, SyslogFramingError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.state.next(self.bytes)
     }
 }
 
@@ -398,12 +429,14 @@ fn validated_frames(bytes: &[u8]) -> Result<(usize, FrameIter<'_>), SyslogFramin
         count,
         FrameIter {
             bytes,
-            cursor: BATCH_HEADER_LEN,
-            remaining: count,
-            run_remaining: 0,
-            observed_time: 0,
-            received_local_year: 0,
-            finished: false,
+            state: FrameState {
+                cursor: BATCH_HEADER_LEN,
+                remaining: count,
+                run_remaining: 0,
+                observed_time: 0,
+                received_local_year: 0,
+                finished: false,
+            },
         },
     ))
 }
@@ -426,15 +459,35 @@ const fn read_i64(bytes: &[u8]) -> i64 {
 
 // Reject oversized materialization before allocating Arrow builders. Batching may
 // split larger framed inputs, but neither configuration nor a budget fallback may
-// emit one that the decoder cannot safely process in a single synchronous call.
+// emit one that exceeds the decoder's per-input resource bounds.
 fn validate_decode_limits(count: usize, bytes: usize) -> Result<(), SyslogFramingError> {
     if count > MAX_BATCH_ITEMS {
-        return Err(framing_error("syslog batch exceeds 256 messages"));
+        return Err(framing_error(format!(
+            "syslog batch exceeds {MAX_BATCH_ITEMS} messages"
+        )));
     }
     if bytes > MAX_BATCH_BYTES {
-        return Err(framing_error("syslog batch exceeds 256 KiB"));
+        return Err(framing_error(format!(
+            "syslog batch exceeds {} KiB",
+            MAX_BATCH_BYTES / 1024
+        )));
     }
     Ok(())
+}
+
+// Both execution modes share parsing, error translation, and receipt context.
+// Returning the message length lets incremental decoding budget the same frame
+// without retaining parsed data or allocating another envelope.
+fn append_syslog_frame(
+    builder: &mut ReceivedArrowRecordsBuilder,
+    frame: Result<Frame<'_>, SyslogFramingError>,
+) -> Result<usize, CodecError> {
+    let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
+    let parsed = parser::parse(frame.message)
+        .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
+        .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+    builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
+    Ok(frame.message.len())
 }
 
 #[derive(Default)]
@@ -459,16 +512,87 @@ impl PdataDecoder for SyslogDecoder {
             .map_err(|error| operation_error(CodecOperation::Decode, error))?;
         let mut builder = ReceivedArrowRecordsBuilder::default();
         for frame in frames {
-            let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            let parsed = parser::parse(frame.message)
-                .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
-                .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-            builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
+            let _ = append_syslog_frame(&mut builder, frame)?;
         }
         builder
             .build()
             .map_err(|error| operation_error(CodecOperation::Decode, error))
     }
+
+    fn start_decode(
+        &mut self,
+        signal: SignalType,
+        bytes: &Bytes,
+    ) -> Result<otel_arrow_dfe_pdata_codec::DecodeTask, CodecError> {
+        use otel_arrow_dfe_pdata_codec::DecodeTask;
+        if signal != SignalType::Logs {
+            return self.decode(signal, bytes).map(DecodeTask::Ready);
+        }
+        let (count, frames) = validated_frames(bytes)
+            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        validate_decode_limits(count, bytes.len())
+            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        // Small inputs retain the synchronous path, with no job allocation.
+        if count <= MAX_SYNC_BATCH_ITEMS && bytes.len() <= MAX_SYNC_BATCH_BYTES {
+            return self.decode(signal, bytes).map(DecodeTask::Ready);
+        }
+        Ok(DecodeTask::Incremental(Box::new(SyslogDecodeJob {
+            bytes: bytes.clone(),
+            frames: frames.state,
+            builder: Some(ReceivedArrowRecordsBuilder::default()),
+        })))
+    }
+}
+
+struct SyslogDecodeJob {
+    bytes: Bytes,
+    frames: FrameState,
+    builder: Option<ReceivedArrowRecordsBuilder>,
+}
+
+impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
+    fn step(
+        &mut self,
+        budget: otel_arrow_dfe_pdata_codec::DecodeBudget,
+    ) -> Result<Option<OtapArrowRecords>, CodecError> {
+        let started = std::time::Instant::now();
+        let mut records = 0;
+        let mut bytes = 0;
+        loop {
+            let Some(frame) = self.frames.next(&self.bytes) else {
+                let builder = self.builder.take().ok_or_else(|| {
+                    operation_error(
+                        CodecOperation::Decode,
+                        framing_error("decode job already finished"),
+                    )
+                })?;
+                // Finalization is synchronous. The parse-loop budget does not
+                // bound this operation or the cost of an indivisible record.
+                return builder
+                    .build()
+                    .map(Some)
+                    .map_err(|error| operation_error(CodecOperation::Decode, error));
+            };
+            let builder = self.builder.as_mut().ok_or_else(|| {
+                operation_error(
+                    CodecOperation::Decode,
+                    framing_error("decode job already finished"),
+                )
+            })?;
+            bytes += append_syslog_frame(builder, frame)?;
+            records += 1;
+            if records >= budget.max_records()
+                || bytes >= budget.max_bytes()
+                || (records.is_multiple_of(16) && started.elapsed() >= budget.max_duration())
+            {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+fn create_decoder(_: otel_arrow_dfe_pdata_codec::DecodePolicy) -> Box<dyn PdataDecoder> {
+    Box::<SyslogDecoder>::default()
 }
 
 #[derive(Default)]
@@ -494,7 +618,7 @@ impl PdataBatcher for SyslogBatcher {
             ));
         }
         let max_items = settings.max_size.map_or(MAX_BATCH_ITEMS, |size| {
-            // Configuration may lower, but never raise, the synchronous work limit.
+            // Configuration may lower, but never raise, the per-input item limit.
             usize::try_from(size.get())
                 .unwrap_or(MAX_BATCH_ITEMS)
                 .min(MAX_BATCH_ITEMS)
@@ -753,7 +877,9 @@ static SYSLOG_BATCHING_SUPPORT: BatchingSupport = BatchingSupport {
 register_pdata_codec!(
     SYSLOG_CEF_CODEC,
     CodecRegistration::new(&SYSLOG_CEF_METADATA)
-        .with_decoder(|_| Box::<SyslogDecoder>::default())
+        .with_implementation("otel.syslog_cef")
+        .with_default_for_encoding()
+        .with_decoder(create_decoder)
         .with_batcher(CodecBatcherRegistration::new(
             &SYSLOG_BATCHING_SUPPORT,
             || Box::<SyslogBatcher>::default(),
@@ -857,6 +983,11 @@ pub mod bench_support {
 }
 
 #[cfg(test)]
+pub(super) const fn full_sized_test_message_capacity() -> usize {
+    (MAX_BATCH_BYTES - BATCH_HEADER_LEN - RUN_HEADER_LEN) / (MAX_MESSAGE_SIZE + FRAME_HEADER_LEN)
+}
+
+#[cfg(test)]
 mod tests {
     use arrow::array::TimestampNanosecondArray;
     use chrono::TimeZone;
@@ -905,7 +1036,7 @@ mod tests {
         let at_item_limit = batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS], 42);
         let large = vec![b'x'; MAX_MESSAGE_SIZE];
         let mut full = SyslogBatchBuilder::new();
-        for _ in 0..15 {
+        for _ in 0..full_sized_test_message_capacity() {
             full.append_with_year(&large, 2024).unwrap();
         }
         let remaining = MAX_BATCH_BYTES - full.bytes.len() - FRAME_HEADER_LEN;
@@ -997,12 +1128,15 @@ mod tests {
             (
                 unchecked_batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS + 1]),
                 None,
-                vec![256, 1],
+                vec![MAX_BATCH_ITEMS, 1],
             ),
             (
-                unchecked_batch(&[large.as_slice(); 16]),
+                unchecked_batch(&vec![
+                    large.as_slice();
+                    full_sized_test_message_capacity() + 1
+                ]),
                 NonZeroU64::new(u64::MAX),
-                vec![15, 1],
+                vec![full_sized_test_message_capacity(), 1],
             ),
         ] {
             let messages = |bytes: &Bytes| {
@@ -1060,7 +1194,7 @@ mod tests {
 
         let message = vec![b'x'; MAX_MESSAGE_SIZE];
         let mut builder = SyslogBatchBuilder::new();
-        for _ in 0..15 {
+        for _ in 0..full_sized_test_message_capacity() {
             builder.append_with_year(&message, 2024).unwrap();
         }
         assert!(builder.should_flush(usize::MAX));
@@ -1077,7 +1211,7 @@ mod tests {
                 .decode(SignalType::Logs, &builder.finish(42).unwrap().bytes)
                 .unwrap()
                 .num_items(),
-            16
+            full_sized_test_message_capacity() + 1
         );
 
         let mut builder = SyslogBatchBuilder::new();
@@ -1096,7 +1230,10 @@ mod tests {
         let too_large = vec![b'x'; MAX_MESSAGE_SIZE + 1];
         for bytes in [
             unchecked_batch(&vec![b"message".as_slice(); MAX_BATCH_ITEMS + 1]),
-            unchecked_batch(&vec![large.as_slice(); 16]),
+            unchecked_batch(&vec![
+                large.as_slice();
+                full_sized_test_message_capacity() + 1
+            ]),
             unchecked_batch(&[too_large.as_slice()]),
         ] {
             let mut payload: OtapPayload =
@@ -1128,7 +1265,7 @@ mod tests {
         };
         let mut inputs = Vec::new();
         for (message, observed) in [(b"first".as_slice(), 1), (b"second", 2), (b"third", 3)] {
-            inputs.push(batch(&vec![message; 200], observed));
+            inputs.push(batch(&vec![message; MAX_BATCH_ITEMS * 25 / 32], observed));
         }
         let result = SyslogBatcher
             .batch(SignalType::Logs, &settings, inputs)
@@ -1156,11 +1293,19 @@ mod tests {
         }
         assert_eq!(
             observed,
-            [vec![1; 200], vec![2; 200], vec![3; 200]].concat()
+            [
+                vec![1; MAX_BATCH_ITEMS * 25 / 32],
+                vec![2; MAX_BATCH_ITEMS * 25 / 32],
+                vec![3; MAX_BATCH_ITEMS * 25 / 32]
+            ]
+            .concat()
         );
 
         let large = vec![b'x'; MAX_MESSAGE_SIZE];
-        let input = batch(&[large.as_slice(); 8], 42);
+        let input = batch(
+            &vec![large.as_slice(); full_sized_test_message_capacity().div_ceil(2)],
+            42,
+        );
         let result = SyslogBatcher
             .batch(SignalType::Logs, &settings, vec![input.clone(), input])
             .unwrap();
@@ -1178,7 +1323,7 @@ mod tests {
                 .iter()
                 .map(|(b, _)| validated_item_count(b).unwrap())
                 .collect::<Vec<_>>(),
-            [15, 1]
+            [full_sized_test_message_capacity(), 1]
         );
         for (bytes, _) in result.batches {
             assert!(bytes.len() <= MAX_BATCH_BYTES);
@@ -1191,7 +1336,10 @@ mod tests {
     #[test]
     fn byte_splits_respect_budgets_without_oversized_fallback() {
         let message = vec![b'x'; MAX_MESSAGE_SIZE];
-        let input = unchecked_batch(&vec![message.as_slice(); 32]);
+        let input = unchecked_batch(&vec![
+            message.as_slice();
+            full_sized_test_message_capacity() * 2 + 2
+        ]);
         let settings = BatchSettings {
             max_size: NonZeroU64::new(u64::MAX),
             ..SYSLOG_BATCH_SETTINGS
@@ -1233,7 +1381,11 @@ mod tests {
                 .iter()
                 .map(|(b, _)| validated_item_count(b).unwrap())
                 .collect::<Vec<_>>(),
-            [15, 15, 2]
+            [
+                full_sized_test_message_capacity(),
+                full_sized_test_message_capacity(),
+                2
+            ]
         );
         for (bytes, range) in result.batches {
             assert_eq!(range, 0..=0);
@@ -1242,8 +1394,72 @@ mod tests {
         }
     }
 
-    /// Scenario: A timer shares one runtime thread with a maximum-sized synchronous decode.
-    /// Guarantees: The measured parse/build/finalize section and timer lateness stay below 50 ms on an idle CPU.
+    // Rearm after each sample instead of replaying missed ticks. Completion
+    // carries its own timestamp: account for an overdue final tick, but exclude
+    // unrelated scheduling delays after the conversion has already completed.
+    async fn probe_scheduling_lateness(
+        mut completed: tokio::sync::oneshot::Receiver<tokio::time::Instant>,
+        period: std::time::Duration,
+    ) -> std::time::Duration {
+        use tokio::time::{Instant, sleep_until};
+
+        assert!(!period.is_zero());
+        let mut deadline = Instant::now() + period;
+        let mut max_lateness = std::time::Duration::ZERO;
+        loop {
+            tokio::select! {
+                biased;
+                finished = &mut completed => {
+                    let finished = finished.expect("conversion always reports its completion time");
+                    return max_lateness.max(finished.saturating_duration_since(deadline));
+                }
+                _ = sleep_until(deadline) => {
+                    let observed = Instant::now();
+                    max_lateness = max_lateness.max(observed.saturating_duration_since(deadline));
+                    deadline = observed + period;
+                }
+            }
+        }
+    }
+
+    /// Scenario: A conversion completes late after an earlier periodic probe tick was serviced.
+    /// Guarantees: The probe continues after its first observation and accounts for a final overdue tick even when completion is already ready.
+    #[tokio::test(start_paused = true)]
+    async fn scheduling_probe_covers_late_completion_after_earlier_tick() {
+        use std::time::Duration;
+
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let mut probe = Box::pin(probe_scheduling_lateness(
+            completion,
+            Duration::from_millis(1),
+        ));
+        assert!(futures::poll!(probe.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_millis(2)).await;
+        assert!(futures::poll!(probe.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_millis(20)).await;
+        finished.send(tokio::time::Instant::now()).unwrap();
+        assert_eq!(probe.await, Duration::from_millis(19));
+    }
+
+    /// Scenario: Conversion finishes before its first probe deadline, but the observer is polled much later.
+    /// Guarantees: Lateness after completion is excluded instead of being attributed to conversion or finalization.
+    #[tokio::test(start_paused = true)]
+    async fn scheduling_probe_excludes_delay_after_completion() {
+        use std::time::Duration;
+
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let mut probe = Box::pin(probe_scheduling_lateness(
+            completion,
+            Duration::from_millis(1),
+        ));
+        assert!(futures::poll!(probe.as_mut()).is_pending());
+        finished.send(tokio::time::Instant::now()).unwrap();
+        tokio::time::advance(Duration::from_millis(20)).await;
+        assert_eq!(probe.await, Duration::ZERO);
+    }
+
+    /// Scenario: A periodic timer shares one runtime thread with maximum-sized cooperative syslog decoding.
+    /// Guarantees: The opt-in release check measures worst timer lateness throughout parsing and finalization for item- and byte-limited batches.
     #[tokio::test(flavor = "current_thread")]
     #[ignore = "wall-clock check: run in release mode on an otherwise idle pinned CPU"]
     async fn bounded_decode_scheduling_latency() {
@@ -1262,7 +1478,10 @@ mod tests {
                 "rfc3164_item_limit",
                 unchecked_batch(&vec![small.as_slice(); MAX_BATCH_ITEMS]),
             ),
-            ("raw_byte_limit", unchecked_batch(&vec![raw.as_slice(); 15])),
+            (
+                "raw_byte_limit",
+                unchecked_batch(&vec![raw.as_slice(); full_sized_test_message_capacity()]),
+            ),
             (
                 "cef_byte_limit",
                 unchecked_batch(&vec![
@@ -1280,22 +1499,24 @@ mod tests {
             for _ in 0..24 {
                 let payload: OtapPayload =
                     codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
-                let deadline = tokio::time::Instant::now() + Duration::from_millis(1);
-                let timer = async {
-                    tokio::time::sleep_until(deadline).await;
-                    tokio::time::Instant::now().saturating_duration_since(deadline)
-                };
+                let (finished, completion) = tokio::sync::oneshot::channel();
+                let timer = probe_scheduling_lateness(completion, Duration::from_millis(1));
                 let decode = async {
                     let start = Instant::now();
-                    // No synthetic yield inside the operation: measure the actual
-                    // synchronous codec path, including Arrow finalization.
-                    let records = payload.try_into_otap(&service).unwrap();
+                    // Exercise the same scheduler-aware boundary as effect handlers,
+                    // including the final synchronous Arrow finalization.
+                    let records = payload
+                        .try_into_otap_cooperative(&service, tokio::task::yield_now)
+                        .await
+                        .unwrap();
                     let elapsed = start.elapsed();
-                    let _ = std::hint::black_box(&records);
-                    elapsed
+                    finished.send(tokio::time::Instant::now()).unwrap();
+                    (elapsed, records)
                 };
-                // Poll the timer first so it is armed before decoding starts.
-                let (lateness, elapsed) = tokio::join!(biased; timer, decode);
+                // Arm the probe before decoding. Retain records until it exits
+                // so destruction is outside conversion and finalization timing.
+                let (lateness, (elapsed, records)) = tokio::join!(biased; timer, decode);
+                let _ = std::hint::black_box(&records);
                 max_decode = max_decode.max(elapsed);
                 max_timer_lateness = max_timer_lateness.max(lateness);
             }
@@ -1372,7 +1593,8 @@ mod tests {
         let service = CodecServiceBuilder::from_global_registry()
             .expect("valid codec registry")
             .with_decode_policy(DecodePolicy::new(DecodeValidation::Strict))
-            .build();
+            .build()
+            .unwrap();
         let codec = resolve_syslog().unwrap();
         let valid = codec
             .admit(
@@ -1498,6 +1720,77 @@ mod tests {
             predicted_frame_capacity(usize::MAX, usize::MAX),
             MAX_PREDICTED_BATCH_CAPACITY - BATCH_HEADER_LEN - RUN_HEADER_LEN
         );
+    }
+
+    /// Scenario: Successive homogeneous full batches follow the same receiver target.
+    /// Guarantees: Learning the previous size avoids buffer growth on the next batch
+    /// without allocating a large replacement buffer while the connection is idle.
+    #[test]
+    fn reservation_learns_recent_size_without_retaining_a_buffer() {
+        let message = [b'x'; 100];
+        let mut builder = SyslogBatchBuilder::with_max_items(MAX_BATCH_ITEMS);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(&message, 2024).unwrap();
+        }
+        let previous_size = builder.bytes.len();
+        let first = builder.take().finish(42).unwrap();
+        assert_eq!(validated_item_count(&first.bytes).unwrap(), MAX_BATCH_ITEMS);
+        assert_eq!(builder.reservation_hint, previous_size);
+        assert!(builder.capacity() <= MAX_PREDICTED_BATCH_CAPACITY);
+        builder.append_with_year(&message, 2024).unwrap();
+        let capacity = builder.capacity();
+        let pointer = builder.bytes.as_ptr();
+        for _ in 1..MAX_BATCH_ITEMS {
+            builder.append_with_year(&message, 2024).unwrap();
+        }
+        assert_eq!(builder.capacity(), capacity);
+        assert_eq!(builder.bytes.as_ptr(), pointer);
+        assert_eq!(builder.take().finish(42).unwrap().bytes, first.bytes);
+    }
+
+    /// Scenario: A large batch is followed by sparse traffic and a timer-sized seal.
+    /// Guarantees: The published small batch sheds excess capacity, preserves its
+    /// frame, and the next reservation follows the small batch rather than the peak.
+    #[test]
+    fn reservation_decays_and_small_output_does_not_retain_large_capacity() {
+        let mut builder = SyslogBatchBuilder::with_max_items(MAX_BATCH_ITEMS);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(&[b'x'; 100], 2024).unwrap();
+        }
+        drop(builder.take());
+        builder.append_with_year(b"small", 2025).unwrap();
+        let oversized_pointer = builder.bytes.as_ptr();
+        let small_size = builder.bytes.len();
+        let batch = builder.take().finish(7).unwrap();
+        assert_ne!(batch.bytes.as_ptr(), oversized_pointer);
+        assert_eq!(builder.reservation_hint, small_size);
+        let (_, frames) = validated_frames(&batch.bytes).unwrap();
+        let frame = frames.into_iter().next().unwrap().unwrap();
+        assert_eq!(frame.message, b"small");
+        assert_eq!(frame.observed_time, 7);
+        assert_eq!(frame.received_local_year, 2025);
+        builder.append_with_year(b"small", 2025).unwrap();
+        assert!(builder.capacity() <= MAX_PREDICTED_BATCH_CAPACITY);
+    }
+
+    /// Scenario: Large messages grow a batch beyond the learning cap before discard.
+    /// Guarantees: The next prediction is capped and memory-pressure discard resets
+    /// both buffered data and the capacity hint without changing the item target.
+    #[test]
+    fn reservation_is_capped_and_discard_forgets_it() {
+        let mut builder = SyslogBatchBuilder::with_max_items(MAX_BATCH_ITEMS);
+        for _ in 0..MAX_BATCH_ITEMS {
+            builder.append_with_year(&[b'x'; 200], 2024).unwrap();
+        }
+        assert!(builder.bytes.len() > MAX_LEARNED_BATCH_CAPACITY);
+        drop(builder.take());
+        assert_eq!(builder.reservation_hint, MAX_LEARNED_BATCH_CAPACITY);
+        builder.append_with_year(b"small", 2024).unwrap();
+        builder.discard();
+        assert!(builder.is_empty());
+        assert_eq!(builder.reservation_hint, 0);
+        assert_eq!(builder.max_items_hint, MAX_BATCH_ITEMS);
+        assert!(builder.capacity() <= MAX_PREDICTED_BATCH_CAPACITY);
     }
 
     /// Scenario: Encoded framing is malformed or contains trailing data.
@@ -2058,7 +2351,7 @@ mod tests {
     }
 
     /// Scenario: A budget fallback encounters malformed framing or more than the hard item limit.
-    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the synchronous decode limit.
+    /// Guarantees: Invalid or undecodable whole inputs are rejected, valid work recovers, and unrestricted splitting respects the per-input decode limits.
     #[test]
     fn native_batching_budget_fallback_validates_framing_and_decode_limits() {
         let mut settings = BatchSettings {
@@ -2124,5 +2417,332 @@ mod tests {
             vec![MAX_BATCH_ITEMS, 1]
         );
         assert!(split.batches.iter().all(|(_, range)| range == &(0..=0)));
+    }
+
+    mod cooperative_tests {
+        use std::future::Future;
+        use std::task::{Context as TaskContext, Poll, Waker};
+
+        use otel_arrow_dfe_engine::local::exporter::EffectHandler;
+        use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
+        use otel_arrow_dfe_pdata_codec::{
+            AcceptedEncodings, CodecService, DecodeBudget, DecodeTask, EncodePolicy, EncodingPlan,
+            PdataDecodeJob, PdataEncoding, PdataView,
+        };
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+        use super::*;
+
+        fn handler() -> EffectHandler<OtapPdata> {
+            let (_, metrics) = MetricsReporter::create_new_and_receiver(1);
+            EffectHandler::new(
+                otel_arrow_dfe_engine::testing::test_node("cooperative-codec"),
+                metrics,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            )
+        }
+
+        /// Scenario: The registered decoder receives inputs around its synchronous item and byte thresholds.
+        /// Guarantees: Both decode policies select immediate small-batch conversion or owned cooperative work without feature flags or runtime switches.
+        #[test]
+        fn registered_decoder_selects_work_by_input_size() {
+            let raw = vec![b'x'; MAX_MESSAGE_SIZE];
+            let mut at_byte_limit = SyslogBatchBuilder::new();
+            while at_byte_limit.bytes.len() + FRAME_HEADER_LEN + raw.len() <= MAX_SYNC_BATCH_BYTES {
+                at_byte_limit.append_with_year(&raw, 2024).unwrap();
+            }
+            let remaining = MAX_SYNC_BATCH_BYTES - at_byte_limit.bytes.len() - FRAME_HEADER_LEN;
+            at_byte_limit
+                .append_with_year(&raw[..remaining], 2024)
+                .unwrap();
+            let at_byte_limit = at_byte_limit.finish(42).unwrap().bytes;
+            assert_eq!(at_byte_limit.len(), MAX_SYNC_BATCH_BYTES);
+            for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+                let mut decoder = create_decoder(DecodePolicy::new(validation));
+                for (bytes, incremental) in [
+                    (
+                        unchecked_batch(&vec![b"message".as_slice(); MAX_SYNC_BATCH_ITEMS]),
+                        false,
+                    ),
+                    (
+                        unchecked_batch(&vec![b"message".as_slice(); MAX_SYNC_BATCH_ITEMS + 1]),
+                        true,
+                    ),
+                    (at_byte_limit.clone(), false),
+                    (
+                        unchecked_batch(&vec![
+                            raw.as_slice();
+                            MAX_SYNC_BATCH_BYTES / MAX_MESSAGE_SIZE
+                        ]),
+                        true,
+                    ),
+                ] {
+                    let count = validated_item_count(&bytes).unwrap();
+                    let task = decoder.start_decode(SignalType::Logs, &bytes).unwrap();
+                    let records = match task {
+                        DecodeTask::Ready(records) => {
+                            assert!(!incremental, "large input must yield through an owned job");
+                            records
+                        }
+                        DecodeTask::Incremental(mut job) => {
+                            assert!(incremental, "small input must avoid job allocation");
+                            loop {
+                                if let Some(records) = job.step(DecodeBudget::default()).unwrap() {
+                                    break records;
+                                }
+                            }
+                        }
+                    };
+                    assert_eq!(records.num_items(), count);
+                }
+            }
+        }
+
+        /// Scenario: Mixed formats and receipt years are decoded across multiple work segments.
+        /// Guarantees: One final batch preserves every Arrow column, timestamp and row order; each parse step obeys its record budget.
+        #[test]
+        fn cooperative_steps_preserve_one_batch_and_fields() {
+            let inputs: [&[u8]; 4] = [
+                b"<34>Oct 11 22:14:15 host app: message",
+                b"<34>1 2024-10-11T22:14:15Z host app 1 - - message",
+                b"CEF:0|Vendor|Product|1|1|event|5|src=10.0.0.1",
+                b"unstructured message",
+            ];
+            let mut builder = SyslogBatchBuilder::new();
+            for index in 0..512 {
+                builder
+                    .append_with_year(inputs[index % 4], 2024 + (index / 256) as i32)
+                    .unwrap();
+            }
+            let bytes = builder.finish(-7).unwrap().bytes;
+            let expected = SyslogDecoder.decode(SignalType::Logs, &bytes).unwrap();
+            let DecodeTask::Incremental(mut job) = SyslogDecoder
+                .start_decode(SignalType::Logs, &bytes)
+                .unwrap()
+            else {
+                panic!("large input must create an owned job");
+            };
+            let mut pending = 0;
+            let actual = loop {
+                match job.step(DecodeBudget::default()).unwrap() {
+                    Some(records) => break records,
+                    None => pending += 1,
+                }
+            };
+            assert!(
+                pending >= 4,
+                "512 records need at least four bounded parse steps"
+            );
+            for kind in [ArrowPayloadType::Logs, ArrowPayloadType::LogAttrs] {
+                assert_eq!(actual.get(kind), expected.get(kind));
+            }
+        }
+
+        /// Scenario: Large messages reach the byte budget before the record budget.
+        /// Guarantees: Byte-heavy input selects an incremental job and one parse step consumes at most 64 KiB of messages.
+        #[test]
+        fn cooperative_byte_budget_bounds_one_step() {
+            let message = vec![b'x'; MAX_MESSAGE_SIZE];
+            let bytes = unchecked_batch(&vec![message.as_slice(); 32]);
+            assert!(matches!(
+                SyslogDecoder
+                    .start_decode(SignalType::Logs, &bytes)
+                    .unwrap(),
+                DecodeTask::Incremental(_)
+            ));
+            let (_, frames) = validated_frames(&bytes).unwrap();
+            let mut job = SyslogDecodeJob {
+                bytes: bytes.clone(),
+                frames: frames.state,
+                builder: Some(ReceivedArrowRecordsBuilder::default()),
+            };
+            assert!(job.step(DecodeBudget::default()).unwrap().is_none());
+            let consumed = 32 - job.frames.remaining;
+            assert!(
+                (1..=DecodeBudget::default().max_bytes() / MAX_MESSAGE_SIZE).contains(&consumed)
+            );
+        }
+
+        /// Scenario: Corruption appears after several completed parse steps while another node uses the same service.
+        /// Guarantees: Mutable service access is released before suspension; failure returns exact bytes, count and delivery context, then valid work still succeeds.
+        #[tokio::test(flavor = "current_thread")]
+        async fn cooperative_failure_recovers_after_partial_progress() {
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let complete = unchecked_batch(&vec![b"SECRET_TELEMETRY".as_slice(); 512]);
+            let bytes = complete.slice(..complete.len() - 1);
+            let pointer = bytes.as_ptr();
+            let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
+            let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 512);
+            let peer = "127.0.0.1:1234".parse().unwrap();
+            let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+            let mut conversion = Box::pin(handler.materialize_otap(pdata));
+            assert!(matches!(
+                conversion
+                    .as_mut()
+                    .poll(&mut TaskContext::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            let other = OtapPdata::new_default(
+                codec
+                    .admit(SignalType::Logs, batch(&[b"valid"], 42))
+                    .unwrap()
+                    .into(),
+            );
+            assert!(handler.materialize_otap(other).await.is_ok());
+            let error = conversion.await.unwrap_err();
+            assert!(!format!("{error:?}").contains("SECRET_TELEMETRY"));
+            let (_, recovered) = error.into_parts();
+            assert_eq!(recovered.peer_addr(), Some(peer));
+            assert_eq!(recovered.signal_type(), SignalType::Logs);
+            assert_eq!(
+                recovered.payload_ref().encoding(),
+                Some(&SYSLOG_CEF_ENCODING)
+            );
+            assert_eq!(recovered.payload_ref().known_item_count(), Some(512));
+            let recovered_bytes = recovered.payload_ref().encoded_bytes().unwrap();
+            assert_eq!(recovered_bytes.as_ptr(), pointer);
+            assert_eq!(recovered_bytes, &bytes);
+            let next = OtapPdata::new_default(
+                codec
+                    .admit(SignalType::Logs, batch(&[b"next"], 43))
+                    .unwrap()
+                    .into(),
+            );
+            assert!(handler.materialize_otap(next).await.is_ok());
+        }
+
+        /// Scenario: A conversion future is dropped after yielding with a partially built batch.
+        /// Guarantees: Input sharing and partial state are released, and cancellation neither leases nor poisons the reusable codec instance.
+        #[tokio::test(flavor = "current_thread")]
+        async fn cooperative_cancellation_releases_owned_progress() {
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let bytes = unchecked_batch(&vec![b"message".as_slice(); 512]);
+            let pdata = OtapPdata::new_default(
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into(),
+            );
+            let mut conversion = Box::pin(handler.materialize_otap(pdata));
+            assert!(matches!(
+                conversion
+                    .as_mut()
+                    .poll(&mut TaskContext::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            assert!(!bytes.is_unique());
+            drop(conversion);
+            assert!(bytes.is_unique());
+            let next = OtapPdata::new_default(
+                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into(),
+            );
+            assert!(handler.materialize_otap(next).await.is_ok());
+        }
+
+        /// Scenario: Batch preparation and finishing convert large syslog input to native OTAP or OTLP.
+        /// Guarantees: Both paths yield; cancellation and late decode failure preserve original bytes, identity and cached counts, and successful conversion remains reusable.
+        #[tokio::test(flavor = "current_thread")]
+        async fn batch_plan_conversions_preserve_input_across_yields() {
+            use otel_arrow_dfe_pdata_codec::{BatchPlan, PdataFormat};
+
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let complete = unchecked_batch(&vec![b"message".as_slice(); 512]);
+            let truncated = complete.slice(..complete.len() - 1);
+            let otlp = CodecService::new()
+                .unwrap()
+                .registry()
+                .resolve(&PdataEncoding::OTLP)
+                .unwrap();
+            let encoded_otlp = PdataFormat::encoded(otlp);
+            for (output, settings, working) in [
+                (PdataFormat::OTAP, BatchSettings::otap(), PdataFormat::OTAP),
+                (encoded_otlp, BatchSettings::otlp(), encoded_otlp),
+                (encoded_otlp, BatchSettings::otap(), PdataFormat::OTAP),
+            ] {
+                let plan = BatchPlan::new(output, settings, false).unwrap();
+                for prepare in [true, false] {
+                    for bytes in [&complete, &truncated] {
+                        let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
+                        let mut payload =
+                            otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(
+                                payload, 512,
+                            );
+                        let convert = async |payload: &mut OtapPayload| {
+                            if prepare {
+                                handler.prepare_batch(&plan, payload).await
+                            } else {
+                                handler.finish_batch(&plan, payload).await
+                            }
+                        };
+                        let mut conversion = Box::pin(convert(&mut payload));
+                        assert!(matches!(
+                            conversion
+                                .as_mut()
+                                .poll(&mut TaskContext::from_waker(Waker::noop())),
+                            Poll::Pending
+                        ));
+                        drop(conversion);
+                        assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                        assert_eq!(payload.encoded_bytes().unwrap(), bytes);
+                        assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+                        assert_eq!(payload.known_item_count(), Some(512));
+
+                        let result = convert(&mut payload).await;
+                        if bytes.len() == complete.len() {
+                            result.unwrap();
+                            assert_eq!(payload.format(), if prepare { working } else { output });
+                            assert_eq!(
+                                handler
+                                    .materialize_otap_payload(payload)
+                                    .await
+                                    .unwrap()
+                                    .num_items(),
+                                512
+                            );
+                        } else {
+                            assert!(result.is_err());
+                            assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                            assert_eq!(payload.encoded_bytes().unwrap(), bytes);
+                            assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+                            assert_eq!(payload.known_item_count(), Some(512));
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Scenario: Read-only views accept encoded syslog or require native records, then export to OTLP.
+        /// Guarantees: Direct borrowing creates no codec or buffer copy; fallback and cross-codec output use the cooperative boundary without changing the input.
+        #[tokio::test(flavor = "current_thread")]
+        async fn cooperative_views_and_cross_encoding_preserve_input() {
+            let handler = handler();
+            let codec = resolve_syslog().unwrap();
+            let bytes = unchecked_batch(&vec![b"message".as_slice(); 512]);
+            let pointer = bytes.as_ptr();
+            let mut payload: OtapPayload = codec.admit(SignalType::Logs, bytes).unwrap().into();
+            let accepted = AcceptedEncodings::accept_encoded([codec]);
+            let view = handler.view(&payload, &accepted).await.unwrap();
+            let PdataView::Encoded(view) = view else {
+                panic!("accepted input must remain borrowed");
+            };
+            assert_eq!(view.bytes().as_ptr(), pointer);
+            use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
+            assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+            let view = handler
+                .view(&payload, &AcceptedEncodings::native())
+                .await
+                .unwrap();
+            assert!(matches!(view, PdataView::Native(_)));
+            let plan = EncodingPlan::resolve(
+                CodecService::new().unwrap().registry(),
+                &PdataEncoding::OTLP,
+                EncodePolicy::default(),
+            )
+            .unwrap();
+            let encoded = handler.encode_owned(&mut payload, &plan).await.unwrap();
+            assert!(!encoded.is_empty());
+            assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), pointer);
+            assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
+        }
     }
 }

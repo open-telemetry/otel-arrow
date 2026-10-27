@@ -3,6 +3,7 @@
 
 //! Resolution phase for [`OtelDataflowSpec`].
 
+use crate::codecs::{CodecsConfig, ResolvedCodecsConfig};
 use crate::context_policy::ContextEntryDeclaration;
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
@@ -77,6 +78,8 @@ pub struct ResolvedPipelineConfig {
     pub topic_scope: TopicScope,
     /// Resolved policies after hierarchy resolution.
     pub policies: ResolvedPolicies,
+    /// Effective codec configuration after inheritance resolution.
+    pub codecs: ResolvedCodecsConfig,
     /// Pipeline role.
     pub role: ResolvedPipelineRole,
 }
@@ -86,7 +89,7 @@ impl ResolvedPipelineConfig {
     ///
     /// Logical identity is intentionally ignored here; callers compare two
     /// candidate snapshots for the same logical pipeline and only care whether
-    /// runtime-relevant config and resolved policies match.
+    /// runtime-relevant config, resolved policies, and codec settings match.
     #[must_use]
     pub fn runtime_matches(&self, other: &Self) -> bool {
         let Self {
@@ -95,6 +98,7 @@ impl ResolvedPipelineConfig {
             pipeline: self_pipeline,
             topic_scope: self_topic_scope,
             policies: self_policies,
+            codecs: self_codecs,
             role: self_role,
         } = self;
         let Self {
@@ -103,16 +107,18 @@ impl ResolvedPipelineConfig {
             pipeline: other_pipeline,
             topic_scope: other_topic_scope,
             policies: other_policies,
+            codecs: other_codecs,
             role: other_role,
         } = other;
 
         self_role == other_role
             && self_topic_scope == other_topic_scope
-            // Policy effects are compared through the resolved snapshot below.
+            // Inherited settings are compared through the resolved snapshot below.
             // Comparing their declaration placement here would redeploy for a
-            // scope-only move whose effective runtime policy is unchanged.
-            && self_pipeline.eq_ignoring_policies(other_pipeline)
+            // scope-only move whose effective runtime settings are unchanged.
+            && self_pipeline.eq_ignoring_inherited_settings(other_pipeline)
             && self_policies == other_policies
+            && self_codecs == other_codecs
     }
 
     /// Compares two resolved pipelines while ignoring resource-only policy
@@ -125,6 +131,7 @@ impl ResolvedPipelineConfig {
             pipeline: self_pipeline,
             topic_scope: self_topic_scope,
             policies: self_policies,
+            codecs: self_codecs,
             role: self_role,
         } = self;
         let Self {
@@ -133,13 +140,15 @@ impl ResolvedPipelineConfig {
             pipeline: other_pipeline,
             topic_scope: other_topic_scope,
             policies: other_policies,
+            codecs: other_codecs,
             role: other_role,
         } = other;
 
         self_role == other_role
             && self_topic_scope == other_topic_scope
-            && self_pipeline.eq_ignoring_policies(other_pipeline)
+            && self_pipeline.eq_ignoring_inherited_settings(other_pipeline)
             && self_policies.eq_ignoring_resources(other_policies)
+            && self_codecs == other_codecs
     }
 }
 
@@ -159,7 +168,7 @@ impl OtelDataflowSpec {
         })
     }
 
-    /// Resolves and materializes policies once for all pipelines.
+    /// Resolves inherited policies and codec settings once for all pipelines.
     ///
     /// The returned snapshot is deterministic: pipelines are ordered by
     /// `(group_id, pipeline_id)` lexicographically.
@@ -248,18 +257,33 @@ impl OtelDataflowSpec {
                 } else {
                     None
                 };
+                let codecs = CodecsConfig::resolve(
+                    [
+                        pipeline.codecs(),
+                        pipeline_group.codecs.as_ref(),
+                        self.codecs.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                );
                 ResolvedPipelineConfig {
                     topic_scope,
                     pipeline_group_id,
                     pipeline_id,
                     pipeline,
                     policies,
+                    codecs,
                     role: ResolvedPipelineRole::Regular,
                 }
             })
             .collect();
 
         let obs_pipeline = self.engine.observability.pipeline.clone();
+        let codecs = CodecsConfig::resolve(
+            [obs_pipeline.codecs.as_ref(), self.codecs.as_ref()]
+                .into_iter()
+                .flatten(),
+        );
         let obs_as_policies = obs_pipeline
             .policies
             .as_ref()
@@ -280,6 +304,7 @@ impl OtelDataflowSpec {
             pipeline: obs_pipeline.into_pipeline_config(),
             topic_scope: TopicScope::GLOBAL,
             policies,
+            codecs,
             role: ResolvedPipelineRole::ObservabilityInternal,
         });
 
@@ -320,6 +345,129 @@ mod tests {
     };
     use crate::topic::TopicScope;
 
+    fn codec_test_spec() -> serde_json::Value {
+        serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "groups": { "g": { "pipelines": { "p": {
+                "nodes": {
+                    "source": { "type": "urn:test:receiver:example", "config": {} },
+                    "sink": { "type": "urn:test:exporter:example", "config": {} }
+                },
+                "connections": [{ "from": "source", "to": "sink" }]
+            } } } }
+        })
+    }
+
+    fn codec_declaration(validation: &str) -> serde_json::Value {
+        serde_json::json!({ "bindings": { "otlp-bytes": { "decode": { "validation": validation } } } })
+    }
+
+    fn codec_validation(
+        config: &crate::codecs::ResolvedCodecsConfig,
+    ) -> crate::codecs::DecodeValidation {
+        config
+            .effective_bindings()
+            .unwrap()
+            .get("otlp-bytes")
+            .and_then(|binding| binding.decode.as_ref())
+            .map(|decode| decode.validation)
+            .unwrap_or_default()
+    }
+
+    fn resolve_codec_test_spec(
+        spec: &serde_json::Value,
+    ) -> (ResolvedPipelineConfig, ResolvedPipelineConfig) {
+        let config = crate::engine::OtelDataflowSpec::from_json(&spec.to_string()).unwrap();
+        let (_, mut regular, observability) = config.resolve().into_parts();
+        (regular.remove(0), observability.unwrap())
+    }
+
+    /// Scenario: Codec bindings are declared at top-level, group, pipeline, and observability scope.
+    /// Guarantees: The nearest explicit value wins; empty sections inherit, and observability bypasses groups.
+    #[test]
+    fn codec_config_inherits_across_pipeline_scopes() {
+        use crate::codecs::DecodeValidation::{BestEffort, Strict};
+        let mut spec = codec_test_spec();
+        let (pipeline, observability) = resolve_codec_test_spec(&spec);
+        assert_eq!(codec_validation(&pipeline.codecs), BestEffort);
+        assert_eq!(codec_validation(&observability.codecs), BestEffort);
+
+        spec["codecs"] = codec_declaration("strict");
+        spec["groups"]["g"]["pipelines"]["p"]["codecs"] = serde_json::json!({});
+        let (pipeline, observability) = resolve_codec_test_spec(&spec);
+        assert_eq!(codec_validation(&pipeline.codecs), Strict);
+        assert_eq!(codec_validation(&observability.codecs), Strict);
+
+        spec["groups"]["g"]["codecs"] = codec_declaration("best_effort");
+        let (pipeline, observability) = resolve_codec_test_spec(&spec);
+        assert_eq!(codec_validation(&pipeline.codecs), BestEffort);
+        assert_eq!(codec_validation(&observability.codecs), Strict);
+
+        spec["groups"]["g"]["pipelines"]["p"]["codecs"] = codec_declaration("strict");
+        spec["engine"] = serde_json::json!({ "observability": { "pipeline":
+            serde_json::to_value(crate::engine::EngineObservabilityPipelineConfig::default()).unwrap()
+        } });
+        spec["engine"]["observability"]["pipeline"]["codecs"] = codec_declaration("best_effort");
+        let (pipeline, observability) = resolve_codec_test_spec(&spec);
+        assert_eq!(codec_validation(&pipeline.codecs), Strict);
+        assert_eq!(codec_validation(&observability.codecs), BestEffort);
+    }
+
+    /// Scenario: Only codec validation changes, then the same effective value moves between scopes.
+    /// Guarantees: Effective changes require redeployment, but declaration-only changes do not restart a pipeline.
+    #[test]
+    fn codec_config_changes_redeploy_only_when_effective_settings_change() {
+        let mut spec = codec_test_spec();
+        let (current, _) = resolve_codec_test_spec(&spec);
+        spec["codecs"] = codec_declaration("strict");
+        let (strict, _) = resolve_codec_test_spec(&spec);
+        assert!(!current.runtime_matches(&strict));
+        assert!(!current.runtime_shape_matches_ignoring_resources(&strict));
+
+        _ = spec.as_object_mut().unwrap().remove("codecs");
+        spec["groups"]["g"]["pipelines"]["p"]["codecs"] = codec_declaration("strict");
+        let (moved, _) = resolve_codec_test_spec(&spec);
+        assert!(strict.runtime_matches(&moved));
+        assert!(strict.runtime_shape_matches_ignoring_resources(&moved));
+    }
+
+    /// Scenario: A user puts codec settings in a node or the former pdata policy namespace.
+    /// Guarantees: Unsupported locations fail configuration parsing instead of silently ignoring validation requests.
+    #[test]
+    fn codec_config_rejects_node_and_policy_locations() {
+        let mut spec = codec_test_spec();
+        spec["groups"]["g"]["pipelines"]["p"]["nodes"]["source"]["codecs"] =
+            codec_declaration("strict");
+        let error = crate::engine::OtelDataflowSpec::from_json(&spec.to_string()).unwrap_err();
+        assert!(error.to_string().contains("unknown field `codecs`"));
+
+        let mut spec = codec_test_spec();
+        spec["policies"] = serde_json::json!({"pdata": {"decode_validation": "strict"}});
+        let error = crate::engine::OtelDataflowSpec::from_json(&spec.to_string()).unwrap_err();
+        assert!(error.to_string().contains("unknown field `pdata`"));
+    }
+
+    /// Scenario: An operator uses the complete YAML example in the codec guide.
+    /// Guarantees: The documented configuration parses and its pipeline override leaves observability strict.
+    #[test]
+    fn codec_guide_example_matches_documented_settings() {
+        use crate::codecs::DecodeValidation::{BestEffort, Strict};
+        let guide = include_str!("../../../../docs/codecs.md");
+        let example = guide
+            .split("```yaml")
+            .map(str::trim_start)
+            .find(|part| part.starts_with("version:"))
+            .unwrap()
+            .split("```")
+            .next()
+            .unwrap();
+        let config = crate::engine::OtelDataflowSpec::from_yaml(example).unwrap();
+        let (_, regular, observability) = config.resolve().into_parts();
+        assert_eq!(regular.len(), 1);
+        assert_eq!(codec_validation(&regular[0].codecs), BestEffort);
+        assert_eq!(codec_validation(&observability.unwrap().codecs), Strict);
+    }
+
     #[test]
     fn runtime_shape_matches_ignoring_resources_ignores_resource_only_changes() {
         let current = ResolvedPipelineConfig {
@@ -355,6 +503,7 @@ connections:
                 },
                 ..ResolvedPolicies::default()
             },
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         };
         let candidate = ResolvedPipelineConfig {
@@ -390,6 +539,7 @@ connections:
                 },
                 ..ResolvedPolicies::default()
             },
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         };
 
@@ -426,6 +576,7 @@ connections:
             .expect("current pipeline should parse"),
             topic_scope: TopicScope::GLOBAL,
             policies: ResolvedPolicies::default(),
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         };
         let candidate = ResolvedPipelineConfig {
@@ -440,6 +591,7 @@ connections:
                 },
                 ..ResolvedPolicies::default()
             },
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         };
 

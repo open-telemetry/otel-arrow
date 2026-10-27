@@ -18,6 +18,7 @@ use std::hash::Hash;
 
 pub mod authorized_identity_policy;
 pub mod byte_units;
+pub mod codecs;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
 /// Context entry names.

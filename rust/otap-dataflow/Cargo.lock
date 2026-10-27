@@ -7713,6 +7713,7 @@ dependencies = [
  "libc",
  "libtest-mimic",
  "linkme",
+ "memchr",
  "nix 0.31.3",
  "object_store",
  "otel-arrow-contrib-data-engine-expressions",
@@ -8021,6 +8022,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
  "serde",
+ "serde_yaml",
  "thiserror 2.0.21",
 ]
 

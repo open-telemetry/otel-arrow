@@ -99,6 +99,7 @@ impl OtelDataflowSpec {
         let config = OtelDataflowSpec {
             version: ENGINE_CONFIG_VERSION_V1.to_string(),
             policies: Policies::default(),
+            codecs: None,
             topics: HashMap::new(),
             engine,
             groups,
