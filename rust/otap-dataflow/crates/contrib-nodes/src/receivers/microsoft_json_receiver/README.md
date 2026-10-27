@@ -27,10 +27,56 @@ a web page cannot be kept secret from users or scripts running in that page,
 so the receiver does not claim that API keys or other browser-provided values
 authenticate the sender.
 
-This phase registers the component and validates its receiver-level
-configuration, but intentionally returns a `NotImplemented` error during
-construction. It does not open a listener, read endpoint files, process
-requests, or emit telemetry.
+The component is registered and validates its receiver-level configuration,
+but intentionally returns a `NotImplemented` error during construction.
+Construction does not open a listener, read endpoint files, process requests,
+or emit telemetry.
+
+A standalone endpoint compiler and bounded JSON-to-log mapper are available.
+They are not invoked by receiver construction yet. Arrow construction and
+HTTP/runtime integration are not implemented.
+
+## Standalone mapping implementation
+
+The [endpoint compiler](field_mapping.rs) loads endpoint YAML files, resolves
+environment attributes once, compiles iKey filters, flattens nested rules and
+merges event overrides. Endpoint and external filter file references are
+confined to the pipeline configuration directory, including symlink resolution.
+Startup loading returns either the complete route set or an explicit error.
+
+The [event mapper](event_mapping.rs) produces a typed intermediate log, not an
+Arrow record batch. It implements validation/coercion, required defaults,
+event-name transforms, iKey verdicts and remapping, severity, timestamps, trace
+context, resource/log attributes, instrumentation scope, additional targets,
+unmapped-field policies and retained-source `filtered_item_size`.
+
+Mapping is transactional per event: a rejected event or exceeded safeguard
+returns an error, never a partially accepted log. Override `reject` remains a
+distinct request-payload rejection for the future runtime to propagate.
+Explicit drops remain distinguishable from errors.
+
+Internal safeguards bound each mapping operation:
+
+| Resource | Limit |
+| --- | --- |
+| Endpoint routes per receiver | 64 |
+| Each endpoint or external filter YAML file | 1 MiB |
+| JSON/rule nesting depth | 64 |
+| JSON value nodes per logical event | 65,536 |
+| Compiled rules, including expanded overrides | 4,096 |
+| Traversal work units per event or compilation | 16,777,216 |
+| Cumulative emitted data and final intermediate JSON size | 3 MiB |
+| Distinct resource plus log attributes per event | 8,192 |
+
+Work accounting includes inspected bytes, rule/path comparisons and emitted
+data. Fan-out and overwritten destinations consume the cumulative output
+budget too. The output budget is deliberately conservative: an event can be
+refused before its final representation reaches 3 MiB. The configured
+`max_event_size` additionally caps the compact source JSON representation.
+When omitted, it does not impose an input cap equal to the output budget;
+request-body limits and independent traversal limits still apply.
+Encoded request size, decompression limits and request-wide batch limits must
+be enforced by the future HTTP/runtime implementation.
 
 ## Ingestion modes
 
@@ -137,7 +183,7 @@ for concrete examples and trade-offs.
 ## Endpoint files
 
 Each `endpoints` entry references an endpoint YAML configuration. The complete
-configuration schema is included in this phase and covers:
+configuration schema covers:
 
 - endpoint request and event size limits
 - accepted HTTP methods, content types, and body formats
@@ -153,8 +199,9 @@ configuration schema is included in this phase and covers:
 The iKey filtering module includes rule compilation and evaluation, external
 YAML loading, origin restrictions, event allow-lists, and key remapping, with
 the full contract documented in [iKey filtering](Endpoint.md#ikey-filtering).
-Endpoint file contents are not opened by the phase-one runtime. Wiring endpoint
-loading and filter evaluation into request handling remains follow-up work.
+The standalone endpoint compiler can load these files, and the mapper evaluates
+the filter before emitting a log. Wiring both into receiver startup and request
+handling remains follow-up work.
 
 ## Telemetry
 
@@ -204,7 +251,7 @@ The receiver also defines these non-overlapping protocol diagnostics under
 This skeleton does not emit metric observations because construction
 intentionally returns `NotImplemented`. The configuration module composes the
 shared `ReceiverMetrics` helper under a `boundary` field with the diagnostic
-metric set. The runtime phase must register it and record the terminal outcome
+metric set. Runtime integration must register it and record the terminal outcome
 before handing accepted data downstream.
 
 ## Security model
@@ -226,7 +273,7 @@ implementation.
 
 ## Limits
 
-- Only a direct listener address is represented in the phase-one contract.
+- Only a direct listener address is supported by the configuration schema.
 - Browser telemetry is intentionally accepted without authentication.
 - Endpoint runtime behavior is not implemented.
 

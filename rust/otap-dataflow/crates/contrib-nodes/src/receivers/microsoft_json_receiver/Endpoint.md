@@ -35,7 +35,7 @@ destination URL used by the Azure Monitor exporter.
 | ------- | ------ | --------- | ------------- |
 | `name` | `string` | `""` | Human-readable label for logging and diagnostics. |
 | `allowed_methods` | `string[]` | `["POST"]` | HTTP methods accepted (uppercased at compile time). |
-| `accepted_content_types` | `string[]` | `[]` (accept any) | Allowed `Content-Type` values. Parameters (e.g. `;charset=utf-8`) are stripped before matching. |
+| `accepted_content_types` | `string[]` | `[]` (accept any) | Allowed `Content-Type` values. Parameters (e.g. `;charset=utf-8`) are stripped before matching. Malformed type/subtype tokens fail compilation. |
 | `body_format` | `enum` or `enum[]` | `line_separated_json` | Accepted POST body parsing strategies. |
 | `get_format` | `enum` | `event_fields` | GET query-string handling. |
 | `filtered_item_size` | `boolean` | `false` | Emits the compact JSON byte size of retained source fields as the `filtered_item_size` log attribute. |
@@ -159,10 +159,49 @@ Each entry specifies:
 Only the `resource` and `attribute` target kinds are supported for header
 mappings.
 
+Resource precedence is environment attributes, then header mappings in
+declaration order, then event mappings. Later writes replace earlier values
+within the same destination namespace; resource and log attributes are
+independent. Duplicate request header names after case folding are rejected by
+the standalone mapper rather than selecting a value implicitly.
+
 ## Field mapping rules
 
 Rules define how JSON body fields map to OTel log record fields.  They are
 processed top-down in declaration order.
+
+The first matching rule wins for each source field, including when exact and
+wildcard rules overlap. Source object keys are visited in lexicographic order,
+so colliding destinations have deterministic last-write-wins behavior.
+Metadata-only container rules allow traversal into their children.
+Rules without a target must declare children or validation, allowed-key,
+required-field or additional-target metadata; bare targetless leaves are
+configuration errors. Omitting a target does not implicitly drop values.
+Use an explicit `drop` target to suppress unmapped values.
+
+Each base or merged override mapping may have at most one `event_name` target,
+on an exact path. Wildcard and additional (`also`) event-name targets are
+configuration errors. When overrides or iKey filtering are configured, the
+emitted name must match the name selected for policy checks; disagreeing
+dotted/nested representations or name-changing defaults/overrides reject the
+event rather than bypassing admission policy.
+
+Literal dotted SDK keys (for example `tags["ai.user.id"]`) match the same
+configured paths as nested objects, including wildcard segments within dotted
+keys. Wildcards can consume one actual object key;
+`tags.*` captures the entire literal key, including dots. Attribute keys default
+to the full source path for exact rules and the suffix beginning at the first
+wildcard for wildcard rules. A configured prefix is prepended to that key.
+Required-field lookup prefers a literal dotted key over nested traversal.
+`allowed_keys` accepts an immediate literal child name or its first dotted
+segment. Listing `foo.bar` accepts that literal key but does not permit a
+separate nested `foo` object; listing `foo` permits both forms. The same check
+applies when a parent is represented only by flattened source keys.
+
+Object and array values mapped directly to attributes become compact JSON
+strings. Unmapped body values retain their original JSON types and nesting.
+A `drop` container suppresses unmapped descendants but still permits explicitly
+mapped child rules.
 
 ```yaml
 rules:
@@ -197,7 +236,7 @@ rules:
 | Field | Type | Default | Description |
 | ------- | ------ | --------- | ------------- |
 | `path` | `string` | *(required)* | Dot-separated JSON field path. Supports `*.*` wildcards. |
-| `target` | `MappingTarget` | `null` | Where to place the value. Omit for container-only nodes that just hold `children`. |
+| `target` | `MappingTarget` | `null` | Where to place the value. May be omitted for containers with children or metadata-only rules; does not implicitly drop values. |
 | `validate` | `Validation` | `null` | Optional type checking and length constraints. |
 | `allowed_keys` | `string[]` | `null` | Restrict accepted child keys; an unlisted key causes validation failure for the entire event. |
 | `required` | `Required` | `null` | Mark the field as required; missing fields trigger the configured action. |
@@ -213,8 +252,8 @@ The `target` object uses a `kind` discriminator:
 | `event_name` | `prefix`, `split_last`, `strip_segment` | Log record event name. |
 | `timestamp` | -- | `time_unix_nano` (parsed from RFC 3339). |
 | `observed_timestamp` | -- | RFC 3339 observed time. |
-| `trace_id` | -- | 32 hex character trace identifier. |
-| `span_id` | -- | 16 hex character span identifier. |
+| `trace_id` | -- | 32 hex character trace identifier. All-zero IDs are treated as absent; malformed IDs reject the event. |
+| `span_id` | -- | 16 hex character span identifier. All-zero IDs are treated as absent; malformed IDs reject the event. |
 | `trace_flags` | -- | Integer trace flags. |
 | `severity` | `map` | Maps scalar values to `severity_number` / `severity_text`; numeric and boolean values use their JSON string representation as lookup keys. |
 | `attribute` | `key`, `prefix` | Log record attribute. If `key` is omitted, the JSON field name (optionally prefixed by `prefix`) is used. |
@@ -235,6 +274,20 @@ validate:
   on_length_exceeded: truncate  # truncate (default) | reject
   on_validation_failure: skip   # skip (default) | reject
 ```
+
+  Integer and float validation accept numeric strings; float coercion refuses
+  non-finite values. `string_coerce` serializes non-string JSON compactly.
+  Truncation respects UTF-8 character boundaries. A length policy of `reject`
+  rejects the event regardless of the type-validation policy.
+  Invalid semantic destinations (timestamps, identifiers, flags or event names)
+  and inapplicable additional-target transforms explicitly reject the event.
+  They are not converted into successful records with missing OTel fields.
+
+  Missing required defaults are injected into the logical event and pass through
+  the ordinary mapper, including child rules and allowed-key constraints.
+  Synthetic defaults are not counted by `filtered_item_size`, which measures
+  retained source data. Required wildcard paths are rejected during compilation
+  because their missing-field semantics are ambiguous.
 
 ### Also targets
 
@@ -296,6 +349,11 @@ event_overrides:
 Exact matches take priority over glob patterns.  This allows a catch-all glob
 to block unknown events while specific exact overrides accept known ones:
 
+Overlapping globs use the longest matching prefix, independent of YAML map
+iteration order. The base rule's validated event-name transform selects the
+override before iKey remapping. Final event-name validation and `drop_events`
+use the name emitted by the selected mapping.
+
 ```yaml
 event_overrides:
   # Accept specific known events (with optional rule overrides).
@@ -330,11 +388,14 @@ Each endpoint can optionally filter events based on their instrumentation key
 (iKey).  The filter is checked before field mapping -- rejected events never
 reach the pipeline.
 
-Rule compilation, evaluation, and external-file loading are implemented in the
-iKey filter module. The receiver remains a skeleton: it does not load endpoint
-files or invoke the filter during request handling yet. HTTP responses, metrics,
-and applying remapped keys to emitted telemetry describe the integration
-contract for the receiver runtime, not behavior emitted by this phase.
+Rule compilation, evaluation, and bounded external-file loading are implemented
+in the iKey filter module. The standalone endpoint compiler and mapper invoke
+them. Remapped keys replace the source `iKey` during mapping and the `apikey`
+header value for header mappings, but are not rechecked by the filter. Embedded
+event-name key stripping compares against the original source key.
+The receiver remains a skeleton: it does not invoke this processing during
+startup or request handling yet. HTTP responses and emitted metrics remain
+future runtime behavior.
 
 ### Configuration
 
