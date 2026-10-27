@@ -284,7 +284,9 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let time_elapsed = time.elapsed();
                     let (context, mut payload) = pdata.into_parts();
                     let source_node = context.source_node();
-                    let transport_headers = context.transport_headers().cloned();
+                    let transport_headers = context
+                        .transport_headers()
+                        .map(|headers| headers.to_transport_headers());
                     let signal = payload.signal_type();
                     let msg = effect_handler
                         .encode_owned(&mut payload, &encoding_plan)

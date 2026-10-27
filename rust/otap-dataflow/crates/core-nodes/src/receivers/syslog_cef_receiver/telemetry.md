@@ -10,13 +10,16 @@ by the component and log events emitted via `otel_*` log macros.
 
 The shared metrics describe the complete receiver-local lifecycle of each
 classified external message. Component metrics retain protocol-specific
-diagnostics.
+diagnostics. Content parsing is deferred to the syslog codec; receiver success
+means the message was appended to the receiver's encoded batch. Sealing and
+admitting that batch as pdata happen later; a failure there does not rewrite the
+message-level receiver outcome.
 
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
 | `receiver.received.messages` | Counter | `{message}` | Classified external messages grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and node-local terminal `outcome`; batching and downstream handoff do not change it. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.received.payload.size` | Counter | `By` | Optional encoded payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and node-local terminal `outcome`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.processing.duration` | Histogram | `s` | Optional active admission, parsing, and record append time, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and excluding batch buffering and pipeline handoff. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.processing.duration` | Histogram | `s` | Optional active admission and encoded-frame append time, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and excluding batch buffering and pipeline handoff. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.rejections.items` | Counter | `{item}` | Rejected messages grouped by bounded `protocol` and `error.type`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.truncations.items` | Counter | `{item}` | Payloads that reached the fixed `MAX_MESSAGE_SIZE` receive limit. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.transport.errors` | Counter | `{error}` | Transport-level errors grouped by `protocol`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
@@ -32,9 +35,9 @@ diagnostics.
 | `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed successfully for an incoming connection. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timeout expired with connection tasks still active during shutdown. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.batch.seal_failed` | `warn` | Failed to seal an encoded batch or admit it as pdata; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tcp.read_error` | `warn` | A TCP read failed and the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tcp.framing_error` | `warn` | An invalid, incomplete, or oversized TCP frame caused the connection to close. Bounded numeric fields identify invalid prefix bytes, incomplete lengths, or size-policy mismatches without logging payload content. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Failed to build Arrow records from a parsed batch; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Maintenance
 

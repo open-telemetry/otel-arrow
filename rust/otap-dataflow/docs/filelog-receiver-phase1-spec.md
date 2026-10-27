@@ -647,6 +647,12 @@ truncate durable state.
 Discovery receives validated, precompiled include and exclude matchers. It does not
 recompile patterns per scan or per path.
 
+Absolute patterns are accepted without a base directory. Relative patterns
+require an explicit absolute lexical base supplied by the embedding caller.
+If that integration has no explicit base, it must reject relative patterns;
+it must not infer a base from the process working directory or checkpoint state
+root. This is a compilation input, not a new Filelog YAML setting.
+
 On Unix, `/` is the separator. Backslash escapes glob metacharacters and is removed
 when deriving a literal traversal prefix. On Windows, both platform path behavior and
 the glob compiler treat backslash as a separator rather than as a glob escape.

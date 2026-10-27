@@ -211,13 +211,13 @@ where
             }
             BenchOp::EncodeProto => {
                 let mut buf = ProtoBuffer::default();
-                let mut encoder = DirectLogRecordEncoder::new(&mut buf);
 
                 for _ in 0..self.iterations {
-                    encoder.clear();
-                    let size =
-                        encoder.encode_log_record(now, &LogRecord::new(event, LogContext::new()));
-                    let _ = std::hint::black_box(size);
+                    buf.clear();
+                    DirectLogRecordEncoder::new(&mut buf)
+                        .encode_log_record(now, &LogRecord::new(event, LogContext::new()))
+                        .expect("encoding is under max size");
+                    let _ = std::hint::black_box(buf.as_ref());
                 }
             }
             BenchOp::EncodeProtoWithScope => {
@@ -473,7 +473,8 @@ fn encode_with_growth_policy(content: &[u8], policy: HeapGrowthPolicy) -> bytes:
         {
             buf.ensure_capacity(MAXIMUM);
         }
-        buf.try_extend(chunk).expect("benchmark input is bounded");
+        buf.try_extend_slice(chunk)
+            .expect("benchmark input is bounded");
     }
 
     buf.into_bytes()
