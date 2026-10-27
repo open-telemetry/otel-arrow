@@ -16,7 +16,6 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
@@ -27,70 +26,41 @@ pub(super) const WINDOWS_PERF_COUNTERS_RECEIVER_URN: &str =
 
 const WORKER_SHUTDOWN_MAX_WAIT: Duration = Duration::from_secs(1);
 
-/// Warn-once state for the receiver's warnings.
+/// Open failure episodes of one configured counter; each warns once when it opens.
+#[derive(Debug, Default, Clone, Copy)]
+struct Episodes {
+    add: bool,
+    read: bool,
+    collect: bool,
+    recreate: bool,
+}
+
+/// Warn-once state for the receiver's warnings. Counter episodes are tracked per configured
+/// counter, since every counter has its own query.
 #[derive(Debug)]
 struct Diagnostics {
-    /// Lowercased paths in an add, read or collect failure episode; several mappings can share a
-    /// path.
-    add_failing: HashSet<String>,
-    read_failing: HashSet<String>,
-    collect_failing: HashSet<String>,
-    recreate_warned: Vec<bool>,
+    counters: Vec<Episodes>,
     overrunning: bool,
     dropping: bool,
+}
+
+/// Opens an episode; returns whether it was not already open, which is when to warn.
+fn begin(episode: &mut bool) -> bool {
+    !std::mem::replace(episode, true)
 }
 
 impl Diagnostics {
     fn new(counters: usize) -> Self {
         Self {
-            add_failing: HashSet::new(),
-            read_failing: HashSet::new(),
-            collect_failing: HashSet::new(),
-            recreate_warned: vec![false; counters],
+            counters: vec![Episodes::default(); counters],
             overrunning: false,
             dropping: false,
         }
     }
 
-    /// Returns whether to warn: once per path until an add succeeds.
-    fn add_failed(&mut self, path: &str) -> bool {
-        self.add_failing.insert(path.to_lowercase())
-    }
-
-    fn added(&mut self, path: &str) {
-        let _ = self.add_failing.remove(&path.to_lowercase());
-    }
-
-    /// Returns whether to warn: once per path until a read succeeds.
-    fn read_failed(&mut self, path: &str) -> bool {
-        self.read_failing.insert(path.to_lowercase())
-    }
-
-    fn read(&mut self, path: &str) {
-        let _ = self.read_failing.remove(&path.to_lowercase());
-    }
-
-    /// Returns whether to warn: once per path until its query collects again.
-    fn collect_failed(&mut self, path: &str) -> bool {
-        self.collect_failing.insert(path.to_lowercase())
-    }
-
-    fn collected(&mut self, path: &str) {
-        let _ = self.collect_failing.remove(&path.to_lowercase());
-    }
-
-    /// Returns whether to warn: once per counter until its replacement succeeds.
-    fn recreate_failed(&mut self, counter: usize) -> bool {
-        !std::mem::replace(&mut self.recreate_warned[counter], true)
-    }
-
-    fn recreated(&mut self, counter: usize) {
-        self.recreate_warned[counter] = false;
-    }
-
     /// Returns whether to warn: once until a scrape completes on time.
     fn overrun(&mut self) -> bool {
-        !std::mem::replace(&mut self.overrunning, true)
+        begin(&mut self.overrunning)
     }
 
     fn completed(&mut self, on_time: bool) {
@@ -101,7 +71,7 @@ impl Diagnostics {
 
     /// Returns whether to warn: once until a batch is accepted downstream.
     fn dropped(&mut self) -> bool {
-        !std::mem::replace(&mut self.dropping, true)
+        begin(&mut self.dropping)
     }
 
     fn sent(&mut self) {
@@ -178,65 +148,59 @@ impl Scrape for Worker {
 impl WindowsPerfCountersReceiver {
     /// Records a start or scrape report and emits any due warnings.
     fn apply(&mut self, report: &Report, duration: Option<Duration>) {
-        let path = |counter: usize| self.config.counters[counter].path.as_str();
-        for &(counter, status) in &report.add_failures {
-            if self.diagnostics.add_failed(path(counter)) {
-                otel_warn!(
-                    "windows_perf_counters_receiver.counter_add.fail",
-                    node = self.node.as_str(),
-                    path = path(counter),
-                    status = format!("{status:#010x}")
-                );
-            }
+        let node = self.node.as_str();
+        let config = |counter: usize| &self.config.counters[counter];
+        let episodes = &mut self.diagnostics.counters;
+        // Each failure kind warns when its counter's episode opens; the counter's success ends it.
+        macro_rules! episode {
+            ($failures:ident, $successes:ident, $episode:ident, $event:literal) => {
+                for &(counter, status) in &report.$failures {
+                    if begin(&mut episodes[counter].$episode) {
+                        otel_warn!(
+                            $event,
+                            node = node,
+                            counter_index = counter,
+                            metric = config(counter).name.as_ref(),
+                            path = config(counter).path.as_str(),
+                            status = %format_args!("{status:#010x}")
+                        );
+                    }
+                }
+                for &counter in &report.$successes {
+                    episodes[counter].$episode = false;
+                }
+            };
         }
-        for &counter in &report.added {
-            self.diagnostics.added(path(counter));
-        }
-        for &(counter, status) in &report.read_failures {
-            if self.diagnostics.read_failed(path(counter)) {
-                otel_warn!(
-                    "windows_perf_counters_receiver.counter_read.fail",
-                    node = self.node.as_str(),
-                    path = path(counter),
-                    status = format!("{status:#010x}")
-                );
-            }
-        }
-        for &counter in &report.read {
-            self.diagnostics.read(path(counter));
-        }
-        for &(counter, status) in &report.collect_failures {
-            if self.diagnostics.collect_failed(path(counter)) {
-                otel_warn!(
-                    "windows_perf_counters_receiver.collect.fail",
-                    node = self.node.as_str(),
-                    path = path(counter),
-                    status = format!("{status:#010x}")
-                );
-            }
-        }
-        for &counter in &report.collected {
-            self.diagnostics.collected(path(counter));
-        }
+        episode!(
+            add_failures,
+            added,
+            add,
+            "windows_perf_counters_receiver.counter_add.fail"
+        );
+        episode!(
+            read_failures,
+            read,
+            read,
+            "windows_perf_counters_receiver.counter_read.fail"
+        );
+        episode!(
+            collect_failures,
+            collected,
+            collect,
+            "windows_perf_counters_receiver.collect.fail"
+        );
+        episode!(
+            recreate_failures,
+            recreated,
+            recreate,
+            "windows_perf_counters_receiver.recreate_query.fail"
+        );
         // Both can count in one scrape: some queries collect while others fail.
         if !report.collect_failures.is_empty() {
             self.metrics.scrape_failures.inc();
         }
         if !report.collected.is_empty() {
             self.metrics.scrapes.inc();
-        }
-        for &(counter, status) in &report.recreate_failures {
-            if self.diagnostics.recreate_failed(counter) {
-                otel_warn!(
-                    "windows_perf_counters_receiver.recreate_query.fail",
-                    node = self.node.as_str(),
-                    path = self.config.counters[counter].path.as_str(),
-                    status = format!("{status:#010x}")
-                );
-            }
-        }
-        for &counter in &report.recreated {
-            self.diagnostics.recreated(counter);
         }
         if let Some(duration) = duration {
             self.metrics.scrape_duration.record(duration.as_secs_f64());

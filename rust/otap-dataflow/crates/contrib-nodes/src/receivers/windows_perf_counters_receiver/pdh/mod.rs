@@ -67,7 +67,7 @@ pub(super) struct Report {
     pub(super) recreated: Vec<usize>,
     /// Counter indexes whose add failed, with the status.
     pub(super) add_failures: Vec<(usize, u32)>,
-    /// Counter indexes added in this scrape.
+    /// Counter indexes added in this report: at startup, or by a retry at the start of a scrape.
     pub(super) added: Vec<usize>,
     /// Counter indexes whose array read failed with a non-ignorable status.
     pub(super) read_failures: Vec<(usize, u32)>,

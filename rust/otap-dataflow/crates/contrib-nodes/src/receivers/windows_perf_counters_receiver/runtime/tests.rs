@@ -1,36 +1,68 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::super::test_utils::spawn_children;
 use super::*;
 
-/// Scenario: Two mappings share a failing path, spelled with different case; adds fail, the path
-/// is added, then fails again; another path fails independently.
-/// Guarantees: Each path warns once per failure episode however many mappings use it, and a
-/// success re-arms only that path.
+/// Scenario: For each counter failure kind (add, read, collect, recreate), counter 0 fails in three
+/// reports while counter 1, which maps the same path, succeeds; then counter 0 succeeds while
+/// counter 1 fails.
+/// Guarantees: Each failure opens an episode for its configured counter, which warns only when it
+/// opens; another counter's success, even on the same path, does not end it; the counter's own
+/// success does; and one counter's open episode does not suppress another's warning. Every collect
+/// report counts a scrape and a scrape failure, also while the episode suppresses the warning.
 #[test]
-fn add_failure_warns_once_per_path_until_added() {
-    let mut diagnostics = Diagnostics::new(0);
-    assert!(diagnostics.add_failed(r"\Memory\No Such Counter"));
-    assert!(!diagnostics.add_failed(r"\memory\no such counter"));
-    assert!(diagnostics.add_failed(r"\System\Missing"));
-    diagnostics.added(r"\Memory\No Such Counter");
-    assert!(diagnostics.add_failed(r"\Memory\No Such Counter"));
-    assert!(!diagnostics.add_failed(r"\System\Missing"));
-}
-
-/// Scenario: A path's collections fail repeatedly, it collects, then fails again; another path
-/// fails independently.
-/// Guarantees: One collect warning per path per failure episode; a collection re-arms only that
-/// path.
-#[test]
-fn collect_failure_warns_once_per_path_episode() {
-    let mut diagnostics = Diagnostics::new(0);
-    assert!(diagnostics.collect_failed(r"\System\Threads"));
-    assert!(!diagnostics.collect_failed(r"\system\threads"));
-    assert!(diagnostics.collect_failed(r"\System\Processes"));
-    diagnostics.collected(r"\System\Threads");
-    assert!(diagnostics.collect_failed(r"\System\Threads"));
-    assert!(!diagnostics.collect_failed(r"\System\Processes"));
+fn counter_failures_warn_once_per_counter_episode() {
+    type Record = fn(&mut Report, usize);
+    let kinds: [(Record, Record, fn(&Episodes) -> bool, u64); 4] = [
+        (
+            |report, counter| report.add_failures.push((counter, 1)),
+            |report, counter| report.added.push(counter),
+            |episodes| episodes.add,
+            0,
+        ),
+        (
+            |report, counter| report.read_failures.push((counter, 1)),
+            |report, counter| report.read.push(counter),
+            |episodes| episodes.read,
+            0,
+        ),
+        (
+            |report, counter| report.collect_failures.push((counter, 1)),
+            |report, counter| report.collected.push(counter),
+            |episodes| episodes.collect,
+            4,
+        ),
+        (
+            |report, counter| report.recreate_failures.push((counter, 1)),
+            |report, counter| report.recreated.push(counter),
+            |episodes| episodes.recreate,
+            0,
+        ),
+    ];
+    for (fail, succeed, open, scrapes) in kinds {
+        let mut h = harness();
+        let shared = h.receiver.config.counters[1].path.clone();
+        h.receiver.config.counters[0].path = shared;
+        let report = |failing: usize, succeeding: usize| {
+            let mut report = Report::default();
+            fail(&mut report, failing);
+            succeed(&mut report, succeeding);
+            report
+        };
+        for _ in 0..3 {
+            h.receiver.apply(&report(0, 1), None);
+            let counters = &h.receiver.diagnostics.counters;
+            assert!(open(&counters[0]) && !open(&counters[1]));
+        }
+        h.receiver.apply(&report(1, 0), None);
+        let counters = &h.receiver.diagnostics.counters;
+        assert!(!open(&counters[0]), "own success ends the episode");
+        assert!(open(&counters[1]), "another counter opens its own episode");
+        let metrics = &h.receiver.metrics;
+        assert_eq!(metrics.scrapes.get(), scrapes);
+        assert_eq!(metrics.scrape_failures.get(), scrapes);
+    }
 }
 
 /// Scenario: The overrun latch is triggered twice, released by a late completion, then by an
@@ -46,34 +78,6 @@ fn overrun_warns_once_until_on_time_completion() {
     assert!(!diagnostics.overrun());
     diagnostics.completed(true);
     assert!(diagnostics.overrun());
-}
-
-/// Scenario: One counter's replacement queries fail repeatedly, succeed, then fail again; another
-/// counter fails independently.
-/// Guarantees: One recreate warning per counter per failure episode.
-#[test]
-fn recreate_failure_warns_once_per_counter_episode() {
-    let mut diagnostics = Diagnostics::new(2);
-    assert!(diagnostics.recreate_failed(0));
-    assert!(!diagnostics.recreate_failed(0));
-    assert!(diagnostics.recreate_failed(1));
-    diagnostics.recreated(0);
-    assert!(diagnostics.recreate_failed(0));
-    assert!(!diagnostics.recreate_failed(1));
-}
-
-/// Scenario: A path's array read fails repeatedly through two mappings, succeeds, then fails again;
-/// another path fails independently.
-/// Guarantees: One read warning per path per failure episode.
-#[test]
-fn read_failure_warns_once_per_path_episode() {
-    let mut diagnostics = Diagnostics::new(0);
-    assert!(diagnostics.read_failed(r"\System\Threads"));
-    assert!(!diagnostics.read_failed(r"\System\Threads"));
-    assert!(diagnostics.read_failed(r"\System\Processes"));
-    diagnostics.read(r"\System\Threads");
-    assert!(diagnostics.read_failed(r"\System\Threads"));
-    assert!(!diagnostics.read_failed(r"\System\Processes"));
 }
 
 /// Scenario: Downstream rejects batches repeatedly, accepts one, then rejects again.
@@ -248,10 +252,10 @@ async fn due_tick_is_handled_before_report() {
     assert!(h.receiver.diagnostics.overrunning);
 }
 
-/// Scenario: A scrape reports counter 1's collection failure while counter 0 collects and
-/// publishes a point, as the collector does when only one per-counter query fails.
-/// Guarantees: The scrape counts one scrapes and one scrape.failures, and the healthy point is
-/// still published.
+/// Scenario: A scrape reports collection failures for counters 1 and 2 while counter 0 collects and
+/// publishes a point.
+/// Guarantees: The scrape counts one scrapes and one scrape.failures, however many counters fail,
+/// and the healthy point is still published.
 #[tokio::test(start_paused = true)]
 async fn failed_scrape_still_publishes_healthy_points() {
     let mut h = harness();
@@ -274,7 +278,7 @@ async fn failed_scrape_still_publishes_healthy_points() {
                     time_unix_nano: 2,
                     start_time_unix_nano: 1,
                 }],
-                collect_failures: vec![(1, 0xC000_0BB9)],
+                collect_failures: vec![(1, 0xC000_0BB9), (2, 0xC000_0BB9)],
                 collected: vec![0],
                 ..Report::default()
             })
@@ -286,65 +290,117 @@ async fn failed_scrape_still_publishes_healthy_points() {
     assert!(h.output.try_recv().is_ok(), "healthy point published");
 }
 
-/// Scenario: Counter A's query fails on every scrape; three scrapes later counter B's also fails,
-/// while counter C keeps collecting.
-/// Guarantees: A's persistent failure does not suppress B's warning (B opens its own episode);
-/// scrapes and scrape.failures each count once per scrape, so scrapes keeps increasing while a
-/// healthy counter collects.
-#[test]
-fn persistent_failure_does_not_hide_another_counter() {
+/// Runs one scheduled scrape under paused time for `elapsed`, then completes it if `complete`.
+async fn scrape_once(h: &mut Harness, elapsed: Duration, complete: bool) {
+    let scrapes = ScriptedScrapes::default();
+    let (start, started) = oneshot::channel();
+    start.send(Report::default()).unwrap();
+    let collect = h
+        .receiver
+        .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+    tokio::pin!(collect);
+    assert!(futures::poll!(&mut collect).is_pending());
+    tokio::time::advance(elapsed).await;
+    assert!(futures::poll!(&mut collect).is_pending());
+    if complete {
+        let report = scrapes.0.borrow_mut()[0].1.take().unwrap();
+        report.send(Report::default()).unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+    }
+    assert_eq!(scrapes.0.borrow().len(), 1, "no tick within the interval");
+}
+
+/// Scenario: Under paused time with a 3 s timeout and a 10 s interval, a scrape is still running
+/// 4 s after it started, another completes late at 4 s, one completes on time, and one is again
+/// still running at 4 s.
+/// Guarantees: Timeout expiry opens an overrun episode without counting a skipped tick; a late
+/// completion does not end it; an on-time completion re-arms it, so the next expiry opens a new
+/// episode.
+#[tokio::test(start_paused = true)]
+async fn timeout_expiry_opens_overrun_until_on_time_completion() {
     let mut h = harness();
-    let b = h.receiver.config.counters[1].path.to_lowercase();
-    let scrape = |failing: &[usize], collected: &[usize]| Report {
-        collect_failures: failing
-            .iter()
-            .map(|&counter| (counter, 0xC000_0BB9))
-            .collect(),
-        collected: collected.to_vec(),
-        ..Report::default()
-    };
-    for _ in 0..3 {
-        h.receiver.apply(&scrape(&[0], &[1, 2]), None);
-    }
-    assert!(!h.receiver.diagnostics.collect_failing.contains(&b));
-    h.receiver.apply(&scrape(&[0, 1], &[2]), None);
+    h.receiver.config.timeout = Some(Duration::from_secs(3));
+    scrape_once(&mut h, Duration::from_secs(4), false).await;
+    assert!(h.receiver.diagnostics.overrunning, "expiry opens episode");
+    scrape_once(&mut h, Duration::from_secs(4), true).await;
     assert!(
-        h.receiver.diagnostics.collect_failing.contains(&b),
-        "B warned"
+        h.receiver.diagnostics.overrunning,
+        "late completion keeps it"
     );
-    assert_eq!(h.receiver.metrics.scrapes.get(), 4);
-    assert_eq!(h.receiver.metrics.scrape_failures.get(), 4);
-}
-/// Owned child processes sharing one executable name, killed on drop.
-struct Children(Vec<std::process::Child>, std::path::PathBuf);
-
-impl Drop for Children {
-    fn drop(&mut self) {
-        for child in &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let _ = std::fs::remove_dir_all(&self.1);
-    }
+    scrape_once(&mut h, Duration::from_secs(1), true).await;
+    assert!(!h.receiver.diagnostics.overrunning, "on time re-arms");
+    scrape_once(&mut h, Duration::from_secs(4), false).await;
+    assert!(
+        h.receiver.diagnostics.overrunning,
+        "expiry opens new episode"
+    );
+    assert_eq!(h.receiver.metrics.scrape_overruns.get(), 0);
 }
 
-/// Starts two long-running copies of `ping.exe` named `name.exe`.
-fn spawn_children(name: &str) -> Children {
-    let dir = std::env::temp_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let exe = dir.join(format!("{name}.exe"));
-    let _ = std::fs::copy(r"C:\Windows\System32\PING.EXE", &exe).unwrap();
-    let mut children = Children(Vec::new(), dir);
-    for _ in 0..2 {
-        children.0.push(
-            std::process::Command::new(&exe)
-                .args(["-n", "3600", "127.0.0.1"])
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .unwrap(),
-        );
+/// Scenario: The start report carries a query that could not be opened or primed.
+/// Guarantees: Startup counts one scrape.failures and no scrapes.
+#[tokio::test(start_paused = true)]
+async fn startup_failure_counts_scrape_failure() {
+    let mut h = harness();
+    let (start, started) = oneshot::channel();
+    start
+        .send(Report {
+            collect_failures: vec![(0, 0xC000_0BB9)],
+            ..Report::default()
+        })
+        .unwrap();
+    let scrapes = ScriptedScrapes::default();
+    {
+        let collect = h
+            .receiver
+            .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+        tokio::pin!(collect);
+        assert!(futures::poll!(&mut collect).is_pending());
     }
-    children
+    assert_eq!(h.receiver.metrics.scrape_failures.get(), 1);
+    assert_eq!(h.receiver.metrics.scrapes.get(), 0);
+}
+
+/// Scenario: Batches are sent until the downstream channel is full, one is drained, then the
+/// channel is closed.
+/// Guarantees: Sends to a full or closed channel count batches.dropped and do not fail the
+/// receiver; a send after draining is accepted, not counted, and ends the dropped episode.
+#[test]
+fn full_or_closed_downstream_counts_dropped_batches() {
+    let mut h = harness();
+    let point = super::super::pdh::Point {
+        counter: 0,
+        instance: None,
+        value: 1.0,
+        time_unix_nano: 2,
+        start_time_unix_nano: 1,
+    };
+    let batch = |counters: &[super::super::config::CounterConfig]| {
+        let records = project_points(counters, std::slice::from_ref(&point))
+            .unwrap()
+            .unwrap();
+        OtapPdata::new(Context::default(), records.into())
+    };
+    for _ in 0..4 {
+        let data = batch(&h.receiver.config.counters);
+        h.receiver.send(&h.effect_handler, data).unwrap();
+    }
+    assert_eq!(h.receiver.metrics.batches_dropped.get(), 0);
+    let data = batch(&h.receiver.config.counters);
+    h.receiver.send(&h.effect_handler, data).unwrap();
+    assert_eq!(h.receiver.metrics.batches_dropped.get(), 1);
+    assert!(h.receiver.diagnostics.dropping);
+
+    assert!(h.output.try_recv().is_ok());
+    let data = batch(&h.receiver.config.counters);
+    h.receiver.send(&h.effect_handler, data).unwrap();
+    assert_eq!(h.receiver.metrics.batches_dropped.get(), 1);
+    assert!(!h.receiver.diagnostics.dropping);
+
+    drop(h.output);
+    let data = batch(&h.receiver.config.counters);
+    h.receiver.send(&h.effect_handler, data).unwrap();
+    assert_eq!(h.receiver.metrics.batches_dropped.get(), 2);
 }
 
 /// Decoded string attributes of one data point.

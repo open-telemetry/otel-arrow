@@ -13,7 +13,8 @@ pub(super) struct WindowsPerfCountersMetrics {
     /// Scrapes in which at least one counter's query collected.
     #[metric(unit = "{scrape}")]
     pub scrapes: Counter<u64>,
-    /// Scrapes in which at least one counter's query failed to open or collect.
+    /// Scrapes in which at least one counter's query failed to open or collect, plus startup if a
+    /// query failed to open or prime.
     #[metric(unit = "{scrape}")]
     pub scrape_failures: Counter<u64>,
     /// Ticks skipped because the previous scrape was still running.
