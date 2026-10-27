@@ -19,21 +19,21 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers::{TransportHeaders, TransportHeadersData};
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
 use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
-use otel_arrow_dfe_engine::context_declaration::{
-    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
-    ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
-    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
-};
 use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, NodeControlMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
+use otel_arrow_dfe_engine::pdata_context::{
+    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
+    ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
+    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
+};
 use otel_arrow_dfe_engine::processor::{
     FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
 };
@@ -2069,11 +2069,11 @@ mod test {
     };
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
         ContextScope,
     };
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,

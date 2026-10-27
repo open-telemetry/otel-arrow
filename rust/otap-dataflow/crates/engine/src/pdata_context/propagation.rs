@@ -3,13 +3,13 @@
 
 //! Header propagation bindings compiled from configuration and visible context declarations.
 
-use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
-use otel_arrow_dfe_config::context_policy::{ContextEntryDeclaration, ContextEntryPart};
-use otel_arrow_dfe_config::transport_headers::TransportHeaderSource;
-use otel_arrow_dfe_config::transport_headers_policy::{
+use otel_arrow_dfe_config::context::policy::{ContextEntryDeclaration, ContextEntryPart};
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaderSource;
+use otel_arrow_dfe_config::context::transport_policy::{
     HeaderPropagationPolicy, NameStrategy, PropagatedHeader, PropagationAction, PropagationDefault,
     PropagationOverride, PropagationSelectorType,
 };
+use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
@@ -352,10 +352,10 @@ impl CompiledHeaderPropagationPolicy {
                             header_name,
                             value_kind: match value.kind() {
                                 ContextValueKind::Text => {
-                                    otel_arrow_dfe_config::transport_headers::ValueKind::Text
+                                    otel_arrow_dfe_config::context::transport_headers::ValueKind::Text
                                 }
                                 ContextValueKind::Binary => {
-                                    otel_arrow_dfe_config::transport_headers::ValueKind::Binary
+                                    otel_arrow_dfe_config::context::transport_headers::ValueKind::Binary
                                 }
                             },
                             value: value.bytes(),
@@ -449,17 +449,17 @@ fn register_named_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context_declaration::{
+    use crate::pdata_context::{
         ContextDomain, ContextFieldLayout, ContextValueCardinality, ContextValueSource,
         MaterializedContextValue, MaterializedContextValues,
     };
-    use otel_arrow_dfe_config::transport_headers::{
+    use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeaderRef, TransportHeaders, TransportHeadersIter, ValueKind,
     };
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, PropagationMatch, PropagationSelector,
     };
-    use otel_arrow_dfe_config::{context_policy, transport_headers};
+    use otel_arrow_dfe_config::{context::policy, context::transport_headers};
     use std::cell::Cell;
     use uuid::Uuid;
 
@@ -817,7 +817,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   product_user:
@@ -837,7 +837,7 @@ entries:
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             policy,
             &[ContextEntryDeclaration {
-                scope: context_policy::ContextScope::Engine,
+                scope: policy::ContextScope::Engine,
                 name,
                 definition,
             }],
@@ -940,7 +940,7 @@ overrides:
     }
 
     fn conditional_product_user_declaration() -> ContextEntryDeclaration {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   product_user:
@@ -960,7 +960,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         }
@@ -989,7 +989,7 @@ default:
     /// Guarantees: the unrelated constant does not block compilation or header propagation.
     #[test]
     fn propagates_header_with_constant_sibling() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   route:
@@ -1004,7 +1004,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1041,7 +1041,7 @@ default:
     /// Guarantees: `preserve` falls back to the primitive source name instead of the member alias.
     #[test]
     fn qualified_preserve_falls_back_to_primitive_source_name() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant:
@@ -1053,7 +1053,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1089,7 +1089,7 @@ default:
     /// Guarantees: capture retains the wire name and qualified export emits it unchanged.
     #[test]
     fn qualified_preserve_retains_original_name_from_capture_to_export() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant:
@@ -1101,7 +1101,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1166,7 +1166,7 @@ default:
             ("x-workspace", "X-Workspace"),
             ("X-Workspace", "x-workspace"),
         ] {
-            let context: context_policy::ContextPolicy = serde_yaml::from_str(&format!(
+            let context: policy::ContextPolicy = serde_yaml::from_str(&format!(
                 r#"
 entries:
   tenant:
@@ -1178,7 +1178,7 @@ entries:
             .expect("valid context policy");
             let (name, definition) = context.entries.into_iter().next().expect("declaration");
             let declaration = ContextEntryDeclaration {
-                scope: context_policy::ContextScope::Engine,
+                scope: policy::ContextScope::Engine,
                 name,
                 definition,
             };
@@ -1241,7 +1241,7 @@ default:
     /// Guarantees: unselected randomness does not block compilation or header propagation.
     #[test]
     fn propagates_header_with_randomness_sibling() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   idempotency:
@@ -1256,7 +1256,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1292,7 +1292,7 @@ default:
     /// Guarantees: the configured value propagates using the member name as its wire name.
     #[test]
     fn composite_transport_header_propagation_emits_constant_member() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   route:
@@ -1304,7 +1304,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1335,7 +1335,7 @@ default:
     /// Guarantees: materialization does not bypass the configured propagation action.
     #[test]
     fn composite_transport_header_propagation_drops_constant_member() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   route:
@@ -1347,7 +1347,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1378,7 +1378,7 @@ default:
     /// Guarantees: one UUID-v7 value materializes and propagates under the member name.
     #[test]
     fn composite_transport_header_propagation_emits_randomness_member() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   idempotency:
@@ -1390,7 +1390,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1424,7 +1424,7 @@ default:
     /// while selected constant and randomness members follow the default propagation action.
     #[test]
     fn generated_members_do_not_match_primitive_overrides() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   delivery:
@@ -1439,7 +1439,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1477,7 +1477,7 @@ overrides:
     /// qualified representation, while selected constant and UUID members share the result.
     #[test]
     fn mixed_propagation_preserves_primitive_override_precedence() {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   delivery:
@@ -1495,7 +1495,7 @@ entries:
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let declaration = ContextEntryDeclaration {
-            scope: context_policy::ContextScope::Engine,
+            scope: policy::ContextScope::Engine,
             name,
             definition,
         };
@@ -1609,7 +1609,7 @@ default:
     }
 
     fn composite_declarations_for_duplicate_source() -> Vec<ContextEntryDeclaration> {
-        let context: context_policy::ContextPolicy = serde_yaml::from_str(
+        let context: policy::ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant_a:
@@ -1634,7 +1634,7 @@ entries:
             .entries
             .into_iter()
             .map(|(name, definition)| ContextEntryDeclaration {
-                scope: context_policy::ContextScope::Engine,
+                scope: policy::ContextScope::Engine,
                 name,
                 definition,
             })

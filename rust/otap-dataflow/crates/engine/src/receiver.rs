@@ -12,7 +12,6 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metrics};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
-use crate::context_declaration::ContextMaterializationPlan;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
 };
@@ -23,6 +22,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataSender};
+use crate::pdata_context::ContextMaterializationPlan;
 use crate::readiness::{ReadinessProbe, ReadinessSignaller};
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -31,9 +31,9 @@ use crate::terminal_state::TerminalState;
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -793,10 +793,10 @@ mod tests {
     use crate::PipelineFactory;
     use crate::capability::registry::Capabilities;
     use crate::context::ControllerContext;
-    use crate::context_declaration::ContextMaterializationPlan;
     use crate::exporter::ExporterWrapper;
     use crate::local::receiver as local;
     use crate::node::NodeId;
+    use crate::pdata_context::ContextMaterializationPlan;
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
     use crate::terminal_state::TerminalState;
@@ -806,7 +806,7 @@ mod tests {
     use crate::{ExporterFactory, ReceiverFactory};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
     };
     use otel_arrow_dfe_config::engine::{
@@ -1344,7 +1344,7 @@ connections:
 
     // -- with_capture_policy tests --------------------------------------------
 
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+    use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 
     #[test]
     fn test_with_capture_policy_none_by_default() {
