@@ -85,10 +85,9 @@ queries:
           with_rate AS wr
           ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         GROUP BY component_name, metric_name
-  - name: Component Metric Rates By Core ID
+  - name: Scraped send / receive series
     sql: |
-      CREATE TABLE send_receive_rates_by_core AS WITH
-        metrics_filtered AS (
+      CREATE VIEW scraped_send_receive AS
             SELECT
               * REPLACE (
               CASE
@@ -125,7 +124,13 @@ queries:
                 SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
                 FROM metadata_row
                 LIMIT 1
-              )
+              );
+
+  - name: Component Metric Rates By Core ID
+    sql: |
+      CREATE TABLE send_receive_rates_by_core AS WITH
+        metrics_filtered AS (
+            SELECT * FROM scraped_send_receive
         ),
 
         -- Add lag for previous value and time
@@ -250,21 +255,50 @@ queries:
         ORDER BY
           m.component_name DESC;
 
+  - name: Whole-run scraped totals
+    sql: |
+      -- Scraped counters are cumulative since process start, so the largest
+      -- value seen per series is its whole-run total. The final scrapes happen
+      -- after the components drain and shut down; they only see the final
+      -- counts while engine.telemetry.metric_unregister_grace_period keeps the
+      -- stopped pipelines' metric sets registered.
+      CREATE TABLE scraped_totals AS
+      WITH per_series AS (
+        SELECT
+          metric_name,
+          component_name,
+          core_id,
+          MAX(value) AS total,
+          MAX(timestamp) AS last_scrape
+        FROM scraped_send_receive
+        GROUP BY metric_name, component_name, core_id
+      )
+      SELECT
+        metric_name,
+        component_name,
+        SUM(total) AS total,
+        MAX(last_scrape) AS last_scrape
+      FROM per_series
+      GROUP BY metric_name, component_name
+      ORDER BY metric_name, component_name;
+
   - name: Calculate loss
     sql: |
+      -- Loss uses whole-run totals (not the observation window) so the
+      -- post-drain final counts are included and sent/received cover the same
+      -- set of batches.
       CREATE TABLE signal_loss AS
+      WITH t AS (
+        SELECT
+          COALESCE((SELECT SUM(total) FROM scraped_totals WHERE metric_name = 'metrics_produced'), 0) AS produced,
+          COALESCE((SELECT SUM(total) FROM scraped_totals WHERE metric_name = 'metrics'), 0) AS received
+      )
       SELECT
-          (COALESCE(metrics_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(metrics_received.total, 0)) AS signals_lost,
-          CASE
-              WHEN (COALESCE(metrics_produced.total, 0) + COALESCE(failed.total, 0)) > 0 THEN
-                  (COALESCE(metrics_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(metrics_received.total, 0)) * 1.0 /
-                  (COALESCE(metrics_produced.total, 0) + COALESCE(failed.total, 0))
-              ELSE NULL
-          END AS signals_lost_pct
-      FROM
-          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'metrics_produced') AS metrics_produced,
-          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'failed') AS failed,
-          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'metrics') AS metrics_received;
+        produced AS signals_produced,
+        received AS signals_received,
+        produced - received AS signals_lost,
+        CASE WHEN produced > 0 THEN (produced - received) * 1.0 / produced ELSE NULL END AS signals_lost_pct
+      FROM t;
 
   - name: Calculate throughput rates
     sql: |
@@ -370,8 +404,10 @@ result_tables:
     description: Cumulative increase and average rate of various send / receive metrics
   - name: component_resource_metrics
     description: CPU and Memory metrics for the components in the Test Suite during the test.
+  - name: scraped_totals
+    description: Whole-run totals of scraped send/receive counters (final cumulative value, including post-drain counts).
   - name: signal_loss
-    description: Lost metrics (failed or sent but not received) total and as a percentage
+    description: Lost metrics computed from whole-run scraped totals (produced - received).
   - name: signal_throughput_rates
     description: Metric throughput rates (metrics/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
