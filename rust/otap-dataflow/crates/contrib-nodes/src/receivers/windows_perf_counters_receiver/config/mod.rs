@@ -3,7 +3,7 @@
 
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,9 +30,11 @@ pub(super) struct Config {
 pub(super) struct CounterConfig {
     /// English PDH path, optionally with a wildcard instance.
     pub(super) path: String,
-    /// The aggregate instance name to clear or drop, or `None` when `*` opted it in.
+    /// The aggregate instance name, which is unnamed when it is the only point and otherwise
+    /// dropped, or `None` when `*` opted it in.
     pub(super) aggregate: Option<Arc<str>>,
-    /// Whether this path gets its own query, replaced after every scrape.
+    /// Whether a replacement query is attempted after each scrape in which this counter's query
+    /// collected; a failed replacement keeps the old query.
     pub(super) recreate_query: bool,
     /// OTel metric name; counters may share one definition.
     pub(super) name: Arc<str>,
@@ -172,7 +174,7 @@ fn invalid(error: impl Into<String>) -> Error {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Metric {
     name: Arc<str>,
     unit: Arc<str>,
@@ -231,19 +233,19 @@ impl Config {
             .collect::<Result<BTreeMap<_, _>, Error>>()?;
 
         let mut counters = Vec::new();
-        let mut seen = HashSet::new();
+        let mut emitted = HashMap::new();
         for (object_index, object) in user.perfcounters.into_iter().enumerate() {
             let object_field = format!("perfcounters[{object_index}]");
-            if object.object.is_empty() {
-                return Err(invalid(format!("{object_field}.object must not be empty")));
-            }
             if object.counters.is_empty() {
                 return Err(invalid(format!(
                     "{object_field}.counters must not be empty"
                 )));
             }
-            reject_wildcard(&format!("{object_field}.object"), &object.object)?;
-            reject_backslash(&format!("{object_field}.object"), &object.object)?;
+            check_component(
+                &format!("{object_field}.object"),
+                &object.object,
+                Component::Object,
+            )?;
             let aggregate: Arc<str> = match object.aggregation_name.as_str() {
                 "" => Arc::from(DEFAULT_AGGREGATION_NAME),
                 name => Arc::from(name),
@@ -257,13 +259,12 @@ impl Config {
                 Some(OneOrMany::Many(names)) => names,
             };
             // Validate every configured name before `*` replaces the others.
-            if names.iter().any(String::is_empty) {
-                return Err(invalid(format!(
-                    "{object_field}.instances must not contain an empty name"
-                )));
-            }
-            for name in &names {
-                reject_backslash(&format!("{object_field}.instances"), name)?;
+            for (index, name) in names.iter().enumerate() {
+                check_component(
+                    &format!("{object_field}.instances[{index}]"),
+                    name,
+                    Component::Instance,
+                )?;
             }
             let (instances, aggregate) = instances(names, aggregate);
             for (counter_index, mapping) in object.counters.into_iter().enumerate() {
@@ -282,16 +283,15 @@ impl Config {
                         description: Arc::from(""),
                         kind: MetricKind::Gauge,
                     });
-                    // Identical entries would only emit duplicate points.
-                    if !seen.insert((
-                        path.to_lowercase(),
-                        Arc::clone(&metric.name),
-                        Arc::clone(&counter.attributes),
-                    )) {
-                        return Err(invalid(format!(
-                            "{field}: duplicate counter path {path} with the same metric and attributes"
-                        )));
-                    }
+                    check_points(
+                        &mut emitted,
+                        &field,
+                        &path,
+                        &metric,
+                        &counter.attributes,
+                        instance.as_deref(),
+                        aggregate.as_deref(),
+                    )?;
                     counters.push(CounterConfig {
                         path,
                         aggregate: aggregate.clone(),
@@ -329,6 +329,176 @@ fn instances(names: Vec<String>, aggregate: Arc<str>) -> (Vec<Option<String>>, O
     (names.into_iter().map(Some).collect(), Some(aggregate))
 }
 
+/// Names the items of one array read, given in returned order with whether each is kept.
+///
+/// The aggregate is the last returned item with the aggregate name, by position before status
+/// filtering; every other item is a real instance. Among kept items, a lone aggregate is unnamed and
+/// any other aggregate is dropped; the second and later occurrences of a name get the lowest free
+/// "#1", "#2", ... suffix that is not also a returned name. Yields each emitted item's position and
+/// its instance, `None` when unnamed.
+pub(super) fn emitted_instances<'a>(
+    items: impl Iterator<Item = (&'a str, bool)> + Clone + 'a,
+    aggregate: Option<&'a str>,
+) -> impl Iterator<Item = (usize, Option<String>)> + 'a {
+    let aggregate = aggregate.and_then(|aggregate| {
+        items
+            .clone()
+            .enumerate()
+            .filter(|(_, (name, _))| *name == aggregate)
+            .last()
+            .map(|(position, _)| position)
+    });
+    let kept = items.enumerate().filter(|(_, (_, kept))| *kept);
+    let lone = kept.clone().count() == 1;
+    let returned: HashSet<&str> = kept.clone().map(|(_, (name, _))| name).collect();
+    let mut next = HashMap::<&str, u32>::new();
+    kept.filter_map(move |(position, (name, _))| {
+        if Some(position) == aggregate {
+            return lone.then_some((position, None));
+        }
+        let suffix = next.entry(name).or_default();
+        let mut instance = name.to_owned();
+        while *suffix > 0 && returned.contains(instance.as_str()) {
+            instance = format!("{name}#{suffix}");
+            *suffix += 1;
+        }
+        *suffix = (*suffix).max(1);
+        Some((position, (!instance.is_empty()).then_some(instance)))
+    })
+}
+
+/// PDH reads an instance index as a number: `name#0` and `name#00` are `name`, and `name#01` is
+/// `name#1`.
+fn canonical_index(name: &str) -> std::borrow::Cow<'_, str> {
+    match name.rsplit_once('#') {
+        Some((base, index)) if !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()) => {
+            match index.trim_start_matches('0') {
+                "" => base.into(),
+                index => format!("{base}#{index}").into(),
+            }
+        }
+        _ => name.into(),
+    }
+}
+
+/// The `instance` an entry's points carry: any for a wildcard, else a static value compared
+/// exactly or an emitted name compared ignoring case, as PDH resolves it; `None` is no instance.
+enum Identity {
+    Any,
+    Static(String),
+    Emitted(Option<String>),
+}
+
+impl Identity {
+    fn collides(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Any, _) | (_, Self::Any) => true,
+            (Self::Static(a), Self::Static(b)) => a == b,
+            (
+                Self::Static(a) | Self::Emitted(Some(a)),
+                Self::Static(b) | Self::Emitted(Some(b)),
+            ) => a.to_lowercase() == b.to_lowercase(),
+            (Self::Emitted(a), Self::Emitted(b)) => a.is_none() && b.is_none(),
+            _ => false,
+        }
+    }
+}
+
+/// The earlier entries of one metric name.
+struct Emitted {
+    /// The field of the first definition.
+    field: String,
+    /// The first definition, which every later entry must match.
+    metric: Metric,
+    entries: Vec<Entry>,
+}
+
+/// One emitted series of a metric: its field and path, static attributes and instance.
+struct Entry {
+    name: String,
+    attributes: BTreeMap<String, String>,
+    identity: Identity,
+}
+
+/// A metric name has one definition, and points sharing a metric, static attributes and instance
+/// cannot be told apart, so rejects an entry that conflicts with an earlier one.
+fn check_points(
+    emitted: &mut HashMap<Arc<str>, Emitted>,
+    field: &str,
+    path: &str,
+    metric: &Metric,
+    attributes: &BTreeMap<String, String>,
+    instance: Option<&str>,
+    aggregate: Option<&str>,
+) -> Result<(), Error> {
+    let Emitted {
+        field: other,
+        metric: first,
+        entries,
+    } = emitted
+        .entry(Arc::clone(&metric.name))
+        .or_insert_with(|| Emitted {
+            field: field.to_owned(),
+            metric: metric.clone(),
+            entries: Vec::new(),
+        });
+    if first != metric {
+        let differs = match (first.kind, metric.kind) {
+            (MetricKind::Sum { temporality: a, .. }, MetricKind::Sum { temporality: b, .. })
+                if a != b =>
+            {
+                "sum.aggregation"
+            }
+            (MetricKind::Sum { .. }, MetricKind::Sum { .. }) if first.kind != metric.kind => {
+                "sum.monotonic"
+            }
+            _ if first.kind != metric.kind => "gauge or sum",
+            _ if first.unit != metric.unit => "unit",
+            _ => "description",
+        };
+        return Err(invalid(format!(
+            "{other} and {field} use metric {:?} with a different {differs}; give one of them a different metric name",
+            metric.name
+        )));
+    }
+    let mut attributes = attributes.clone();
+    let wildcard = instance.is_some_and(|name| name.contains(['*', '?']));
+    let identity = match (attributes.remove("instance"), instance) {
+        (Some(_), _) if wildcard => {
+            return Err(invalid(format!(
+                "{field}.attributes.instance: a static instance on wildcard instances collapses every instance into one series; remove the static instance or select a specific instance"
+            )));
+        }
+        (Some(value), _) => Identity::Static(value),
+        (None, _) if wildcard => Identity::Any,
+        (None, Some(name)) => Identity::Emitted(
+            emitted_instances(
+                std::iter::once((canonical_index(name).as_ref(), true)),
+                aggregate,
+            )
+            .next()
+            .and_then(|(_, instance)| instance),
+        ),
+        (None, None) => Identity::Emitted(None),
+    };
+    let name = format!("{field} ({path})");
+    if let Some(other) = entries
+        .iter()
+        .find(|seen| seen.attributes == attributes && seen.identity.collides(&identity))
+    {
+        return Err(invalid(format!(
+            "{} and {name} would emit indistinguishable points for metric {:?}; give one of them a static attribute with a distinct value",
+            other.name, metric.name
+        )));
+    }
+    entries.push(Entry {
+        name,
+        attributes,
+        identity,
+    });
+    Ok(())
+}
+
 /// A validated counter mapping, shared by the paths of each configured instance.
 struct Mapping {
     name: String,
@@ -343,13 +513,12 @@ fn normalize_counter(
     metrics: &BTreeMap<String, Metric>,
     mapping: CounterMapping,
 ) -> Result<Mapping, Error> {
-    if mapping.name == "*" {
+    check_component(&format!("{field}.name"), &mapping.name, Component::Counter)?;
+    if mapping.attributes.contains_key("") {
         return Err(invalid(format!(
-            "{field}.name: whole-counter wildcard \"*\" is not supported yet; list counter names explicitly"
+            "{field}.attributes: attribute keys must not be empty"
         )));
     }
-    reject_wildcard(&format!("{field}.name"), &mapping.name)?;
-    reject_backslash(&format!("{field}.name"), &mapping.name)?;
     if !(MIN_SCALE_POWER10..=MAX_SCALE_POWER10).contains(&mapping.scale_power10) {
         return Err(invalid(format!(
             "{field}.scale_power10 must be between {MIN_SCALE_POWER10} and {MAX_SCALE_POWER10}"
@@ -372,22 +541,33 @@ fn normalize_counter(
     })
 }
 
-fn reject_wildcard(field: &str, value: &str) -> Result<(), Error> {
-    if value.contains(['*', '?']) {
-        return Err(invalid(format!(
-            "{field}: wildcards are supported only in instance names"
-        )));
-    }
-    Ok(())
+/// The part of a counter path a configured name fills.
+#[derive(PartialEq)]
+enum Component {
+    Object,
+    Instance,
+    Counter,
 }
 
-fn reject_backslash(field: &str, value: &str) -> Result<(), Error> {
-    if value.contains('\\') {
-        return Err(invalid(format!(
-            "{field}: remote or malformed counter paths are not supported"
-        )));
+/// Accepts a name only in its own path role: no empty part; no `\` or NUL in any part, since paths
+/// are local and NUL-terminated; wildcards only in instances; no whole-counter `*`; and no
+/// parentheses in the object, since `instances` selects instances.
+fn check_component(field: &str, value: &str, component: Component) -> Result<(), Error> {
+    if value.is_empty() {
+        return Err(invalid(format!("{field} must not be empty")));
     }
-    Ok(())
+    let message = if value.contains(['\\', '\0']) {
+        "remote or malformed counter paths are not supported"
+    } else if component == Component::Counter && value == "*" {
+        "whole-counter wildcard \"*\" is not supported yet; list counter names explicitly"
+    } else if component != Component::Instance && value.contains(['*', '?']) {
+        "wildcards are supported only in instance names"
+    } else if component == Component::Object && value.contains(['(', ')']) {
+        "select instances with `instances`, not parentheses in the object name"
+    } else {
+        return Ok(());
+    };
+    Err(invalid(format!("{field}: {message}")))
 }
 
 #[cfg(test)]

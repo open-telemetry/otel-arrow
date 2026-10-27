@@ -160,9 +160,11 @@ fn normalizes_instance_selection_forms() {
     assert_eq!(paths(json!("*,_Total"), ""), [(path("*"), None)]);
 }
 
-/// Scenario: perfcounters is empty, or an object is empty, has no counters, or lists an empty
-/// instance, alone, beside `*`, or from comma-splitting a scalar ("0,").
-/// Guarantees: Each is rejected at load with the field, as Go's validation does.
+/// Scenario: perfcounters is empty, or an object is empty, has no counters, lists an empty
+/// instance (alone, beside `*`, or from comma-splitting a scalar "0,"), has an empty counter name,
+/// or has a static attribute with an empty key.
+/// Guarantees: Each is rejected at load naming the field, so no unusable path is collected and no
+/// point carries an empty attribute key.
 #[test]
 fn rejects_empty_required_fields() {
     assert_config_error(
@@ -180,15 +182,25 @@ fn rejects_empty_required_fields() {
         ),
         (
             json!({"object": "Process", "instances": ["app", ""], "counters": [{"name": "ID Process"}]}),
-            "perfcounters[0].instances must not contain an empty name",
+            "perfcounters[0].instances[1] must not be empty",
         ),
         (
             json!({"object": "Process", "instances": ["*", ""], "counters": [{"name": "ID Process"}]}),
-            "perfcounters[0].instances must not contain an empty name",
+            "perfcounters[0].instances[1] must not be empty",
         ),
         (
             json!({"object": "Process", "instances": "0,", "counters": [{"name": "ID Process"}]}),
-            "perfcounters[0].instances must not contain an empty name",
+            "perfcounters[0].instances[1] must not be empty",
+        ),
+        (
+            json!({"object": "Memory", "counters": [{"name": ""}]}),
+            "perfcounters[0].counters[0].name must not be empty",
+        ),
+        (
+            json!({"object": "Memory", "counters": [
+                {"name": "Available Bytes", "attributes": {"": "value"}}
+            ]}),
+            "perfcounters[0].counters[0].attributes: attribute keys must not be empty",
         ),
     ] {
         assert_config_error(json!({"perfcounters": [object]}), expected);
@@ -381,21 +393,213 @@ fn rejects_undefined_metric_reference() {
     );
 }
 
-/// Scenario: Two entries name the same path in different case with identical metric and attributes,
-/// and other entries reuse a path with a different metric or different attributes.
-/// Guarantees: Only fully identical entries are rejected; differing metric or attributes are kept.
+/// Builds a config whose objects all map their counters to the Gauge `m`.
+fn shared_metric(objects: serde_json::Value) -> serde_json::Value {
+    json!({"metrics": {"m": {"gauge": {}}}, "perfcounters": objects})
+}
+
+fn object(
+    name: &str,
+    instances: serde_json::Value,
+    counters: serde_json::Value,
+) -> serde_json::Value {
+    let mut object = json!({"object": name, "counters": counters});
+    if !instances.is_null() {
+        object["instances"] = instances;
+    }
+    object
+}
+
+fn counter(name: &str, attributes: serde_json::Value) -> serde_json::Value {
+    json!([{"name": name, "metric": "m", "attributes": attributes}])
+}
+
+/// Scenario: Entries that share a metric and static attributes are the same path in different
+/// case; different counters; a wildcard beside another counter's named instance; instances "a"
+/// and "A"; instances "PING" beside "PING#0" or "PING#00", or "PING#1" beside "PING#01", which
+/// PDH reads as the same instance; or a lone
+/// aggregate instance beside an object without instances. Separately, a static
+/// `instance` is set on a wildcard instance.
+/// Guarantees: Each configuration that could emit indistinguishable points is rejected at load,
+/// naming both fields and paths, the metric and the fix; a static `instance` on a wildcard is
+/// rejected with its own fix.
 #[test]
-fn rejects_only_identical_duplicate_entries() {
-    assert_config_error(
-        json!({
-            "perfcounters": [
-                {"object": "Memory", "counters": [{"name": "Available Bytes", "metric": "a"}]},
-                {"object": "memory", "counters": [{"name": "available bytes", "metric": "a"}]}
-            ],
-            "metrics": {"a": {"gauge": {}}}
-        }),
-        "perfcounters[1].counters[0]: duplicate counter path \\memory\\available bytes with the same metric and attributes",
+fn rejects_indistinguishable_points() {
+    let none = json!(null);
+    let memory = |name: &str| object("Memory", none.clone(), counter(name, json!({})));
+    for (objects, expected) in [
+        (
+            json!([
+                memory("Available Bytes"),
+                object(
+                    "memory",
+                    none.clone(),
+                    counter("available bytes", json!({}))
+                )
+            ]),
+            r#"perfcounters[0].counters[0] (\Memory\Available Bytes) and perfcounters[1].counters[0] (\memory\available bytes) would emit indistinguishable points for metric "m"; give one of them a static attribute with a distinct value"#,
+        ),
+        (
+            json!([memory("Available Bytes"), memory("Committed Bytes")]),
+            r"perfcounters[0].counters[0] (\Memory\Available Bytes) and perfcounters[1].counters[0] (\Memory\Committed Bytes)",
+        ),
+        (
+            json!([
+                object(
+                    "Processor",
+                    json!("*"),
+                    counter("% Processor Time", json!({}))
+                ),
+                object("Processor", json!("0"), counter("% Idle Time", json!({})))
+            ]),
+            r"perfcounters[0].counters[0] (\Processor(*)\% Processor Time) and perfcounters[1].counters[0] (\Processor(0)\% Idle Time)",
+        ),
+        (
+            json!([
+                object("Process", json!("a"), counter("ID Process", json!({}))),
+                object("Process", json!("A"), counter("ID Process", json!({})))
+            ]),
+            r"perfcounters[0].counters[0] (\Process(a)\ID Process) and perfcounters[1].counters[0] (\Process(A)\ID Process)",
+        ),
+        (
+            json!([object(
+                "Process",
+                json!(["PING", "PING#0"]),
+                counter("ID Process", json!({}))
+            )]),
+            r"perfcounters[0].counters[0] (\Process(PING)\ID Process) and perfcounters[0].counters[0] (\Process(PING#0)\ID Process)",
+        ),
+        (
+            json!([object(
+                "Process",
+                json!(["PING", "PING#00"]),
+                counter("ID Process", json!({}))
+            )]),
+            r"perfcounters[0].counters[0] (\Process(PING)\ID Process) and perfcounters[0].counters[0] (\Process(PING#00)\ID Process)",
+        ),
+        (
+            json!([object(
+                "Process",
+                json!(["PING#1", "PING#01"]),
+                counter("ID Process", json!({}))
+            )]),
+            r"perfcounters[0].counters[0] (\Process(PING#1)\ID Process) and perfcounters[0].counters[0] (\Process(PING#01)\ID Process)",
+        ),
+        (
+            json!([
+                object(
+                    "Processor",
+                    json!(["_Total"]),
+                    counter("% Processor Time", json!({}))
+                ),
+                memory("Available Bytes")
+            ]),
+            r"perfcounters[0].counters[0] (\Processor(_Total)\% Processor Time) and perfcounters[1].counters[0] (\Memory\Available Bytes)",
+        ),
+        (
+            json!([object(
+                "Processor",
+                json!("*"),
+                counter("% Processor Time", json!({"instance": "cpu"}))
+            )]),
+            "perfcounters[0].counters[0].attributes.instance: a static instance on wildcard instances collapses every instance into one series; remove the static instance or select a specific instance",
+        ),
+    ] {
+        assert_config_error(shared_metric(objects), expected);
+    }
+}
+
+/// Scenario: A counter without `metric` emits under its path name, and a `metrics` entry with that
+/// name is a cumulative Sum, a Gauge with another unit, or a Gauge with a description, used by a
+/// counter with a distinct static attribute.
+/// Guarantees: One metric name has one definition: each is rejected, naming both counters, the
+/// differing field and the fix.
+#[test]
+fn rejects_conflicting_metric_definitions() {
+    let path = r"\Memory\Available Bytes";
+    for (definition, differs) in [
+        (
+            json!({"unit": "1", "sum": {"aggregation": "cumulative"}}),
+            "gauge or sum",
+        ),
+        (json!({"unit": "By"}), "unit"),
+        (json!({"description": "Available memory."}), "description"),
+    ] {
+        assert_config_error(
+            json!({
+                "metrics": {path: definition},
+                "perfcounters": [
+                    {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
+                    {"object": "Memory", "counters": [
+                        {"name": "Committed Bytes", "metric": path, "attributes": {"a": "b"}}
+                    ]}
+                ]
+            }),
+            &format!(
+                r#"perfcounters[0].counters[0] and perfcounters[1].counters[0] use metric "\\Memory\\Available Bytes" with a different {differs}; give one of them a different metric name"#
+            ),
+        );
+    }
+}
+
+/// Scenario: Entries share a metric but differ in a static attribute, in instance ("a" and "b"),
+/// or in a static `instance` on a named instance and an object without instances; a lone
+/// aggregate instance under a custom aggregation name sits beside an object without instances;
+/// one path maps to different metrics or attributes.
+/// Guarantees: Distinguishable points are accepted, so several counters can share a metric.
+#[test]
+fn accepts_distinguishable_points() {
+    let none = json!(null);
+    let mut custom = object(
+        "Processor",
+        json!(["_Total"]),
+        counter("% Processor Time", json!({})),
     );
+    custom["aggregation_name"] = json!("Sum");
+    for objects in [
+        json!([
+            object(
+                "Memory",
+                none.clone(),
+                counter("Available Bytes", json!({"state": "free"}))
+            ),
+            object(
+                "Memory",
+                none.clone(),
+                counter("Committed Bytes", json!({"state": "used"}))
+            )
+        ]),
+        json!([object(
+            "Process",
+            json!(["a", "b"]),
+            counter("ID Process", json!({}))
+        )]),
+        json!([
+            object(
+                "Processor",
+                json!("0"),
+                counter("% Processor Time", json!({"instance": "x"}))
+            ),
+            object(
+                "Memory",
+                none.clone(),
+                counter("Available Bytes", json!({"instance": "y"}))
+            )
+        ]),
+        json!([
+            custom,
+            object(
+                "Memory",
+                none.clone(),
+                counter("Available Bytes", json!({}))
+            )
+        ]),
+    ] {
+        assert!(
+            Config::from_json(&shared_metric(objects.clone())).is_ok(),
+            "{objects}"
+        );
+    }
     let config = Config::from_json(&json!({
         "metrics": {"a": {"gauge": {}}, "b": {"gauge": {}}},
         "perfcounters": [{
@@ -411,72 +615,98 @@ fn rejects_only_identical_duplicate_entries() {
     assert_eq!(config.counters.len(), 3);
 }
 
-/// Scenario: A wildcard appears in an object or counter name, or the counter name is `*`.
-/// Guarantees: Wildcards are accepted only in instance names, with a field-specific error.
+/// Scenario: An object or counter name contains a wildcard, the counter name is `*`, an object
+/// names an instance in parentheses, or a backslash or NUL appears in the object, an instance
+/// (alone or beside `*`), or the counter name.
+/// Guarantees: Each path component accepts only its own role, with a field-specific error: wildcards
+/// only in instances, instances only through `instances`, and no remote or malformed paths.
 #[test]
-fn rejects_wildcards_outside_instances() {
-    for (object, counter, expected) in [
+fn rejects_misplaced_path_components() {
+    const MALFORMED: &str = "remote or malformed counter paths are not supported";
+    for (object, instances, counter, field, message) in [
         (
             "Proc*",
+            json!("*"),
             "ID Process",
-            "perfcounters[0].object: wildcards are supported only in instance names",
+            "object",
+            "wildcards are supported only in instance names",
         ),
         (
             "Process",
+            json!("*"),
             "ID ?rocess",
-            "perfcounters[0].counters[0].name: wildcards are supported only in instance names",
+            "counters[0].name",
+            "wildcards are supported only in instance names",
         ),
         (
             "Process",
+            json!("*"),
             "*",
-            "perfcounters[0].counters[0].name: whole-counter wildcard \"*\" is not supported yet; list counter names explicitly",
+            "counters[0].name",
+            "whole-counter wildcard \"*\" is not supported yet; list counter names explicitly",
         ),
-    ] {
-        assert_config_error(
-            json!({"perfcounters": [{
-                "object": object, "instances": "*", "counters": [{"name": counter}]
-            }]}),
-            expected,
-        );
-    }
-}
-
-/// Scenario: A backslash appears in the object, an instance (alone or beside `*`), or the counter
-/// name.
-/// Guarantees: Remote or malformed paths are rejected at load with a field-specific error.
-#[test]
-fn rejects_backslash_in_path_components() {
-    for (object, instances, counter, field) in [
+        (
+            "Processor(0)",
+            json!(null),
+            "% Processor Time",
+            "object",
+            "select instances with `instances`, not parentheses in the object name",
+        ),
         (
             r"\\host\Processor",
             json!("*"),
             "% Processor Time",
-            "perfcounters[0].object",
+            "object",
+            MALFORMED,
         ),
         (
             "Processor",
             json!(r"0)\x"),
             "% Processor Time",
-            "perfcounters[0].instances",
+            "instances[0]",
+            MALFORMED,
         ),
         (
             "Processor",
             json!(["*", r"a\b"]),
             "% Processor Time",
-            "perfcounters[0].instances",
+            "instances[1]",
+            MALFORMED,
+        ),
+        (
+            "Mem\0ory",
+            json!(null),
+            "Available Bytes",
+            "object",
+            MALFORMED,
+        ),
+        (
+            "Process",
+            json!(["a\0b"]),
+            "ID Process",
+            "instances[0]",
+            MALFORMED,
+        ),
+        (
+            "Memory",
+            json!(null),
+            "Avail\0able Bytes",
+            "counters[0].name",
+            MALFORMED,
         ),
         (
             "Processor",
             json!("*"),
             r"x\% Processor Time",
-            "perfcounters[0].counters[0].name",
+            "counters[0].name",
+            MALFORMED,
         ),
     ] {
         assert_config_error(
             json!({"perfcounters": [{
                 "object": object, "instances": instances, "counters": [{"name": counter}]
             }]}),
-            &format!("{field}: remote or malformed counter paths are not supported"),
+            &format!("perfcounters[0].{field}: {message}"),
         );
     }
 }

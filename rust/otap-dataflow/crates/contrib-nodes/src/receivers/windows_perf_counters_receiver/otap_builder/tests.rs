@@ -214,7 +214,7 @@ fn static_instance_attribute_overrides_generated() {
     let counters = Config::from_json(&json!({
         "perfcounters": [{
             "object": "Processor",
-            "instances": "*",
+            "instances": "0",
             "counters": [{"name": "% Processor Time", "attributes": {"instance": "fixed"}}]
         }]
     }))
