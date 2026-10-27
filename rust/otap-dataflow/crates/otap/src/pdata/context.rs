@@ -1,8 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Message context carried by pdata: verified identity storage, the value
-//! source used to materialize composites, and peer-address merging.
+//! Message context carried by pdata: request-scoped [`Metadata`], verified
+//! identity storage, the value source used to materialize composites, and
+//! peer-address merging.
 //!
 //! Delivery state (Ack/Nack frames, flow metrics, signal) stays in the parent
 //! module.
@@ -12,11 +13,112 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
 use otel_arrow_dfe_engine::pdata_context::{
-    ContextDomain, ContextFieldLayout, ContextValueCardinality, ContextValueKind,
-    ContextValueSource, MaterializedContextValue, MaterializedContextValues,
+    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
+    ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
+    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
 };
+
+/// Request-scoped message metadata.
+///
+/// Holds what a message carries about its request, as opposed to delivery
+/// state (Ack/Nack frames, flow metrics, signal):
+///
+/// - **Transport headers**: Protocol-neutral metadata captured from inbound
+///   transport headers.
+/// - **Authorized identity**: Verified claims selected by policy and kept
+///   separate from untrusted transport headers.
+/// - **Materialized entries**: Selected composite snapshots whose values are
+///   fixed for the message's lifetime.
+/// - **Peer address**: Optional socket address observed by the receiving
+///   socket at request acceptance time. Populated by receivers that have a
+///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
+///   sourceless receivers (file-based, journald).
+///
+/// All of it is preserved across transport boundaries and copied to split
+/// outputs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Metadata {
+    /// Verified authorization claims selected by policy.
+    authorized_identity: AuthorizedIdentityEntries,
+    /// Captured transport headers and selected materialized composites.
+    materialized: MaterializedContext,
+    /// Peer address observed by the receiving socket at request acceptance
+    /// time. `None` for receivers without a real socket.
+    peer_addr: Option<SocketAddr>,
+}
+
+impl Metadata {
+    /// Returns a reference to the captured transport headers, if any.
+    #[must_use]
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
+        self.materialized.transport_headers()
+    }
+
+    /// Takes and returns the captured transport headers, if any.
+    #[must_use]
+    pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
+        self.materialized.take_transport_headers()
+    }
+
+    /// Sets the captured transport headers.
+    pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
+        self.materialized.set_transport_headers(headers);
+    }
+
+    /// Returns the authorization-derived context entries, if any.
+    #[must_use]
+    pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
+        (!self.authorized_identity.is_empty()).then_some(&self.authorized_identity)
+    }
+
+    pub(super) fn capture_authorized_identity(
+        &mut self,
+        policy: &AuthorizedIdentityPolicy,
+        identity: &AuthorizedIdentity,
+    ) {
+        self.authorized_identity =
+            AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
+    }
+
+    /// Materializes selected composite snapshots exactly once.
+    pub fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        let source = PdataContextValueSource {
+            authorized_identity: &self.authorized_identity,
+        };
+        self.materialized
+            .materialize_with_stored_transport(plan, &source);
+    }
+
+    /// Returns the materialized composite snapshots, if any.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        (!self.materialized.is_empty()).then_some(&self.materialized)
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.materialized.resolve(plan, projection)
+    }
+
+    /// Returns the peer address observed by the receiving socket, if any.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+
+    /// Sets the peer address.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.peer_addr = Some(addr);
+    }
+}
 
 const AUTHORIZED_ENTRY_LEN: usize = 20;
 const AUTHORIZED_VALUE_LEN: usize = 8;
@@ -141,10 +243,7 @@ impl fmt::Debug for AuthorizedIdentityEntries {
 }
 
 impl AuthorizedIdentityEntries {
-    pub(super) fn capture(
-        policy: &AuthorizedIdentityPolicy,
-        identity: &AuthorizedIdentity,
-    ) -> Option<Self> {
+    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
         PackedAuthorizedIdentity::capture(policy, identity).map(|packed| Self {
             packed: Some(Arc::new(packed)),
         })
@@ -349,8 +448,8 @@ fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
     std::str::from_utf8(bytes.get(range.0..range.0.checked_add(range.1)?)?).ok()
 }
 
-pub(super) struct PdataContextValueSource<'a> {
-    pub(super) authorized_identity: &'a AuthorizedIdentityEntries,
+struct PdataContextValueSource<'a> {
+    authorized_identity: &'a AuthorizedIdentityEntries,
 }
 
 impl ContextValueSource for PdataContextValueSource<'_> {

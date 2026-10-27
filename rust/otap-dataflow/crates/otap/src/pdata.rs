@@ -49,9 +49,9 @@ use otel_arrow_dfe_pdata_codec::{
 
 mod context;
 mod delivery;
-use context::PdataContextValueSource;
 pub use context::{
-    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntry, PeerAddrMerger,
+    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntry, Metadata,
+    PeerAddrMerger,
 };
 pub use delivery::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataDelivery};
 
@@ -60,28 +60,15 @@ pub use delivery::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataDelivery};
 /// Carries independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
-/// - **Transport headers**: Protocol-neutral request-scoped metadata captured
-///   from inbound transport headers. Preserved across transport boundaries.
-/// - **Authorized identity**: Verified claims selected by policy and kept
-///   separate from untrusted transport headers. Preserved across transport
-///   boundaries.
-/// - **Materialized entries**: Selected composite snapshots whose values are
-///   fixed for this context's lifetime.
-/// - **Peer address**: Optional socket address observed by the receiving
-///   socket at request acceptance time. Populated by receivers that have a
-///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
-///   sourceless receivers (file-based, journald). Preserved across transport
-///   boundaries.
+/// - **Metadata**: Request-scoped message metadata (transport headers,
+///   authorized identity, materialized entries, and peer address). Preserved
+///   across transport boundaries. See [`Metadata`].
+/// - **Flow metric and signal**: Delivery bookkeeping, described below.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
-    /// Verified authorization claims selected by policy.
-    authorized_identity: AuthorizedIdentityEntries,
-    /// Captured transport headers and selected materialized composites.
-    materialized: MaterializedContext,
-    /// Peer address observed by the receiving socket at request acceptance
-    /// time. `None` for receivers without a real socket.
-    peer_addr: Option<SocketAddr>,
+    /// Request-scoped message metadata.
+    metadata: Metadata,
     /// Active flow_metric accumulator (nanoseconds).
     ///
     /// `Some(ns)` when a message is inside a flow_metric range (between
@@ -108,9 +95,7 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
-            authorized_identity: AuthorizedIdentityEntries::default(),
-            materialized: MaterializedContext::default(),
-            peer_addr: None,
+            metadata: Metadata::default(),
             flow_compute_ns: None,
             signal: None,
         }
@@ -431,27 +416,45 @@ impl Context {
         });
     }
 
+    /// Returns the request-scoped message metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Replaces the request-scoped message metadata.
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
+    }
+
+    /// Returns this context with the given message metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
     pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
-        self.materialized.transport_headers()
+        self.metadata.transport_headers()
     }
 
     /// Takes and returns the captured transport headers, if any.
     #[must_use]
     pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
-        self.materialized.take_transport_headers()
+        self.metadata.take_transport_headers()
     }
 
     /// Set the transport headers for this context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.materialized.set_transport_headers(headers);
+        self.metadata.set_transport_headers(headers);
     }
 
     /// Returns the authorization-derived context entries, if any.
     #[must_use]
     pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
-        (!self.authorized_identity.is_empty()).then_some(&self.authorized_identity)
+        self.metadata.authorized_identity_entries()
     }
 
     fn capture_authorized_identity(
@@ -459,23 +462,18 @@ impl Context {
         policy: &AuthorizedIdentityPolicy,
         identity: &AuthorizedIdentity,
     ) {
-        self.authorized_identity =
-            AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
+        self.metadata.capture_authorized_identity(policy, identity);
     }
 
     /// Materializes selected composite snapshots exactly once.
     pub fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
-        let source = PdataContextValueSource {
-            authorized_identity: &self.authorized_identity,
-        };
-        self.materialized
-            .materialize_with_stored_transport(plan, &source);
+        self.metadata.materialize_context(plan);
     }
 
     /// Returns the materialized composite snapshots, if any.
     #[must_use]
     pub fn materialized_context(&self) -> Option<&MaterializedContext> {
-        (!self.materialized.is_empty()).then_some(&self.materialized)
+        self.metadata.materialized_context()
     }
 
     /// Resolves an existing materialized composite projection.
@@ -485,18 +483,18 @@ impl Context {
         plan: &'a ContextMaterializationPlan,
         projection: &'a ContextProjection,
     ) -> Option<MaterializedContextProjection<'a>> {
-        self.materialized.resolve(plan, projection)
+        self.metadata.resolve_materialized_context(plan, projection)
     }
 
     /// Returns the peer address observed by the receiving socket, if any.
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
-        self.peer_addr
+        self.metadata.peer_addr()
     }
 
     /// Set the peer address for this context.
     pub fn set_peer_addr(&mut self, addr: SocketAddr) {
-        self.peer_addr = Some(addr);
+        self.metadata.set_peer_addr(addr);
     }
 
     /// Merge peer addresses from a set of contributing inputs.
@@ -551,9 +549,7 @@ impl Context {
     pub fn clone_detached(&self) -> Self {
         Self {
             stack: Vec::new(),
-            authorized_identity: self.authorized_identity.clone(),
-            materialized: self.materialized.clone(),
-            peer_addr: self.peer_addr,
+            metadata: self.metadata.clone(),
             flow_compute_ns: None,
             signal: None,
         }
@@ -962,6 +958,24 @@ impl OtapPdata {
     #[must_use]
     pub fn has_ack_or_nack_interests(&self) -> bool {
         self.context.has_ack_or_nack_subscribers()
+    }
+
+    /// Returns the request-scoped message metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
+        self.context.metadata()
+    }
+
+    /// Replaces the request-scoped message metadata.
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.context.set_metadata(metadata);
+    }
+
+    /// Returns this pdata with the given message metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.context.set_metadata(metadata);
+        self
     }
 
     /// Returns a reference to the captured transport headers, if any.
