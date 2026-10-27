@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793144284287,
+  "lastUpdate": 1793145440031,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -73265,6 +73265,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 105.83,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "504c8f36b752d3c07e4e1476c5260bda698b8cac",
+          "message": "feat(wasm-host): introduce wasm-guest-sdk for OTAP dataflow plugins (#4454)\n\n# Change summary\n\nAdd an experimental Rust guest SDK for authoring OTAP dataflow WASM\nprocessor plugins. The SDK owns guest binding generation and the shared\nWIT source, provides a flat plugin API, and automatically checks the\nexisting host-services ABI before initialization. Migrate the\nin-repository reference and test plugins to use it.\n\nThe SDK remains unpublished, and the host API and WIT contract remain\nexperimental. This change does not add host capabilities or kernels.\n\n## Related issue\n\n* Relates to #2973 and #3227\n\n## Validation\n\n- `cargo test --quiet -p otel-arrow-dfe-wasm-guest-sdk` - passed: 4 unit\ntests and 1 doctest.\n- `cargo test --quiet -p otel-arrow-dfe-wasm-host --features wasm --lib\nhost_abi_version_is_reported_without_consuming_budget` - passed.\n- Feature-enabled SDK and host tests, integration tests, and both\nnightly `wasm32-wasip3` guest builds passed.\n- `cargo xtask check` did not pass: four traffic-generator tests failed\nbecause their YAML used `unref`, which the schema rejected. The full\nworkspace check is therefore not green.\n\n## User-facing changes\n\nAdds an experimental SDK for Rust WASM plugin authors in this\nrepository. It is not published, and the collector's host capabilities\nand runtime behavior are unchanged.",
+          "timestamp": "2026-10-27T22:48:26Z",
+          "tree_id": "7a7169ed66d8bbe970bd73ffe5c25495916a40a9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/504c8f36b752d3c07e4e1476c5260bda698b8cac"
+        },
+        "date": 1793145417109,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
             "unit": "MB"
           }
         ]
