@@ -8,6 +8,8 @@ use arrow::{array::*, datatypes::*};
 use crate::*;
 
 impl<'a> Dictionary<'a> {
+    /// Transforms values, reusing keys and validity buffers when indexes and null keys are unchanged.
+    /// Empty value sets and non-null single-value outputs are normalized to null or scalar dictionaries.
     pub(crate) fn transform_into_any<FTransform>(
         self,
         mut transform: FTransform,
@@ -160,11 +162,26 @@ where
 {
     let key_length = keys.len();
 
-    let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
-    let mut key_writer = key_builder.get_writer();
-
     let (mut transformed_values, value_index_lookup) = values.transform_into_set(&mut transform)?;
 
+    let mut null_value = None;
+    if value_index_lookup.is_none() {
+        if keys.null_count() > 0 {
+            null_value = Some(transform(&ValueOrRef::Null));
+        }
+        if null_value
+            .as_ref()
+            .is_none_or(|value| matches!(value, ValueOrRef::Null))
+        {
+            return Ok(dictionary_with_unchanged_keys(
+                keys.into(),
+                transformed_values,
+            ));
+        }
+    }
+
+    let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
+    let mut key_writer = key_builder.get_writer();
     let mut null_index = None;
 
     for (key_index, value_index) in keys.into_iter().enumerate() {
@@ -187,7 +204,10 @@ where
         let (has_value_index, value_index) = match null_index {
             Some(v) => v,
             None => {
-                let v = match transform(&ValueOrRef::Null) {
+                let v = match null_value
+                    .take()
+                    .unwrap_or_else(|| transform(&ValueOrRef::Null))
+                {
                     ValueOrRef::Null => (
                         false,
                         <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
@@ -240,11 +260,29 @@ where
 {
     let key_length = keys.len();
 
-    let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
-    let mut key_writer = key_builder.get_writer();
-
     let (mut transformed_values, value_index_lookup) = values.transform_into_set(&mut transform)?;
 
+    let mut null_value = None;
+    if value_index_lookup.is_none() {
+        if keys.null_count() > 0 {
+            null_value = Some(transform(&ValueOrRef::Null));
+        }
+        if null_value
+            .as_ref()
+            .is_none_or(|value| matches!(value, ValueOrRef::Null))
+        {
+            return Ok(dictionary_with_unchanged_keys(
+                DictionaryKeyArray::BooleanArray {
+                    data_type: key_data_type,
+                    values: keys,
+                },
+                transformed_values,
+            ));
+        }
+    }
+
+    let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
+    let mut key_writer = key_builder.get_writer();
     let mut null_index = None;
 
     for (key_index, value_index) in keys.into_iter().enumerate() {
@@ -267,7 +305,10 @@ where
         let (has_value_index, value_index) = match null_index {
             Some(v) => v,
             None => {
-                let v = match transform(&ValueOrRef::Null) {
+                let v = match null_value
+                    .take()
+                    .unwrap_or_else(|| transform(&ValueOrRef::Null))
+                {
                     ValueOrRef::Null => (
                         false,
                         <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
@@ -324,24 +365,13 @@ where
         None => {
             // Note: Reaching here means nothing was remapped so we can skip
             // building a new key array.
-            return Ok(match transformed_values.len() {
-                0 => Dictionary::new_null(key_data_type, key_length),
-                1 => Dictionary::new_scalar(
-                    key_data_type,
-                    key_length,
-                    transformed_values.into_iter().next().expect("has value"),
-                ),
-                _ => unsafe {
-                    // Unchanged indexes remain implicit and are not limited by the key type.
-                    Dictionary::new_unvalidated(
-                        DictionaryKeyArray::UniqueValues {
-                            data_type: key_data_type,
-                            length: key_length,
-                        },
-                        transformed_values.into(),
-                    )
+            return Ok(dictionary_with_unchanged_keys(
+                DictionaryKeyArray::UniqueValues {
+                    data_type: key_data_type,
+                    length: key_length,
                 },
-            });
+                transformed_values,
+            ));
         }
         Some(lookup) => lookup,
     };
@@ -370,6 +400,24 @@ where
     Ok(unsafe {
         Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into())
     })
+}
+
+fn dictionary_with_unchanged_keys<'a>(
+    keys: DictionaryKeyArray,
+    values: ValueOrRefSet<'a>,
+) -> Dictionary<'a> {
+    let key_data_type = keys.data_type();
+    let key_length = keys.len();
+    match values.len() {
+        0 => Dictionary::new_null(key_data_type, key_length),
+        1 if keys.nulls().is_none_or(|nulls| nulls.null_count() == 0) => Dictionary::new_scalar(
+            key_data_type,
+            key_length,
+            values.into_iter().next().expect("has value"),
+        ),
+        // Callers preserve value indexes and leave null keys unchanged.
+        _ => unsafe { Dictionary::new_unvalidated(keys, values.into()) },
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +490,108 @@ mod tests {
                 "row {index} validity"
             );
         }
+    }
+
+    fn assert_key_buffers_reused(original: &DictionaryKeyArray, actual: &DictionaryKeyArray) {
+        let array_data = |keys: &DictionaryKeyArray| match keys {
+            DictionaryKeyArray::KeyArray(keys) => keys.as_array().to_data(),
+            DictionaryKeyArray::BooleanArray { values, .. } => values.to_data(),
+            other => panic!("expected array keys: {other:?}"),
+        };
+        assert_eq!(original.data_type(), actual.data_type());
+        let original = array_data(original);
+        let actual = array_data(actual);
+        assert_eq!(original.data_type(), actual.data_type());
+        assert_eq!(original.len(), actual.len());
+        assert_eq!(original.offset(), actual.offset());
+        assert_eq!(original.buffers().len(), actual.buffers().len());
+        for (original, actual) in original.buffers().iter().zip(actual.buffers()) {
+            assert_eq!(original.as_ptr(), actual.as_ptr());
+            assert_eq!(original.len(), actual.len());
+        }
+        match (original.nulls(), actual.nulls()) {
+            (Some(original), Some(actual)) => {
+                assert_eq!(
+                    original.inner().values().as_ptr(),
+                    actual.inner().values().as_ptr()
+                );
+                assert_eq!(original.offset(), actual.offset());
+                assert_eq!(original.len(), actual.len());
+            }
+            (None, None) => {}
+            other => panic!("validity buffers differ: {other:?}"),
+        }
+    }
+
+    /// Scenario: Primitive and Boolean keys have either no null rows or null rows that remain null after an injective transform.
+    /// Guarantees: Every key type reuses its key and validity buffers, and the callback runs once per value and at most once for null keys.
+    #[test]
+    fn transform_into_any_reuses_unchanged_key_buffers() {
+        for length in [3, 5] {
+            for keys in primitive_keys(length) {
+                let data_type = keys.data_type();
+                for dictionary in [
+                    Dictionary::new(keys, DictionaryValueArray::Boolean).expect("valid"),
+                    Dictionary::new_boolean(
+                        data_type,
+                        BooleanArray::from(vec![Some(false), Some(true), Some(false), None, None])
+                            .slice(0, length),
+                    ),
+                ] {
+                    let original_keys = dictionary.keys().clone();
+                    let mut calls = Vec::new();
+                    let transformed = dictionary
+                        .transform_into_any(|value| {
+                            calls.push(value.clone());
+                            match value {
+                                ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
+                                ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
+                                ValueOrRef::Null => ValueOrRef::Null,
+                                other => panic!("unexpected value: {other:?}"),
+                            }
+                        })
+                        .expect("transform succeeds");
+                    assert_key_buffers_reused(&original_keys, transformed.keys());
+                    let expected = [
+                        ValueOrRef::Integer(10),
+                        ValueOrRef::Integer(20),
+                        ValueOrRef::Integer(10),
+                        ValueOrRef::Null,
+                        ValueOrRef::Null,
+                    ];
+                    assert_rows(&transformed, &expected[..length]);
+                    let mut expected_calls =
+                        vec![ValueOrRef::Boolean(false), ValueOrRef::Boolean(true)];
+                    if length == 5 {
+                        expected_calls.push(ValueOrRef::Null);
+                    }
+                    assert_eq!(calls, expected_calls);
+                }
+            }
+        }
+    }
+
+    /// Scenario: Primitive keys need no remapping and reference either no values or one non-null value.
+    /// Guarantees: The buffer-reuse fast path retains null and scalar normalization instead of returning redundant key arrays.
+    #[test]
+    fn transform_into_any_normalizes_unchanged_key_outputs() {
+        let null = Dictionary::new(UInt8Array::from(vec![None, None]).into(), vec![].into())
+            .expect("valid null keys")
+            .transform_into_any(Clone::clone)
+            .expect("transform succeeds");
+        assert_eq!(null, Dictionary::new_null(DictionaryKeyType::UInt8, 2));
+
+        let scalar = Dictionary::new(
+            UInt8Array::from(vec![0, 0]).into(),
+            vec![ValueOrRef::Integer(10)].into(),
+        )
+        .expect("valid scalar keys")
+        .transform_into_any(Clone::clone)
+        .expect("transform succeeds");
+        assert_eq!(
+            scalar,
+            Dictionary::new_scalar(DictionaryKeyType::UInt8, 2, ValueOrRef::Integer(10))
+        );
     }
 
     /// Scenario: Every integer key type uses primitive, Boolean, or unique-value keys with repeated and null rows.
@@ -611,7 +761,7 @@ mod tests {
     }
 
     /// Scenario: Nullable primitive and Boolean keys are sliced at offset three for seventeen rows.
-    /// Guarantees: Transformation preserves sliced values and validity across multiple bitmap byte boundaries.
+    /// Guarantees: Transformation preserves sliced values and reuses key and validity buffers across multiple bitmap byte boundaries.
     #[test]
     fn transform_into_any_preserves_sliced_key_values_and_validity() {
         let input = vec![
@@ -689,6 +839,7 @@ mod tests {
                     BooleanArray::from(input.clone()).slice(3, 17),
                 ),
             ] {
+                let original_keys = dictionary.keys().clone();
                 let transformed = dictionary
                     .transform_into_any(|value| match value {
                         ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
@@ -699,6 +850,7 @@ mod tests {
                     .expect("transform succeeds");
 
                 assert_eq!(transformed.keys().data_type(), data_type);
+                assert_key_buffers_reused(&original_keys, transformed.keys());
                 assert_rows(&transformed, &expected);
                 assert_eq!(transformed.values().len(), 2);
             }
