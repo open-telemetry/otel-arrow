@@ -2948,7 +2948,8 @@ async fn test_not_supported_queries_return_error() {
                     }
                 }",
         },
-        // Accessing resource/scope attributes from a data-point pipeline is not supported.
+        // special attribute operations invoked on resource/scope attributes from a
+        // data-point pipeline is not supported.
         TestCase {
             query: "metrics | apply data_points {
                 rename resource.attributes \"x\" as \"y\"
@@ -2958,6 +2959,20 @@ async fn test_not_supported_queries_return_error() {
             query: "metrics | apply data_points {
                 remove resource.attributes[\"x\"]
             }",
+        },
+        // accessing resource/scope fields from a data point pipeline not yet supported.
+        // Note: when this is supported, we should add a test for the following query specifically.
+        // in the case where the resource.schema_url column is missing. This ensures we properly
+        // align the scalar value returned by the expr evaluation when filtering metric data points
+        // in the conditional pipeline stage.
+        TestCase {
+            query: r#"metrics | apply data_points {
+                if (lower_case(resource.schema_url) != "prod") {
+                    set flags = 100
+                } else {
+                    set flags = 200
+                }
+            }"#,
         },
     ];
 
