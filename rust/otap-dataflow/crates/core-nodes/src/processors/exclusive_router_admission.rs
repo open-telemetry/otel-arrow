@@ -43,10 +43,9 @@ pub enum OnFullPolicy {
     /// for route A immediately and keep admitting traffic for route B.
     #[default]
     RejectImmediately,
-    /// If route A is full while route B is healthy, park one message for route
-    /// A and keep admitting traffic for route B. The router only pauses pdata
-    /// admission once every selectable route currently has a parked full
-    /// message.
+    /// If route A is full, park one message for route A and pause pdata
+    /// admission immediately. The router pauses as soon as any selectable
+    /// route has a parked full message.
     Backpressure,
 }
 
@@ -161,7 +160,7 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
     pub fn accept_pdata(&self) -> bool {
         match self.policy.on_full {
             OnFullPolicy::RejectImmediately => true,
-            OnFullPolicy::Backpressure => !self.all_pause_candidates_blocked(),
+            OnFullPolicy::Backpressure => !self.any_pause_candidate_blocked(),
         }
     }
 
@@ -287,12 +286,10 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
             .collect()
     }
 
-    fn all_pause_candidates_blocked(&self) -> bool {
-        !self.pause_candidate_ports.is_empty()
-            && self
-                .pause_candidate_ports
-                .iter()
-                .all(|port| self.pending_by_port.contains_key(port))
+    fn any_pause_candidate_blocked(&self) -> bool {
+        self.pause_candidate_ports
+            .iter()
+            .any(|port| self.pending_by_port.contains_key(port))
     }
 
     fn desired_wakeup_at(&self) -> Option<Instant> {
