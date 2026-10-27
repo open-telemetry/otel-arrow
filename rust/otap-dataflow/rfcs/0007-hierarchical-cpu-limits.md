@@ -19,9 +19,16 @@ we will use the container groups v2 interface).
 Using these options requires special operating-system privileges for
 delegation of the necessary capabilities. This may require running the
 DFE in a special way, for example, via special `systemd` unit
-settings. When operating-system-level features or user-level
-privileges are not available, `individual` limits may still be
-enforced using cooperative mechanisms.
+settings. The hierarchical model proposed here initially targets Linux
+cgroups v2 containers interface.
+
+A separate RFC will cover implementing the hierarchical model in the
+Windows runtime; we anticipate that a portable, engine-cooperative CPU
+limiting mechanism can be built and exposed through an extension
+interface.
+
+The engine will fail to start when CPU limits are configured that
+cannot be initialized due to the platform or privilege level.
 
 ## Background
 
@@ -59,13 +66,12 @@ objects.
 A new `policies.resources.cpu.limit` policy section will be added alongside
 `policies.resources.cpu.core_allocation`. The new section will offer:
 
-- `total`: the limit applies to the sum across cores of the engine
-- `individual`: the limit applies separately to individual cores of the engine
+- `total`: the aggregate limit for the engine, group, or pipeline across all cores.
+- `individual`: this limit applies independently to one pipeline/thread/core.
 
-For pipelines, `individual` limits apply directly. At the group and
-engine levels, an `individual` limit applies to every enclosed
-pipeline. When configuring limits for a given pipeline, the minimum
-value of the engine, group, and pipeline `individual` settings applies.
+For pipelines, an `individual` limit applies to one operating system
+thread pinned to one CPU core by the engine. At the group and engine
+levels, an `individual` setting limits any enclosed pipeline.
 
 ### Example configuration
 
@@ -80,9 +86,6 @@ policies:
         # Total self-imposed engine-wide mCPU limit: 4 CPUs/sec
         total: 4000
 
-        # Per-pipeline limit across all groups: 0.5 CPUs/sec
-        individual: 500
-
 groups:
   # External receivers are in the ingest group.
   ingest:
@@ -93,7 +96,7 @@ groups:
             # Total ingest-group limit: 2 CPUs/sec
             total: 2000
 
-            # Per-pipeline limit for the ingest group: 25% of one CPU
+            # For every pipeline in this group, limit to 25% of one CPU
             individual: 250
 
     # Pipelines in the ingest group.
@@ -102,11 +105,11 @@ groups:
       push:
         policies:
           resources:
-            # Runs on 2 cores, subject to the engine-wide and ingest-group
-            # limits and the individual limit of 25% of one core set above.
-            core_allocation:
-              type: core_count
-              count: 2
+            cpu:
+              # Four cores threads, each limited to 250 mCPU individually
+              core_allocation:
+                type: core_count
+                count: 4
         nodes:
           otlp:
             type: "receiver:otlp"
@@ -132,31 +135,34 @@ engine                         total engine limit (all cores)
       worker on core 1         individual limit
 ```
 
+### Limit mechanics
+
 Unlike other areas of engine policy, these levels are always additive,
-adding limits in addition to those placed above in the hierarchy.
+each level adding limits on top of those placed above in the
+hierarchy.
 
-The `individual` CPU limit corresponds to one operating-system
-thread per engine core. Every CPU core allocation of the dataflow
-engine instantiates a number of pipelines, and thus a number of threads
-per CPU core. When any of the engine-wide, group-level, or pipeline-level
-`individual` settings is present, a CPU limit is implied for each
-per-core pipeline thread.
+Any of the engine, group, and pipeline `individual` CPU limit policies
+will cause a new single-thread container to be created per pipeline
+instance. The `total` CPU limits are applied successively by up to
+three levels of enclosing container.
 
-### Isolation guarantees
+Pipeline and group `total` limits cover all pipelines on all CPU
+cores, including during those starting and stopping due to live
+reconfiguration. Limits remain in effect during shutdown.
 
-Every level of the `cpu::limit` policy is independent of the others, and
-pipelines are always subject to every ancestor's limits. Limits are a
-ceiling on CPU activity, not a reservation. Operating-system-level
-configuration determines how pipelines are scheduled when the CPU is
-overcommitted.
+The engine will provide an interface for software libraries to create
+threads in the correct container group. For example, a receiver that
+requires a dedicated thread (per core) will create its thread in the
+correct individual/total limit groups through a dedicated interface.
 
-When CPU limits are configured and the required capabilities are not
-available to the DFE process when it starts, it will abort the
-process. We will not bypass CPU limits when the operating-system
-feature is determined to be unavailable.
+Each `cpu.limit` policy sets an upper bound on CPU activity, therefore
+the we apply the minimum value of any `individual` CPU limit across
+the engine, group, and pipeline levels.
 
-The mechanism presented here does not protect against untrusted
-code.
+Operating-system-level configuration determines the outcome when the engine
+uses more than its CPU allocation.
+
+The mechanism presented here does not protect against untrusted code.
 
 ### Milli-CPU units preferred
 
@@ -170,8 +176,8 @@ There is no accommodation for configuring system-percent limits in the DFE.
 
 ### Non-pipeline CPU limits
 
-A dedicated `system` resource with separate `cpu.limit` configuration
-will be established for non-engine threads.
+A dedicated `cpu.system_limit` configuration will cover shared and
+administrative support threads under the engine `total` limit.
 
 ```yaml
 policies:
@@ -186,7 +192,8 @@ policies:
         total: 200
 ```
 
-Likewise, for the observability pipeline:
+Likewise, for the observability pipeline, configure the pipeline `individual`
+limits the cost of self-observability.
 
 ```yaml
 engine:
@@ -195,8 +202,9 @@ engine:
       policies:
         resources:
           cpu:
-            # Internal telemetry system threads get 10% of one CPU
-            individual: 100
+            limit:
+              # Each observability pipeline worker gets 10% of one CPU
+              individual: 100
 ```
 
 ### Linux implementation details
@@ -249,13 +257,6 @@ CapabilityBoundingSet=
 
 #### T.B.D. More Linux details
 
-### Windows implementation details
-
-The Windows Job Object interface supports process-wide CPU limits.
-
-The Windows kernel does not support nested container limits within
-a process; for that, we will use cooperative limits.
-
 ### Limit observability
 
 Every engine-controlled thread will have an associated metric
@@ -265,26 +266,34 @@ attributes indicating the pipeline, pipeline group, and CPU core
 number responsible for the usage. From these metrics we can calculate
 total and group-subtotal CPU usage.
 
-### Cooperative CPU budgets
-
-Because of our thread-per-core design, the engine can limit itself by
-effectively stalling the per-core engine thread's async runtime.
-
-The internal metric system delivers per-thread CPU usage as described
-above. Using this information and a cooperative controller, the engine
-can implement `individual` and `total` limiters.
-
-Cooperative CPU limiters will be defined through the extension
-interface. Individual limits will use local capabilities (`!Send`),
-while pipeline and group `total` limits will use shared (`Send`)
-capabilities.
-
 ### Limit reconfiguration
 
 Limited live reconfiguration of CPU limits will be supported, for
 example to modify the value of an existing `individual` or `total`
 limit.
 
-### Work plan
+## Open questions
+
+1. The admin console and observability pipelines are subject to
+limits. How do we ensure that admin/observability is still useful
+(and graceful? andfair?) when it is at its limit?
+2. Can the engine adjust its behavior when limits are in effect
+to improve performance (e.g., prioritize control messages)?
+
+### Separate document: Windows implementation details
+
+The Windows Job Object interface supports process-wide CPU limits. It
+does not support nested in-process limits. This will require a separate
+implementation, possibly using cooperative CPU limits
+
+### Separate document: Cooperative CPU limits
+
+Cooperative limiting is the idea that the engine thread-per-core
+architecture may be used to implement voluntary limits. By inserting
+wait points in the engine's async runtime a group of threads can
+self-impose a limit. This should be exposed through an extension
+interface.
+
+## Work plan
 
 T.B.D.
