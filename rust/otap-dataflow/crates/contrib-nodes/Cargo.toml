@@ -36,6 +36,7 @@ bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = { workspace = true, optional = true }
 thiserror.workspace = true
 crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
@@ -121,6 +122,7 @@ contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
     "kafka",
+    "microsoft-json",
     "user-events",
     "windows-perf-counters",
     "windows-event-forwarding",
@@ -190,6 +192,7 @@ sql-server = [
     "dep:tiberius",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
+microsoft-json = ["dep:humantime-serde", "dep:serde_yaml"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
 # receiver's remaining optional dependencies land with the receiver itself.
 windows-event-forwarding = [
