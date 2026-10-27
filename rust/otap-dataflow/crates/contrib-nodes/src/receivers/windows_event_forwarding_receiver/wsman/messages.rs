@@ -8,7 +8,7 @@ use super::{ADDRESSING, Envelope, Error, Route, SOAP, has_non_whitespace_text, s
 use crate::common::xml::Node;
 use quick_xml::{
     Writer,
-    events::{BytesEnd, BytesStart, BytesText, Event},
+    events::{BytesEnd, BytesStart, Event},
 };
 use std::io::{self, Write};
 use uuid::Uuid;
@@ -79,6 +79,7 @@ impl<'input> Envelope<'input> {
     /// are supported. Unknown optional headers are ignored; unknown mandatory
     /// headers (including robust replay and Bookmark until implemented) fail.
     /// Delivery versions remain opaque and are not compared to Identifier.
+    /// Enumeration requires OptimizeEnumeration; context/Pull is not supported.
     ///
     /// # Errors
     ///
@@ -325,7 +326,7 @@ impl Request<'_, '_> {
         self.encode_response(response_id, false)
     }
 
-    /// Encode an empty, completed enumeration without advertising event delivery.
+    /// Encode an empty, completed optimized enumeration without advertising event delivery.
     ///
     /// # Errors
     ///
@@ -361,10 +362,9 @@ impl Request<'_, '_> {
                 ("a:To", ANONYMOUS),
                 ("a:RelatesTo", self.message_id()),
             ] {
-                let escaped = quick_xml::escape::escape(value).replace('\r', "&#13;");
-                let _ = writer
-                    .create_element(name)
-                    .write_text_content(BytesText::from_escaped(escaped))?;
+                writer.write_event(Event::Start(BytesStart::new(name)))?;
+                write_escaped_text(writer.get_mut(), value)?;
+                writer.write_event(Event::End(BytesEnd::new(name)))?;
             }
             writer.write_event(Event::End(BytesEnd::new("s:Header")))?;
             if enumeration {
@@ -414,6 +414,27 @@ impl Request<'_, '_> {
 struct BoundedXml {
     bytes: Vec<u8>,
     limit: usize,
+}
+
+// Stream borrowed spans and static entities directly into the bounded output,
+// so a large correlation value never creates an intermediate escaped string.
+fn write_escaped_text(output: &mut BoundedXml, value: &str) -> io::Result<()> {
+    let mut start = 0;
+    for (index, byte) in value.bytes().enumerate() {
+        let entity: &[u8] = match byte {
+            b'&' => b"&amp;",
+            b'<' => b"&lt;",
+            b'>' => b"&gt;",
+            b'"' => b"&quot;",
+            b'\'' => b"&apos;",
+            b'\r' => b"&#13;",
+            _ => continue,
+        };
+        output.write_all(&value.as_bytes()[start..index])?;
+        output.write_all(entity)?;
+        start = index + 1;
+    }
+    output.write_all(&value.as_bytes()[start..])
 }
 
 impl Write for BoundedXml {
@@ -468,9 +489,10 @@ fn validate_enumeration(payload: Node<'_, '_>) -> Result<(), Error> {
     }) {
         return Err(Error::InvalidEnvelope("unsupported enumeration option"));
     }
-    if let Some(optimize) = unique_child(payload, WSMAN, "OptimizeEnumeration")? {
-        require_empty(optimize)?;
-    }
+    let optimize = unique_child(payload, WSMAN, "OptimizeEnumeration")?.ok_or(
+        Error::InvalidEnvelope("enumeration requires OptimizeEnumeration"),
+    )?;
+    require_empty(optimize)?;
     if let Some(max_elements) = unique_child(payload, WSMAN, "MaxElements")?
         && scalar_text(max_elements, "MaxElements")?
             .parse::<u32>()
@@ -490,6 +512,7 @@ mod tests {
 
     const DELIVERY_HEADERS: &str =
         "<e:Identifier>reference-property</e:Identifier><w:AckRequested/>";
+    const OPTIMIZED_ENUMERATE: &str = "<n:Enumerate><w:OptimizeEnumeration/></n:Enumerate>";
 
     fn request_xml(action: Action, body: &str, headers: &str) -> String {
         format!(
@@ -514,7 +537,7 @@ mod tests {
         for (action, body, headers) in [
             (
                 Action::Enumerate,
-                "<n:Enumerate/>",
+                OPTIMIZED_ENUMERATE,
                 format!("<w:ResourceURI>{SUBSCRIPTION_RESOURCE}</w:ResourceURI>"),
             ),
             (
@@ -726,7 +749,7 @@ mod tests {
     fn validates_manager_requests() {
         let headers = format!("<w:ResourceURI>{SUBSCRIPTION_RESOURCE}</w:ResourceURI>");
         for body in [
-            "<n:Enumerate/>",
+            OPTIMIZED_ENUMERATE,
             "<n:Enumerate><w:OptimizeEnumeration/><w:MaxElements>1</w:MaxElements></n:Enumerate>",
         ] {
             let xml = request_xml(Action::Enumerate, body, &headers);
@@ -740,9 +763,9 @@ mod tests {
             "text",
             "&#160;",
             "<n:Filter/>",
-            "<w:MaxElements>0</w:MaxElements>",
-            "<w:MaxElements>4294967296</w:MaxElements>",
-            "<w:MaxElements>1</w:MaxElements><w:MaxElements>2</w:MaxElements>",
+            "<w:OptimizeEnumeration/><w:MaxElements>0</w:MaxElements>",
+            "<w:OptimizeEnumeration/><w:MaxElements>4294967296</w:MaxElements>",
+            "<w:OptimizeEnumeration/><w:MaxElements>1</w:MaxElements><w:MaxElements>2</w:MaxElements>",
             "<w:OptimizeEnumeration>yes</w:OptimizeEnumeration>",
             "<w:OptimizeEnumeration/><w:OptimizeEnumeration/>",
         ] {
@@ -763,7 +786,7 @@ mod tests {
             "<w:ResourceURI>wrong</w:ResourceURI>".into(),
             format!("{headers}{headers}"),
         ] {
-            let xml = request_xml(Action::Enumerate, "<n:Enumerate/>", &headers);
+            let xml = request_xml(Action::Enumerate, OPTIMIZED_ENUMERATE, &headers);
             assert!(
                 parse_envelope(&xml)
                     .request(&Route::SubscriptionManager, 4096)
@@ -782,6 +805,92 @@ mod tests {
         );
     }
 
+    /// Scenario: enumeration omits optimization while context/Pull is not implemented.
+    /// Guarantees: bare enumeration and MaxElements alone cannot obtain an optimized response.
+    #[test]
+    fn rejects_nonoptimized_enumeration() {
+        let headers = format!("<w:ResourceURI>{SUBSCRIPTION_RESOURCE}</w:ResourceURI>");
+        for body in [
+            "<n:Enumerate/>",
+            "<n:Enumerate><w:MaxElements>1</w:MaxElements></n:Enumerate>",
+        ] {
+            let xml = request_xml(Action::Enumerate, body, &headers);
+            assert!(matches!(
+                parse_envelope(&xml).request(&Route::SubscriptionManager, 4096),
+                Err(Error::InvalidEnvelope(
+                    "enumeration requires OptimizeEnumeration"
+                ))
+            ));
+        }
+    }
+
+    /// Scenario: escaping text reaches the output limit or expands a one-MiB correlation value.
+    /// Guarantees: streaming preserves XML entities, CR, and Unicode and never writes beyond the bound.
+    #[test]
+    fn bounds_streamed_text() {
+        let value = "a&<>\"'\r\u{00e9}\u{1f600}";
+        let expected = "a&amp;&lt;&gt;&quot;&apos;&#13;\u{00e9}\u{1f600}";
+        let mut output = BoundedXml {
+            bytes: Vec::new(),
+            limit: expected.len(),
+        };
+        write_escaped_text(&mut output, value).unwrap();
+        assert_eq!(output.bytes, expected.as_bytes());
+        let mut output = BoundedXml {
+            bytes: Vec::new(),
+            limit: expected.len() - 1,
+        };
+        assert_eq!(
+            write_escaped_text(&mut output, value).unwrap_err().kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        assert!(output.bytes.len() <= output.limit);
+        let large = "&".repeat(1024 * 1024);
+        let mut output = BoundedXml {
+            bytes: Vec::new(),
+            limit: 4096,
+        };
+        assert_eq!(
+            write_escaped_text(&mut output, &large).unwrap_err().kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        assert_eq!(output.bytes.len(), 4095);
+        assert_eq!(output.bytes, "&amp;".repeat(819).as_bytes());
+    }
+
+    /// Scenario: an accepted request contains one MiB of ampersands in MessageID CDATA.
+    /// Guarantees: both response encoders reject oversized escaped correlation under a 4096-byte limit.
+    #[test]
+    fn rejects_oversized_correlation() {
+        let correlation = "&".repeat(1024 * 1024);
+        for (action, body, headers, route) in [
+            (
+                Action::Heartbeat,
+                "<w:Events/>",
+                DELIVERY_HEADERS.into(),
+                Route::Delivery { version: "v" },
+            ),
+            (
+                Action::Enumerate,
+                OPTIMIZED_ENUMERATE,
+                format!("<w:ResourceURI>{SUBSCRIPTION_RESOURCE}</w:ResourceURI>"),
+                Route::SubscriptionManager,
+            ),
+        ] {
+            let xml = request_xml(action, body, &headers)
+                .replace("uuid:AbC-123", &format!("<![CDATA[{correlation}]]>"));
+            let envelope = Envelope::parse(&xml, xml.len(), 128).unwrap();
+            let request = envelope.request(&route, 4096).unwrap();
+            assert_eq!(request.message_id(), correlation);
+            let result = if action == Action::Enumerate {
+                request.encode_empty_enumeration(Uuid::from_u128(123))
+            } else {
+                request.encode_ack(Uuid::from_u128(123))
+            };
+            assert!(matches!(result, Err(Error::TooLarge)));
+        }
+    }
+
     /// Scenario: Ack and empty enumeration include escaped Unicode/CR correlation values at byte limits.
     /// Guarantees: exact UTF-16 wire bounds include BOM, decoded correlation is preserved, and no subscriptions leak.
     #[test]
@@ -795,7 +904,7 @@ mod tests {
             ),
             (
                 Action::Enumerate,
-                "<n:Enumerate/>",
+                OPTIMIZED_ENUMERATE,
                 format!("<w:ResourceURI>{SUBSCRIPTION_RESOURCE}</w:ResourceURI>"),
                 Route::SubscriptionManager,
             ),
