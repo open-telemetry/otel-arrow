@@ -6,6 +6,8 @@
 
 use super::super::config::{CounterConfig, emitted_instances};
 use super::{Pdh, Point, Report, Value};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::System::Performance::{
     PDH_CALC_NEGATIVE_DENOMINATOR, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NEW_DATA,
@@ -36,6 +38,8 @@ pub(super) struct Collector<P: Pdh, F> {
     queries: Vec<Option<Query<P>>>,
     report: Report,
     items: Vec<(String, Value)>,
+    /// Set on shutdown: no further counter work starts.
+    stop: Arc<AtomicBool>,
     /// Cumulative start time: when the collector started. Reopening or recreating a query does not
     /// reset the OS counter, so neither changes it; only a read at an earlier time, as after a
     /// backward clock step, moves it back.
@@ -43,13 +47,23 @@ pub(super) struct Collector<P: Pdh, F> {
 }
 
 impl<P: Pdh, F: FnMut() -> Result<P, u32>> Collector<P, F> {
-    /// Opens, adds every path, and primes each query; returns the start report.
-    pub(super) fn start(counters: Vec<CounterConfig>, mut open: F) -> (Self, Report) {
+    /// Opens, adds every path, and primes each query until `stop` is set; returns the start
+    /// report.
+    pub(super) fn start(
+        counters: Vec<CounterConfig>,
+        mut open: F,
+        stop: Arc<AtomicBool>,
+    ) -> (Self, Report) {
         let mut report = Report::default();
         let queries = counters
             .iter()
             .enumerate()
-            .map(|(index, counter)| open_query(&mut open, index, counter, &mut report))
+            .map(|(index, counter)| {
+                if stop.load(Ordering::Relaxed) {
+                    return None;
+                }
+                open_query(&mut open, index, counter, &mut report)
+            })
             .collect();
         let mut collector = Self {
             open,
@@ -57,16 +71,21 @@ impl<P: Pdh, F: FnMut() -> Result<P, u32>> Collector<P, F> {
             queries,
             report,
             items: Vec::new(),
+            stop,
             start_time_unix_nano: now_unix_nano(),
         };
         let report = collector.take_report();
         (collector, report)
     }
 
-    /// Runs one scrape. A query that failed is reopened and primed instead of read.
+    /// Runs one scrape until `stop` is set. A query that failed is reopened and primed instead of
+    /// read.
     pub(super) fn scrape(&mut self) -> Report {
         let report = &mut self.report;
         for (index, (slot, counter)) in self.queries.iter_mut().zip(&self.counters).enumerate() {
+            if self.stop.load(Ordering::Relaxed) {
+                break;
+            }
             let Some(query) = slot else {
                 *slot = open_query(&mut self.open, index, counter, report);
                 continue;
@@ -77,7 +96,7 @@ impl<P: Pdh, F: FnMut() -> Result<P, u32>> Collector<P, F> {
             let Some(handle) = &query.handle else {
                 continue;
             };
-            match collect(&mut query.query) {
+            match collect(&mut query.query, &self.stop) {
                 Ok(true) => read(
                     &mut query.query,
                     handle,
@@ -97,7 +116,7 @@ impl<P: Pdh, F: FnMut() -> Result<P, u32>> Collector<P, F> {
                 }
             }
             report.collected.push(index);
-            if counter.recreate_query {
+            if counter.recreate_query && !self.stop.load(Ordering::Relaxed) {
                 // Swaps in a primed replacement; on failure keeps the current query.
                 let replacement = (self.open)().and_then(|mut query| {
                     let handle = query.add(&counter.path)?;
@@ -210,13 +229,19 @@ fn read<P: Pdh>(
 }
 
 /// Collects and returns whether there is data. A negative denominator collects once more after
-/// a pause; any error from that retry, including no data, is a collect failure.
-fn collect<P: Pdh>(query: &mut P) -> Result<bool, u32> {
+/// a pause, unless `stop` is set before or during the pause; any error from that retry, including
+/// no data, is a collect failure.
+fn collect<P: Pdh>(query: &mut P, stop: &AtomicBool) -> Result<bool, u32> {
     match query.collect() {
         Ok(()) => Ok(true),
         Err(PDH_NO_DATA) => Ok(false),
         Err(PDH_CALC_NEGATIVE_DENOMINATOR) => {
-            std::thread::sleep(NEGATIVE_DENOMINATOR_RETRY);
+            if !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(NEGATIVE_DENOMINATOR_RETRY);
+            }
+            if stop.load(Ordering::Relaxed) {
+                return Ok(false);
+            }
             query.collect().map(|()| true)
         }
         Err(status) => Err(status),

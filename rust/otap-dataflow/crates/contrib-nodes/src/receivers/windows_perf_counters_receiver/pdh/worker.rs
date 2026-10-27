@@ -1,18 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The thread that owns the PDH query, its command channel, and shutdown.
+//! The thread that owns the PDH queries, its scrape requests, and shutdown.
 
 use super::super::config::CounterConfig;
 use super::query::Collector;
 use super::{Pdh, Report};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use tokio::sync::oneshot;
-
-enum Command {
-    Scrape(oneshot::Sender<Report>),
-    Stop,
-}
 
 /// How the worker ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -27,7 +23,10 @@ pub(in super::super) enum Stopped {
 
 /// Client for the worker thread. PDH calls block, so they never run on the async runtime.
 pub(in super::super) struct Worker {
-    commands: mpsc::Sender<Command>,
+    /// Each message requests one scrape; closing the channel ends the worker's loop.
+    scrapes: mpsc::Sender<oneshot::Sender<Report>>,
+    /// Set on shutdown; the worker checks it before each counter's work.
+    stop: Arc<AtomicBool>,
     /// Sent once the worker thread has fully exited, thread-local destructors included: `true`
     /// for a clean exit and `false` after a panic.
     exited: oneshot::Receiver<bool>,
@@ -45,15 +44,17 @@ impl Worker {
         P: Pdh,
         F: FnMut() -> Result<P, u32> + Send + 'static,
     {
-        let (commands, receiver) = mpsc::channel();
+        let (scrapes, requests) = mpsc::channel::<oneshot::Sender<Report>>();
         let (started_tx, started) = oneshot::channel();
         let (exited_tx, exited) = oneshot::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("windows-perf-counters-pdh".to_owned())
             .spawn(move || {
-                let (mut collector, report) = Collector::start(counters, open);
+                let (mut collector, report) = Collector::start(counters, open, worker_stop);
                 let _ = started_tx.send(report);
-                while let Ok(Command::Scrape(reply)) = receiver.recv() {
+                while let Ok(reply) = requests.recv() {
                     let _ = reply.send(collector.scrape());
                 }
             })?;
@@ -63,20 +64,32 @@ impl Worker {
             .spawn(move || {
                 let _ = exited_tx.send(thread.join().is_ok());
             })?;
-        Ok((Self { commands, exited }, started))
+        let worker = Self {
+            scrapes,
+            stop,
+            exited,
+        };
+        Ok((worker, started))
     }
 
     /// Requests one scrape. The receiver errors if the worker has stopped.
     pub(in super::super) fn scrape(&self) -> oneshot::Receiver<Report> {
         let (reply, report) = oneshot::channel();
-        let _ = self.commands.send(Command::Scrape(reply));
+        let _ = self.scrapes.send(reply);
         report
     }
 
-    /// Stops the worker after any start or scrape in progress, waiting until the deadline.
+    /// Stops the worker, waiting until the deadline. A start or scrape in progress finishes the
+    /// counter operation it is in and skips the remaining counters.
     pub(in super::super) async fn shutdown(self, deadline: tokio::time::Instant) -> Stopped {
-        let _ = self.commands.send(Command::Stop);
-        match tokio::time::timeout_at(deadline, self.exited).await {
+        let Self {
+            scrapes,
+            stop,
+            exited,
+        } = self;
+        stop.store(true, Ordering::Relaxed);
+        drop(scrapes);
+        match tokio::time::timeout_at(deadline, exited).await {
             Ok(Ok(true)) => Stopped::Cleanly,
             Ok(_) => Stopped::Failed,
             Err(_) => Stopped::TimedOut,

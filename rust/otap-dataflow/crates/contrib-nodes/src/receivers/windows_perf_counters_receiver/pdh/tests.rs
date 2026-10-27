@@ -6,6 +6,7 @@ use super::query::Collector;
 use super::*;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use windows_sys::Win32::System::Performance::{
     PDH_CALC_NEGATIVE_DENOMINATOR, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NEW_DATA,
@@ -31,7 +32,11 @@ struct State {
     /// One-shot collect statuses, used before `collect_status`.
     collect_script: VecDeque<u32>,
     collects: usize,
-    gate: Option<mpsc::Receiver<()>>,
+    /// Set as each collect returns, as if shutdown were requested during it.
+    stop_on_collect: Option<Arc<AtomicBool>>,
+    /// Taken by the next collect, which reports entry on the sender and then blocks until the
+    /// receiver is released.
+    gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     arrays: HashMap<String, Result<Vec<(String, Value)>, u32>>,
 }
 
@@ -69,11 +74,15 @@ impl Pdh for FakePdh {
 
     fn collect(&mut self) -> Result<(), u32> {
         let gate = self.state.lock().unwrap().gate.take();
-        if let Some(gate) = gate {
-            let _ = gate.recv();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.recv();
         }
         let mut state = self.state.lock().unwrap();
         state.collects += 1;
+        if let Some(stop) = &state.stop_on_collect {
+            stop.store(true, Ordering::Relaxed);
+        }
         match state.collect_script.pop_front() {
             Some(status) => Err(status),
             None => state.collect_status.map_or(Ok(()), Err),
@@ -115,6 +124,32 @@ fn opener(state: &Arc<Mutex<State>>) -> impl FnMut() -> Result<FakePdh, u32> + S
             id: locked.opens,
         })
     }
+}
+
+/// Starts a collector on the fake, with no shutdown requested.
+fn collector(
+    config: Vec<CounterConfig>,
+    state: &Arc<Mutex<State>>,
+) -> (
+    Collector<FakePdh, impl FnMut() -> Result<FakePdh, u32>>,
+    Report,
+) {
+    Collector::start(config, opener(state), Arc::default())
+}
+
+/// Blocks the next collect. Returns a receiver that reports when the collect is entered and a
+/// sender that releases it.
+fn gate(state: &Arc<Mutex<State>>) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    state.lock().unwrap().gate = Some((entered_tx, release_rx));
+    (entered, release)
+}
+
+fn wait_until_entered(entered: &mpsc::Receiver<()>) {
+    entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the worker reaches the gate");
 }
 
 fn value(status: u32, value: f64) -> Value {
@@ -171,7 +206,7 @@ fn retries_failed_adds_each_scrape() {
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
         {"object": "System", "counters": [{"name": "Threads"}]}
     ]));
-    let (mut collector, start) = Collector::start(config, opener(&state));
+    let (mut collector, start) = collector(config, &state);
     assert!(start.points.is_empty());
     assert_eq!(start.add_failures, [(1, MISSING)]);
     assert_eq!(start.added, [0]);
@@ -227,7 +262,7 @@ fn publishes_only_valid_or_new_cstatus() {
          "counters": [{"name": "% Processor Time", "scale_power10": 2}]},
         {"object": "Process", "instances": "app", "counters": [{"name": "ID Process"}]}
     ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
+    let (mut collector, _) = collector(config, &state);
     let report = collector.scrape();
     assert_eq!(
         points(&report),
@@ -257,7 +292,7 @@ fn ignorable_read_statuses_are_no_observation() {
     }
     set_single(&state, MEMORY, 1.0);
     perfcounters.push(json!({"object": "Memory", "counters": [{"name": "Available Bytes"}]}));
-    let (mut collector, _) = Collector::start(counters(json!(perfcounters)), opener(&state));
+    let (mut collector, _) = collector(counters(json!(perfcounters)), &state);
     let report = collector.scrape();
     assert_eq!(points(&report), [(4, None, 1.0)]);
     assert_eq!(report.read, [0, 1, 2, 3, 4]);
@@ -277,7 +312,7 @@ fn other_read_errors_skip_only_that_counter() {
         {"object": "System", "counters": [{"name": "Threads"}]},
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
     ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
+    let (mut collector, _) = collector(config, &state);
     let report = collector.scrape();
     assert_eq!(points(&report), [(1, None, 1.0)]);
     assert_eq!(report.read_failures, [(0, READ_FAILED)]);
@@ -300,7 +335,7 @@ fn collect_no_data_is_silent() {
     let config = counters(json!([
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
     ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
+    let (mut collector, _) = collector(config, &state);
     state.lock().unwrap().collect_status = Some(PDH_NO_DATA);
     let report = collector.scrape();
     assert!(report.points.is_empty());
@@ -322,7 +357,7 @@ fn negative_denominator_collects_once_more() {
     let config = counters(json!([
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
     ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
+    let (mut collector, _) = collector(config, &state);
     let before = state.lock().unwrap().collects;
     state
         .lock()
@@ -464,7 +499,7 @@ fn names_instances_of_an_array_read() {
             "aggregation_name": aggregation_name,
             "counters": [{"name": "% Processor Time"}]
         }]));
-        let (mut collector, _) = Collector::start(config, opener(&state));
+        let (mut collector, _) = collector(config, &state);
         assert_eq!(
             points(&collector.scrape()),
             expected,
@@ -484,7 +519,7 @@ fn start_time_moves_back_with_the_clock() {
     let config = counters(json!([
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
     ]));
-    let (mut collector, _) = Collector::start(config, opener(&state));
+    let (mut collector, _) = collector(config, &state);
     collector.start_time_unix_nano = i64::MAX;
     let moved = collector.scrape().points.remove(0);
     assert_eq!(moved.start_time_unix_nano, moved.time_unix_nano);
@@ -505,7 +540,7 @@ fn start_open_or_prime_failure_is_a_collect_failure() {
     ]));
     let state = fake();
     state.lock().unwrap().fail_open = true;
-    let (_, start) = Collector::start(config.clone(), opener(&state));
+    let (_, start) = collector(config.clone(), &state);
     assert_eq!(start.collect_failures, [(0, OPEN_FAILED)]);
     assert_eq!(start.active_counters, 0);
 
@@ -515,7 +550,7 @@ fn start_open_or_prime_failure_is_a_collect_failure() {
         .unwrap()
         .collect_script
         .push_back(COLLECT_FAILED);
-    let (_, start) = Collector::start(config, opener(&state));
+    let (_, start) = collector(config, &state);
     assert_eq!(start.collect_failures, [(0, COLLECT_FAILED)]);
     assert!(start.points.is_empty() && start.collected.is_empty());
     assert_eq!(start.active_counters, 0);
@@ -538,7 +573,7 @@ fn collect_failure_stops_only_its_counter() {
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
         {"object": "System", "counters": [{"name": "Threads"}]}
     ]));
-    let (mut collector, start) = Collector::start(config, opener(&state));
+    let (mut collector, start) = collector(config, &state);
     assert_eq!(start.active_counters, 2);
     assert_eq!(state.lock().unwrap().opens, 2);
     collector.start_time_unix_nano = 1;
@@ -591,7 +626,7 @@ fn recreates_query_after_each_scrape() {
         {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
         {"object": "System", "counters": [{"name": "Threads", "recreate_query": true}]}
     ]));
-    let (mut collector, start) = Collector::start(config, opener(&state));
+    let (mut collector, start) = collector(config, &state);
     assert_eq!(start.active_counters, 2);
     assert_eq!(state.lock().unwrap().opens, 2);
     collector.start_time_unix_nano = 1;
@@ -660,14 +695,11 @@ async fn shutdown_closes_query_or_stops_waiting_at_deadline() {
     set_single(&state, MEMORY, 1.0);
     let (worker, started) = Worker::start(config.clone(), opener(&state)).unwrap();
     let _ = started.await.unwrap();
-    let (release, gate) = mpsc::channel();
+    let (entered, release) = gate(&state);
     let (closed_tx, closed) = mpsc::channel();
-    {
-        let mut state = state.lock().unwrap();
-        state.gate = Some(gate);
-        state.closed = Some(closed_tx);
-    }
+    state.lock().unwrap().closed = Some(closed_tx);
     let _pending = worker.scrape();
+    wait_until_entered(&entered);
     let soon = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
     assert_eq!(worker.shutdown(soon).await, Stopped::TimedOut);
     assert_eq!(state.lock().unwrap().closes, 0);
@@ -726,7 +758,8 @@ async fn shutdown_deadline_covers_thread_exit() {
     ]));
     let (worker, started) = Worker::start(config, open).unwrap();
     let _ = started.await.unwrap();
-    // Bounds a regression that joins on the async runtime: the join then returns once released.
+    // Releases the held destructor if shutdown blocks the async runtime on the join, so the test
+    // fails instead of hanging.
     let watchdog = release.clone();
     let _ = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(10));
@@ -741,6 +774,66 @@ async fn shutdown_deadline_covers_thread_exit() {
     exited
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the released worker thread exits");
+}
+
+/// Scenario: Shutdown is requested while the first of two counters is blocked in its priming
+/// collect at start.
+/// Guarantees: Shutdown sets the stop flag the collector checks: the blocked collect finishes, but
+/// the second counter is never opened, added or collected.
+#[tokio::test]
+async fn shutdown_stops_start_before_the_next_counter() {
+    let config = counters(json!([
+        {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
+        {"object": "System", "counters": [{"name": "Threads"}]}
+    ]));
+    let state = fake();
+    let (entered, release) = gate(&state);
+    let (worker, _started) = Worker::start(config, opener(&state)).unwrap();
+    wait_until_entered(&entered);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let stopping = worker.shutdown(deadline);
+    futures::pin_mut!(stopping);
+    assert!(futures::poll!(&mut stopping).is_pending());
+    release.send(()).unwrap();
+    assert_eq!(stopping.await, Stopped::Cleanly);
+    let locked = state.lock().unwrap();
+    assert_eq!((locked.opens, locked.collects), (1, 1));
+    assert_eq!(locked.adds, [MEMORY]);
+}
+
+/// Scenario: Shutdown is requested while a scrape collects the first of two counters, which
+/// recreates its query after each scrape; the collect either succeeds or reports a negative
+/// denominator.
+/// Guarantees: A successful collect is still read and published, but the query is not recreated;
+/// a negative denominator is not collected again; and the second counter is not collected.
+#[test]
+fn stop_during_a_scrape_skips_remaining_counter_work() {
+    let config = counters(json!([
+        {"object": "Memory", "counters": [{"name": "Available Bytes", "recreate_query": true}]},
+        {"object": "System", "counters": [{"name": "Threads"}]}
+    ]));
+    for (status, published) in [
+        (None, vec![(0, None, 1.0)]),
+        (Some(PDH_CALC_NEGATIVE_DENOMINATOR), vec![]),
+    ] {
+        let state = fake();
+        set_single(&state, MEMORY, 1.0);
+        set_single(&state, SYSTEM, 2.0);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (mut collector, _) =
+            Collector::start(config.clone(), opener(&state), Arc::clone(&stop));
+        {
+            let mut locked = state.lock().unwrap();
+            locked.stop_on_collect = Some(stop);
+            locked.collect_script.extend(status);
+        }
+        let report = collector.scrape();
+        assert_eq!(points(&report), published, "{status:?}");
+        assert!(report.recreated.is_empty(), "{status:?}");
+        let locked = state.lock().unwrap();
+        // Start opened and primed both counters; the scrape collected only the first, once.
+        assert_eq!((locked.opens, locked.collects), (2, 3), "{status:?}");
+    }
 }
 
 /// Scenario: Array sizes at, under and over the 64 MiB cap, as each PDH sizing call reports them,
@@ -839,7 +932,7 @@ mod live {
 
     fn start(perfcounters: serde_json::Value) -> Live {
         let open: fn() -> Result<NativePdh, u32> = NativePdh::open;
-        let (collector, report) = Collector::start(counters(perfcounters), open);
+        let (collector, report) = Collector::start(counters(perfcounters), open, Arc::default());
         assert!(report.collect_failures.is_empty(), "{report:?}");
         assert!(report.add_failures.is_empty(), "{report:?}");
         std::thread::sleep(Duration::from_millis(1100));
@@ -925,6 +1018,7 @@ mod live {
                 {"object": "Memory", "counters": [{"name": "No Such Counter"}]}
             ])),
             open,
+            Arc::default(),
         );
         assert_eq!(report.add_failures.len(), 1, "{report:?}");
         assert_eq!(report.add_failures[0].0, 1);
