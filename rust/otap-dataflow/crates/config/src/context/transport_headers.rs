@@ -906,7 +906,7 @@ fn read_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport_headers_policy::{CaptureDefaults, CaptureRule, HeaderCapturePolicy};
+    use crate::context::transport_policy::{CaptureDefaults, CaptureRule, HeaderCapturePolicy};
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")

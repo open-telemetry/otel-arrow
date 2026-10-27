@@ -13,7 +13,6 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metri
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
 };
@@ -23,6 +22,7 @@ use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{ExporterInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
+use crate::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -1405,7 +1405,7 @@ mod tests {
 
     // -- with_propagation_policy tests ----------------------------------------
 
-    use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+    use crate::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 
     #[test]
     fn test_with_propagation_policy_none_by_default() {

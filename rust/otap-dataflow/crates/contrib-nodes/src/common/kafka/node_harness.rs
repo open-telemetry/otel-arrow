@@ -523,8 +523,8 @@ mod receiver_harness {
     use std::time::Duration;
 
     use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
     use otel_arrow_dfe_engine::control::NackMsg;
     use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
