@@ -20,11 +20,11 @@ use crate::instrument::{DistributionValue, Mmsc};
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
 use slotmap::SlotMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The default per-set cardinality budget used by the compile-time check emitted
 /// by the `#[metric_set]` macro.
@@ -648,8 +648,12 @@ pub struct MetricsEntry {
     /// Whether a producer snapshot has updated each admin bucket.
     pub(crate) admin_observed: Vec<bool>,
 
-    /// Whether the producer has gone away while a final export is still pending.
+    /// Whether the producer has gone away while a final export or the
+    /// unregister grace period is still pending.
     pending_unregister: bool,
+
+    /// Earliest time a pending unregister may complete (set with `pending_unregister`).
+    unregister_deadline: Option<Instant>,
 
     /// Number of item buckets (1 for plain and registration-only sets, the
     /// [`MeasurementAttributeSet::CARDINALITY`] for measurement sets).
@@ -675,6 +679,7 @@ impl Debug for MetricsEntry {
             .field("export_in_flight", &self.export_in_flight)
             .field("admin_observed", &self.admin_observed)
             .field("pending_unregister", &self.pending_unregister)
+            .field("unregister_deadline", &self.unregister_deadline)
             .field("bucket_count", &self.bucket_count)
             .finish()
     }
@@ -700,6 +705,7 @@ impl MetricsEntry {
             export_in_flight: vec![false],
             admin_observed: vec![false],
             pending_unregister: false,
+            unregister_deadline: None,
             bucket_count: 1,
             measurement_attributes: &[],
             registration_attributes: Vec::new(),
@@ -734,10 +740,24 @@ impl MetricsEntry {
             export_in_flight: vec![false; bucket_count],
             admin_observed: vec![false; bucket_count],
             pending_unregister: false,
+            unregister_deadline: None,
             bucket_count,
             measurement_attributes,
             registration_attributes,
         }
+    }
+
+    /// Whether a pending unregister can complete: the grace period has elapsed,
+    /// no export owns this entry's values, and (when an exporter exists) its
+    /// final values have been exported.
+    fn unregister_ready(&self, now: Instant, has_metric_exporter: bool) -> bool {
+        let export_dirty = self.export_dirty.iter().any(|dirty| *dirty);
+        self.pending_unregister
+            && self
+                .unregister_deadline
+                .is_some_and(|deadline| deadline <= now)
+            && !(has_metric_exporter && export_dirty)
+            && !self.export_in_flight.iter().any(|in_flight| *in_flight)
     }
 }
 
@@ -844,6 +864,18 @@ pub struct MetricSetRegistry {
     pub(crate) metrics: SlotMap<MetricSetKey, MetricsEntry>,
     identity_counts: HashMap<(usize, EntityKey), usize>,
     duplicate_identity_count: usize,
+    /// How long an unregistered metric set stays readable before removal.
+    unregister_grace: Duration,
+    /// Metric sets retained for the grace period, in deadline order. Deadlines
+    /// are `unregister time + unregister_grace` with a fixed grace, so pushing
+    /// to the back keeps the queue sorted. Keys may be stale: an entry can be
+    /// removed by the export path before its deadline is popped.
+    pending_unregisters: VecDeque<(Instant, MetricSetKey)>,
+    /// Whether something drains the export accumulator: an ITS collector is
+    /// configured or an export has started. Only then does an unregistered
+    /// metric set wait for its dirty values to be exported; otherwise nothing
+    /// would ever clear them and the entry would never be removed.
+    has_metric_exporter: bool,
 }
 
 pub(crate) enum MetricSetUnregister {
@@ -860,6 +892,18 @@ impl Debug for MetricSetRegistry {
 }
 
 impl MetricSetRegistry {
+    pub(crate) fn set_unregister_grace(&mut self, grace: Duration) {
+        debug_assert!(
+            self.pending_unregisters.is_empty(),
+            "the grace period must be fixed before any unregister so deadlines stay ordered"
+        );
+        self.unregister_grace = grace;
+    }
+
+    pub(crate) fn set_has_metric_exporter(&mut self) {
+        self.has_metric_exporter = true;
+    }
+
     fn register_identity(&mut self, descriptor: &'static MetricsDescriptor, entity_key: EntityKey) {
         let identity = (std::ptr::from_ref(descriptor) as usize, entity_key);
         let count = self.identity_counts.entry(identity).or_default();
@@ -1046,18 +1090,66 @@ impl MetricSetRegistry {
     pub(crate) fn unregister(
         &mut self,
         metrics_key: MetricSetKey,
-        defer_dirty_unregistration: bool,
+        now: Instant,
     ) -> Option<MetricSetUnregister> {
+        let grace = self.unregister_grace;
         let entry = self.metrics.get_mut(metrics_key)?;
+        if entry.pending_unregister {
+            // Already unregistered and retained; a repeated call must not
+            // extend the grace period.
+            return Some(MetricSetUnregister::Deferred);
+        }
         let export_in_flight = entry.export_in_flight.iter().any(|in_flight| *in_flight);
         let export_dirty = entry.export_dirty.iter().any(|dirty| *dirty);
-        if export_in_flight || (defer_dirty_unregistration && export_dirty) {
+        if !grace.is_zero() || export_in_flight || (self.has_metric_exporter && export_dirty) {
+            let deadline = now + grace;
             entry.pending_unregister = true;
-            Some(MetricSetUnregister::Deferred)
-        } else {
-            self.remove_entry(metrics_key)
-                .map(|entry| MetricSetUnregister::Removed(entry.entity_key))
+            entry.unregister_deadline = Some(deadline);
+            if !grace.is_zero() {
+                // Without a grace period the export path completes the
+                // unregister; only grace deadlines need a timed sweep.
+                self.pending_unregisters.push_back((deadline, metrics_key));
+            }
+            return Some(MetricSetUnregister::Deferred);
         }
+        self.remove_entry(metrics_key)
+            .map(|entry| MetricSetUnregister::Removed(entry.entity_key))
+    }
+
+    /// Returns the earliest grace deadline still queued, if any.
+    pub(crate) fn next_unregister_deadline(&self) -> Option<Instant> {
+        self.pending_unregisters
+            .front()
+            .map(|(deadline, _)| *deadline)
+    }
+
+    /// Removes metric sets whose grace deadline is at or before `now`, releasing
+    /// their entities, and returns the next queued deadline.
+    ///
+    /// An expired entry that still has values to export stays pending; the
+    /// export commit that drains it completes the unregister.
+    pub(crate) fn reap_expired_unregisters(
+        &mut self,
+        entities: &mut EntityRegistry,
+        now: Instant,
+    ) -> Option<Instant> {
+        while let Some(&(deadline, metrics_key)) = self.pending_unregisters.front() {
+            if deadline > now {
+                break;
+            }
+            let _ = self.pending_unregisters.pop_front();
+            let Some(entry) = self.metrics.get(metrics_key) else {
+                // Already removed by the export path.
+                continue;
+            };
+            if !entry.unregister_ready(now, self.has_metric_exporter) {
+                continue;
+            }
+            let entity_key = entry.entity_key;
+            let _ = self.remove_entry(metrics_key);
+            let _ = entities.unregister(entity_key);
+        }
+        self.next_unregister_deadline()
     }
 
     fn remove_entry(&mut self, metrics_key: MetricSetKey) -> Option<MetricsEntry> {
@@ -1101,6 +1193,8 @@ impl MetricSetRegistry {
             MetricsIterator<'a>,
         ),
     {
+        let now = Instant::now();
+        let has_metric_exporter = self.has_metric_exporter;
         let mut completed_unregisters = Vec::new();
         for (metrics_key, entry) in &mut self.metrics {
             let Some(attrs) = entities.get(entry.entity_key) else {
@@ -1135,10 +1229,7 @@ impl MetricSetRegistry {
                     entry.export_dirty[bucket] = false;
                 }
             }
-            if entry.pending_unregister
-                && !entry.export_dirty.iter().any(|dirty| *dirty)
-                && !entry.export_in_flight.iter().any(|in_flight| *in_flight)
-            {
+            if entry.unregister_ready(now, has_metric_exporter) {
                 completed_unregisters.push((metrics_key, entry.entity_key));
             }
         }
@@ -1268,14 +1359,19 @@ impl MetricSetRegistry {
                 *in_flight = false;
             }
         }
+        self.remove_ready_unregisters(entities, Instant::now());
+    }
+
+    /// Completes pending unregisters that an export just made ready.
+    fn remove_ready_unregisters(&mut self, entities: &mut EntityRegistry, now: Instant) {
+        let has_metric_exporter = self.has_metric_exporter;
         let completed_unregisters = self
             .metrics
             .iter()
             .filter_map(|(metrics_key, entry)| {
-                (entry.pending_unregister
-                    && !entry.export_dirty.iter().any(|dirty| *dirty)
-                    && !entry.export_in_flight.iter().any(|in_flight| *in_flight))
-                .then_some((metrics_key, entry.entity_key))
+                entry
+                    .unregister_ready(now, has_metric_exporter)
+                    .then_some((metrics_key, entry.entity_key))
             })
             .collect::<Vec<_>>();
         for (metrics_key, entity_key) in completed_unregisters {
@@ -1819,9 +1915,9 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        assert!(metrics.unregister(metrics_key, false).is_some());
+        assert!(metrics.unregister(metrics_key, Instant::now()).is_some());
         assert_eq!(metrics.len(), 0);
-        assert!(metrics.unregister(metrics_key, false).is_none());
+        assert!(metrics.unregister(metrics_key, Instant::now()).is_none());
     }
 
     #[test]
@@ -1855,7 +1951,7 @@ mod tests {
                 .all(|metric_set| metric_set.identity_may_repeat)
         );
 
-        assert!(metrics.unregister(second.key, false).is_some());
+        assert!(metrics.unregister(second.key, Instant::now()).is_some());
         metrics.accumulate_snapshot(first.key, 0, &[MetricValue::U64(5), MetricValue::U64(6)]);
         let unique_batch = metrics.drain_export_batch(&mut entities, 20);
         assert_eq!(unique_batch.metric_sets.len(), 1);
