@@ -22,7 +22,7 @@ use otel_arrow_dfe_engine::control::{WakeupRevision, WakeupSlot};
 use otel_arrow_dfe_engine::local::processor::EffectHandler;
 use otel_arrow_dfe_engine::{ProcessorRuntimeRequirements, WakeupError};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Shared wakeup slot used by exclusive-router admission scheduling.
@@ -44,8 +44,7 @@ pub enum OnFullPolicy {
     #[default]
     RejectImmediately,
     /// If route A is full, park one message for route A and pause pdata
-    /// admission immediately. The router pauses as soon as any selectable
-    /// route has a parked full message.
+    /// admission immediately.
     Backpressure,
 }
 
@@ -121,7 +120,6 @@ pub(crate) enum FullRouteHandling<PData> {
 /// Shared parked-state scheduler for exclusive routers.
 pub(crate) struct ExclusiveRouteScheduler<PData, Meta> {
     policy: SelectedRouteAdmissionPolicy,
-    pause_candidate_ports: HashSet<PortName>,
     pending_by_port: HashMap<PortName, PendingRoute<PData, Meta>>,
     armed_wakeup: Option<ArmedWakeup>,
 }
@@ -131,7 +129,6 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
     pub fn new(policy: SelectedRouteAdmissionPolicy) -> Self {
         Self {
             policy,
-            pause_candidate_ports: HashSet::new(),
             pending_by_port: HashMap::new(),
             armed_wakeup: None,
         }
@@ -142,25 +139,12 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
         self.policy.runtime_requirements()
     }
 
-    /// Record the set of outputs that can currently be selected by the router.
-    pub fn observe_pause_candidate_ports<I>(&mut self, ports: I)
-    where
-        I: IntoIterator<Item = PortName>,
-    {
-        if self.policy.on_full != OnFullPolicy::Backpressure {
-            return;
-        }
-
-        self.pause_candidate_ports.clear();
-        self.pause_candidate_ports.extend(ports);
-    }
-
     /// Return whether the router should accept new pdata right now.
     #[must_use]
     pub fn accept_pdata(&self) -> bool {
         match self.policy.on_full {
             OnFullPolicy::RejectImmediately => true,
-            OnFullPolicy::Backpressure => !self.any_pause_candidate_blocked(),
+            OnFullPolicy::Backpressure => self.pending_by_port.is_empty(),
         }
     }
 
@@ -284,12 +268,6 @@ impl<PData, Meta> ExclusiveRouteScheduler<PData, Meta> {
             .drain()
             .map(|(_, pending)| pending)
             .collect()
-    }
-
-    fn any_pause_candidate_blocked(&self) -> bool {
-        self.pause_candidate_ports
-            .iter()
-            .any(|port| self.pending_by_port.contains_key(port))
     }
 
     fn desired_wakeup_at(&self) -> Option<Instant> {

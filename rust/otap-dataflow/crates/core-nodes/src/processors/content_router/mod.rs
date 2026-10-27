@@ -110,7 +110,7 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -641,34 +641,6 @@ impl ContentRouter {
         }
     }
 
-    /// Refresh the set of outputs that can currently participate in
-    /// router-level backpressure.
-    ///
-    /// This work only happens on the blocked-route path. Healthy steady-state
-    /// routing does not rebuild these sets.
-    fn observe_backpressure_candidates(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) {
-        let connected: HashSet<_> = effect_handler.connected_ports().into_iter().collect();
-        let mut candidates = HashSet::new();
-
-        for port in self.routes.values() {
-            if connected.contains(port) {
-                let _ = candidates.insert(port.clone());
-            }
-        }
-
-        if let Some(default_port) = self.default_output.as_ref() {
-            let default_port = PortName::from(default_port.clone());
-            if connected.contains(&default_port) {
-                let _ = candidates.insert(default_port);
-            }
-        }
-
-        self.admission.observe_pause_candidate_ports(candidates);
-    }
-
     /// Convert scheduler-specific wakeup failures into processor errors.
     fn wakeup_error(
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -763,7 +735,6 @@ impl ContentRouter {
     ) -> Result<(), EngineError> {
         // `Full` is policy-driven. The scheduler decides whether this message
         // is rejected now or parked for wakeup-driven re-probing.
-        self.observe_backpressure_candidates(effect_handler);
         match self
             .admission
             .handle_selected_route_full(port.clone(), data, route_kind, effect_handler)

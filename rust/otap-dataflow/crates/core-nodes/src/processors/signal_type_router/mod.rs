@@ -72,7 +72,6 @@ use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -250,37 +249,6 @@ impl SignalTypeRouter {
         }
     }
 
-    /// Refresh the set of outputs that can currently participate in
-    /// router-level backpressure.
-    ///
-    /// The default output only participates when it is a real fallback for at
-    /// least one currently unwired named route.
-    fn observe_backpressure_candidates(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) {
-        let connected: HashSet<_> = effect_handler.connected_ports().into_iter().collect();
-        let mut candidates = HashSet::new();
-        let named_ports = [
-            PortName::from(PORT_LOGS),
-            PortName::from(PORT_METRICS),
-            PortName::from(PORT_TRACES),
-        ];
-        let default_reachable = named_ports.iter().any(|port| !connected.contains(port));
-
-        for port in named_ports {
-            if connected.contains(&port) {
-                let _ = candidates.insert(port);
-            }
-        }
-
-        if default_reachable && let Some(default_port) = effect_handler.default_port() {
-            let _ = candidates.insert(default_port.clone());
-        }
-
-        self.admission.observe_pause_candidate_ports(candidates);
-    }
-
     /// Convert scheduler-specific wakeup failures into processor errors.
     fn wakeup_error(
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -390,7 +358,6 @@ impl SignalTypeRouter {
     ) -> Result<(), EngineError> {
         // `Full` is policy-driven. The scheduler decides whether this message
         // is rejected now or parked for wakeup-driven re-probing.
-        self.observe_backpressure_candidates(effect_handler);
         match self
             .admission
             .handle_selected_route_full(port.clone(), data, context, effect_handler)
