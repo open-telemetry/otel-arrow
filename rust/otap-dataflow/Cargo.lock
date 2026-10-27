@@ -7788,7 +7788,7 @@ dependencies = [
  "weaver_resolver",
  "weaver_semconv",
  "xxhash-rust",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -7841,7 +7841,7 @@ dependencies = [
  "weaver_resolved_schema",
  "weaver_resolver",
  "weaver_semconv",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -7985,7 +7985,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -11438,6 +11438,7 @@ checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "futures-util",
  "libc",
