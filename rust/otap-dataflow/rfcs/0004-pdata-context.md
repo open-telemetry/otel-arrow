@@ -23,10 +23,9 @@ example:
   `policies::transport_headers` section already has a mechanism for
   defining context entries though its `store_as` verb.
 - Network information such as source address can be placed into
-  context entries using network configuration, and so on.
-- Randomness and constant entries are defined inline in composite
-  entries. Their values are generated or set when a new context is
-  created, not captured from a request.
+  context entries using network configuration.
+- Randomness and constant entries are defined implicitly through
+  composite context entries, and so on.
 
 For users with multitenancy requirements, we introduce a form of
 **composite context entry** capable of binding multiple context
@@ -120,6 +119,7 @@ I have the desires as A/B/C/G, in addition I may wish to:
 
 - Route messages by using dimension(s) of the context entries for load balance
 - Subdivide messages using aspects of the data and assign new context entries
+- Batch by randomness values from the context
 - Batch by continuous range(s) of an aspect of the data (e.g., TraceID) for optimization
 - Batch by properties of the OpenTelemetry resource
 - Partition by property of the items (e.g., metric_name) to ensure consistency.
@@ -127,8 +127,6 @@ I have the desires as A/B/C/G, in addition I may wish to:
 While some of these partitioning steps are orthogonal from context, the
 partition function creates a new context for each output and preserves
 only its explicitly selected context entries from the input context.
-Randomness entries that are not selected are generated fresh for each
-output.
 
 ## Configuration model
 
@@ -261,20 +259,16 @@ policies:
           value: uuid7
 ```
 
-The randomness `value` selects a generator rather than containing generated
-data. The initial supported generator is `uuid7`. Randomness entries have no
-original wire name.
+The randomness `value` selects a generator rather than containing
+generated data. Randomness is a primitive domain. The initial
+generator is `uuid7`. Randomness entries have no original wire name.
 
-Randomness is a primitive domain. A `type: randomness` part defines a
-randomness entry under its `name` and makes it a member of the composite.
-Entries are identified by domain and name, so composites that list the same
-randomness name share one generated value. Use distinct names for independent
-values.
-
-A randomness value is generated when a new context is created and retained for
-that context's lifetime. Context clones share it, and context transfers carry
-it without generating a new value (see [Context
-materialization](#context-materialization)).
+A `type: randomness` part defines a randomness entry under its `name`
+and makes it a member of the composite.  Entries are identified by
+domain and name; composites that list the same randomness `name`
+generate a single value, however they must have identical `value`
+otherwise it is a context configuration error. Use distinct names for
+independent values.
 
 A `constant` entry is defined,
 
@@ -288,44 +282,34 @@ policies:
           value: otlp-http-json
 ```
 
-Constant values are UTF-8 strings supplied directly by configuration. They
-have no original wire name. Configuration values are not secret storage and
-must not contain credentials or other sensitive data.
+Constant values are UTF-8 strings supplied directly by
+configuration. They are have no original wire name and must not contain
+sensitive data.
 
-Constant is also a primitive domain. A `type: constant` part defines a
-constant entry under its `name` and makes it a member of the composite.
-Definitions that use the same name with the same value define one entry.
-When definitions use the same name with different values, the unqualified
-name is ambiguous, and references must use the qualified `composite:member`
-form.
-
-In a new context, randomness and constant entries are always present, so
-only the other fields and conditions determine whether a composite entry is
-present. After a context transfer, they are present only when carried.
+Constant are also a primitive domain. When `type: constant` part defines a
+constant entry under its `name` and makes it a member of the composite. Use
+the fully-qualified form of `composite:name` to refer to these constants.
 
 #### Context materialization
 
 Context is produced by three kinds of bindings:
 
-- **New-context bindings** create a new context. They capture the
-  source domains and generate or set the randomness and constant
-  entries the pipeline references.
-  - Receiver bindings build new context in stages, gathering transport
-    headers, authorized identity, and network-info fields before
-    constructing the new context object.
+- **New-context bindings** create new Contexts. They capture the
+  requrired and optional elements from the input domains, then derive
+  or set the randomness and constant entries:
+  - Receiver bindings build new context from information about arrival,
+    including transport headers, authorized identity, and network-info
+    fields before constructing the new context object.
   - Processor bindings build new context by projecting the input
     contexts into output contexts. The binding first projects one or
     more input contexts, then creates a single new output context.
-- **Transfer bindings** carry entries of every domain, including
-  randomness and constants, across a topic or durable storage
-  boundary. They never generate or set values. See [RFC
+- **Transfer bindings** carry context entries from all domains across
+  a topic or durable storage boundary. See [RFC
   0006](./0006-transport-header-propagation.md#context-transfer).
-- **Context clones** within a pipeline share the existing context.
 
-Materialization evaluates composite context entries from the finalized
-primitive context entries. Because composite evaluation only reads
-primitive entries, re-evaluating a composite after a transfer never
-generates a new random value.
+Materialization bindings always evaluate composite definitions from
+their inputs, except in cases they can safely optimize. Randomness and
+constant values are computed at this time.
 
 #### Composite context entry dimensions
 
@@ -593,11 +577,15 @@ groups:
     pipelines:
       main:
         nodes:
+          randomized_processor:  # uses randomness
+            type: processor:sampler
+            config:
+              ...
           batch:
             type: processor:batch
             config:
               partition_by:
-                - source:
+                - source:        # drops randomness
                     entry: xyz
                   with:
                     otap:
@@ -605,8 +593,9 @@ groups:
                       sizer: items
 ```
 
-Each batch output is a new context. It preserves `xyz` as the partition key
-and generates a fresh `id`, so `delivery` identifies each output batch.
+Output batches materialize new Contexts. Output batches are limited
+to only the selected partition keys; those will be present in the
+output, other entries are dropped.
 
 ### Pdata context sinks
 
