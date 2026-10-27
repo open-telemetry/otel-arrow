@@ -307,7 +307,7 @@ fn collect_no_data_is_silent() {
 
 /// Scenario: A collect returns PDH_CALC_NEGATIVE_DENOMINATOR once, later twice in a row, and later
 /// once followed by PDH_NO_DATA.
-/// Guarantees: As in Go, the receiver collects exactly once more; one negative denominator still
+/// Guarantees: The receiver collects exactly once more; one negative denominator still
 /// publishes, while any error from the retry, including no data, is a collect failure that drops
 /// the query and reopens it on the next scrape.
 #[test]

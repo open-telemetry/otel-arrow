@@ -65,13 +65,13 @@ pub(super) enum Temporality {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UserConfig {
-    /// A null definition is the zero value, a Gauge, as in Go.
+    /// A null definition is a Gauge.
     #[serde(default)]
     metrics: Option<BTreeMap<String, Option<MetricConfig>>>,
     perfcounters: Vec<ObjectConfig>,
     #[serde(default = "default_interval", with = "humantime_serde")]
     collection_interval: Duration,
-    /// Omitted means 1s; null is the zero value, as in Go.
+    /// Omitted means 1s; null means zero.
     #[serde(default = "default_initial_delay", with = "humantime_serde::option")]
     initial_delay: Option<Duration>,
     #[serde(default, with = "humantime_serde")]
@@ -153,7 +153,7 @@ fn default_interval() -> Duration {
     Duration::from_secs(60)
 }
 
-/// As the Collector's confmap does, an explicit null (`key:` with no value) is the zero value.
+/// An explicit null (`key:` with no value) is the zero value.
 fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -250,8 +250,8 @@ impl Config {
             };
             let names = match object.instances {
                 None => Vec::new(),
-                // As Go's confmap does, a scalar is a comma-separated list, without trimming,
-                // and an empty scalar is an empty list.
+                // A scalar is a comma-separated list, without trimming, and an empty scalar
+                // is an empty list.
                 Some(OneOrMany::One(name)) if name.is_empty() => Vec::new(),
                 Some(OneOrMany::One(name)) => name.split(',').map(str::to_owned).collect(),
                 Some(OneOrMany::Many(names)) => names,
@@ -317,7 +317,7 @@ impl Config {
 
 /// Configured instances, one per path, and the aggregate name the reads clear or drop.
 ///
-/// As in Go, `*` replaces any other names, and listing the aggregate beside `*` opts it in.
+/// `*` replaces any other names, and listing the aggregate beside `*` opts it in.
 fn instances(names: Vec<String>, aggregate: Arc<str>) -> (Vec<Option<String>>, Option<Arc<str>>) {
     if names.is_empty() {
         return (vec![None], Some(aggregate));

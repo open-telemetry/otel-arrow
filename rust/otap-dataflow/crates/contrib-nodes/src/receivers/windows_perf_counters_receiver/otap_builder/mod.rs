@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 const AGGREGATION_TEMPORALITY_DELTA: i32 = 1;
 const AGGREGATION_TEMPORALITY_CUMULATIVE: i32 = 2;
-/// Go's instance label; a static attribute with the same key replaces it.
+/// The generated instance attribute key; a static attribute with the same key replaces it.
 pub(super) const INSTANCE_ATTRIBUTE: &str = "instance";
 
 struct ProjectionBuilder {
@@ -128,7 +128,7 @@ pub(super) fn project_points(
         let points = &mut builder.points;
         points.append_id(point_id);
         points.append_parent_id(metric_id);
-        // Only cumulative Sums carry a start time; Go sets none for delta.
+        // Only cumulative Sums carry a start time.
         points.append_start_time_unix_nano(
             matches!(
                 counter.metric_kind,

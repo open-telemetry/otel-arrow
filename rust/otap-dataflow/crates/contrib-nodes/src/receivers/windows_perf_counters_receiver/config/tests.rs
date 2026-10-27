@@ -110,9 +110,8 @@ fn normalizes_exact_configuration() {
 /// with the aggregate listed, or the aggregate alone, under default and custom aggregation names;
 /// a scalar is a comma-separated list, or a list entry contains a comma.
 /// Guarantees: Omitted and empty select the non-instanced path; every other name is its own path;
-/// a scalar is split on commas without trimming, as Go's confmap does, while list entries stay
-/// literal;
-/// `*` collapses other names (as in Go) and opts the aggregate in only when the aggregate is also
+/// a scalar is split on commas without trimming, while list entries stay literal;
+/// `*` collapses other names and opts the aggregate in only when the aggregate is also
 /// listed; otherwise reads clear or drop the configured aggregate name.
 #[test]
 fn normalizes_instance_selection_forms() {

@@ -208,7 +208,7 @@ fn projects_sum_temporality_and_monotonic_flags() {
 }
 
 /// Scenario: A counter configures a static `instance` attribute and its points carry returned instance names.
-/// Guarantees: As in Go, the static value replaces the generated instance attribute.
+/// Guarantees: The static value replaces the generated instance attribute.
 #[test]
 fn static_instance_attribute_overrides_generated() {
     let counters = Config::from_json(&json!({
