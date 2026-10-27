@@ -825,6 +825,36 @@ mod live {
         assert_eq!((points[1].0, points[1].1), (1, None));
     }
 
+    /// Scenario: A paging file instance whose name contains a backslash, such as
+    /// `C:\pagefile.sys`, is found through `*` and then configured by name on this machine. Skips
+    /// when the machine has no such paging file.
+    /// Guarantees: The path is added and read, publishing one point that carries the
+    /// instance name with its backslash.
+    #[test]
+    #[ignore = "requires Windows performance counters"]
+    fn live_backslash_instance() {
+        let report = start(json!([
+            {"object": "Paging File", "instances": "*", "counters": [{"name": "% Usage"}]}
+        ]))
+        .scrape();
+        let Some(name) = points(&report)
+            .into_iter()
+            .filter_map(|(_, instance, _)| instance)
+            .find(|instance| instance.contains('\\'))
+            .map(str::to_owned)
+        else {
+            eprintln!("skipped: no paging file instance with a backslash: {report:?}");
+            return;
+        };
+        let mut collector = start(json!([
+            {"object": "Paging File", "instances": name, "counters": [{"name": "% Usage"}]}
+        ]));
+        let report = collector.scrape();
+        let points = points(&report);
+        assert_eq!(points.len(), 1, "{points:?}");
+        assert_eq!(points[0].1, Some(name.as_str()));
+    }
+
     /// Scenario: A counter that does not exist on this machine is configured beside an exact counter.
     /// Guarantees: The add fails at start and is retried on every scrape, while the exact counter
     /// keeps publishing.

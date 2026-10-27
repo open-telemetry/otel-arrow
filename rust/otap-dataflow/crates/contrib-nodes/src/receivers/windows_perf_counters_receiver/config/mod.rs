@@ -559,25 +559,39 @@ enum Component {
     Counter,
 }
 
-/// Accepts a name only in its own path role: no empty part; no `\` or NUL in any part, since paths
-/// are local and NUL-terminated; wildcards only in instances; no whole-counter `*`; and no
-/// parentheses in the object, since `instances` selects instances.
+/// Accepts a name only in its own path role: no empty part; no NUL in any part, since paths are
+/// NUL-terminated; no `\` in the object or counter, since paths are local, though instance names
+/// such as `C:\pagefile.sys` may contain one; balanced parentheses in an instance, so it cannot
+/// close early and spill into the counter name; wildcards only in instances; no whole-counter `*`;
+/// and no parentheses in the object, since `instances` selects instances.
 fn check_component(field: &str, value: &str, component: Component) -> Result<(), Error> {
     if value.is_empty() {
         return Err(invalid(format!("{field} must not be empty")));
     }
-    let message = if value.contains(['\\', '\0']) {
-        "remote or malformed counter paths are not supported"
-    } else if component == Component::Counter && value == "*" {
-        "whole-counter wildcard \"*\" is not supported yet; list counter names explicitly"
-    } else if component != Component::Instance && value.contains(['*', '?']) {
-        "wildcards are supported only in instance names"
-    } else if component == Component::Object && value.contains(['(', ')']) {
-        "select instances with `instances`, not parentheses in the object name"
-    } else {
-        return Ok(());
-    };
+    let message =
+        if value.contains('\0') || (component != Component::Instance && value.contains('\\')) {
+            "remote or malformed counter paths are not supported"
+        } else if component == Component::Instance && !balanced_parentheses(value) {
+            "parentheses in an instance name must be balanced"
+        } else if component == Component::Counter && value == "*" {
+            "whole-counter wildcard \"*\" is not supported yet; list counter names explicitly"
+        } else if component != Component::Instance && value.contains(['*', '?']) {
+            "wildcards are supported only in instance names"
+        } else if component == Component::Object && value.contains(['(', ')']) {
+            "select instances with `instances`, not parentheses in the object name"
+        } else {
+            return Ok(());
+        };
     Err(invalid(format!("{field}: {message}")))
+}
+
+fn balanced_parentheses(value: &str) -> bool {
+    let depth = value.chars().try_fold(0_usize, |depth, c| match c {
+        '(' => Some(depth + 1),
+        ')' => depth.checked_sub(1),
+        _ => Some(depth),
+    });
+    depth == Some(0)
 }
 
 #[cfg(test)]

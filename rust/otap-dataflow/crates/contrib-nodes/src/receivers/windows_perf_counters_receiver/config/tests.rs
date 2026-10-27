@@ -59,10 +59,12 @@ fn sum_config(sum: serde_json::Value) -> serde_json::Value {
     value
 }
 
-/// Scenario: Exact object counters use no instance or explicitly named instances; one sets
-/// recreate_query and the other omits it.
-/// Guarantees: Each path is built from object, instance and counter, and keeps its metric kind,
-/// metadata and recreate_query flag, which defaults to false.
+/// Scenario: Exact object counters use no instance or explicitly named instances, one of which
+/// contains backslashes and balanced parentheses; one counter sets recreate_query and the others
+/// omit it.
+/// Guarantees: Each path is built from object, instance and counter, keeping such an instance
+/// name verbatim, and keeps its metric kind, metadata and recreate_query flag, which
+/// defaults to false.
 #[test]
 fn normalizes_exact_configuration() {
     let config = Config::from_json(&json!({
@@ -71,6 +73,11 @@ fn normalizes_exact_configuration() {
             {
                 "object": "Memory",
                 "counters": [{"name": "Available Bytes", "metric": "available"}]
+            },
+            {
+                "object": "Paging File",
+                "instances": r"D:\swap (1)\pagefile.sys",
+                "counters": [{"name": "% Usage", "metric": "available"}]
             },
             {
                 "object": "Process",
@@ -86,14 +93,18 @@ fn normalizes_exact_configuration() {
         ]
     }))
     .unwrap();
-    assert_eq!(config.counters.len(), 3);
+    assert_eq!(config.counters.len(), 4);
     let memory = &config.counters[0];
     assert_eq!(memory.path, r"\Memory\Available Bytes");
     assert_eq!(memory.aggregate.as_deref(), Some("_Total"));
     assert_eq!(memory.metric_kind, MetricKind::Gauge);
     assert_eq!(memory.unit.as_ref(), "By");
     assert!(!memory.recreate_query);
-    let app = &config.counters[1];
+    assert_eq!(
+        config.counters[1].path,
+        r"\Paging File(D:\swap (1)\pagefile.sys)\% Usage"
+    );
+    let app = &config.counters[2];
     assert_eq!(app.path, r"\Process(app)\Private Bytes");
     assert_eq!(
         app.metric_kind,
@@ -106,7 +117,7 @@ fn normalizes_exact_configuration() {
     assert_eq!(app.attributes.get("role").map(String::as_str), Some("app"));
     assert_eq!(app.scale_power10, -3);
     assert!(app.recreate_query);
-    assert_eq!(config.counters[2].path, r"\Process(worker)\Private Bytes");
+    assert_eq!(config.counters[3].path, r"\Process(worker)\Private Bytes");
     assert_eq!(config.collection_interval, Duration::from_secs(60));
     assert_eq!(config.initial_delay, Duration::from_secs(1));
 }
@@ -627,10 +638,12 @@ fn accepts_distinguishable_points() {
 }
 
 /// Scenario: An object or counter name contains a wildcard, the counter name is `*`, an object
-/// names an instance in parentheses, or a backslash or NUL appears in the object, an instance
-/// (alone or beside `*`), or the counter name.
+/// names an instance in parentheses, a backslash appears in the object or counter name, an
+/// instance closes a parenthesis it did not open or leaves one open, or a NUL appears in the
+/// object, an instance, or the counter name.
 /// Guarantees: Each path component accepts only its own role, with a field-specific error: wildcards
-/// only in instances, instances only through `instances`, and no remote or malformed paths.
+/// only in instances, instances only through `instances`, no instance that spills into the counter
+/// name, and no remote or malformed paths.
 #[test]
 fn rejects_misplaced_path_components() {
     const MALFORMED: &str = "remote or malformed counter paths are not supported";
@@ -675,14 +688,14 @@ fn rejects_misplaced_path_components() {
             json!(r"0)\x"),
             "% Processor Time",
             "instances[0]",
-            MALFORMED,
+            "parentheses in an instance name must be balanced",
         ),
         (
             "Processor",
-            json!(["*", r"a\b"]),
+            json!(["*", "a(b"]),
             "% Processor Time",
             "instances[1]",
-            MALFORMED,
+            "parentheses in an instance name must be balanced",
         ),
         (
             "Mem\0ory",
