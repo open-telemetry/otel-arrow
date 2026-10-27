@@ -107,10 +107,23 @@ fn timer_now() -> Instant {
     }
 }
 
+/// Longest delay a relative deadline is set to, roughly 30 years. Matches
+/// tokio's cap for `tokio::time::sleep`.
+const MAX_DELAY: Duration = Duration::from_secs(86400 * 365 * 30);
+
+/// Returns the deadline `duration` from now on the clock that drives sleeps.
+///
+/// `duration` is capped at [`MAX_DELAY`], so a huge duration (such as
+/// `Duration::MAX`) gives a far-future deadline instead of overflowing
+/// `Instant`.
+fn deadline_after(duration: Duration) -> Instant {
+    timer_now() + duration.min(MAX_DELAY)
+}
+
 /// Creates a sleep future for the active clock after a duration.
 #[must_use]
 pub fn sleep(duration: Duration) -> Sleep {
-    sleep_until(timer_now() + duration)
+    sleep_until(deadline_after(duration))
 }
 
 /// Error returned by [`timeout_at`] and [`timeout`] when the deadline passes
@@ -159,7 +172,7 @@ pub fn timeout<F: Future>(
     duration: Duration,
     future: F,
 ) -> impl Future<Output = Result<F::Output, Elapsed>> {
-    timeout_at(timer_now() + duration, future)
+    timeout_at(deadline_after(duration), future)
 }
 
 /// Lateness past which [`Interval`] skips missed ticks instead of firing the
@@ -184,7 +197,7 @@ pub struct Interval {
 /// Panics if `period` is zero.
 #[must_use]
 pub fn interval(period: Duration) -> Interval {
-    interval_at(timer_now() + period, period)
+    interval_at(deadline_after(period), period)
 }
 
 /// Creates an [`Interval`] whose first tick completes at `start`.
@@ -432,6 +445,47 @@ mod tests {
         let fut = timeout(Duration::from_millis(10), std::future::pending::<()>());
         clock.advance(Duration::from_millis(10));
         assert_eq!(fut.now_or_never(), Some(Err(Elapsed)));
+    }
+
+    /// Scenario: `timeout`, `sleep` and `interval` are given `Duration::MAX`
+    /// on the installed `SimClock`, then a day of simulated time passes.
+    /// Guarantees: the deadline is capped far in the future instead of
+    /// overflowing `Instant` (as tokio does), so nothing panics, a ready
+    /// future still wins, and the timers stay pending.
+    #[test]
+    fn huge_durations_cap_deadline_on_sim_clock() {
+        let clock = SimClock::new();
+        let _guard = clock.install();
+
+        let ready = timeout(Duration::MAX, std::future::ready(7));
+        assert_eq!(ready.now_or_never(), Some(Ok(7)));
+
+        let mut pending = Box::pin(timeout(Duration::MAX, std::future::pending::<()>()));
+        let mut sleep = sleep(Duration::MAX);
+        let mut interval = interval(Duration::MAX);
+        clock.advance(Duration::from_secs(86_400));
+        assert!(pending.as_mut().now_or_never().is_none());
+        assert!(sleep.as_mut().now_or_never().is_none());
+        assert!(interval.tick().now_or_never().is_none());
+    }
+
+    /// Scenario: `timeout`, `sleep` and `interval` are given `Duration::MAX`
+    /// on the system clock, then tokio's paused clock is advanced a day.
+    /// Guarantees: same as on the `SimClock`: no overflow panic, a ready
+    /// future still wins, and the tokio timers accept the capped deadline and
+    /// stay pending.
+    #[tokio::test(start_paused = true)]
+    async fn huge_durations_cap_deadline_on_tokio_clock() {
+        let ready = timeout(Duration::MAX, std::future::ready(7));
+        assert_eq!(ready.await, Ok(7));
+
+        let mut pending = Box::pin(timeout(Duration::MAX, std::future::pending::<()>()));
+        let mut sleep = sleep(Duration::MAX);
+        let mut interval = interval(Duration::MAX);
+        tokio::time::advance(Duration::from_secs(86_400)).await;
+        assert!(pending.as_mut().now_or_never().is_none());
+        assert!(sleep.as_mut().now_or_never().is_none());
+        assert!(interval.tick().now_or_never().is_none());
     }
 
     /// Scenario: with tokio's clock paused and real time moving on, `timeout`,
