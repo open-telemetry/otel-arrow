@@ -1400,8 +1400,12 @@ mod test {
         // so a capacity of one leaves room for exactly one pending retry.
         let rt: TestRuntime<OtapPdata> = TestRuntime::with_channel_capacities(100, 1);
 
+        // A long retry budget keeps the wall-clock deadline check from firing
+        // on a slow machine, so only the queue capacity decides the outcome.
+        let mut config = create_test_config();
+        config["max_elapsed_time"] = json!("1h");
         let mut node_config = NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN);
-        node_config.config = create_test_config();
+        node_config.config = config;
 
         let proc = crate::processors::retry_processor::create_retry_processor(
             pipeline_ctx,
