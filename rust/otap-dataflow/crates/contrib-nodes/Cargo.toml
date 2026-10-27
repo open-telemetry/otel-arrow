@@ -205,6 +205,7 @@ windows-event-forwarding = [
     "dep:url",
     "dep:humantime-serde",
     "dep:x509-parser",
+    "dep:http",
     "dep:rustls",
     "dep:tokio-rustls",
 ]

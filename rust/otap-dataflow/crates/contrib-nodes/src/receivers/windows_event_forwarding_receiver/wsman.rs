@@ -7,6 +7,9 @@ use uuid::Uuid;
 const SOAP: &str = "http://www.w3.org/2003/05/soap-envelope";
 const ADDRESSING: &str = "http://schemas.xmlsoap.org/ws/2004/08/addressing";
 
+/// Request validation and bounded basic response encoding.
+pub mod messages;
+
 /// Errors detected before dispatching a WS-Man request.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -25,6 +28,15 @@ pub enum Error {
     /// SOAP structure or required addressing headers are invalid.
     #[error("invalid SOAP envelope: {0}")]
     InvalidEnvelope(&'static str),
+    /// The action URI is unknown or not supported at this endpoint.
+    #[error("unsupported WS-Man action for this endpoint")]
+    UnsupportedAction,
+    /// An unsupported mandatory header was encountered; the local name is bounded.
+    #[error("unsupported mandatory SOAP header: {0}")]
+    MustUnderstand(String),
+    /// Response serialization failed.
+    #[error("cannot encode SOAP response: {0}")]
+    ResponseWrite(#[from] std::io::Error),
 }
 
 /// An endpoint identified from the HTTP URI path, without its query string.
@@ -145,7 +157,7 @@ impl<'input> Envelope<'input> {
     ///
     /// DTDs are disabled. Required WS-Addressing Action and MessageID headers
     /// must be unique, nonempty scalar elements. Action-specific body and
-    /// mustUnderstand checks are left to the future dispatcher; this parser
+    /// mustUnderstand checks are left to [`Self::request`]; this parser
     /// alone does not authorize an acknowledgement.
     ///
     /// # Errors
