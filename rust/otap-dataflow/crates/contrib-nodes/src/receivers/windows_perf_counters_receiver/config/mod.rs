@@ -11,6 +11,7 @@ pub(super) const MIN_SCALE_POWER10: i32 = -18;
 pub(super) const MAX_SCALE_POWER10: i32 = 18;
 
 const DEFAULT_AGGREGATION_NAME: &str = "_Total";
+const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Configuration normalized for Windows performance-counter collection.
 #[derive(Debug, Clone)]
@@ -188,6 +189,15 @@ impl Config {
         let user = UserConfig::deserialize(value).map_err(|err| invalid(err.to_string()))?;
         if user.collection_interval.is_zero() {
             return Err(invalid("collection_interval must be greater than zero"));
+        }
+        for (field, duration) in [
+            ("collection_interval", Some(user.collection_interval)),
+            ("initial_delay", user.initial_delay),
+            ("timeout", user.timeout),
+        ] {
+            if duration.is_some_and(|duration| duration > MAX_DURATION) {
+                return Err(invalid(format!("{field} must not exceed 24h")));
+            }
         }
         if user.perfcounters.is_empty() {
             return Err(invalid("perfcounters must not be empty"));

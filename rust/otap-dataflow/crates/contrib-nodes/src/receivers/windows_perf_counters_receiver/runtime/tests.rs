@@ -91,7 +91,7 @@ fn dropped_batches_warn_once_per_episode() {
     assert!(diagnostics.dropped());
 }
 
-/// Scenario: The factory validates a valid configuration and one with a removed field.
+/// Scenario: The factory validates a valid configuration and one with an unknown field.
 /// Guarantees: Static validation uses the receiver's config rules.
 #[test]
 fn factory_validates_config() {
@@ -451,7 +451,6 @@ fn live_receiver_end_to_end() {
 
     let name = format!("wpcd{}", std::process::id());
     let _children = spawn_children(&name);
-    std::thread::sleep(Duration::from_secs(1));
 
     let mut node_config = NodeUserConfig::new_receiver_config(WINDOWS_PERF_COUNTERS_RECEIVER_URN);
     node_config.config = serde_json::json!({

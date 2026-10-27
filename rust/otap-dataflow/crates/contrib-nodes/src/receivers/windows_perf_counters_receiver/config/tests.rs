@@ -59,8 +59,10 @@ fn sum_config(sum: serde_json::Value) -> serde_json::Value {
     value
 }
 
-/// Scenario: Exact object counters use no instance or explicitly named instances.
-/// Guarantees: Each path is built from object, instance and counter, and keeps its metric kind and metadata.
+/// Scenario: Exact object counters use no instance or explicitly named instances; one sets
+/// recreate_query and the other omits it.
+/// Guarantees: Each path is built from object, instance and counter, and keeps its metric kind,
+/// metadata and recreate_query flag, which defaults to false.
 #[test]
 fn normalizes_exact_configuration() {
     let config = Config::from_json(&json!({
@@ -77,7 +79,8 @@ fn normalizes_exact_configuration() {
                     "name": "Private Bytes",
                     "metric": "private",
                     "attributes": {"role": "app"},
-                    "scale_power10": -3
+                    "scale_power10": -3,
+                    "recreate_query": true
                 }]
             }
         ]
@@ -89,6 +92,7 @@ fn normalizes_exact_configuration() {
     assert_eq!(memory.aggregate.as_deref(), Some("_Total"));
     assert_eq!(memory.metric_kind, MetricKind::Gauge);
     assert_eq!(memory.unit.as_ref(), "By");
+    assert!(!memory.recreate_query);
     let app = &config.counters[1];
     assert_eq!(app.path, r"\Process(app)\Private Bytes");
     assert_eq!(
@@ -101,6 +105,7 @@ fn normalizes_exact_configuration() {
     assert_eq!(app.name.as_ref(), "private");
     assert_eq!(app.attributes.get("role").map(String::as_str), Some("app"));
     assert_eq!(app.scale_power10, -3);
+    assert!(app.recreate_query);
     assert_eq!(config.counters[2].path, r"\Process(worker)\Private Bytes");
     assert_eq!(config.collection_interval, Duration::from_secs(60));
     assert_eq!(config.initial_delay, Duration::from_secs(1));
@@ -207,11 +212,15 @@ fn rejects_empty_required_fields() {
     }
 }
 
-/// Scenario: Collection timing uses sub-second and multi-day durations or a zero collection interval.
-/// Guarantees: Positive intervals and delays are accepted; a zero collection interval is rejected.
+/// Scenario: Collection timing uses sub-second and 24h durations, a zero collection interval, or a
+/// collection_interval, initial_delay or timeout just over 24h; timeout is omitted, zero, positive
+/// or negative.
+/// Guarantees: Positive durations up to 24h are accepted; a zero collection interval is rejected;
+/// a longer duration is rejected naming its field, instead of overflowing the schedule at run time;
+/// an omitted or zero timeout selects the next-tick default and a negative one is rejected.
 #[test]
 fn enforces_collection_timing_bounds() {
-    for (interval, delay) in [("500ms", "0s"), ("86401s", "0s"), ("1s", "86401s")] {
+    for (interval, delay) in [("500ms", "0s"), ("24h", "0s"), ("1s", "24h")] {
         let config = Config::from_json(&config_with_timing(interval, delay)).unwrap();
         assert_eq!(
             config.collection_interval,
@@ -226,28 +235,11 @@ fn enforces_collection_timing_bounds() {
         config_with_timing("0s", "0s"),
         "collection_interval must be greater than zero",
     );
-}
-
-/// Scenario: Configuration contains an unknown field or a field removed from the earlier engine.
-/// Guarantees: Deserialization rejects each one instead of ignoring it.
-#[test]
-fn rejects_unknown_and_removed_fields() {
-    for field in [
-        "unknown",
-        "wildcard_refresh_interval",
-        "max_instances_per_wildcard",
-        "max_expanded_counters",
-    ] {
-        let mut value = config_with_timing("30s", "1s");
-        value[field] = json!("1s");
-        assert_config_error(value, &format!("unknown field `{field}`"));
+    for field in ["collection_interval", "initial_delay", "timeout"] {
+        let mut config = config_with_timing("30s", "1s");
+        config[field] = json!("24h 1s");
+        assert_config_error(config, &format!("{field} must not exceed 24h"));
     }
-}
-
-/// Scenario: timeout is omitted, zero, positive or negative.
-/// Guarantees: Omitted and zero select the next-tick default, positive is kept, negative is rejected.
-#[test]
-fn normalizes_timeout() {
     for (timeout, expected) in [
         (None, None),
         (Some("0s"), None),
@@ -262,6 +254,23 @@ fn normalizes_timeout() {
     let mut value = config_with_timing("30s", "1s");
     value["timeout"] = json!("-1s");
     assert!(Config::from_json(&value).is_err());
+}
+
+/// Scenario: Configuration contains an unknown field, including the unsupported expansion-limit
+/// options.
+/// Guarantees: Deserialization rejects each one instead of ignoring it.
+#[test]
+fn rejects_unknown_fields() {
+    for field in [
+        "unknown",
+        "wildcard_refresh_interval",
+        "max_instances_per_wildcard",
+        "max_expanded_counters",
+    ] {
+        let mut value = config_with_timing("30s", "1s");
+        value[field] = json!("1s");
+        assert_config_error(value, &format!("unknown field `{field}`"));
+    }
 }
 
 /// Scenario: A Sum selects cumulative or delta aggregation, monotonic or not, or omits monotonic.
@@ -297,13 +306,15 @@ fn accepts_sum_temporality_and_monotonicity() {
     }
 }
 
-/// Scenario: A metric has no kind key, a null `sum`, a bare `gauge`, or an empty `gauge` map; then
+/// Scenario: A metric definition is explicit null (`name:` with no value in YAML), or has no kind
+/// key, a null `sum`, a bare `gauge`, or an empty `gauge` map; then
 /// a `gauge` is combined with an empty `sum` and with a complete `sum`.
 /// Guarantees: Without a present `sum` mapping the metric is a Gauge; `gauge` with any present `sum`
 /// mapping is rejected.
 #[test]
 fn gauge_is_default_and_conflicts_with_any_sum() {
     for metric in [
+        json!(null),
         json!({}),
         json!({"sum": null}),
         json!({"gauge": null}),
@@ -711,21 +722,9 @@ fn rejects_misplaced_path_components() {
     }
 }
 
-/// Scenario: A metric definition is explicit null, as `name:` with no value in YAML.
-/// Guarantees: It loads as a default Gauge with unit "1" and no description, the same as `{}`.
-#[test]
-fn null_metric_definition_is_gauge() {
-    let mut value = config_with_timing("30s", "1s");
-    value["metrics"]["available"] = serde_json::Value::Null;
-    let counter = &Config::from_json(&value).unwrap().counters[0];
-    assert_eq!(counter.metric_kind, MetricKind::Gauge);
-    assert_eq!((&*counter.unit, &*counter.description), ("1", ""));
-}
-
 /// Scenario: Each optional scalar option (description, unit, sum.monotonic, attributes,
 /// recreate_query, aggregation_name, initial_delay) is explicit null, or `instances` is "".
-/// Guarantees: Null takes the zero value and then any existing default, as the Collector's
-/// confmap decodes it; an empty scalar `instances` selects the non-instanced path.
+/// Guarantees: Null takes the zero value and then any existing default; an empty scalar `instances` selects the non-instanced path.
 #[test]
 fn null_options_and_empty_scalar_instances_use_defaults() {
     let base = json!({
@@ -789,27 +788,6 @@ fn null_options_and_empty_scalar_instances_use_defaults() {
         *value.pointer_mut(pointer).unwrap() = replacement;
         check(&Config::from_json(&value).unwrap_or_else(|e| panic!("{pointer}: {e}")));
     }
-}
-
-/// Scenario: recreate_query is omitted, false, or true on one of two counters.
-/// Guarantees: The flag is kept per counter and defaults to false.
-#[test]
-fn accepts_recreate_query() {
-    let config = Config::from_json(&json!({"perfcounters": [{
-        "object": "System",
-        "counters": [
-            {"name": "Processes"},
-            {"name": "Threads", "recreate_query": false},
-            {"name": "File Read Bytes/sec", "recreate_query": true}
-        ]
-    }]}))
-    .unwrap();
-    let flags: Vec<_> = config
-        .counters
-        .iter()
-        .map(|counter| counter.recreate_query)
-        .collect();
-    assert_eq!(flags, [false, false, true]);
 }
 
 /// Scenario: Decimal scaling is configured at and beyond its bounds.

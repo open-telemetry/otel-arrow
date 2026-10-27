@@ -9,8 +9,8 @@ use std::mem::size_of;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::System::Performance::{
     PDH_CSTATUS_BAD_COUNTERNAME, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER,
-    PDH_HQUERY, PDH_INVALID_BUFFER, PDH_MORE_DATA, PdhAddEnglishCounterW, PdhCloseQuery,
-    PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
+    PDH_HQUERY, PDH_INSUFFICIENT_BUFFER, PDH_INVALID_BUFFER, PDH_MORE_DATA, PdhAddEnglishCounterW,
+    PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
 };
 
 // Not exposed by windows-sys 0.61.2.
@@ -19,6 +19,19 @@ const FORMAT: u32 = PDH_FMT_DOUBLE | PDH_FMT_NOCAP100;
 // Instances can appear between the sizing and fill calls; give up after a few tries.
 const MAX_ARRAY_READS: usize = 4;
 const ITEM_SIZE: usize = size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+// Array items are read from `u64` storage.
+const _: () = assert!(align_of::<PDH_FMT_COUNTERVALUE_ITEM_W>() <= align_of::<u64>());
+// Far above the largest array a host returns, such as Thread(*) on a large server.
+const MAX_ARRAY_BYTES: u32 = 64 << 20;
+
+/// The `u64` words that hold an array of `size` bytes, or an error when it exceeds the memory
+/// cap. Every sizing call, including one after a fill finds more instances, goes through this.
+pub(super) fn array_words(size: u32) -> Result<usize, u32> {
+    if size > MAX_ARRAY_BYTES {
+        return Err(PDH_INSUFFICIENT_BUFFER);
+    }
+    Ok((size as usize).div_ceil(size_of::<u64>()))
+}
 
 fn check(status: u32) -> Result<(), u32> {
     if status == 0 { Ok(()) } else { Err(status) }
@@ -83,7 +96,7 @@ impl Pdh for NativePdh {
                 status => return Err(status),
             }
             // u64 storage is zero-initialized and aligned for the item structs.
-            let mut buffer: Vec<u64> = vec![0; (size as usize).div_ceil(size_of::<u64>())];
+            let mut buffer: Vec<u64> = vec![0; array_words(size)?];
             let mut size =
                 u32::try_from(size_of_val(buffer.as_slice())).map_err(|_| PDH_INVALID_BUFFER)?;
             // SAFETY: As above, and the buffer is writable for `size` bytes.

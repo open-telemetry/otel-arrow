@@ -686,6 +686,79 @@ async fn shutdown_closes_query_or_stops_waiting_at_deadline() {
     assert_eq!(worker.shutdown(deadline()).await, Stopped::Failed);
 }
 
+/// Scenario: Array sizes at, under and over the 64 MiB cap, as each PDH sizing call reports them,
+/// are converted to a buffer length.
+/// Guarantees: Each over-cap size fails before any allocation; sizes up to the cap round up to
+/// whole `u64` words.
+#[test]
+fn array_size_is_capped_before_each_allocation() {
+    use windows_sys::Win32::System::Performance::PDH_INSUFFICIENT_BUFFER;
+    let cap = 64 << 20;
+    assert_eq!(native::array_words(cap + 1), Err(PDH_INSUFFICIENT_BUFFER));
+    assert_eq!(native::array_words(9), Ok(2));
+    assert_eq!(native::array_words(cap), Ok(cap as usize / 8));
+    assert_eq!(native::array_words(u32::MAX), Err(PDH_INSUFFICIENT_BUFFER));
+}
+
+/// `count` valid instances named "0", "1", ...
+fn instances(count: usize) -> Result<Vec<(String, Value)>, u32> {
+    Ok((0..count)
+        .map(|index| item(&index.to_string(), PDH_CSTATUS_VALID_DATA, 1.0))
+        .collect())
+}
+
+/// Scenario: A wildcard counter returns 100,001 instances, over the scrape's 100,000-instance
+/// budget, between two non-instanced counters.
+/// Guarantees: The wildcard counter is skipped whole and reported as a read failure with
+/// PDH_INSUFFICIENT_BUFFER, the read failure the runtime warns about; the counters before and
+/// after it still publish.
+#[test]
+fn oversized_array_is_skipped_whole() {
+    use windows_sys::Win32::System::Performance::PDH_INSUFFICIENT_BUFFER;
+    let state = fake();
+    set_single(&state, MEMORY, 1.0);
+    set_array(&state, PROCESSOR, instances(100_001));
+    set_single(&state, SYSTEM, 2.0);
+    let config = counters(json!([
+        {"object": "Memory", "counters": [{"name": "Available Bytes"}]},
+        {"object": "Processor", "instances": "*", "counters": [{"name": "% Processor Time"}]},
+        {"object": "System", "counters": [{"name": "Threads"}]}
+    ]));
+    let (mut collector, _) = collector(config, &state);
+    let report = collector.scrape();
+    assert_eq!(points(&report), [(0, None, 1.0), (2, None, 2.0)]);
+    assert_eq!(report.read_failures, [(1, PDH_INSUFFICIENT_BUFFER)]);
+    assert_eq!(report.read, [0, 2]);
+}
+
+/// Scenario: A wildcard counter returns 99,999 instances before a non-instanced counter, so the
+/// scrape keeps exactly 100,000; then it returns 100,000, putting the second counter one over.
+/// Guarantees: At the budget every counter publishes, in each of two scrapes, since the budget
+/// resets per scrape; one over, the later counter in configuration order is skipped whole as a
+/// read failure, and the earlier one keeps all its instances.
+#[test]
+fn instance_budget_admits_exactly_the_limit() {
+    use windows_sys::Win32::System::Performance::PDH_INSUFFICIENT_BUFFER;
+    let state = fake();
+    set_array(&state, PROCESSOR, instances(99_999));
+    set_single(&state, MEMORY, 1.0);
+    let config = counters(json!([
+        {"object": "Processor", "instances": "*", "counters": [{"name": "% Processor Time"}]},
+        {"object": "Memory", "counters": [{"name": "Available Bytes"}]}
+    ]));
+    let (mut collector, _) = collector(config, &state);
+    for _ in 0..2 {
+        let report = collector.scrape();
+        assert_eq!(report.points.len(), 100_000);
+        assert!(report.read_failures.is_empty());
+    }
+    set_array(&state, PROCESSOR, instances(100_000));
+    let report = collector.scrape();
+    assert_eq!(report.points.len(), 100_000);
+    assert!(report.points.iter().all(|point| point.counter == 0));
+    assert_eq!(report.read_failures, [(1, PDH_INSUFFICIENT_BUFFER)]);
+}
+
 /// Scenario: A counter path contains an interior NUL.
 /// Guarantees: The native add fails with a bad-counter-name status instead of adding a truncated
 /// prefix of the path.
@@ -700,6 +773,7 @@ fn interior_nul_fails_to_add() {
 }
 
 mod live {
+    use super::super::super::test_utils::spawn_children;
     use super::super::NativePdh;
     use super::*;
     use std::time::Duration;
@@ -806,37 +880,55 @@ mod live {
         );
     }
 
-    /// Scenario: `\Process(*)\ID Process` is read while several svchost processes run.
-    /// Guarantees: Repeated process names are published with "#1" style suffixes and unique names.
+    /// Scenario: `\Process(*)\ID Process` is read while two owned processes share a name.
+    /// Guarantees: The repeated name is published with a "#1" suffix, and every name is unique.
     #[test]
     #[ignore = "requires Windows performance counters"]
     fn live_process_duplicate_names() {
+        let name = format!("wpcn{}", std::process::id());
+        let _children = spawn_children(&name);
         let mut collector = start(json!([
             {"object": "Process", "instances": "*", "counters": [{"name": "ID Process"}]}
         ]));
         let report = collector.scrape();
         let names: Vec<_> = names(&report).into_iter().map(Option::unwrap).collect();
-        assert!(names.contains(&"svchost#1"), "{names:?}");
+        assert!(
+            names.contains(&name.as_str()) && names.contains(&format!("{name}#1").as_str()),
+            "{names:?}"
+        );
         let unique: HashSet<_> = names.iter().collect();
         assert_eq!(unique.len(), names.len());
     }
 
-    /// Scenario: Partial instance patterns `svc*` and `svchos?` are added and read.
-    /// Guarantees: PDH accepts both, and every returned instance matches the pattern.
+    /// Scenario: Partial instance patterns `name*` and `nam?` style are added and read while two
+    /// owned processes share a name.
+    /// Guarantees: PDH accepts both, each returns the owned processes, and every returned instance
+    /// matches the pattern.
     #[test]
     #[ignore = "requires Windows performance counters"]
     fn live_partial_instance_patterns() {
+        let name = format!("wpcp{}", std::process::id());
+        let _children = spawn_children(&name);
+        let prefix = &name[..name.len() - 1];
         let mut collector = start(json!([
-            {"object": "Process", "instances": ["svc*", "svchos?"],
+            {"object": "Process", "instances": [format!("{name}*"), format!("{prefix}?")],
              "counters": [{"name": "ID Process"}]}
         ]));
         let report = collector.scrape();
         let points = points(&report);
         for counter in [0, 1] {
-            assert!(points.iter().any(|point| point.0 == counter), "{points:?}");
+            let names: Vec<_> = points
+                .iter()
+                .filter(|point| point.0 == counter)
+                .map(|point| point.1.unwrap())
+                .collect();
+            assert!(
+                names.contains(&name.as_str()) && names.contains(&format!("{name}#1").as_str()),
+                "{names:?}"
+            );
         }
-        for (_, name, _) in points {
-            assert!(name.unwrap().starts_with("svc"), "{name:?}");
+        for (_, instance, _) in points {
+            assert!(instance.unwrap().starts_with(prefix), "{instance:?}");
         }
     }
 

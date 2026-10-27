@@ -9,11 +9,17 @@ use super::{Pdh, Point, Report, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::System::Performance::{
     PDH_CALC_NEGATIVE_DENOMINATOR, PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_NEW_DATA,
-    PDH_CSTATUS_VALID_DATA, PDH_INVALID_DATA, PDH_NO_DATA,
+    PDH_CSTATUS_VALID_DATA, PDH_INSUFFICIENT_BUFFER, PDH_INVALID_DATA, PDH_NO_DATA,
 };
 
 /// How long to wait before collecting again after a negative denominator.
 const NEGATIVE_DENOMINATOR_RETRY: Duration = Duration::from_secs(1);
+
+/// Most instances one scrape keeps as points, across all counters in configuration order. A
+/// counter whose array would exceed the remainder is read but skipped whole for that scrape as a
+/// read failure, never truncated, since PDH's instance order is not stable. Splitting counters
+/// across receivers raises the total.
+const MAX_INSTANCES_PER_SCRAPE: usize = 100_000;
 
 /// One counter's open query and, once its add succeeds, the counter handle.
 struct Query<P: Pdh> {
@@ -161,7 +167,8 @@ fn add<P: Pdh>(
     }
 }
 
-/// Reads the counter as an array and names its instances with [`emitted_instances`].
+/// Reads the counter as an array within the scrape's instance budget, and names its instances with
+/// [`emitted_instances`].
 fn read<P: Pdh>(
     query: &mut P,
     handle: &P::Counter,
@@ -174,7 +181,7 @@ fn read<P: Pdh>(
     let time_unix_nano = now_unix_nano();
     *start_time_unix_nano = (*start_time_unix_nano).min(time_unix_nano);
     match query.array(handle, items) {
-        Ok(()) => report.read.push(index),
+        Ok(()) => {}
         // No observation, for example a rate counter's first sample.
         Err(
             PDH_CSTATUS_INVALID_DATA
@@ -184,6 +191,10 @@ fn read<P: Pdh>(
         ) => return report.read.push(index),
         Err(status) => return report.read_failures.push((index, status)),
     }
+    if report.points.len() + items.len() > MAX_INSTANCES_PER_SCRAPE {
+        return report.read_failures.push((index, PDH_INSUFFICIENT_BUFFER));
+    }
+    report.read.push(index);
     let names = items
         .iter()
         .map(|(name, value)| (name.as_str(), accepted(value)));
