@@ -9795,6 +9795,193 @@ fn runtime_error_during_engine_operation_recovers_after_guard_release() {
         .expect("recovered runtime should accept shutdown");
 }
 
+/// Scenario: the last producer fails and recovery pauses in backoff or before fatal error publication.
+/// Guarantees: producer drain waits for successful recovery or a recorded failure, while explicit shutdown cancels backoff.
+#[test]
+fn runtime_recovery_blocks_producer_drain_until_recovery_finishes() {
+    struct RecoveryCleanup {
+        runtime: Arc<ControllerRuntime<()>>,
+        resume: std_mpsc::SyncSender<()>,
+    }
+
+    impl Drop for RecoveryCleanup {
+        fn drop(&mut self) {
+            let _ = self.resume.send(());
+            let shutdown = self.runtime.request_shutdown_all(30);
+            let workers = std::mem::take(
+                &mut *self
+                    .runtime
+                    .recovery_workers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            for worker in workers {
+                let result = worker.join();
+                if !thread::panicking() {
+                    result.expect("recovery worker should join cleanly");
+                }
+            }
+            let exited = self
+                .runtime
+                .wait_until_all_instances_exit_for(Duration::from_secs(30));
+            let completed = self.runtime.wait_for_global_shutdown_completion();
+            if !thread::panicking() {
+                shutdown.expect("test cleanup should accept shutdown");
+                assert!(exited, "test cleanup should drain runtime instances");
+                assert!(
+                    completed,
+                    "test cleanup should finish shutdown coordination"
+                );
+            }
+        }
+    }
+
+    // The std::time backoff is held at a channel handoff, not a timed negative assertion.
+    for (cancel_backoff, exhaust_recovery) in [(true, false), (false, true), (false, false)] {
+        let config = engine_config_with_pipeline(&format!(
+            r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 1
+            initial_backoff: {}
+            max_backoff: 60s
+            startup_timeout: 30s
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+            if cancel_backoff { "60s" } else { "1ms" }
+        ));
+        let factory = if exhaust_recovery {
+            &STARTUP_FAILING_PIPELINE_FACTORY
+        } else {
+            &RECOVERY_TEST_PIPELINE_FACTORY
+        };
+        let runtime = test_runtime_with_factory(&config, factory);
+        let _runner = ObservedStateRunner::start(&runtime);
+        register_existing_pipeline(&runtime, &config);
+        let _rx =
+            register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+        report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+        let (paused_tx, paused_rx) = std_mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std_mpsc::sync_channel(1);
+        let hook = if exhaust_recovery {
+            &runtime.before_recovery_failure
+        } else {
+            &runtime.before_recovery_backoff
+        };
+        *hook.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(move || {
+            paused_tx.send(()).expect("announce recovery handoff");
+            resume_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("release recovery handoff");
+        }));
+        let cleanup = RecoveryCleanup {
+            runtime: Arc::clone(&runtime),
+            resume: resume_tx,
+        };
+        runtime.note_instance_exit(
+            deployed_key("g1", "p1", 0, 0),
+            RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+                "last producer failed".to_owned(),
+            )),
+        );
+        paused_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("recovery should reach the controlled handoff");
+
+        let pending_producer_work = {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (state, _) = runtime
+                .state_changed
+                .wait_timeout_while(state, Duration::from_secs(30), |state| {
+                    !state.pending_instance_failures.is_empty()
+                })
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(state.pending_instance_failures.is_empty());
+            assert_eq!(state.active_instances, 0);
+            assert!(state.active_producer_keys().next().is_none());
+            assert!(state.first_error.is_none());
+            state.has_pending_producer_work()
+        };
+        cleanup.resume.send(()).expect("resume recovery");
+        if cancel_backoff {
+            runtime
+                .request_shutdown_all(30)
+                .expect("explicit shutdown should interrupt the 60-second backoff");
+        }
+        let workers = std::mem::take(
+            &mut *runtime
+                .recovery_workers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        assert_eq!(workers.len(), 1);
+        for worker in workers {
+            worker.join().expect("recovery worker should finish");
+        }
+
+        if !cancel_backoff && !exhaust_recovery {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(!state.global_shutdown_requested);
+            let recovery =
+                &state.runtime_recoveries[&(PipelineKey::new("g1".into(), "p1".into()), 0)];
+            assert_eq!(recovery.serving_generation, 1);
+            assert!(recovery.worker_id.is_none());
+            assert!(state.has_pending_producer_work());
+            drop(state);
+            runtime
+                .request_instance_shutdown(&deployed_key("g1", "p1", 0, 1), 30, "finish producer")
+                .expect("recovered producer should accept shutdown");
+        }
+        assert!(
+            runtime.wait_until_all_instances_exit_for(Duration::from_secs(30)),
+            "runtime instances should finish"
+        );
+        assert!(
+            !runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .has_pending_producer_work()
+        );
+        runtime.wait_until_all_producer_instances_exit();
+        let error = runtime.take_runtime_error();
+        if exhaust_recovery {
+            assert!(
+                error
+                    .expect("fatal error must be published before producer drain completes")
+                    .to_string()
+                    .contains("after 1 restart attempt(s)")
+            );
+        } else {
+            assert!(error.is_none());
+        }
+        assert!(
+            pending_producer_work,
+            "a recovery worker must keep automatic producer drain pending"
+        );
+    }
+}
+
 /// Scenario: every replacement runtime fails before it becomes ready and the
 /// configured restart budget is two attempts.
 /// Guarantees: early exit races consume exactly two generations before the

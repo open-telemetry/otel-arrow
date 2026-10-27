@@ -116,6 +116,15 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     /// One-shot test handoff after recording an exit but before publishing its failure.
     #[cfg(test)]
     after_instance_exit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// One-shot test handoff while a recovery worker owns a pending replacement.
+    #[cfg(test)]
+    before_recovery_backoff: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// One-shot test handoff before publishing a fatal recovery error.
+    #[cfg(test)]
+    before_recovery_failure: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Retains recovery thread handles so tests can join all background work.
+    #[cfg(test)]
+    recovery_workers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 /// Keeps observability alive until controller-owned telemetry has been handed off.
@@ -250,6 +259,12 @@ impl<
             state_changed: Condvar::new(),
             #[cfg(test)]
             after_instance_exit: Mutex::new(None),
+            #[cfg(test)]
+            before_recovery_backoff: Mutex::new(None),
+            #[cfg(test)]
+            before_recovery_failure: Mutex::new(None),
+            #[cfg(test)]
+            recovery_workers: Mutex::new(Vec::new()),
         }
     }
 

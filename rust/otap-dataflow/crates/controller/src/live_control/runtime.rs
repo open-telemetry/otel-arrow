@@ -742,24 +742,22 @@ impl<
         };
 
         if !policy.enabled {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 format!("runtime recovery is disabled: {}", error.message),
             );
             return;
         }
         if restart_count >= policy.max_restarts {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 error.message,
             );
@@ -797,28 +795,29 @@ impl<
                         None,
                         Some(failed_key.core_id),
                     );
-                    runtime.clear_runtime_recovery_worker(
-                        &worker_pipeline_key,
-                        failed_key.core_id,
-                        worker_id,
-                    );
                     runtime.fail_runtime_recovery(
                         &worker_pipeline_key,
                         failed_key.core_id,
                         failed_key.deployment_generation,
-                        restart_count,
+                        worker_id,
                         worker_policy.max_restarts,
                         report.detail_message(),
                     );
                 }
             });
+        #[cfg(test)]
+        let spawn_result = spawn_result.map(|worker| {
+            self.recovery_workers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(worker);
+        });
         if let Err(spawn_error) = spawn_result {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 format!("failed to spawn runtime recovery worker: {spawn_error}"),
             );
@@ -853,15 +852,11 @@ impl<
                     return;
                 }
                 RuntimeRecoveryAttemptDecision::Exhausted => {
-                    let restart_count = self
-                        .runtime_recovery_restart_count(&pipeline_key, core_id)
-                        .unwrap_or(policy.max_restarts);
-                    self.clear_runtime_recovery_worker(&pipeline_key, core_id, worker_id);
                     self.fail_runtime_recovery(
                         &pipeline_key,
                         core_id,
                         failed_generation,
-                        restart_count,
+                        worker_id,
                         policy.max_restarts,
                         last_error,
                     );
@@ -1172,6 +1167,17 @@ impl<
         worker_id: u64,
         delay: Duration,
     ) -> bool {
+        #[cfg(test)]
+        {
+            let hook = self
+                .before_recovery_backoff
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         let deadline = Instant::now() + delay;
         let recovery_key = (pipeline_key.clone(), core_id);
         let mut state = self
@@ -1446,10 +1452,24 @@ impl<
         pipeline_key: &PipelineKey,
         core_id: usize,
         failed_generation: u64,
-        restart_count: usize,
+        worker_id: u64,
         max_restarts: usize,
         error: String,
     ) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .before_recovery_failure
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        let restart_count = self
+            .runtime_recovery_restart_count(pipeline_key, core_id)
+            .unwrap_or(max_restarts);
         let fatal_message = format!(
             "runtime recovery failed for {}:{} core={} generation={} after {} restart attempt(s): {}",
             pipeline_key.pipeline_group_id(),
@@ -1481,6 +1501,9 @@ impl<
             error = error.as_str(),
             message = fatal_message.as_str(),
         );
+        // Publish the fatal cause before releasing producer liveness, but release
+        // this worker before coordinated shutdown waits for recovery cancellation.
+        self.clear_runtime_recovery_worker(pipeline_key, core_id, worker_id);
         if let Err(shutdown_error) = self.request_shutdown_all(10) {
             otel_error!(
                 "otelcol.pipeline.recovery.abort",
@@ -2348,7 +2371,7 @@ impl<
         self.state_changed.notify_all();
     }
 
-    /// Blocks until all non-observability runtime instances have exited.
+    /// Blocks until all non-observability instances and recovery workers finish.
     ///
     /// The system observability pipeline is deliberately excluded because it
     /// must remain alive to consume terminal telemetry from those producers.
@@ -2357,7 +2380,7 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while state.active_producer_keys().next().is_some() {
+        while state.has_pending_producer_work() {
             state = self
                 .state_changed
                 .wait(state)

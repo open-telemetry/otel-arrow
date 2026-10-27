@@ -636,6 +636,16 @@ impl ControllerRuntimeState {
             })
     }
 
+    /// Automatic producer drain must also wait for workers that can launch replacements.
+    pub(super) fn has_pending_producer_work(&self) -> bool {
+        self.active_producer_keys().next().is_some()
+            || self.runtime_recoveries.iter().any(|((key, _), recovery)| {
+                recovery.worker_id.is_some()
+                    && !(key.pipeline_group_id().as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                        && key.pipeline_id().as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+            })
+    }
+
     /// Looks up the current launch before any terminal record retained for a reused key.
     pub(super) fn runtime_instance(
         &self,
