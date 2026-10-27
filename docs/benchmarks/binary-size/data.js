@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793143111719,
+  "lastUpdate": 1793144284287,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -73121,6 +73121,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "73203753+sochen0714@users.noreply.github.com",
+            "name": "sochen0714",
+            "username": "sochen0714"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "38abd04c4432bfa4dd0792d0948cab3126ac5124",
+          "message": "feat(extensions): add Azure Key Vault SASL auth using published SDK (#4501)\n\n# Change summary\n\n> Chore PR? Open **Preview**, then [use the chore\ntemplate](?template=chore.md).\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdd the opt-in `azure_key_vault_sasl_auth` extension to retrieve both\nSASL username and password from Azure Key Vault at startup. It publishes\nonly a validated complete pair and reuses shared Azure identity,\nacquisition, and background-provider code.\n\nUse published Secrets `1.1.0-beta.1` with registry Core `1.2.0-beta.1` /\nIdentity `1.1.0-beta.1`, defaults disabled, and explicit Tokio\nintegration. This removes implicit AWS-LC selection. These are released\npreview packages, not stable releases or a product/FIPS approval claim.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4336\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\n**Feature checks passed** at `43f73c5aa`: extension suite 269 passed (8\nignored) and strict extension Clippy passed.\n\n`cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-sasl-auth,azure-identity-auth,crypto-ring --lib\ncommon::azure_key_vault` — PASS (15 tests), from `rust/otap-dataflow` at\n`43f73c5aa`.\n\nCrypto-provider graphs confirm no implicit AWS-LC for Ring, Windows\nSymCrypt, or Linux OpenSSL; Linux OpenSSL validation is graph-only.\n\n**Fresh live E2E: PASS (5/5)** on an Azure Linux VM using its\nsystem-assigned managed identity, production `da8412df9721`, and\n[validation source\n`ced089ecbd8d`](https://github.com/sochen0714/otel-arrow/releases/tag/akv-e2e-validation-ced089e).\n\n1. **Valid credentials:** Retrieve both AKV secrets; deliver exactly\nthree expected records over Kafka SASL_SSL.\n2. **Missing username:** `username/not_found`; nonzero exit; zero\nrecords.\n3. **Missing password:** `password/not_found`; nonzero exit; zero\nrecords.\n4. **1 ms startup timeout:** Credentials-readiness timeout; nonzero\nexit; zero records.\n5. **Broker rejection:** Explicit SASL authentication rejection; zero\nrecords.\n\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nEnable `azure-key-vault-sasl-auth` (also in `contrib-extensions`) and\nconfigure `urn:otel:extension:azure_key_vault_sasl_auth` with a vault\nroot, two secret references, and least-privilege read access. Managed\nidentity, workload identity, and local-only developer tooling are\nsupported. Optional independent version pins support coordinated\nprovisioning; the reads are not atomic. Credentials stay fixed after\nstartup without inline/file fallback or polling; restart to adopt\nchanged secrets. Kafka receiver binding/reconnection remains separate\nwork.\n\nIncludes documentation, telemetry, catalog/inventory integration, and\n`rust/otap-dataflow/.chloggen/azure-key-vault-sasl-auth.yaml`.\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-10-27T22:36:14Z",
+          "tree_id": "c089501ba73d409379e1e5d4a5252078ca2a0b01",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/38abd04c4432bfa4dd0792d0948cab3126ac5124"
+        },
+        "date": 1793144262420,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 2.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.83,
             "unit": "MB"
           }
         ]
