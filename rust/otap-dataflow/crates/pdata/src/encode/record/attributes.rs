@@ -3,6 +3,10 @@
 
 //! This module contains builders for record batches for attributes.
 
+mod known_keys;
+
+pub use known_keys::{KnownKey, KnownKeyArrayBuilder};
+
 use std::sync::Arc;
 
 use arrow::{
@@ -108,23 +112,44 @@ where
     }
 }
 
-/// Record batch builder for attributes where the key column is pre-validated string.
-//
-// Ordinarily, it would be better to use [`AttributesRecordBatchBuilder`] when constructing OTAP
-// batches for attributes where the keys are not known ahead of time and we're receiving them as
-// an array of arbitrary bytes (e.g. from OTLP proto bytes). The reason this is usually better is
-// because we can delay UTF validation until we construct the array.
-//
-// However, in some cases the keys may be known ahead of time, in which case, it makes more sense
-// to put them directly into a StringArrayBuilder instead of putting them into a BinaryArrayBuilder
-// and validate UTF-8 lazily
+/// Key-column backend for the shared string-key attribute record builder.
+///
+/// The default is [`StringArrayBuilder`]. [`KnownKeyArrayBuilder`] is an opt-in
+/// alternative for fixed vocabularies; generic dispatch adds no runtime choice
+/// or cache state to ordinary builders.
+pub trait AttributeKeyColumnBuilder {
+    /// Appends one UTF-8 attribute name.
+    fn append_key(&mut self, key: &str);
+
+    /// Finishes the key column, propagating construction errors.
+    fn finish_keys(&mut self) -> Result<Option<ArrayRef>, ArrowError>;
+}
+
+impl AttributeKeyColumnBuilder for StringArrayBuilder {
+    #[inline]
+    fn append_key(&mut self, key: &str) {
+        self.append_str(key);
+    }
+
+    #[inline]
+    fn finish_keys(&mut self) -> Result<Option<ArrayRef>, ArrowError> {
+        Ok(self.finish())
+    }
+}
+
+/// Record batch builder for attributes with pre-validated string keys.
+///
+/// Use [`AttributesRecordBatchBuilder`] for arbitrary byte keys so UTF-8
+/// validation can be delayed. The default key backend remains unchanged;
+/// `new_with_known_keys` opts into cached fixed-vocabulary names.
 pub struct StrKeysAttributesRecordBatchBuilder<
     T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+    K = StringArrayBuilder,
 > {
-    keys: StringArrayBuilder,
+    keys: K,
     parent_id: PrimitiveArrayBuilder<T::ArrayType>,
 
-    /// builder for attribute values
+    /// Builder for attribute values.
     pub any_values_builder: AnyValuesRecordsBuilder,
 }
 
@@ -132,15 +157,55 @@ impl<T> StrKeysAttributesRecordBatchBuilder<T>
 where
     T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {
-    /// create a new instance of [`AttributesRecordBatchBuilder`]
+    /// Creates an ordinary string-key builder with no known-key cache.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_key_builder(StringArrayBuilder::new(ArrayOptions {
+            optional: false,
+            dictionary_options: Some(DictionaryOptions::dict8()),
+            ..Default::default()
+        }))
+    }
+}
+
+impl<T, const N: usize> StrKeysAttributesRecordBatchBuilder<T, KnownKeyArrayBuilder<N>>
+where
+    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+{
+    /// Creates an opt-in builder whose dictionary cache resets at finish.
+    /// Names are interned on first use, not in vocabulary order.
+    ///
+    /// ```
+    /// use otel_arrow_dfe_pdata::encode::record::attributes::{
+    ///     KnownKey, StrKeysAttributesRecordBatchBuilder,
+    /// };
+    /// let mut attributes = StrKeysAttributesRecordBatchBuilder::<u16, _>::
+    ///     new_with_known_keys(&["service.name", "host.name"]);
+    /// let keys = KnownKey::<2>::slots();
+    /// attributes.append_known_key(keys[0]);
+    /// attributes.any_values_builder.append_str(b"frontend");
+    /// attributes.append_parent_id(&0);
+    /// assert_eq!(attributes.finish().unwrap().num_rows(), 1);
+    /// ```
+    #[must_use]
+    pub fn new_with_known_keys(names: &'static [&'static str; N]) -> Self {
+        Self::with_key_builder(KnownKeyArrayBuilder::new(names))
+    }
+
+    /// Appends a vocabulary slot without exposing an Arrow dictionary ID.
+    pub fn append_known_key(&mut self, key: impl Into<KnownKey<N>>) {
+        self.keys.append_known_key(key.into());
+    }
+}
+
+impl<T, K> StrKeysAttributesRecordBatchBuilder<T, K>
+where
+    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+    K: AttributeKeyColumnBuilder,
+{
+    fn with_key_builder(keys: K) -> Self {
         Self {
-            keys: StringArrayBuilder::new(ArrayOptions {
-                optional: false,
-                dictionary_options: Some(DictionaryOptions::dict8()),
-                ..Default::default()
-            }),
+            keys,
             parent_id: PrimitiveArrayBuilder::new(T::parent_id_array_options()),
             any_values_builder: AnyValuesRecordsBuilder::new(),
         }
@@ -154,9 +219,21 @@ where
         self.parent_id.append_value(val);
     }
 
+    /// Append the same parent ID for `n` consecutive attribute rows.
+    ///
+    /// This avoids repeating adaptive dispatch and dictionary lookup for every
+    /// attribute belonging to the same record. A zero count appends nothing.
+    pub fn append_parent_id_n(
+        &mut self,
+        val: &<<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+        n: usize,
+    ) {
+        self.parent_id.append_value_n(val, n);
+    }
+
     /// Append the attribute key to the builder for this array
     pub fn append_key(&mut self, val: &str) {
-        self.keys.append_str(val);
+        self.keys.append_key(val);
     }
 
     /// Finish this builder and produce the resulting RecordBatch
@@ -173,7 +250,7 @@ where
             columns.push(array);
         }
 
-        if let Some(array) = self.keys.finish() {
+        if let Some(array) = self.keys.finish_keys()? {
             fields.push(Field::new(
                 consts::ATTRIBUTE_KEY,
                 array.data_type().clone(),
@@ -548,5 +625,85 @@ impl AttributesRecordBatchBuilderConstructorHelper for u32 {
             dictionary_options: Some(DictionaryOptions::dict8()),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compare_bulk_parent_ids<T>()
+    where
+        T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+        <T::ArrayType as ArrowPrimitiveType>::Native: From<u16>,
+    {
+        let mut bulk = StrKeysAttributesRecordBatchBuilder::<T>::new();
+        let mut scalar = StrKeysAttributesRecordBatchBuilder::<T>::new();
+        for id in 0..1000u16 {
+            let parent = id.into();
+            let count = usize::from(id % 4);
+            bulk.append_parent_id_n(&parent, count);
+            for _ in 0..count {
+                scalar.append_parent_id(&parent);
+                bulk.append_key("key");
+                scalar.append_key("key");
+                bulk.any_values_builder.append_int(i64::from(id));
+                scalar.any_values_builder.append_int(i64::from(id));
+            }
+        }
+        assert_eq!(bulk.finish().unwrap(), scalar.finish().unwrap());
+    }
+
+    /// Scenario: Parent IDs repeat zero or more times across native and dictionary columns.
+    /// Guarantees: Bulk appends preserve rows and schema across capacity growth and 8-bit dictionary overflow.
+    #[test]
+    fn bulk_parent_ids_match_scalar_appends() {
+        compare_bulk_parent_ids::<u16>();
+        compare_bulk_parent_ids::<u32>();
+    }
+
+    fn compare_known_attribute_records<T>()
+    where
+        T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
+        <T::ArrayType as ArrowPrimitiveType>::Native: From<u16>,
+    {
+        let mut known =
+            StrKeysAttributesRecordBatchBuilder::<T, _>::new_with_known_keys(&["first", "second"]);
+        let keys = KnownKey::<2>::slots();
+        for count in [0u16, 1000] {
+            let mut ordinary = StrKeysAttributesRecordBatchBuilder::<T>::new();
+            for id in 0..count {
+                let parent = id.into();
+                known.append_known_key(keys[1]);
+                ordinary.append_key("second");
+                known.any_values_builder.append_int(i64::from(id));
+                ordinary.any_values_builder.append_int(i64::from(id));
+                known.append_key("first");
+                ordinary.append_key("first");
+                known.any_values_builder.append_str(b"dynamic collision");
+                ordinary.any_values_builder.append_str(b"dynamic collision");
+                known.append_known_key(keys[0]);
+                ordinary.append_key("first");
+                known.any_values_builder.append_empty();
+                ordinary.any_values_builder.append_empty();
+                known.append_parent_id_n(&parent, 3);
+                ordinary.append_parent_id_n(&parent, 3);
+            }
+            let actual = known.finish().unwrap();
+            let expected = ordinary.finish().unwrap();
+            assert_eq!(actual, expected);
+            for (actual, expected) in actual.columns().iter().zip(expected.columns()) {
+                // Compare physical dictionary ordering and keys, not just decoded equality.
+                assert_eq!(actual.to_data(), expected.to_data());
+            }
+        }
+    }
+
+    /// Scenario: Opt-in builders create empty and mixed batches with u16 and u32 parent IDs.
+    /// Guarantees: Shared assembly preserves schema, metadata, physical arrays, bulk parents, and values across finish reuse.
+    #[test]
+    fn known_attribute_records_match_default_builders() {
+        compare_known_attribute_records::<u16>();
+        compare_known_attribute_records::<u32>();
     }
 }
