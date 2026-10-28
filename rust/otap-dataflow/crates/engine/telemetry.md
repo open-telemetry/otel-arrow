@@ -90,6 +90,7 @@ per-engine output.
 | OTLP scope | Instrument name | Description | Produced when |
 | --- | --- | --- | --- |
 | `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS once per engine about every five seconds. |
 | `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
 | `engine` | `memory.pressure.state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
 | `engine` | `process.memory.usage.bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
