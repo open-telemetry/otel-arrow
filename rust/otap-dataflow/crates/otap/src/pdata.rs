@@ -19,21 +19,21 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers::{TransportHeaders, TransportHeadersData};
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
 use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
-use otel_arrow_dfe_engine::context_declaration::{
-    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
-    ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
-    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
-};
 use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, NodeControlMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
+use otel_arrow_dfe_engine::pdata_context::{
+    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
+    ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
+    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
+};
 use otel_arrow_dfe_engine::processor::{
     FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
 };
@@ -1745,7 +1745,10 @@ macro_rules! impl_pdata_effect_handler_ext {
                 pdata: OtapPdata,
             ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
                 let (context, payload) = pdata.into_parts();
-                match payload.try_into_otap(self.codec_service()) {
+                match payload
+                    .try_into_otap_cooperative(self.codec_service(), tokio::task::yield_now)
+                    .await
+                {
                     Ok(records) => Ok(OtapArrowPdata::new(context, records)),
                     Err(error) => {
                         let (source, payload) = error.into_parts();
@@ -1761,7 +1764,9 @@ macro_rules! impl_pdata_effect_handler_ext {
                 &self,
                 payload: OtapPayload,
             ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
-                payload.try_into_otap(self.codec_service())
+                payload
+                    .try_into_otap_cooperative(self.codec_service(), tokio::task::yield_now)
+                    .await
             }
 
             async fn view<'a>(
@@ -1769,7 +1774,13 @@ macro_rules! impl_pdata_effect_handler_ext {
                 payload: &'a OtapPayload,
                 accepted_encodings: &AcceptedEncodings,
             ) -> Result<PdataView<'a>, CodecError> {
-                payload.view(self.codec_service(), accepted_encodings)
+                payload
+                    .view_cooperative(
+                        self.codec_service(),
+                        accepted_encodings,
+                        tokio::task::yield_now,
+                    )
+                    .await
             }
 
             async fn with_encoded<R>(
@@ -1778,9 +1789,14 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &EncodingPlan,
                 consume: impl FnOnce(&[u8]) -> R,
             ) -> Result<R, CodecError> {
-                payload.with_encoded_output(self.codec_service(), plan, |output| {
-                    consume(output.as_ref())
-                })
+                payload
+                    .with_encoded_output_cooperative(
+                        self.codec_service(),
+                        plan,
+                        |output| consume(output.as_ref()),
+                        tokio::task::yield_now,
+                    )
+                    .await
             }
 
             async fn encode_owned(
@@ -1788,7 +1804,14 @@ macro_rules! impl_pdata_effect_handler_ext {
                 payload: &mut OtapPayload,
                 plan: &EncodingPlan,
             ) -> Result<bytes::Bytes, CodecError> {
-                payload.encode_bytes(self.codec_service(), plan)
+                payload
+                    .with_encoded_output_cooperative(
+                        self.codec_service(),
+                        plan,
+                        |output| output.into_bytes(),
+                        tokio::task::yield_now,
+                    )
+                    .await
             }
 
             async fn prepare_batch(
@@ -1796,7 +1819,8 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &BatchPlan,
                 payload: &mut OtapPayload,
             ) -> Result<(), CodecError> {
-                plan.prepare(payload, self.codec_service())
+                plan.prepare_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
             }
 
             async fn batch(
@@ -1813,7 +1837,8 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &BatchPlan,
                 payload: &mut OtapPayload,
             ) -> Result<(), CodecError> {
-                plan.finish(payload, self.codec_service())
+                plan.finish_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
             }
         }
     };
@@ -2069,11 +2094,11 @@ mod test {
     };
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
         ContextScope,
     };
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,

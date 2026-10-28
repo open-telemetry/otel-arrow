@@ -1,0 +1,70 @@
+# Azure Monitor envelope-field mapping. This is a configuration contract:
+# the Microsoft JSON receiver runtime is not implemented yet.
+# Use azure-monitor-exporter.yaml with this mapping, not the semantic example.
+# Reference this file from both "/v2/track" and "/v2.1/track" endpoint entries.
+# Routes do not select a mapping strategy; configure each path explicitly.
+#
+# Keep containers intact for re-export, rather than extracting every nested
+# value into individual OTel attributes as azure-monitor-browser-events.yaml
+# does. The existing exporter maps attributes to columns without decoding
+# JSON-string containers or rebuilding envelopes from expanded fields.
+# This retains container contents as strings, not as nested output objects.
+# The exporter can also export expanded fields with a different column schema.
+# See Endpoint.md for examples, trade-offs, and preservation limits.
+name: Azure Monitor envelope fields
+allowed_methods: [POST]
+accepted_content_types:
+  - application/json
+  - application/x-ndjson
+  - application/x-json-stream
+body_format: [json_array, line_separated_json]
+get_format: disabled
+response_format: azure_monitor
+max_request_body_size: 3145728
+max_event_size: 2097152
+filtered_item_size: false
+event_name_validation: none
+unmapped:
+  mode: body
+cors:
+  allow_credentials: false
+  allow_headers: "Content-Type, Content-Encoding, Sdk-Context"
+
+# Optional deployment metadata for the paired pipeline's resource_mapping.
+# Resolved at endpoint compile time; unset/empty variables are omitted.
+# Set these to identify the receiving service, not an untrusted browser client.
+env_resource_attrs:
+  OTEL_SERVICE_NAME: service.name
+  SERVICE_VERSION: service.version
+  SERVICE_INSTANCE_ID: service.instance.id
+
+# Keep original top-level values in attributes. Do not strip embedded iKeys,
+# flatten nested tags/data/ext, coerce values, remap keys, or drop diagnostics.
+# Container values are JSON strings in the source receiver's Arrow builder;
+# the existing exporter emits those strings unchanged. Use string columns
+# for tags/data/ext in the paired pipeline's destination schema.
+rules:
+  - path: name
+    target: { kind: event_name }
+    also:
+      - target: { kind: attribute, key: azure_monitor.envelope.name }
+  - path: time
+    target: { kind: timestamp }
+    also:
+      - target: { kind: attribute, key: azure_monitor.envelope.time }
+  - path: iKey
+    target: { kind: attribute, key: azure_monitor.envelope.iKey }
+  - path: ver
+    target: { kind: attribute, key: azure_monitor.envelope.ver }
+  - path: sampleRate
+    target: { kind: attribute, key: azure_monitor.envelope.sampleRate }
+  - path: seq
+    target: { kind: attribute, key: azure_monitor.envelope.seq }
+  - path: flags
+    target: { kind: attribute, key: azure_monitor.envelope.flags }
+  - path: tags
+    target: { kind: attribute, key: azure_monitor.envelope.tags }
+  - path: data
+    target: { kind: attribute, key: azure_monitor.envelope.data }
+  - path: ext
+    target: { kind: attribute, key: azure_monitor.envelope.ext }

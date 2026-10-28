@@ -11,6 +11,12 @@
 //! at each `send_message` call) and accumulated onto the PData's
 //! `flow_compute_ns` field. The start and end nodes record item counts, and
 //! the end node records the total compute duration into the flow metric entity.
+//!
+//! Timing measures wall-clock elapsed time, not CPU time. Send markers are not
+//! paused across `.await`, including cooperative codec yields, so time spent
+//! running other tasks can contribute when a processor suspends before sending.
+//! Receivers and exporters do not measure flow duration. Excluding suspension
+//! requires an engine-wide timing change rather than a codec-specific adjustment.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};

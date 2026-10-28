@@ -70,9 +70,6 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
-use otel_arrow_dfe_engine::context_declaration::{
-    CompiledContextBindings, ContextRuntimeRequirements,
-};
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -87,6 +84,7 @@ use otel_arrow_dfe_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
 };
+use otel_arrow_dfe_engine::pdata_context::{CompiledContextBindings, ContextRuntimeRequirements};
 use otel_arrow_dfe_engine::processor::FlowMetricHook;
 use otel_arrow_dfe_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,

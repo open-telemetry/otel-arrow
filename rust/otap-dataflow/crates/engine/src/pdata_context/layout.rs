@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use otel_arrow_dfe_config::context::ContextEntryName;
-pub use otel_arrow_dfe_config::context_policy::ContextDomain;
-use otel_arrow_dfe_config::context_policy::{
+pub use otel_arrow_dfe_config::context::policy::ContextDomain;
+use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind, ContextScope,
 };
 use otel_arrow_dfe_config::error::Error;
@@ -410,7 +410,7 @@ impl ContextFieldLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::context_policy::ContextEntryDefinition;
+    use otel_arrow_dfe_config::context::policy::ContextEntryDefinition;
 
     fn name(value: &str) -> ContextEntryName {
         value.try_into().expect("valid name")
