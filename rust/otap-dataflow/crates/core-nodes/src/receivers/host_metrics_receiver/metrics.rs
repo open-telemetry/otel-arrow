@@ -195,6 +195,48 @@ mod tests {
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
+    struct Expected<'a> {
+        scope: &'a str,
+        instrument: &'a str,
+        unit: &'a str,
+        attr: Option<(&'a str, &'a str)>,
+        value: u64,
+    }
+
+    fn assert_snapshot_cases(snapshots: &[MetricSetSnapshot], cases: &[Expected<'_>]) {
+        for c in cases {
+            let snap = snapshots
+                .iter()
+                .find(|s| {
+                    s.descriptor().name == c.scope
+                        && match c.attr {
+                            Some((k, v)) => s.measurement_attribute_value(k) == Some(v),
+                            None => true,
+                        }
+                        && s.descriptor()
+                            .metrics
+                            .iter()
+                            .any(|m| m.name == c.instrument)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "snapshot `{}` ({}) with attr {:?} not found",
+                        c.scope, c.instrument, c.attr
+                    )
+                });
+
+            let idx = snap
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|m| m.name == c.instrument)
+                .unwrap();
+
+            assert_eq!(snap.descriptor().metrics[idx].unit, c.unit);
+            assert_eq!(snap.get_metrics()[idx].to_u64_lossy(), c.value);
+        }
+    }
+
     /// Scenario: Host metrics receiver metric sets are recorded and drained into terminal snapshots.
     /// Guarantees: Scrape outcomes, error categories, and general counters emit valid snapshots and clear hot values.
     #[test]
@@ -232,14 +274,6 @@ mod tests {
             !snapshots.is_empty(),
             "terminal snapshots should contain recorded metric sets"
         );
-
-        struct Expected<'a> {
-            scope: &'a str,
-            instrument: &'a str,
-            unit: &'a str,
-            attr: Option<(&'a str, &'a str)>,
-            value: u64,
-        }
 
         let cases = [
             Expected {
@@ -396,12 +430,60 @@ mod tests {
 
         assert!(metrics.report(&mut reporter).is_ok());
 
+        let snapshots: Vec<_> = rx.try_iter().collect();
         // Three scrape outcome buckets, one error bucket, and one general bucket.
         assert_eq!(
-            rx.try_iter().count(),
+            snapshots.len(),
             5,
             "all touched metric buckets should be exported exactly once"
         );
+
+        let cases = [
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "completed")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "dropped")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.scrapes",
+                instrument: "scrapes",
+                unit: "{scrape}",
+                attr: Some(("outcome", "timeout")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics.errors",
+                instrument: "errors",
+                unit: "{error}",
+                attr: Some(("error.type", "source_read_error")),
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics",
+                instrument: "scrapes.started",
+                unit: "{scrape}",
+                attr: None,
+                value: 1,
+            },
+            Expected {
+                scope: "receiver.host_metrics",
+                instrument: "scrapes.skipped",
+                unit: "{scrape}",
+                attr: None,
+                value: 1,
+            },
+        ];
+
+        assert_snapshot_cases(&snapshots, &cases);
 
         // Reporting flushes hot values so no stale buckets remain for terminal collection.
         assert!(
