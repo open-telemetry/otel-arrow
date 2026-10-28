@@ -2,7 +2,7 @@
 
 <!-- markdownlint-disable MD013 -->
 
-Status: alpha implementation
+Status: experimental operational exporter
 
 Owner: contrib-nodes
 
@@ -85,7 +85,7 @@ The extension supports managed identity, development credentials, and workload
 identity. One extension instance represents one identity and OAuth scope and
 may serve multiple exporters in the same pipeline.
 
-The exporter uses `BearerAuth` to:
+The exporter uses the shared `HttpClientAuthProvider` adapter to:
 
 - wait for the first usable provider token before accepting data;
 - cache the current authorization header and token generation;
@@ -96,10 +96,10 @@ The exporter uses `BearerAuth` to:
   without a usable token.
 
 An HTTP 401 terminates the current physical HTTP operation. When request
-coalescing is enabled, the exporter may retain the compressed request and its
+coalescing is enabled, the exporter retains the compressed request and its
 source messages until a replacement token is available. Retained
 reauthentication retries are bounded by `max_retries`. Without coalescing, a
-401 produces a terminal NACK for that input.
+401 produces a retryable NACK for that input.
 
 ## Streaming ingestion protocol
 
@@ -221,10 +221,21 @@ traversal-work refusals report their own actual and configured limits rather
 than using row-byte errors.
 
 `max_pending_messages` bounds retained source messages across accumulators,
-in-flight requests, and retained authentication retries for one exporter
-instance. Once the limit is reached, the exporter stops receiving PData until
-capacity becomes available. `max_in_flight` independently bounds concurrent
-HTTP requests.
+in-flight requests, retained authentication retries, and completion routes for
+one exporter instance. Once the limit is reached, partial batches are flushed
+and the exporter stops receiving PData until capacity becomes available.
+`max_in_flight` independently bounds concurrent HTTP requests. Without
+coalescing, it also bounds admitted source messages and completion routes.
+During shutdown, the existing engine inbox can force-drain one input past the
+admission gate. The exporter parks at most one such source, flushes its
+internal batches immediately, and waits for capacity before consuming more
+input. The normal admitted-message bound plus this single parked source
+limits exporter-owned retention; upstream backlog is not copied into a queue.
+The exporter uses the inbox's optional, read-only `shutdown_deadline()`
+accessor to observe the already-latched deadline. It arms an independent
+timer so parked input cannot prevent cancellation of stalled requests or
+completion routes at that deadline. The accessor does not change admission
+or shutdown delivery for other inbox users.
 
 All bounds are per exporter instance. Process-wide capacity scales with the
 number of pipeline instances.
@@ -264,8 +275,8 @@ its logical request reaches a terminal result.
 - Terminal client refusals permanently NACK every source message with cause
   `refused`. Timeouts, throttling, server, transport, and authentication
   failures remain retryable.
-- Coalesced requests rejected with HTTP 401 may remain pending while waiting
-  for a replacement token.
+- Coalesced requests rejected with HTTP 401 remain pending while waiting
+  for a replacement token, up to the configured authentication retry limit.
 - If the token stream closes without a usable token, retained requests,
   partial accumulators, and subsequent PData receive retryable NACKs.
 - Shutdown flushes and drains only until the engine deadline. At the deadline,
@@ -273,9 +284,8 @@ its logical request reaches a terminal result.
   while the deadline permits, then records and abandons work that cannot be
   routed without exceeding the deadline.
 
-The exporter never ACKs a message merely because it entered a local
-accumulator. This preserves upstream retry behavior when ADX does not accept
-the request.
+The exporter never ACKs a non-empty message before ADX accepts it. This
+preserves upstream retry behavior when ADX does not accept the request.
 
 The exporter does not claim exactly-once delivery. A network failure after ADX
 accepts a request but before the response reaches the exporter can lead to
@@ -413,10 +423,9 @@ It does not introduce cross-core shared mutable state. Each pipeline instance
 owns its client pool, accumulators, retained authentication requests, and
 in-flight futures.
 
-Transformation and gzip compression execute synchronously on the pipeline's
-local runtime thread. Transformation stops at the configured request row or
-byte budget. Set coalescing thresholds and upstream batching with this bounded
-local-runtime work in mind.
+Transformation runs synchronously on the pipeline's local runtime thread and
+stops at the configured request row or byte budget. Gzip compression yields
+after each 64 KiB of input so control messages and other requests can progress.
 
 The request body and transformed rows are held in memory. There is no
 temporary-file spool. Per-row size, transformed row count, and uncompressed
@@ -485,12 +494,14 @@ Tests cover:
 - malformed raw OTLP framing for logs, metrics, and traces;
 - missing bearer-token capability rejection;
 - HTTPS-only endpoint validation and request-size refusal;
-- request coalescing thresholds and message boundaries;
+- exact row, byte, and message coalescing boundaries and timed flushing;
+- coalesced ACK/NACK fan-out and global admission across signals;
+- retained 401 recovery, retry exhaustion, and token-stream closure;
 - recoverable in-flight ownership for deadline-bound shutdown;
 - backpressured completion routing at the shutdown deadline;
 - successful no-op attempt accounting;
 - shutdown while request capacity is full;
-- 401 retention followed by replacement-token retry;
+- 401 invalidation followed by use of a replacement token on subsequent input;
 - log schema options and event-name precedence;
 - explicit and exponential histogram transformation;
 - OTAP Arrow transformation for logs, metrics, and traces;
@@ -522,12 +533,12 @@ cargo test -p otel-arrow-dfe-contrib-nodes \
 - ADX streaming ingestion must be enabled for the target tables.
 - Queued ingestion and post-submission ingestion-status monitoring are absent.
 - Client-secret service-principal fields are intentionally not accepted.
-- One source message is never split to satisfy coalescing thresholds.
+- One source message is never split to satisfy request limits.
 - [Signal transformation](#signal-transformation) is lossy; review the
   documented omissions and substitutions before relying on complete OTLP
   semantic fidelity.
 - Exponential histograms are projected to cumulative bucket rows.
-- Compression and transformation are synchronous local-runtime work.
+- Transformation and compression remain local-runtime work; compression yields cooperatively.
 
 ## Future work
 
