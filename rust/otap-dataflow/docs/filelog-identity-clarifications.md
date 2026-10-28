@@ -21,10 +21,21 @@ The specification makes this distinction:
 | Reading fails with an I/O error | Keep the saved identity and progress. Return the original error for worker retry or failure handling. |
 | A read is interrupted | Retry within a bounded budget, checking cancellation between attempts. If the budget runs out, return a source error. |
 
-For example, suppose the saved offset is 1,000 and the disk returns an error
-while Filelog checks the window. That error tells us the read failed. It does
-not tell us that the file was replaced. Resetting or quarantining the identity
-on that evidence alone could discard valid recovery state.
+### Example: the disk fails, then recovers
+
+The saved offset is 1,000 and the locator still matches the saved Active record.
+With compatible framing settings, Filelog must still validate the prefix, size
+and bytes just before the offset before resuming.
+
+| Attempt | Observation | Result |
+| --- | --- | --- |
+| First | The disk returns EIO instead of bytes | Keep the saved record at 1,000. Report the error; do not resume. |
+| Second | The disk returns EIO again | Keep the same record. Repetition does not prove replacement. |
+| Later | The prefix, size and frontier all validate | Resume the original file ID at 1,000. |
+
+If the later read succeeds but the frontier bytes differ, that is a mismatch and
+uses the configured mismatch policy. An error and a successful read of different
+bytes provide different evidence.
 
 On an I/O error, preserve the record, file ID, offset, epoch, prefix and frontier.
 Do not replace the identity or quarantine it solely because of the error.
@@ -86,14 +97,18 @@ identify files or guarantee lossless copytruncate capture.
 
 That alternative would reduce some false matches, but could skip surviving data:
 
-1. A file is copied while it is short.
-2. The original grows, and Filelog saves a longer fingerprint for it.
+1. A 100-byte file is copied; its last 20 bytes have not been acknowledged.
+2. The original grows to 200 bytes. Filelog saves a 200-byte fingerprint, but
+   those 20 bytes are still unacknowledged. Evidence growth does not advance
+   acknowledged progress.
 3. The original is deleted.
-4. After restart, the shorter copy contains the only surviving unread bytes.
+4. After restart, the 100-byte copy is the only surviving source of those bytes.
 
-The copy cannot match the entire longer fingerprint, so that alternative rejects
-its association. This can happen even when the original was only ever appended
-to. A regression test covers this order of events.
+The copy matches the first 100 bytes of the saved fingerprint, but cannot contain
+all 200. Requiring the whole saved fingerprint would reject the association;
+with `start_at: end`, the unread tail would be skipped. Common-prefix association
+with the default `beginning` mismatch policy reads it again, accepting duplicates.
+A regression test covers this order of events.
 
 Keep common-prefix matching for the MVP. Narrowing it requires either accepting
 this capture gap or collecting additional evidence. We cannot assume that every

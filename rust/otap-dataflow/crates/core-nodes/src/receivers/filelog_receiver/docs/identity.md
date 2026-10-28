@@ -7,6 +7,28 @@ primitives and checkpoint store.
 This is a standalone component. It does not register a receiver, schedule
 readers, finalize rotated files or decide which progress an Ack authorizes.
 
+## Start with one log file
+
+Suppose Filelog saved progress at byte 1,000 of `app.log`, under file ID A. A
+**locator** is the operating system's file reference (device and inode on Linux).
+The path is its name; the file ID identifies the stream in the checkpoint.
+
+Consider these cases independently. The saved record is Active and its framing
+settings are compatible. Resume still requires the prefix, size and frontier
+checks described below.
+
+| What happens next? | Identity decision |
+| --- | --- |
+| Filelog restarts and the same file passes validation | Keep ID A and resume at byte 1,000. |
+| The file is renamed to `app.log.1`; its locator and evidence still validate | Keep ID A and resume at byte 1,000, despite the new name. |
+| A copy appears at a different locator and its prefix associates with A | Give the copy a new ID. With the default mismatch policy, start at byte zero; some bytes may be read again. |
+| Discovery recognizes a previously untracked move/create replacement at `app.log` | Give the replacement a new ID and start at byte zero. Keep the old file's progress separate. |
+| Reading the saved file's frontier returns a disk error | Keep ID A and byte 1,000, but do not resume until validation succeeds. |
+
+If another logical reader already holds the locator's lease, admission reports a
+conflict before opening the file. Closing that reader's descriptor does not
+release its lease.
+
 ## Admission protocol
 
 Admission has four stages: restore, prepare, commit and read.

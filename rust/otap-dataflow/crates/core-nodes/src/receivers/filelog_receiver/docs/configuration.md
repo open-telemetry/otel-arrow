@@ -93,6 +93,30 @@ An identical retained full path also associates a changed locator, even without
 matching fingerprints, and can quarantine the replacement under `fail`.
 No association transfers the old file's ID, epoch or committed offset.
 
+### Example: a copy contains unread logs
+
+Filelog has saved acknowledged progress at byte 1,000 of a 2,000-byte `app.log`.
+While it is stopped, someone copies the file to `archive.log` and removes the
+original. Assume the saved record is still Active, the copy is included, and its
+prefix matches.
+
+With `start_at: end`, an unrelated new file would start at byte 2,000. Association
+instead uses `identity.on_recovery_mismatch`: the default `beginning` reads the
+copy from byte zero. That may repeat the first 1,000 bytes, but preserves the
+chance to collect the unread tail. The copy gets a new identity; it does not
+inherit the saved offset.
+
+### Example: two unrelated JSON logs
+
+Suppose the saved fingerprint for `orders.log` is just `{`, because that was all
+the file contained when observed. A new, unrelated `payments.log` also starts
+with `{`. With that evidence still retained, the common prefix can associate
+them even when `fingerprint_bytes` is 1,000.
+
+Under `fail`, the new file can be quarantined. Under `beginning`, it is read from
+the start. This is why fingerprint matching is a policy choice with possible
+false matches, not proof that two files are the same.
+
 ## Memory checks
 
 Configuration rejects arithmetic overflow and values above the limits in the
