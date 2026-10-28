@@ -13,12 +13,18 @@
 mod layout;
 /// Materializes selected composites at runtime.
 mod materialization;
+/// Request-scoped message metadata carried by pdata.
+mod metadata;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
 
 use PreparedHeaderPropagationPolicy as HeaderPropagationPolicy;
 pub use layout::*;
 pub use materialization::*;
+pub use metadata::{
+    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntry, Metadata,
+    PeerAddrMerger,
+};
 pub use propagation::CompiledHeaderPropagationPolicy;
 #[doc(hidden)]
 pub use propagation::PreparedHeaderPropagationPolicy;
