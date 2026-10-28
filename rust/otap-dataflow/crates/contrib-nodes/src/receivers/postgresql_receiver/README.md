@@ -65,6 +65,11 @@ Remove-Item -Recurse -Force .otap-state\postgresql -ErrorAction SilentlyContinue
 
 ## Configuration
 
+For startup-only Azure Key Vault credentials, see the
+[AKV Basic Auth provider](../../../../contrib-extensions/src/azure_key_vault_user_pass_auth/README.md)
+and [complete AKV pipeline](../../../../../configs/postgresql-akv-console.yaml).
+Bind it through `basic_auth_provider`; receiver TLS and checkpoint behavior are unchanged.
+
 | Field | Required? | Default / contract |
 | --- | --- | --- |
 | `source_id` | Yes | Stable name, 1-128 UTF-8 bytes without control characters. |

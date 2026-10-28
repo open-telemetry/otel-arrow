@@ -355,5 +355,11 @@
     "category": "Extension",
     "description": null,
     "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:azure_key_vault_user_pass_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
   }
 ]

@@ -54,6 +54,16 @@ dhat = { workspace = true, optional = true }
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 
+[dev-dependencies]
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+tempfile.workspace = true
+
+[[test]]
+name = "akv_database_bindings"
+required-features = ["azure-key-vault-user-pass-auth", "oracle", "postgresql", "sql-server"]
+
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { version = "0.62.0", path = "crates/admin-api" }
 otel-arrow-dfe-admin-types = { version = "0.62.0", path = "crates/admin-types" }
@@ -402,6 +412,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
 azure-key-vault-sasl-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-vault-sasl-auth"]
+azure-key-vault-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-vault-user-pass-auth"]
 flat-file-api-key-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-api-key-auth"]
 flat-file-sasl-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-sasl-auth"]
 flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]

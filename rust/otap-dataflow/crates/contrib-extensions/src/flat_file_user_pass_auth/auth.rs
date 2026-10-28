@@ -7,17 +7,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use otel_arrow_dfe_engine::capability::CapabilityError;
 use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
-use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthCredentialStream;
-use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider as SharedBasicAuthProvider;
 use secrecy::SecretString;
-use tokio_stream::wrappers::WatchStream;
 
 use crate::common::background_refresh::BackgroundProviderSource;
 use crate::common::secret_file::{ReadSecretFileError, read_secret_file};
-use crate::flat_file_user_pass_auth::FlatFileUserPassAuthExtension;
 use crate::flat_file_user_pass_auth::config::Config;
 use crate::flat_file_user_pass_auth::error::Error;
 
@@ -93,22 +87,5 @@ impl BackgroundProviderSource<BasicAuthCredential> for FlatFileUserPassAuth {
 
     fn expires_on(value: &BasicAuthCredential) -> Option<Instant> {
         value.expires_on()
-    }
-}
-
-#[async_trait]
-impl SharedBasicAuthProvider for FlatFileUserPassAuthExtension {
-    async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
-        self.get_value().await
-    }
-
-    fn credential_stream(&self) -> BasicAuthCredentialStream {
-        let rx = self.subscribe();
-        // Yield the current cached value immediately, then each refresh. The
-        // initial `None` (and any future `None`) is filtered out. The stream
-        // item is a plain `BasicAuthCredential`: a refresh failure does not terminate
-        // the subscription, it simply does not emit until the next success.
-        let stream = WatchStream::new(rx).filter_map(|opt| async move { opt });
-        Box::pin(stream)
     }
 }
