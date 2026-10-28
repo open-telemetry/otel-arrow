@@ -8,10 +8,10 @@
 //!
 //! A node can expose multiple named output ports.
 
+use crate::context::transport_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
 use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
 use crate::policy::DistributionTier;
-use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
 use crate::{CapabilityId, Description, ExtensionId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -875,7 +875,7 @@ capabilities:
 
     #[test]
     fn exporter_with_invalid_propagation_selector_is_rejected() {
-        use crate::transport_headers_policy::{
+        use crate::context::transport_policy::{
             PropagationDefault, PropagationSelector, PropagationSelectorType,
         };
 
@@ -899,7 +899,7 @@ capabilities:
 
     #[test]
     fn exporter_with_valid_propagation_selector_passes() {
-        use crate::transport_headers_policy::{
+        use crate::context::transport_policy::{
             PropagationDefault, PropagationSelector, PropagationSelectorType,
         };
 

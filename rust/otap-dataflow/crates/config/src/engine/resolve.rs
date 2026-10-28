@@ -4,7 +4,7 @@
 //! Resolution phase for [`OtelDataflowSpec`].
 
 use crate::codecs::{CodecsConfig, ResolvedCodecsConfig};
-use crate::context_policy::ContextEntryDeclaration;
+use crate::context::policy::ContextEntryDeclaration;
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
 use crate::policy::{

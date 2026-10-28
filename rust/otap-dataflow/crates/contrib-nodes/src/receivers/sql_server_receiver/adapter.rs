@@ -56,6 +56,8 @@ pub struct SqlServerAdapter<C: SqlServerConnector> {
     cancellation: SqlServerCancellation,
     stopping: bool,
     response_pending: bool,
+    connection_pending: bool,
+    connection_cleanup_failed: bool,
     unconfirmed_transport: Option<std::io::ErrorKind>,
 }
 
@@ -105,6 +107,8 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
             cancellation: SqlServerCancellation::default(),
             stopping: false,
             response_pending: false,
+            connection_pending: false,
+            connection_cleanup_failed: false,
             unconfirmed_transport: None,
         }
     }
@@ -142,7 +146,7 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
                 _ => false,
             }
         }
-        if self.stopping || self.response_pending {
+        if self.stopping || self.response_pending || self.connection_pending {
             return Err(Error::NotValidated);
         }
         Ok(())
@@ -177,15 +181,43 @@ impl<C: SqlServerConnector> SqlServerAdapter<C> {
             config.handshake_timeout(None);
             config.command_timeout(None);
             config.lossy_utf16_decoding(false);
-            driver_call(self.connector.connect(endpoint, config)).await
+            self.connection_pending = true;
+            driver_call(self.connector.connect(endpoint, config))
+                .await
+                .map_err(|error| match error {
+                    Error::Transport(kind) => Error::ConnectTransport(kind),
+                    _ => error,
+                })
         };
-        self.client = Some(tokio::select! {
+        let result = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Err(Error::Cancelled),
-            () = tokio::time::sleep_until(deadline) => return Err(Error::Deadline),
-            result = operation => result?,
-        });
-        Ok(())
+            () = cancel.cancelled() => Err(Error::Cancelled),
+            () = tokio::time::sleep_until(deadline) => Err(Error::ConnectTimeout),
+            result = operation => result,
+        };
+        match result {
+            Ok(client) => {
+                self.connection_pending = false;
+                self.client = Some(client);
+                Ok(())
+            }
+            Err(error) => {
+                // Dropping connect only requests cancellation. Never expose a
+                // retryable error until its owned worker has acknowledged exit.
+                if self.connection_pending {
+                    match tokio::time::timeout(Duration::from_secs(1), self.connector.shutdown())
+                        .await
+                    {
+                        Ok(Ok(())) => self.connection_pending = false,
+                        _ => {
+                            self.connection_cleanup_failed = true;
+                            return Err(Error::Driver);
+                        }
+                    }
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn cancel_client(&mut self, client: &mut Client<C::Stream>) -> Result<(), Error> {
@@ -275,7 +307,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
     }
 
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Error> {
-        if self.stopping || self.response_pending {
+        if self.stopping || self.response_pending || self.connection_pending {
             return Err(Error::NotValidated);
         }
         self.cancellation = SqlServerCancellation::default();
@@ -283,15 +315,38 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
     }
 
     fn is_retryable(error: &Error) -> bool {
+        use std::io::ErrorKind;
+        if let Error::NameResolution(kind) = error {
+            // Resolver APIs may erase transient DNS causes into Uncategorized.
+            // This fallback is restricted to DNS, never TLS or query I/O.
+            return !matches!(
+                kind,
+                ErrorKind::InvalidInput
+                    | ErrorKind::InvalidData
+                    | ErrorKind::PermissionDenied
+                    | ErrorKind::Unsupported
+            );
+        }
         matches!(
             error,
             Error::Transport(
-                std::io::ErrorKind::ConnectionRefused
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::UnexpectedEof
-            ) | Error::Server(1205 | 40197 | 40501 | 40613)
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::UnexpectedEof
+            ) | Error::ConnectTransport(
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::UnexpectedEof
+                    | ErrorKind::TimedOut
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::NetworkDown
+            ) | Error::ConnectTimeout
+                | Error::Server(1205 | 40197 | 40501 | 40613)
                 | Error::QueryTimeout
         )
     }
@@ -394,6 +449,10 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
         let connector = self.connector.shutdown().await;
         close?;
         connector?;
+        self.connection_pending = false;
+        if self.connection_cleanup_failed {
+            return Err(Error::Driver);
+        }
         if self.response_pending {
             Err(self.cleanup_error())
         } else {
@@ -403,7 +462,11 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
 
     fn classify_error(error: &Error) -> ReceiverErrorKind {
         match error {
-            Error::Transport(_) | Error::UnconfirmedTransport(_) => ReceiverErrorKind::Connect,
+            Error::Transport(_)
+            | Error::ConnectTransport(_)
+            | Error::NameResolution(_)
+            | Error::ConnectTimeout
+            | Error::UnconfirmedTransport(_) => ReceiverErrorKind::Connect,
             Error::Credentials
             | Error::Metadata
             | Error::Cursor

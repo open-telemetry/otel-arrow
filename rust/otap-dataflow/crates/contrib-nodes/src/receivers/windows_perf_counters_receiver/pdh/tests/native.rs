@@ -42,7 +42,7 @@ fn comparison_paths_normalize_only_native_instance_components() {
         assert_eq!(NativePdh::comparison_path_fixture(path).unwrap(), expected);
     }
 }
-use super::super::super::TEST_PDH_LOCK;
+use super::super::tests::TEST_PDH_LOCK;
 use std::cell::RefCell;
 use windows_sys::Win32::System::Performance::PdhFormatFromRawValue;
 

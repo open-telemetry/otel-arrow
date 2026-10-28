@@ -33,7 +33,6 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::Interests;
-use crate::context_declaration::ContextMaterializationPlan;
 use crate::control::{NodeControlMsg, RuntimeCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -41,6 +40,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::pdata_context::ContextMaterializationPlan;
 use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
@@ -49,8 +49,8 @@ use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};

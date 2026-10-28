@@ -14,7 +14,7 @@
 //! headers cannot contain a forbidden key.
 
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use serde::{Deserialize, Serialize};
 
 /// A key/value pair for transport header assertions.
@@ -153,7 +153,7 @@ pub fn validate_transport_header_deny_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")

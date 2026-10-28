@@ -34,12 +34,12 @@
 //! in parallel on different cores, each with its own exporter instance.
 
 use crate::Interests;
-use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::ExporterInbox;
 use crate::node::NodeId;
+use crate::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;

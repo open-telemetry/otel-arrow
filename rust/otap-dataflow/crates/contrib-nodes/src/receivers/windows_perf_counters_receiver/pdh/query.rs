@@ -20,6 +20,7 @@ use super::timing::{cumulative_start_time, positive_timestamp};
 use super::{CounterLanguage, PdhApi, ValueFormat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Performance::PDH_MAX_COUNTER_PATH;
 
@@ -47,6 +48,50 @@ pub(super) struct Query<A: PdhApi = NativePdh> {
     comparison_mappings: BTreeSet<usize>,
     identity_failures: BTreeSet<usize>,
     exact_identities: BTreeMap<CounterKey, usize>,
+}
+
+impl Query {
+    pub(super) fn open_replacement(
+        configs: Vec<CounterConfig>,
+        exact_retry_cap: Duration,
+        wildcard_refresh_interval: Duration,
+        max_instances_per_wildcard: usize,
+        max_native_counters: usize,
+        node: String,
+        seed: Option<&QueryRecreationSeed>,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<Self, Error> {
+        Self::open_with_seed(
+            NativePdh::open_controlled(node, shutdown)?,
+            configs,
+            exact_retry_cap,
+            wildcard_refresh_interval,
+            max_instances_per_wildcard,
+            max_native_counters,
+            seed,
+        )
+    }
+}
+
+pub(super) fn record_query_failure(
+    pending: &mut PendingMetadata,
+    configs: &[CounterConfig],
+    error: &Error,
+) {
+    pending
+        .failures
+        .extend(
+            configs
+                .iter()
+                .enumerate()
+                .map(|(counter_index, config)| SampleFailure {
+                    counter_index,
+                    path: Arc::from(config.path.as_str()),
+                    reason: error.reason(),
+                    error: error.bounded_detail(),
+                    diagnostic_only: true,
+                }),
+        );
 }
 
 impl<A: PdhApi> Query<A> {
@@ -1241,6 +1286,23 @@ impl<A: PdhApi> Query<A> {
         self.restore_collection_error(metadata, error)
     }
 
+    pub(super) fn move_pending_metadata_to(&mut self, target: &mut PendingMetadata) {
+        target.merge(std::mem::take(&mut self.pending));
+        target.pending_cleanup = Some(self.pending_cleanup());
+    }
+
+    fn pending_cleanup(&self) -> Vec<(usize, Arc<str>)> {
+        self.pending_removals
+            .values()
+            .map(|removal| {
+                (
+                    removal.counter.config_index,
+                    Arc::clone(&removal.counter.path),
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn active_counter_count(&self) -> usize {
         self.counters.len()
     }
@@ -1351,6 +1413,7 @@ impl<A: PdhApi> Query<A> {
                 &mut self.previous_timestamp_unix_nano,
                 timestamp_unix_nano,
             );
+            metadata.pending_cleanup = Some(self.pending_cleanup());
             return Ok(Sample {
                 timestamp_unix_nano,
                 members: self.admitted_members(),
@@ -1384,6 +1447,7 @@ impl<A: PdhApi> Query<A> {
             Err(error) => return Err(self.restore_collection_error(metadata, error)),
         };
         metadata.diagnostics.active_expanded_counters = self.active_expanded_count();
+        metadata.pending_cleanup = Some(self.pending_cleanup());
         Ok(Sample {
             timestamp_unix_nano,
             members: self.admitted_members(),

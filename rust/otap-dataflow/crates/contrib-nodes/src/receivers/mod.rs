@@ -9,6 +9,10 @@ pub mod etw_receiver;
 #[cfg(feature = "kafka")]
 pub mod kafka_receiver;
 
+/// Microsoft Common Schema JSON receiver.
+#[cfg(feature = "microsoft-json")]
+pub mod microsoft_json_receiver;
+
 /// Oracle database receiver.
 #[cfg(feature = "oracle")]
 pub mod oracle_receiver;

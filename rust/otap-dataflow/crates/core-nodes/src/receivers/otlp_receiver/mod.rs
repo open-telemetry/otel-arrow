@@ -909,13 +909,13 @@ mod tests {
 
     use otel_arrow_dfe_channel::error::RecvError;
     use otel_arrow_dfe_config::{ContextEntryName, SignalType};
-    use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+    use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::policy::{
         MemoryLimiterMode, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
         RateLimitUnit, RateLimiterPolicy, TokenBucketPolicy,
     };
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     };
     use otel_arrow_dfe_engine::Interests;

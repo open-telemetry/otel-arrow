@@ -357,6 +357,42 @@ advances the acknowledged checkpoint.
 
 ## Development
 
+### Live integration CI
+
+The shared contrib workflow selects the advisory Ubuntu 24.04 job for receiver
+and shared dependency changes, following the Oracle and SQL Server patterns.
+On Linux with Docker Compose v2, Python, and Rust build prerequisites, run from the
+repository root:
+
+```sh
+python3 .github/scripts/run-contrib-integration-test.py --manifest rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/integration-test.json
+```
+
+Harness checks run before provisioning the existing TLS fixture. The ignored
+`worker::live_tests` suite covers native integer/timestamp scalar and composite
+paging, exact values/microseconds, snapshot fit/overflow, factory emission,
+NACK replay, ACK/checkpoint/restart, native cancellation, idle reconnect,
+untrusted TLS rejection, and bounded shutdown. Ordinary loopback TLS tests remain
+independent. Certificate rotation and full `df_engine` process smoke tests are
+not part of this suite.
+
+Runs own a unique Compose project, private temporary credentials, and ephemeral
+loopback port; commands own a process group terminated before failure cleanup.
+Readiness requires the final TCP server, not its Unix-only initialization server.
+Manual fixture defaults are unchanged. Idle-disconnect coverage follows failed
+polling, retryable error, reconnect, revalidation, and polling. It currently waits
+through the receiver's conservative 30-second reconnect fence; shutdown during
+that fence reports unconfirmed cleanup, and a reconnect timeout may require another
+controller retry. Fixing that production behavior is separate.
+For an already provisioned fixture, set `OTEL_ARROW_POSTGRESQL_TEST_PORT` and
+`OTEL_ARROW_POSTGRESQL_TEST_CA_FILE`, then run from `rust/otap-dataflow`:
+
+```sh
+cargo test --locked -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::worker::live_tests -- --ignored --nocapture --test-threads=1
+```
+
+### Unit and transport tests
+
 Run commands from `rust/otap-dataflow`.
 
 Run the complete PostgreSQL receiver unit and loopback transport suite:

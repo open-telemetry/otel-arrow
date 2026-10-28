@@ -20,8 +20,8 @@ use futures::future::FutureExt;
 use http::{HeaderName, HeaderValue};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::ValueKind;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
@@ -908,7 +908,7 @@ fn build_grpc_metadata(
 fn append_propagated_grpc_header(
     metadata: &mut MetadataMap,
     static_metadata: Option<&MetadataMap>,
-    header: otel_arrow_dfe_config::transport_headers_policy::PropagatedHeader<'_>,
+    header: otel_arrow_dfe_config::context::transport_policy::PropagatedHeader<'_>,
 ) {
     match header.value_kind {
         ValueKind::Text => {
@@ -1163,7 +1163,7 @@ mod tests {
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextPolicy, ContextScope,
     };
     use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -1171,17 +1171,17 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
 
-    use otel_arrow_dfe_config::transport_headers::{
+    use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
-    use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_policy::PropagationSelectorType;
+    use otel_arrow_dfe_config::context::transport_policy::{
         HeaderPropagationPolicy as HeaderPropagationConfig, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector,
     };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+    use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,

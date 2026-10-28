@@ -535,9 +535,25 @@ jobs:
           save-if: false
       - name: Free disk space
         run: |
+          df -h /tmp "$GITHUB_WORKSPACE"
+          if [ -d /mnt ]; then
+            df -h /mnt
+          fi
+          # Measure the tool cache, but retain language runtimes used by build tools.
+          if [ -d /opt/hostedtoolcache ]; then
+            sudo du -h --max-depth=1 /opt/hostedtoolcache
+          fi
+          # These jobs do not use CodeQL, Conda environments, or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL; do
+            if [ -d "$directory" ]; then
+              sudo du -sh "$directory"
+            fi
+          done
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+          df -h /tmp "$GITHUB_WORKSPACE"
       - name: Install nightly wasm guest target
         run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
       - name: Check the reference WASM guest
@@ -638,9 +654,25 @@ jobs:
           tool: cargo-nextest
       - name: Free disk space
         run: |
+          df -h /tmp "$GITHUB_WORKSPACE"
+          if [ -d /mnt ]; then
+            df -h /mnt
+          fi
+          # Measure the tool cache, but retain language runtimes used by build tools.
+          if [ -d /opt/hostedtoolcache ]; then
+            sudo du -h --max-depth=1 /opt/hostedtoolcache
+          fi
+          # These jobs do not use CodeQL, Conda environments, or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL; do
+            if [ -d "$directory" ]; then
+              sudo du -sh "$directory"
+            fi
+          done
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+          df -h /tmp "$GITHUB_WORKSPACE"
       - name: Build the test collector
         run: make otelarrowcol
       - name: Install nightly wasm guest target
@@ -652,12 +684,19 @@ jobs:
           name: nextest-archive-ubuntu-latest
           path: ./rust/otap-dataflow
       - name: Run tests (partition ${{ matrix.partition }}/3)
-        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        # /tmp can be a small tmpfs; extract test binaries onto the workspace disk.
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/nextest-extracted"
+          cargo nextest run --profile ci --config-file .config/nextest.toml \
+            --archive-file nextest-archive.tar.zst \
+            --extract-to "$GITHUB_WORKSPACE/nextest-extracted" \
+            --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/otap-dataflow
       - name: Write JUnit artifact metadata
         if: always()
         shell: bash
         run: |
+          mkdir -p ./rust/otap-dataflow/target/nextest/ci
           echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow"}' \
             > ./rust/otap-dataflow/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results

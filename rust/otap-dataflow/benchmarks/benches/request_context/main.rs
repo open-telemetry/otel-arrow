@@ -13,13 +13,15 @@ use std::sync::Arc;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
-use otel_arrow_dfe_config::transport_headers_policy::{
+use otel_arrow_dfe_config::context::transport_headers::{
+    TransportHeader, TransportHeaders, ValueKind,
+};
+use otel_arrow_dfe_config::context::transport_policy::{
     CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
     HeaderPropagationPolicy as HeaderPropagationConfig, NameStrategy, PropagationDefault,
     PropagationSelector, PropagationSelectorType,
 };
-use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use rdkafka::message::{Header, Headers, OwnedHeaders};
 use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 

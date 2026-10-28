@@ -2,18 +2,175 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::super::config::{CounterConfig, InstanceConfig, MetricKind};
-use super::super::model::{ExpansionOverflow, InstanceIdentity, Number, SampleValue};
-use super::super::{config::Config, otap_builder::into_otap, test_utils::decode};
+use super::super::model::{
+    ExpansionOverflow, InstanceIdentity, Number, PendingMetadata, Sample, SampleDiagnostics,
+    SampleFailure, SampleValue, merge_diagnostics,
+};
+use super::super::{config::Config, otap_builder::project_sample, test_utils::decode};
 use super::expansion::*;
 use super::native::NativePdh;
 use super::query::*;
+use super::worker::*;
 use super::*;
-use std::cell::RefCell;
+use super::{QueryCadence, Worker};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::Path;
+use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
+
+pub(super) static TEST_PDH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+// Scoped tracing subscribers can race through process-wide callsite caches.
+pub(super) fn assert_isolated_tracing(test: impl FnOnce()) {
+    const CHILD: &str = "OTEL_ARROW_PERF_COUNTER_TRACING_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("named test thread");
+    if std::env::var_os(CHILD) == Some(std::ffi::OsString::from(name)) {
+        test();
+        return;
+    }
+    let mut child = ProcessCommand::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD, name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("isolated tracing subprocess");
+    let mut stdout = child.stdout.take().expect("tracing subprocess stdout");
+    let reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        const CAPTURE_LIMIT: usize = 64 * 1024;
+        let mut tail = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            let read = stdout.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(tail);
+            }
+            tail.extend_from_slice(&buffer[..read]);
+            if tail.len() > CAPTURE_LIMIT {
+                let excess = tail.len() - CAPTURE_LIMIT;
+                drop(tail.drain(..excess));
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("tracing subprocess status") {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("kill timed-out tracing subprocess");
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let _ = child.wait().expect("reap tracing subprocess");
+    let output = reader
+        .join()
+        .expect("tracing stdout reader panicked")
+        .expect("read tracing stdout");
+    let stdout = String::from_utf8_lossy(&output);
+    let Some(status) = status else {
+        panic!("isolated tracing test timed out: {name}; stdout tail:\n{stdout}");
+    };
+    assert!(status.success(), "{name}; stdout tail:\n{stdout}");
+    assert!(
+        stdout.contains("1 passed;"),
+        "no isolated test ran; stdout tail:\n{stdout}"
+    );
+}
+
+/// Scenario: An isolated tracing test writes more stdout than a pipe or the diagnostic capture can hold.
+/// Guarantees: Output is drained while the child runs, and its final one-test success is still verified.
+#[test]
+fn isolated_tracing_drains_large_child_stdout() {
+    assert_isolated_tracing(|| {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+        stdout.flush().unwrap();
+    });
+}
+
+// Native worker events cross threads; isolated test assertions share their capture.
+#[derive(Clone, Default)]
+pub(super) struct CapturedEvents(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+
+struct CapturedEvent {
+    name: &'static str,
+    error: Option<String>,
+}
+
+impl CapturedEvents {
+    pub(super) fn dispatch(&self) -> tracing::Dispatch {
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing::Dispatch::new(tracing_subscriber::registry().with(self.clone()))
+    }
+
+    pub(super) fn names(&self) -> Vec<&'static str> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.name)
+            .collect()
+    }
+
+    fn counter_failures(&self) -> Vec<String> {
+        self.failure_details("windows_perf_counters_receiver.counter.fail")
+    }
+
+    pub(super) fn query_failures(&self) -> Vec<String> {
+        self.failure_details("windows_perf_counters_receiver.query.fail")
+    }
+
+    fn failure_details(&self, name: &str) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.name == name)
+            .map(|event| {
+                event
+                    .error
+                    .as_ref()
+                    .expect("failure event must include error detail")
+                    .clone()
+            })
+            .collect()
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        #[derive(Default)]
+        struct Detail(Option<String>);
+        impl tracing::field::Visit for Detail {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "error" {
+                    self.0 = Some(format!("{value:?}"));
+                }
+            }
+
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "error" {
+                    self.0 = Some(value.to_owned());
+                }
+            }
+        }
+        let mut detail = Detail::default();
+        event.record(&mut detail);
+        self.0.lock().unwrap().push(CapturedEvent {
+            name: event.metadata().name(),
+            error: detail.0,
+        });
+    }
+}
 
 pub(super) fn counter(path: &str, name: &str) -> CounterConfig {
     CounterConfig {
@@ -35,6 +192,21 @@ fn cumulative_sum(path: &str, name: &str, unit: &str) -> CounterConfig {
         unit: Arc::from(unit),
         ..counter(path, name)
     }
+}
+
+fn collect_query<A, F>(slot: &mut QuerySlot<A>, open: &mut F, now: Instant) -> Result<Sample, Error>
+where
+    A: PdhApi,
+    F: QueryFactory<A>,
+{
+    collect_query_with_diagnostics(slot, open, now, |_, _| Ok(()))
+}
+
+fn query_counts() -> (usize, usize) {
+    (
+        QUERY_OPENS.load(Ordering::Relaxed),
+        QUERY_CLOSES.load(Ordering::Relaxed),
+    )
 }
 
 struct FakeCounter {
@@ -382,6 +554,83 @@ impl PdhApi for FakePdh {
     }
 }
 
+struct CalculatedPdh {
+    fail_collect: Arc<AtomicBool>,
+    collect_calls: usize,
+    fail_first_collect: bool,
+}
+
+impl PdhApi for CalculatedPdh {
+    type Counter = ();
+
+    fn add(&mut self, _path: &str, _language: CounterLanguage) -> Result<Self::Counter, Error> {
+        Ok(())
+    }
+
+    fn remove(&mut self, _counter: &Self::Counter, _path: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn counter_type(&mut self, _counter: &Self::Counter, _path: &str) -> Result<u32, Error> {
+        Ok(0x2041_0500)
+    }
+
+    fn full_path(&mut self, _counter: &Self::Counter, path: &str) -> Result<String, Error> {
+        Ok(path.to_owned())
+    }
+
+    fn comparison_path(&mut self, path: &str) -> Result<String, Error> {
+        NativePdh::comparison_path_fixture(path)
+    }
+
+    fn collect(&mut self) -> Result<bool, Error> {
+        if std::mem::take(&mut self.fail_first_collect) || self.fail_collect.load(Ordering::Relaxed)
+        {
+            return Err(Error::Pdh {
+                operation: PdhOperation::CollectQueryData,
+                path: "<query>".to_owned(),
+                status: 1,
+            });
+        }
+        self.collect_calls += 1;
+        Ok(true)
+    }
+
+    fn raw(&mut self, _counter: &Self::Counter, _path: &str) -> Result<Option<RawSample>, Error> {
+        Ok(Some(RawSample {
+            second_value: i64::try_from(self.collect_calls).unwrap_or(i64::MAX) * 10,
+            multi_count: 1,
+        }))
+    }
+
+    fn formatted(
+        &mut self,
+        _counter: &Self::Counter,
+        _path: &str,
+        _format: ValueFormat,
+    ) -> Result<Option<Number>, Error> {
+        Ok(Some(Number::Double(self.collect_calls as f64)))
+    }
+
+    fn timestamp(&mut self) -> Result<i64, Error> {
+        Ok(100 + i64::try_from(self.collect_calls).unwrap_or(i64::MAX) * 10)
+    }
+
+    fn refresh_objects(&mut self) -> Result<usize, Error> {
+        Ok(0)
+    }
+
+    fn expand(&mut self, _path: &str, _budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn parse_instance(&mut self, path: &str) -> Result<InstanceIdentity, Error> {
+        Err(Error::InvalidCounterToken {
+            path: path.to_owned(),
+        })
+    }
+}
+
 fn fake_query(
     configs: Vec<CounterConfig>,
     counters: Vec<FakeCounter>,
@@ -539,5 +788,7 @@ fn temporary_template_cleanup_is_bounded_and_stop_safe() {
     }
 }
 
+mod live;
 mod query;
 mod timing;
+mod worker;

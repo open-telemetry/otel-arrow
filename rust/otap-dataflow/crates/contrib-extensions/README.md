@@ -20,6 +20,7 @@ configuration semantics, see
 | Extension | URN | Feature gate | Capability | Docs |
 | --- | --- | --- | --- | --- |
 | Azure Identity Auth | `urn:microsoft:extension:azure_identity_auth` | `azure-identity-auth` | `bearer_token_provider` | [usage](./src/azure_identity_auth/README.md), [design](./src/azure_identity_auth/design.md) |
+| Azure Key Vault SASL Auth | `urn:otel:extension:azure_key_vault_sasl_auth` | `azure-key-vault-sasl-auth` | `sasl_credential_provider` | [usage](./src/azure_key_vault_sasl_auth/README.md) |
 | Flat File API Key Auth | `urn:otel:extension:flat_file_api_key_auth` | `flat-file-api-key-auth` | `api_key_provider` | [usage](./src/flat_file_api_key_auth/README.md) |
 | Flat File SASL Auth | `urn:otel:extension:flat_file_sasl_auth` | `flat-file-sasl-auth` | `sasl_credential_provider` | [usage](./src/flat_file_sasl_auth/README.md) |
 | Flat File User Pass Auth | `urn:otel:extension:flat_file_user_pass_auth` | `flat-file-user-pass-auth` | `basic_auth_provider` | [usage](./src/flat_file_user_pass_auth/README.md) |

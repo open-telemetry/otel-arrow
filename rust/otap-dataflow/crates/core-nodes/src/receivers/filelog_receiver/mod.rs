@@ -15,6 +15,6 @@ pub mod multiline_pattern;
 #[cfg(target_os = "linux")]
 pub mod source;
 
-/// Bounded Linux discovery without reconciliation or receiver wiring.
+/// Bounded Linux scanning and reconciliation without receiver wiring.
 #[cfg(target_os = "linux")]
 pub mod discovery;

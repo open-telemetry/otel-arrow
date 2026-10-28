@@ -1403,13 +1403,225 @@ fn accepts_exact_shared_limits() {
     assert_eq!(config.query().catch_up().max_pages, 1024);
 }
 
-/// Scenario: The preparation-only SQL Server feature is linked into a host.
-/// Guarantees: No SQL Server receiver factory is registered by this layer.
+/// Scenario: The SQL Server feature is linked into a host.
+/// Guarantees: Exactly one receiver factory exposes the documented URN.
 #[test]
-fn preparation_does_not_register_runtime_factory() {
-    assert!(
-        !otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES
+fn runtime_factory_is_registered() {
+    assert_eq!(
+        otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES
             .iter()
-            .any(|factory| factory.name == "urn:otel:receiver:sql_server")
+            .filter(|factory| factory.name == super::SQL_SERVER_RECEIVER_URN)
+            .count(),
+        1,
     );
+}
+
+/// Scenario: The runtime attempts multicore placement or omits the credential capability.
+/// Guarantees: Factory validation prevents duplicate pollers and unauthenticated construction.
+#[test]
+fn factory_requires_single_core_and_credentials() {
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::{
+        capability::registry::Capabilities,
+        context::ControllerContext,
+        testing::{receiver::TestRuntime, test_node},
+    };
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use std::sync::Arc;
+    for (cores, expected) in [
+        (0, "single-core"),
+        (2, "single-core"),
+        (1, "basic_auth_provider"),
+    ] {
+        let context = ControllerContext::new(TelemetryRegistryHandle::new()).pipeline_context_with(
+            "group".into(),
+            "pipeline".into(),
+            0,
+            cores,
+            0,
+        );
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let result = (super::SQL_SERVER_RECEIVER.create)(
+            context,
+            test_node("sql-server-test"),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                super::SQL_SERVER_RECEIVER_URN,
+            )),
+            runtime.config(),
+            &Capabilities::empty(),
+        );
+        let Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { error }) = result else {
+            panic!("expected configuration error");
+        };
+        assert!(error.contains(expected));
+    }
+}
+
+mod factory {
+    use super::*;
+    use async_trait::async_trait;
+    use otel_arrow_dfe_config::{error::Error, node::NodeUserConfig};
+    use otel_arrow_dfe_engine::{
+        capability::{
+            CapabilityError,
+            auth::{
+                BasicAuthCredential,
+                basic_auth_provider::{
+                    BasicAuthCredentialStream, BasicAuthProvider as Registration,
+                },
+            },
+            registry::{CapabilityRegistry, LocalCapabilityEntry},
+        },
+        context::{ControllerContext, PipelineContext},
+        local::capability::auth::basic_auth_provider::BasicAuthProvider,
+        receiver::ReceiverWrapper,
+        testing::{capability::resolve_bindings_for_test, receiver::TestRuntime, test_node},
+    };
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_scraper::{CheckpointStore, LeaseError, SourceLease};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use std::sync::Arc;
+
+    struct NoCredentials;
+
+    #[async_trait(?Send)]
+    impl BasicAuthProvider for NoCredentials {
+        async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
+            panic!("construction and hard-pressure admission must not acquire credentials");
+        }
+
+        fn credential_stream(&self) -> BasicAuthCredentialStream {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    fn context() -> PipelineContext {
+        ControllerContext::new(TelemetryRegistryHandle::new()).pipeline_context_with(
+            "group".into(),
+            "pipeline".into(),
+            0,
+            1,
+            0,
+        )
+    }
+
+    fn build(
+        context: PipelineContext,
+        raw: Value,
+        runtime: &TestRuntime<OtapPdata>,
+    ) -> Result<ReceiverWrapper<OtapPdata>, Error> {
+        let mut registry = CapabilityRegistry::new();
+        registry
+            .register_local(
+                std::any::TypeId::of::<Registration>(),
+                LocalCapabilityEntry::new("test".into(), || -> Box<dyn std::any::Any> {
+                    let provider: Box<dyn BasicAuthProvider> = Box::new(NoCredentials);
+                    Box::new(provider)
+                }),
+            )
+            .unwrap();
+        let capabilities = resolve_bindings_for_test(
+            &std::collections::HashMap::from([("basic_auth_provider".into(), "test".into())]),
+            &registry,
+            &std::collections::HashSet::from(["test".into()]),
+        )
+        .unwrap();
+        let mut node = NodeUserConfig::new_receiver_config(super::super::SQL_SERVER_RECEIVER_URN);
+        node.config = raw;
+        (super::super::SQL_SERVER_RECEIVER.create)(
+            context,
+            test_node("sql-server-test"),
+            Arc::new(node),
+            runtime.config(),
+            &capabilities,
+        )
+    }
+
+    /// Scenario: The factory validates and builds against existing shared-format checkpoint progress.
+    /// Guarantees: Validation is side-effect-free; construction leases the same source without resetting it.
+    #[test]
+    fn shared_checkpoint_identity_and_exclusive_ownership() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state-\u{e9}");
+        let mut raw = scalar(json!({"type":"int64","value":0}));
+        raw["checkpoint"]["directory"] = json!(state);
+        for _ in 0..2 {
+            (super::super::SQL_SERVER_RECEIVER.validate_config)(&raw).unwrap();
+        }
+        assert!(!state.exists());
+        let parsed = parse(raw.clone());
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let store = CheckpointStore::new(
+            &state,
+            "group",
+            "pipeline",
+            runtime.config().name.as_ref(),
+            parsed.source_id(),
+            parsed.config_fingerprint().to_owned(),
+        );
+        let cursor = otel_arrow_dfe_scraper::database::Cursor::Scalar(ScalarValue::Int64(42));
+        let (before, _) = store.write(0, &cursor).unwrap();
+        let first = build(context(), raw.clone(), &runtime).unwrap();
+        assert!(matches!(
+            SourceLease::acquire(store.lease_key()),
+            Err(LeaseError::AlreadyOwned)
+        ));
+        assert!(build(context(), raw.clone(), &runtime).is_err());
+        assert_eq!(store.read().unwrap(), Some(before.clone()));
+        drop(first);
+        let second = build(context(), raw, &runtime).unwrap();
+        assert_eq!(store.read().unwrap(), Some(before));
+        drop(second);
+        let _lease = SourceLease::acquire(store.lease_key()).unwrap();
+    }
+
+    /// Scenario: A sensitive checkpoint path names a file instead of a usable state directory.
+    /// Guarantees: Factory failure reports a safe I/O category without exposing the path.
+    #[test]
+    fn lease_failure_redacts_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("SENSITIVE-checkpoint");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let mut raw = composite();
+        raw["checkpoint"]["directory"] = json!(blocked);
+        let Err(error) = build(context(), raw, &TestRuntime::<OtapPdata>::new()) else {
+            panic!("expected lease error");
+        };
+        assert!(error.to_string().contains("lease I/O"));
+        assert!(!format!("{error} {error:?}").contains("SENSITIVE"));
+    }
+
+    /// Scenario: Process memory pressure is already hard before the factory builds the receiver.
+    /// Guarantees: Initial admission prevents credentials/connection work and shutdown releases ownership.
+    #[test]
+    fn initial_hard_pressure_prevents_connection() {
+        use otel_arrow_dfe_engine::{control::NodeControlMsg, memory_limiter::MemoryPressureLevel};
+        let directory = tempfile::tempdir().unwrap();
+        let mut raw = composite();
+        raw["checkpoint"]["directory"] = json!(directory.path());
+        let context = context();
+        context
+            .memory_pressure_state()
+            .set_level_for_tests(MemoryPressureLevel::Hard);
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let wrapper = build(context, raw.clone(), &runtime).unwrap();
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation_concurrent(|mut ctx| async move {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), ctx.recv())
+                        .await
+                        .is_err()
+                );
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: std::time::Instant::now() + Duration::from_secs(2),
+                    reason: "hard-pressure test complete".into(),
+                })
+                .await
+                .unwrap();
+            });
+        let _replacement = build(self::context(), raw, &TestRuntime::<OtapPdata>::new()).unwrap();
+    }
 }
