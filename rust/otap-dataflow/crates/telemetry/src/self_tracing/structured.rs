@@ -36,10 +36,10 @@ pub trait StructuredValue: Any {
 /// This object-safe interface lets type-erased structured values use the same
 /// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
-    /// Starts a struct with `name` stored as its `name` field.
+    /// Starts a struct containing only caller-supplied fields.
     /// Dropping the builder before `finish()` retains its completed prefix
     /// and reports truncation at the enclosing value boundary.
-    fn encode_struct(&mut self, name: &str) -> EncodeResult<StructEncoder<'_>>;
+    fn encode_struct(&mut self) -> EncodeResult<StructEncoder<'_>>;
     /// Encodes a string, maybe truncated.
     fn encode_str(&mut self, value: &str) -> EncodeResult;
     /// Encodes the `Debug` value as a string, maybe truncated.

@@ -129,7 +129,7 @@ struct Probe {
 
 impl StructuredValue for Probe {
     fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-        w.encode_struct("Probe")?
+        w.encode_struct()?
             .field("id", &self.id)?
             .field("label", &self.label)?
             .field("tags", &self.tags)?
@@ -149,7 +149,6 @@ The `state` field is an OTLP AnyValue map equivalent to:
 
 ```json
 {
-  "name": "Probe",
   "id": 7,
   "label": "example",
   "tags": ["a", "b"]
@@ -165,7 +164,8 @@ Handwritten encoders propagate failures with `?`. The encoder tracks
 truncation, retains completed container prefixes, and accounts for lost
 attributes without caller bookkeeping.
 
-The struct name becomes `name`. Each `.field()` borrows and encodes its value
+Only caller-supplied fields are encoded; no struct name or reserved field is
+added. Each `.field()` borrows and encodes its value
 immediately. A failed field rolls back that field; exiting through `?` finalizes
 the completed prefix and reports truncation, even though `finish()` was skipped.
 Dropping an unfinished builder has the same behavior.

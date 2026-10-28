@@ -624,7 +624,7 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
 }
 
 impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
-    fn encode_struct(&mut self, name: &str) -> EncodeResult<StructEncoder<'_>> {
+    fn encode_struct(&mut self) -> EncodeResult<StructEncoder<'_>> {
         let depth = self.depth + 1;
         let width = self.buf.placeholder_width();
         self.once(|buf| {
@@ -637,7 +637,7 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
             len_start: self.buf.len() - width,
             width,
         });
-        StructEncoder::new(self).field("name", name)
+        Ok(StructEncoder::new(self))
     }
 
     fn encode_str(&mut self, value: &str) -> EncodeResult {
@@ -2115,9 +2115,9 @@ mod tests {
 
     impl StructuredValue for Probe {
         fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-            w.encode_struct("Probe")?
+            w.encode_struct()?
                 .field("id", &self.id)?
-                .field("label", &self.name)?
+                .field("name", &self.name)?
                 .field("tags", &self.tags)?
                 .finish()
         }
@@ -2148,7 +2148,7 @@ mod tests {
             else {
                 panic!("expected map");
             };
-            assert_eq!(map.values[1], KeyValue::new("id", AnyValue::new_int(count)));
+            assert_eq!(map.values[0], KeyValue::new("id", AnyValue::new_int(count)));
             for limit in [8, 32, 64, 128, 2048, 1 << 16, 1 << 28] {
                 let mut buf = ProtoBuffer::with_capacity_and_limit(limit.min(256), limit);
                 let mut visitor = DirectFieldVisitor::new(&mut buf);
@@ -2168,7 +2168,7 @@ mod tests {
     }
 
     /// Scenario: a struct builder produces a structured `message` with string, integer, and array fields.
-    /// Guarantees: the body contains the struct name and typed values rather than an attribute.
+    /// Guarantees: the body contains only caller-supplied typed fields, including an ordinary field named name.
     #[test]
     fn structured_message_is_log_body() {
         let slot = StructBox::new(Probe {
@@ -2188,9 +2188,8 @@ mod tests {
         assert_eq!(
             decoded.body,
             Some(AnyValue::new_kvlist(vec![
-                KeyValue::new("name", AnyValue::new_string("Probe")),
                 KeyValue::new("id", AnyValue::new_int(7)),
-                KeyValue::new("label", AnyValue::new_string("example")),
+                KeyValue::new("name", AnyValue::new_string("example")),
                 KeyValue::new(
                     "tags",
                     AnyValue::new_array(vec![AnyValue::new_string("a"), AnyValue::new_string("b")]),
@@ -2215,7 +2214,7 @@ mod tests {
         let samples = [0.5f32, 1.0];
         visitor.record_toplevel_field(&field, |buf| {
             ValueEncoder::new(buf, 0).encode_structured(|w| {
-                w.encode_struct("Samples")?
+                w.encode_struct()?
                     .field("count", &samples.len())?
                     .field("number", &number)?
                     .field("enabled", &enabled)?
@@ -2231,7 +2230,6 @@ mod tests {
             vec![KeyValue::new(
                 "a",
                 AnyValue::new_kvlist(vec![
-                    KeyValue::new("name", AnyValue::new_string("Samples")),
                     KeyValue::new("count", AnyValue::new_int(2)),
                     KeyValue::new("number", AnyValue::new_int(8)),
                     KeyValue::new("enabled", AnyValue::new_bool(true)),
@@ -2248,7 +2246,7 @@ mod tests {
         );
     }
 
-    /// Scenario: a struct builder truncates its name, encodes one value, then encounters a key that cannot fit.
+    /// Scenario: a struct builder truncates a string field, encodes another value, then encounters a key that cannot fit.
     /// Guarantees: truncation needs no caller bookkeeping, accepted callbacks run once, rejected callbacks do not run, and later log fields survive.
     #[test]
     fn struct_builder_skips_callback_when_key_does_not_fit() {
@@ -2260,7 +2258,8 @@ mod tests {
         let mut evaluations = 0;
         visitor.record_toplevel_field(&a, |buf| {
             ValueEncoder::new(buf, 0).encode_structured(|w| {
-                w.encode_struct(&"x".repeat(80))?
+                w.encode_struct()?
+                    .field("text", &"x".repeat(80))?
                     .field_with("first", &mut |w| {
                         evaluations += 1;
                         w.encode_bool(true)
@@ -2294,11 +2293,11 @@ mod tests {
             panic!("expected map")
         };
         assert_eq!(map.values.len(), 2);
-        assert_eq!(map.values[0].key, "name");
-        let Some(StringValue(name)) = &map.values[0].value.as_ref().expect("name").value else {
-            panic!("expected struct name")
+        assert_eq!(map.values[0].key, "text");
+        let Some(StringValue(text)) = &map.values[0].value.as_ref().expect("text").value else {
+            panic!("expected string field")
         };
-        assert!(name.ends_with("[...]"));
+        assert!(text.ends_with("[...]"));
         assert_eq!(
             map.values[1],
             KeyValue::new("first", AnyValue::new_bool(true))
@@ -2314,7 +2313,7 @@ mod tests {
         }
         impl StructuredValue for Partial {
             fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-                w.encode_struct("Partial")?
+                w.encode_struct()?
                     .field("first", &7)?
                     .field_with("failed", &mut |w| {
                         self.attempts.set(self.attempts.get() + 1);
@@ -2342,10 +2341,7 @@ mod tests {
         visitor.record_bool(&b, true);
         assert_eq!(visitor.dropped_count(), 1);
         assert_eq!(value.attempts.get(), 2);
-        let prefix = AnyValue::new_kvlist(vec![
-            KeyValue::new("name", AnyValue::new_string("Partial")),
-            KeyValue::new("first", AnyValue::new_int(7)),
-        ]);
+        let prefix = AnyValue::new_kvlist(vec![KeyValue::new("first", AnyValue::new_int(7))]);
         let record = LogRecord::decode(buf.as_ref()).expect("valid prefix framing");
         assert_eq!(record.body, Some(prefix.clone()));
         assert_eq!(
@@ -2369,7 +2365,7 @@ mod tests {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             visitor.record_toplevel_field(&a, |buf| {
                 ValueEncoder::new(buf, 0).encode_structured(|w| {
-                    let builder = w.encode_struct("Partial")?.field("first", &7)?;
+                    let builder = w.encode_struct()?.field("first", &7)?;
                     match completion {
                         "drop" => drop(builder),
                         "forget" => std::mem::forget(builder),
@@ -2384,10 +2380,7 @@ mod tests {
             if completion != "finish" {
                 expected.push(KeyValue::new(
                     "a",
-                    AnyValue::new_kvlist(vec![
-                        KeyValue::new("name", AnyValue::new_string("Partial")),
-                        KeyValue::new("first", AnyValue::new_int(7)),
-                    ]),
+                    AnyValue::new_kvlist(vec![KeyValue::new("first", AnyValue::new_int(7))]),
                 ));
             }
             expected.push(KeyValue::new("b", AnyValue::new_bool(true)));
@@ -2619,7 +2612,7 @@ mod tests {
         if depth == 0 {
             w.encode_bool(true)
         } else {
-            let builder = w.encode_struct("chain")?;
+            let builder = w.encode_struct()?;
             *visited += 1;
             builder
                 .field_with("child", &mut |v| encode_chain(v, depth - 1, visited))?
@@ -2648,13 +2641,12 @@ mod tests {
             assert_eq!(visitor.dropped_count(), u32::from(truncated));
             assert_eq!(visited, depth.min(MAX_DEPTH));
             let mut expected = if truncated {
-                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("chain"))])
+                AnyValue::new_kvlist(vec![])
             } else {
                 AnyValue::new_bool(true)
             };
             for _ in 0..depth.min(MAX_DEPTH) - usize::from(truncated) {
                 expected = AnyValue::new_kvlist(vec![
-                    KeyValue::new("name", AnyValue::new_string("chain")),
                     KeyValue::new("child", expected),
                     KeyValue::new("tail", AnyValue::new_bool(true)),
                 ]);
