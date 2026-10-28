@@ -24,7 +24,9 @@ pub use otel_arrow_dfe_pdata::otlp::{EncodeFailure, EncodeResult};
 pub const MAX_DEPTH: usize = 16;
 
 /// A value that can encode itself as an OTLP AnyValue.
-pub trait StructuredValue: Any {
+///
+/// Values may borrow data; only storage in [`StructBox`] requires `'static`.
+pub trait StructuredValue {
     /// Encodes exactly one value, propagating failures with `?`.
     /// The encoder accounts for truncation without caller bookkeeping.
     fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult;
@@ -37,13 +39,14 @@ pub trait StructuredValue: Any {
 /// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
     /// Encodes a struct containing only caller-supplied fields.
+    /// Return the field chain directly, or `Ok(s)` for an empty struct.
     /// The callback propagates field failures with `?`, retaining the completed
     /// prefix and reporting truncation when it returns an error.
     fn encode_struct(
         &mut self,
-        f: &mut dyn FnMut(StructEncoder<'_>) -> EncodeResult,
+        f: &mut dyn for<'a> FnMut(StructEncoder<'a>) -> EncodeResult<StructEncoder<'a>>,
     ) -> EncodeResult {
-        self.encode_map(&mut |writer| f(StructEncoder { writer }))
+        self.encode_map(&mut |writer| f(StructEncoder { writer }).map(|_| ()))
     }
     /// Encodes a string, maybe truncated.
     fn encode_str(&mut self, value: &str) -> EncodeResult;
@@ -107,12 +110,6 @@ impl<'a> StructEncoder<'a> {
         self.writer.encode_entry(name, encode)?;
         Ok(self)
     }
-
-    /// Ends the field chain with a successful callback result.
-    /// The enclosing callback finalizes the struct.
-    pub fn finish(self) -> EncodeResult {
-        Ok(())
-    }
 }
 
 macro_rules! encode_integers {
@@ -166,7 +163,7 @@ impl StructuredValue for String {
     }
 }
 
-impl<T: StructuredValue + ?Sized> StructuredValue for &'static T {
+impl<T: StructuredValue + ?Sized> StructuredValue for &T {
     fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
         T::encode(self, encoder)
     }
@@ -199,12 +196,13 @@ impl<T: StructuredValue> StructuredValue for Vec<T> {
 ///
 /// Like [`Box`], dereferencing borrows `T` and mutable dereferencing provides
 /// exclusive access. Logging borrows the stored carrier without allocating.
-pub struct StructBox<T: StructuredValue> {
+/// Stored values must be `'static` to support the tracing error carrier.
+pub struct StructBox<T: StructuredValue + 'static> {
     carrier: StructCarrier,
     marker: PhantomData<T>,
 }
 
-impl<T: StructuredValue> StructBox<T> {
+impl<T: StructuredValue + 'static> StructBox<T> {
     /// Allocates exclusive storage for a value that will be logged repeatedly.
     #[must_use]
     pub fn new(value: T) -> Self {
@@ -220,7 +218,7 @@ impl<T: StructuredValue> StructBox<T> {
     }
 }
 
-impl<T: StructuredValue> From<Box<T>> for StructBox<T> {
+impl<T: StructuredValue + 'static> From<Box<T>> for StructBox<T> {
     fn from(value: Box<T>) -> Self {
         Self {
             carrier: StructCarrier(value),
@@ -229,18 +227,18 @@ impl<T: StructuredValue> From<Box<T>> for StructBox<T> {
     }
 }
 
-impl<T: StructuredValue> Deref for StructBox<T> {
+impl<T: StructuredValue + 'static> Deref for StructBox<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        let value: &dyn Any = self.carrier.value();
+        let value: &dyn Any = self.carrier.0.as_ref();
         value
             .downcast_ref::<T>()
             .expect("StructBox carrier must contain T")
     }
 }
 
-impl<T: StructuredValue> DerefMut for StructBox<T> {
+impl<T: StructuredValue + 'static> DerefMut for StructBox<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         let value: &mut dyn Any = self.carrier.0.as_mut();
         value
@@ -249,14 +247,18 @@ impl<T: StructuredValue> DerefMut for StructBox<T> {
     }
 }
 
-impl<T: StructuredValue + fmt::Debug> fmt::Debug for StructBox<T> {
+impl<T: StructuredValue + fmt::Debug + 'static> fmt::Debug for StructBox<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
+trait StoredValue: StructuredValue + Any {}
+
+impl<T: StructuredValue + Any> StoredValue for T {}
+
 /// One downcast target for structured fields, regardless of the stored value type.
-pub(super) struct StructCarrier(Box<dyn StructuredValue>);
+pub(super) struct StructCarrier(Box<dyn StoredValue>);
 
 impl StructCarrier {
     pub(super) fn value(&self) -> &dyn StructuredValue {

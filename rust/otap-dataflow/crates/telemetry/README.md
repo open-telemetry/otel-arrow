@@ -132,8 +132,7 @@ impl StructuredValue for Probe {
         w.encode_struct(&mut |s| {
             s.field("id", &self.id)?
                 .field("label", &self.label)?
-                .field("tags", &self.tags)?
-                .finish()
+                .field("tags", &self.tags)
         })
     }
 }
@@ -161,6 +160,9 @@ build an intermediate value tree. Keep the `StructBox` for repeated logging:
 `as_struct()` borrows its current state without allocating. Pass it directly,
 without `?` or `%`, to preserve structure.
 
+`StructuredValue` implementations may borrow data, including nested views created
+during encoding. Only values stored in `StructBox` must be `'static`.
+
 Handwritten encoders propagate failures with `?`. The encoder tracks
 truncation, retains completed container prefixes, and accounts for lost
 attributes without caller bookkeeping.
@@ -169,8 +171,8 @@ Only caller-supplied fields are encoded; no struct name or reserved field is
 added. Each `.field()` borrows and encodes its value immediately. A failed field
 rolls back that field; exiting the callback through `?` retains the completed
 prefix and reports truncation. The callback boundary finalizes the struct;
-`.finish()` simply ends the field chain with a successful result. An error
-returned after `encode_struct` completes rolls back the enclosing value.
+return the last `.field()` result directly, or `Ok(s)` for an empty struct.
+An error returned after `encode_struct` completes rolls back the enclosing value.
 
 Use `.field_with()` to defer encoding a field until its key fits when computing
 the field value is expensive.

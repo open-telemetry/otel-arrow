@@ -2052,8 +2052,7 @@ mod tests {
             w.encode_struct(&mut |s| {
                 s.field("id", &self.id)?
                     .field("name", &self.name)?
-                    .field("tags", &self.tags)?
-                    .finish()
+                    .field("tags", &self.tags)
             })
         }
     }
@@ -2133,6 +2132,70 @@ mod tests {
         );
     }
 
+    /// Scenario: an owned structured root encodes a temporary nested view borrowing its strings.
+    /// Guarantees: non-static structured views, string references, and vectors of borrowed strings retain their wire types through the stored carrier.
+    #[test]
+    fn structured_values_encode_borrowed_nested_views() {
+        struct State {
+            name: String,
+            tags: Vec<String>,
+        }
+
+        struct Snapshot<'a> {
+            name: &'a str,
+            tags: Vec<&'a str>,
+        }
+
+        impl StructuredValue for Snapshot<'_> {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                w.encode_struct(&mut |s| s.field("name", &self.name)?.field("tags", &self.tags))
+            }
+        }
+
+        impl StructuredValue for State {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                let snapshot = Snapshot {
+                    name: &self.name,
+                    tags: self.tags.iter().map(String::as_str).collect(),
+                };
+                w.encode_struct(&mut |s| s.field("snapshot", &snapshot))
+            }
+        }
+
+        let state = StructBox::new(State {
+            name: "example".into(),
+            tags: vec!["a".into(), "b".into()],
+        });
+        let field = BUDGET_TEST_METADATA
+            .fields()
+            .field("a")
+            .expect("known field");
+        let mut buf = ProtoBuffer::with_capacity_and_limit(16384, 16384);
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_error(&field, state.as_struct());
+        assert_eq!(visitor.dropped_count(), 0);
+        let decoded = LogRecord::decode(buf.as_ref()).expect("valid record");
+        assert_eq!(
+            decoded.attributes,
+            vec![KeyValue::new(
+                "a",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "snapshot",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("name", AnyValue::new_string("example")),
+                        KeyValue::new(
+                            "tags",
+                            AnyValue::new_array(vec![
+                                AnyValue::new_string("a"),
+                                AnyValue::new_string("b"),
+                            ]),
+                        ),
+                    ]),
+                )]),
+            )],
+        );
+    }
+
     /// Scenario: a struct builder encodes integers, booleans, strings, and an array of floats.
     /// Guarantees: borrowed values retain their original types in the encoded fields.
     #[test]
@@ -2154,8 +2217,7 @@ mod tests {
                         .field("number", &number)?
                         .field("enabled", &enabled)?
                         .field("type", &kind)?
-                        .field("samples", &samples)?
-                        .finish()
+                        .field("samples", &samples)
                 })
             })
         });
@@ -2202,8 +2264,7 @@ mod tests {
                         })?
                         .field_with(&"x".repeat(64), &mut |_| {
                             panic!("oversized key skips its callback")
-                        })?
-                        .finish()
+                        })
                 })
             })
         });
@@ -2257,8 +2318,7 @@ mod tests {
                             w.encode_bool(true)?;
                             Err(EncodeFailure::Dropped)
                         })?
-                        .field_with("last", &mut |_| panic!("failed field must stop the chain"))?
-                        .finish()
+                        .field_with("last", &mut |_| panic!("failed field must stop the chain"))
                 })
             }
         }
@@ -2291,28 +2351,27 @@ mod tests {
         );
     }
 
-    /// Scenario: encoding fails inside a struct callback before or after finish, or after the callback succeeds.
-    /// Guarantees: callback errors retain valid prefixes regardless of finish; errors outside the callback roll back the value, preserving later fields.
+    /// Scenario: a struct callback returns an empty or populated builder, fails inside, or succeeds before an outer failure.
+    /// Guarantees: returned builders finalize valid structs, callback errors retain prefixes, and outer errors roll back the value without losing later fields.
     #[test]
     fn struct_builder_finalizes_at_callback_boundary() {
         let fields = BUDGET_TEST_METADATA.fields();
         let a = fields.field("a").expect("known field");
         let b = fields.field("b").expect("known field");
-        for completion in ["before_finish", "after_finish", "outside_callback"] {
+        for completion in ["empty", "complete", "inside_callback", "outside_callback"] {
             let mut buf = ProtoBuffer::with_capacity_and_limit(256, 2048);
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             visitor.record_toplevel_field(&a, |buf| {
                 ValueEncoder::new(buf, 0).encode_structured(|w| {
                     w.encode_struct(&mut |s| {
+                        if completion == "empty" {
+                            return Ok(s);
+                        }
                         let builder = s.field("first", &7)?;
-                        if completion == "before_finish" {
+                        if completion == "inside_callback" {
                             return Err(EncodeFailure::Dropped);
                         }
-                        builder.finish()?;
-                        if completion == "after_finish" {
-                            return Err(EncodeFailure::Dropped);
-                        }
-                        Ok(())
+                        Ok(builder)
                     })?;
                     if completion != "outside_callback" {
                         return Ok(());
@@ -2321,12 +2380,20 @@ mod tests {
                 })
             });
             visitor.record_bool(&b, true);
-            assert_eq!(visitor.dropped_count(), 1);
+            assert_eq!(
+                visitor.dropped_count(),
+                u32::from(matches!(completion, "inside_callback" | "outside_callback")),
+                "{completion}",
+            );
             let mut expected = Vec::new();
             if completion != "outside_callback" {
                 expected.push(KeyValue::new(
                     "a",
-                    AnyValue::new_kvlist(vec![KeyValue::new("first", AnyValue::new_int(7))]),
+                    AnyValue::new_kvlist(if completion == "empty" {
+                        vec![]
+                    } else {
+                        vec![KeyValue::new("first", AnyValue::new_int(7))]
+                    }),
                 ));
             }
             expected.push(KeyValue::new("b", AnyValue::new_bool(true)));
@@ -2561,8 +2628,7 @@ mod tests {
             w.encode_struct(&mut |s| {
                 *visited += 1;
                 s.field_with("child", &mut |v| encode_chain(v, depth - 1, visited))?
-                    .field("tail", &true)?
-                    .finish()
+                    .field("tail", &true)
             })
         }
     }

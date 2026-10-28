@@ -211,11 +211,7 @@ fn structured_fields_preserve_lazy_evaluation() {
 
     impl StructuredValue for Point {
         fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-            w.encode_struct(&mut |s| {
-                s.field("x", &*self.x.borrow())?
-                    .field("y", &self.y)?
-                    .finish()
-            })
+            w.encode_struct(&mut |s| s.field("x", &*self.x.borrow())?.field("y", &self.y))
         }
     }
 
