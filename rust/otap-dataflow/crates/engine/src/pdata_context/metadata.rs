@@ -482,9 +482,12 @@ impl ContextValueSource for PdataContextValueSource<'_> {
     }
 }
 
-/// Incremental builder applying the same merge rule as
-/// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
-/// peer addresses.
+/// Incremental merge of the peer addresses of contributing inputs, without
+/// allocating a `Vec` of intermediate peer addresses.
+///
+/// The merged result is `Some(addr)` only when every contributing input
+/// observed the same peer address; it is `None` when no inputs were pushed,
+/// any input was peerless, or distinct peers contributed.
 ///
 /// Use when contributing inputs are observed one-at-a-time as part of an
 /// existing pass over the input list (e.g. a processor's flush loop). Push
@@ -500,19 +503,19 @@ pub enum PeerAddrMerger {
     Empty,
     /// Every input pushed so far agreed on this address.
     Single(SocketAddr),
-    /// At least one input was peerless or distinct from a prior agreed
+    /// At least one input was peerless or distinct from a previously agreed
     /// address. The merge stays in this state regardless of later pushes.
     Poisoned,
 }
 
 impl PeerAddrMerger {
-    /// Create an empty merger. `finish` on an unused merger returns `None`.
+    /// Creates an empty merger. `finish` on an unused merger returns `None`.
     #[must_use]
     pub const fn new() -> Self {
         Self::Empty
     }
 
-    /// Fold one contributing input's `peer_addr` into the running merge.
+    /// Folds one contributing input's `peer_addr` into the running merge.
     pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
         *self = match (*self, peer_addr) {
             (Self::Empty, None) => Self::Poisoned,
@@ -524,7 +527,7 @@ impl PeerAddrMerger {
         };
     }
 
-    /// Return the merged peer address, or `None` if no inputs were pushed or
+    /// Returns the merged peer address, or `None` if no inputs were pushed or
     /// the merge was poisoned by a peerless or distinct contributor.
     #[must_use]
     pub const fn finish(self) -> Option<SocketAddr> {
@@ -718,8 +721,12 @@ mod tests {
         let _ = value.values().next();
     }
 
+    /// Scenario: peer addresses from contributing inputs are pushed into a
+    /// merger in various combinations, including after a conflict.
+    /// Guarantees: the merge yields an address only when every input agreed
+    /// on it, and a peerless or distinct input poisons the merge for good.
     #[test]
-    fn peer_addr_merger_matches_merge_peer_addr() {
+    fn peer_addr_merger_requires_unanimous_peer() {
         let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
         let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
 
