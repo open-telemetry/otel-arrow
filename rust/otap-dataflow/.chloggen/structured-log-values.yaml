@@ -2,4 +2,4 @@ change_type: enhancement
 component: observability
 note: Internal log statements support structured arguments that encode directly into a bounded buffer.
 issues: [1746]
-subtext: Deeply nested log values use a bracketed vertical ellipsis to mark subtrees omitted at the nesting limit, when space permits.
+subtext: Truncated log text and incomplete structured values use bracketed dagger markers. Depth-limited subtrees use a bracketed diagonal ellipsis.

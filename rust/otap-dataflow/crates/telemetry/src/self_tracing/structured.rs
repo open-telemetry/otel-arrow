@@ -20,8 +20,9 @@ use std::ops::{Deref, DerefMut};
 
 pub use otel_arrow_dfe_pdata::otlp::{EncodeFailure, EncodeResult};
 
-/// Maximum nesting of maps and arrays; deeper containers become a string
-/// containing a bracketed vertical ellipsis (U+22EE), or are dropped if it cannot fit.
+/// Maximum nesting of maps and arrays written through callbacks; deeper containers
+/// become a bracketed diagonal-ellipsis string (U+22F1), or are dropped if it cannot fit.
+/// Pre-encoded values bypass this limit.
 pub const MAX_DEPTH: usize = 16;
 
 /// A value that can encode itself as an OTLP AnyValue.
@@ -49,11 +50,19 @@ pub trait ValueWriter {
     fn encode_f64(&mut self, value: f64) -> EncodeResult;
     /// Encodes a boolean.
     fn encode_bool(&mut self, value: bool) -> EncodeResult;
+    /// Copies one trusted, serialized AnyValue message without its enclosing tag or length.
+    /// The entire message must fit the current byte budget; it is never byte-truncated.
+    /// Depth limits are bypassed. Debug builds check for exactly one recognized,
+    /// well-framed oneof field, but do not inspect nested messages.
+    fn encode_raw_any_value(&mut self, encoded: &[u8]) -> EncodeResult;
     /// Encodes a map; `f` propagates member failures with `?`.
-    /// A member failure retains the map's prefix.
+    /// A member failure rolls back to the latest boundary where a cutoff fits,
+    /// then appends an entry with bracketed dagger (U+2020) key and string value.
+    /// This may discard completed members after that boundary.
     fn encode_map(&mut self, f: &mut dyn FnMut(&mut dyn MapWriter) -> EncodeResult)
     -> EncodeResult;
-    /// Encodes an array with the same prefix-retention policy as `encode_map`.
+    /// Encodes an array with the same rollback policy as `encode_map`,
+    /// using a bracketed dagger string (U+2020) as the cutoff element.
     fn encode_array(
         &mut self,
         f: &mut dyn FnMut(&mut dyn ArrayWriter) -> EncodeResult,

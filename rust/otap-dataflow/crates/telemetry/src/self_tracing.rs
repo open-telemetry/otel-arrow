@@ -59,7 +59,7 @@ pub const LOG_ARGUMENTS_ENCODE_STACK: usize = 256;
 /// Must stay large enough to hold the rendered text of the largest encoded
 /// record (up to `LOG_ARGUMENTS_ENCODE_LIMIT` bytes of protobuf, which can
 /// render to more text than its wire size); otherwise the already-truncated
-/// `[...]`-marked value could be silently re-truncated here with no marker.
+/// dagger-marked value could be silently re-truncated here with no marker.
 pub const LOG_BUFFER_SIZE: usize = LOG_ARGUMENTS_ENCODE_LIMIT * 2;
 
 /// A log record with structural metadata and pre-encoded body/attributes.

@@ -170,22 +170,46 @@ without `?` or `%`, to preserve structure.
 `StructuredValue` implementations may borrow data, including nested views created
 during encoding. Only values stored in `StructBox` must be `'static`.
 
+`ValueWriter::encode_raw_any_value(&[u8])` copies a previously encoded AnyValue
+message directly, without decoding or rebuilding it. Supply only the message
+bytes, not an enclosing field tag or length and not a whole LogRecord fragment.
+This is not an OTLP BytesValue: the original value's type is retained.
+
+Raw values are trusted input and bypass `MAX_DEPTH`. Debug builds check that the
+enclosure contains exactly one recognized AnyValue field with complete framing;
+nested messages are not inspected. The byte budget still applies: an oversized
+raw value fails atomically rather than being byte-truncated, so propagate `?`
+to use the normal container cutoff behavior.
+
 Handwritten encoders propagate failures with `?`. The encoder tracks
 truncation, retains completed container prefixes, and accounts for lost
 attributes without caller bookkeeping.
 
-Only caller-supplied entries are encoded; no struct name or reserved field is
-added. A failed entry or element rolls back that member; exiting the container
-callback through `?` retains the completed prefix and reports truncation.
+Complete values contain only caller-supplied entries; no struct name is added.
+A failed entry or element rolls back that member; exiting the container
+callback through `?` retains a marker-safe prefix, appends a cutoff marker,
+and reports truncation.
 An error returned after the container completes rolls back the enclosing value.
 Entry callbacks run only after their keys fit.
 
-Containers beyond `MAX_DEPTH` become a string containing a bracketed vertical
-ellipsis (U+22EE), indicating a structural cutoff without invoking the container
-callback. If the marker cannot fit, the member rolls back instead. Truncation
-anywhere in an attribute increments `dropped_attributes_count` once; body
-truncation does not increment that count. Depth cutoffs are visible in bodies
-when the marker fits, but capacity-truncated containers retain unmarked prefixes.
+Non-depth cutoffs use a bracketed dagger (U+2020): a final string element in
+arrays, or an entry with that key and string value in maps. Shortened strings
+use the same dagger suffix. These synthetic markers favor diagnostic legibility
+over exact data fidelity; a caller's identical map key is not rejected.
+
+Each container remembers the latest complete-member boundary where its cutoff
+marker fits. Normal encoding does not withhold footer space. On failure, the
+container rolls back to that boundary, which may discard some recently completed
+members, then writes its marker. Complete containers need no marker. Ancestors
+propagate child truncation without adding redundant markers; if a child cannot
+fit its own marker, failure propagates to an enclosing container instead.
+
+Containers beyond `MAX_DEPTH` become a bracketed diagonal-ellipsis string
+(U+22F1) without invoking their callbacks. If no enclosing container can fit a
+cutoff marker either, the top-level value rolls back.
+Truncation anywhere in an attribute increments `dropped_attributes_count` once;
+body truncation does not increment that count, but its cutoff markers remain
+visible.
 
 ### Logging suppression and sampling
 
