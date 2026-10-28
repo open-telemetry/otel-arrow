@@ -8,23 +8,23 @@ use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::NodeId as NodeName;
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
-};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
+    ContextEntryTarget, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
@@ -327,7 +327,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_engine::context_declaration::{
+    use otel_arrow_dfe_engine::pdata_context::{
         ContextConsumerSelector, ContextDeclaration, ContextEntrySelector,
     };
 

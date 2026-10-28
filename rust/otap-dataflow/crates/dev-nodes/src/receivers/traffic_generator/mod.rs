@@ -18,20 +18,20 @@ use metrics::{
     TrafficGeneratorMetrics,
 };
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 use otel_arrow_dfe_config::{ContextEntryName, error::Error as ConfigError};
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
-    NodeContextDeclarations,
-};
 use otel_arrow_dfe_engine::control::CallData;
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
+    NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{
@@ -828,10 +828,10 @@ mod tests {
     }
 
     use crate::receivers::traffic_generator::config::{Config, TrafficConfig};
+    use otel_arrow_dfe_config::context::transport_headers::ValueKind;
     use otel_arrow_dfe_config::node::NodeUserConfig;
-    use otel_arrow_dfe_config::transport_headers::ValueKind;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
+    use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
