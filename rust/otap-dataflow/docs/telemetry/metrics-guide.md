@@ -459,16 +459,32 @@ replay, is a new attempt.
 
 ##### Collection instrumentation
 
-`otel_arrow_dfe_otap::metrics` provides `ReceiverPulledMetrics` and
-`ReceiverProcessingMetricSet` with all three distribution tiers. Attempt counts
-reuse `Outcome` and `OutcomeAttributes`; duration has no measurement attributes.
-Collection lifecycle helpers and receiver adoption remain follow-ups under
-[#3822](https://github.com/open-telemetry/otel-arrow/issues/3822).
+Register `ReceiverPullMetrics::register(&pipeline)` as the node's `boundary`
+helper; it owns count/duration policy checks and duration-tier selection:
 
-Future integration MUST gate counts with `NODE_OUTPUT_METRICS` and duration
-with `NODE_LOCAL_DURATION`, select the node's distribution tier, and avoid clock
-reads when timing is disabled. The declarations do not enforce these policies
-or register themselves automatically.
+```rust
+// Node-specific: accept bounded work before starting the attempt.
+let output = self.metrics.boundary.processing()
+    .run(async |attempt| {
+        // Node-specific: collect, validate, and encode while servicing controls.
+        self.collect_with_controls(attempt.cancellation_handle()).await
+    })
+    .await?; // Ok records success; Err or a dropped future records failure.
+
+// Node-specific: handoff cannot change the collection outcome.
+effect_handler.send_message(output).await?;
+```
+
+When controls can terminate collection, retain `attempt.cancellation_handle()`
+in the node's control handler and end accounting before cleanup:
+
+```rust
+cancellation.cancel(); // This attempt only; late completion cannot recount.
+self.cancel_and_join_source_work().await?; // Discard abandoned output; retain capacity until joined.
+```
+
+For externally driven work, retain the guard from `processing()` and call `success()`
+before handoff instead of using `run()`.
 
 ### Exporter implementation
 

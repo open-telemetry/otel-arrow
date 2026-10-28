@@ -26,8 +26,11 @@ use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
+use std::cell::{Cell, RefCell};
 use std::ops::AsyncFnOnce;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
+use tokio::time::Instant as TokioInstant;
 
 /// Accepted receiver-initiated collection attempts, completed before downstream handoff.
 ///
@@ -39,6 +42,177 @@ pub struct ReceiverPulledMetrics {
     /// Number of accepted collection attempts reaching a terminal local outcome.
     #[metric(unit = "{attempt}")]
     pub attempts: Counter<u64>,
+}
+
+/// Shared, node-interest-gated telemetry for receiver-initiated collection.
+///
+/// Start one attempt per accepted bounded collection, not per output message.
+/// Complete it before downstream handoff. Receivers own admission, partial-result
+/// policy, cancellation decisions, and worker cleanup.
+///
+/// Attempts may overlap on the same core. Each has independent completion state;
+/// no mutable metric borrow is held across source work or control handling.
+#[derive(Default)]
+pub struct ReceiverPullMetrics {
+    inner: Option<Rc<RefCell<PullMetricSets>>>,
+}
+
+impl ReceiverPullMetrics {
+    /// Registers only the count and duration sets enabled by node policy.
+    #[must_use]
+    pub fn register(pipeline: &PipelineContext) -> Self {
+        let interests = pipeline.node_interests();
+        Self {
+            inner: interests
+                .intersects(Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION)
+                .then(|| {
+                    Rc::new(RefCell::new(PullMetricSets {
+                        attempts: interests
+                            .contains(Interests::NODE_OUTPUT_METRICS)
+                            .then(|| ReceiverPulledMetrics::register(pipeline)),
+                        duration: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
+                            ReceiverProcessingMetricSet::register(
+                                pipeline,
+                                pipeline.node_duration_distribution(),
+                            )
+                        }),
+                    }))
+                }),
+        }
+    }
+
+    /// Starts an accepted attempt, reading the monotonic clock only when enabled.
+    #[must_use = "retain the attempt until collection succeeds or fails"]
+    pub fn processing(&self) -> ReceiverPullAttempt {
+        ReceiverPullAttempt(self.inner.as_ref().map(|metrics| {
+            Rc::new(PullAttemptState {
+                metrics: Rc::clone(metrics),
+                started: metrics.borrow().duration.is_some().then(TokioInstant::now),
+                finished: Cell::new(false),
+            })
+        }))
+    }
+
+    /// Reports completed attempts while retaining deltas deferred by backpressure.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        if let Some(inner) = &self.inner {
+            let mut metrics = inner.borrow_mut();
+            if let Some(attempts) = &mut metrics.attempts {
+                reporter.report_measurement(attempts)?;
+            }
+            if let Some(duration) = &mut metrics.duration {
+                duration.report(reporter)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes completed observations for terminal handoff; active attempts stay active.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = Vec::new();
+        if let Some(inner) = &self.inner {
+            let mut metrics = inner.borrow_mut();
+            if let Some(attempts) = &mut metrics.attempts {
+                snapshots.extend(attempts.terminal_snapshots());
+            }
+            if let Some(duration) = &mut metrics.duration {
+                snapshots.extend(duration.terminal_snapshots());
+            }
+        }
+        snapshots
+    }
+}
+
+struct PullMetricSets {
+    attempts: Option<MeasurementMetricSet<ReceiverPulledMetrics>>,
+    duration: Option<ReceiverProcessingMetricSet>,
+}
+
+struct PullAttemptState {
+    metrics: Rc<RefCell<PullMetricSets>>,
+    started: Option<TokioInstant>,
+    finished: Cell<bool>,
+}
+
+impl PullAttemptState {
+    fn finish(&self, outcome: Outcome) {
+        if self.finished.replace(true) {
+            return;
+        }
+        let duration = self.started.map(|started| started.elapsed());
+        let mut metrics = self.metrics.borrow_mut();
+        if let Some(attempts) = &mut metrics.attempts {
+            attempts.with(OutcomeAttributes { outcome }).attempts.inc();
+        }
+        if let (Some(elapsed), Some(duration)) = (duration, &mut metrics.duration) {
+            duration.record(elapsed);
+        }
+    }
+}
+
+/// One accepted collection attempt; dropping it unfinished records failure.
+///
+/// Keep this guard on the receiver's local core, including when source work is
+/// dispatched to a worker. Finish before handoff, or cancel before joining work.
+#[must_use = "retain the attempt until collection succeeds or fails"]
+pub struct ReceiverPullAttempt(Option<Rc<PullAttemptState>>);
+
+impl ReceiverPullAttempt {
+    /// Runs async collection, recording success on `Ok` and failure on `Err` or drop.
+    ///
+    /// The closure may obtain an attempt-specific cancellation handle to end
+    /// accounting before cleanup. It still owns suppressing abandoned output.
+    /// Use [`Self::success`] directly for externally driven collection.
+    pub async fn run<T, E>(
+        self,
+        work: impl AsyncFnOnce(&ReceiverPullAttempt) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let result = work(&self).await;
+        if result.is_ok() {
+            self.success();
+        }
+        result
+    }
+
+    /// Records successful collection, including valid empty or permitted partial results.
+    ///
+    /// Does nothing if this attempt already failed through its cancellation handle.
+    pub fn success(self) {
+        if let Some(state) = &self.0 {
+            state.finish(Outcome::Success);
+        }
+    }
+
+    /// Creates an attempt-specific handle for control-driven timeout or cancellation.
+    #[must_use]
+    pub fn cancellation_handle(&self) -> ReceiverPullCancellation {
+        ReceiverPullCancellation(self.0.clone())
+    }
+}
+
+impl Drop for ReceiverPullAttempt {
+    fn drop(&mut self) {
+        if let Some(state) = &self.0 {
+            state.finish(Outcome::Failure);
+        }
+    }
+}
+
+/// A local cancellation handle that cannot terminate any other collection attempt.
+///
+/// Dropping the handle does not finish the attempt. Cancellation records failure
+/// immediately, but does not stop source work, release capacity, or join workers.
+#[derive(Clone)]
+pub struct ReceiverPullCancellation(Option<Rc<PullAttemptState>>);
+
+impl ReceiverPullCancellation {
+    /// Ends accounting before cleanup; repeated cancellation and late results are ignored.
+    pub fn cancel(&self) {
+        if let Some(state) = &self.0 {
+            state.finish(Outcome::Failure);
+        }
+    }
 }
 
 /// Receiver-local handling of classified messages received at the external boundary.
@@ -812,6 +986,227 @@ mod tests {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::cell::Cell;
+
+    /// Scenario: Success and guard-drop failure occur under every count/duration policy and distribution tier.
+    /// Guarantees: Only enabled sets emit, attempts count once, and duration has neither signal nor outcome.
+    #[tokio::test(start_paused = true)]
+    async fn pull_policy_controls_counts_duration_and_distribution() {
+        for tier in [
+            DistributionTier::Basic,
+            DistributionTier::Normal,
+            DistributionTier::Detailed,
+        ] {
+            for interests in [
+                Interests::empty(),
+                Interests::NODE_OUTPUT_METRICS,
+                Interests::NODE_LOCAL_DURATION,
+                Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+            ] {
+                let (pipeline, _registry) =
+                    test_pipeline_ctx_with_interests_and_duration_distribution(interests, tier);
+                let mut metrics = ReceiverPullMetrics::register(&pipeline);
+                let success = metrics.processing();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                success.success();
+                let failure = metrics.processing();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                drop(failure);
+                let snapshots = metrics.terminal_snapshots();
+                assert_eq!(
+                    snapshots.len(),
+                    2 * usize::from(interests.contains(Interests::NODE_OUTPUT_METRICS))
+                        + usize::from(interests.contains(Interests::NODE_LOCAL_DURATION)),
+                    "{interests:?}, {tier:?}"
+                );
+                for snapshot in snapshots {
+                    assert_eq!(snapshot.measurement_attribute_value("signal"), None);
+                    match &snapshot.get_metrics()[0] {
+                        MetricValue::U64(value) => {
+                            assert_eq!(*value, 1);
+                            assert!(matches!(
+                                snapshot.measurement_attribute_value("outcome"),
+                                Some("success" | "failure")
+                            ));
+                        }
+                        MetricValue::Distribution(value) => {
+                            assert_eq!(value.summary(), (2, 0.05, 0.02, 0.03));
+                            assert_eq!(snapshot.measurement_attribute_value("outcome"), None);
+                            let expected = match tier {
+                                DistributionTier::Basic => Instrument::Mmsc,
+                                _ => Instrument::ExponentialHistogram,
+                            };
+                            assert_eq!(snapshot.descriptor().metrics[0].instrument, expected);
+                        }
+                        _ => panic!("pull counter or duration"),
+                    }
+                }
+                assert!(metrics.terminal_snapshots().is_empty());
+            }
+        }
+    }
+
+    /// Scenario: Async collection succeeds, fails, cancels before cleanup, or is dropped while pending.
+    /// Guarantees: The closure result is preserved, every attempt records once, and cleanup time is excluded.
+    #[tokio::test(start_paused = true)]
+    async fn pull_run_records_results_cancellation_and_dropped_futures() {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = ReceiverPullMetrics::register(&pipeline);
+        let result = metrics
+            .processing()
+            .run(async |_| {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok::<_, &str>("collected")
+            })
+            .await;
+        assert_eq!(result, Ok("collected"));
+        let result = metrics
+            .processing()
+            .run(async |_| {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Err::<(), _>("source failed")
+            })
+            .await;
+        assert_eq!(result, Err("source failed"));
+        let result = metrics
+            .processing()
+            .run(async |attempt| {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                attempt.cancellation_handle().cancel();
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Err::<(), _>("cancelled")
+            })
+            .await;
+        assert_eq!(result, Err("cancelled"));
+        let mut pending = Box::pin(
+            metrics
+                .processing()
+                .run(async |_| std::future::pending::<Result<(), &str>>().await),
+        );
+        assert!(futures::poll!(&mut pending).is_pending());
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        drop(pending);
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+        for snapshot in snapshots {
+            match &snapshot.get_metrics()[0] {
+                MetricValue::U64(value) => {
+                    let expected = match snapshot.measurement_attribute_value("outcome") {
+                        Some("success") => 1,
+                        Some("failure") => 3,
+                        other => panic!("unexpected pull outcome: {other:?}"),
+                    };
+                    assert_eq!(*value, expected);
+                }
+                MetricValue::Distribution(value) => {
+                    assert_eq!(value.summary(), (4, 10.0, 1.0, 4.0));
+                }
+                _ => panic!("pull counter or duration"),
+            }
+        }
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: Two pulls overlap; one is cancelled, then its late result and stale handle outlive a newer pull.
+    /// Guarantees: Each attempt terminates once, cancellation excludes cleanup, and reports do not end active pulls.
+    #[tokio::test(start_paused = true)]
+    async fn pull_cancellation_is_attempt_scoped_and_excludes_cleanup() {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = ReceiverPullMetrics::register(&pipeline);
+        let cancelled = metrics.processing();
+        let cancellation = cancelled.cancellation_handle();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let overlapping = metrics.processing();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancellation.cancel();
+        cancellation.clone().cancel();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(4);
+        metrics
+            .report(&mut reporter)
+            .expect("report cancelled pull");
+        let snapshots: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("failure")
+        );
+        assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+        let MetricValue::Distribution(duration) = &snapshots[1].get_metrics()[0] else {
+            panic!("cancelled pull duration");
+        };
+        assert_eq!(duration.summary(), (1, 0.02, 0.02, 0.02));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        overlapping.success();
+        let newer = metrics.processing();
+        cancelled.success();
+        cancellation.cancel();
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2, "only the overlapping success completed");
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("success")
+        );
+        assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+        let MetricValue::Distribution(duration) = &snapshots[1].get_metrics()[0] else {
+            panic!("overlapping pull duration");
+        };
+        assert_eq!(duration.summary(), (1, 1.01, 1.01, 1.01));
+        drop(newer);
+        cancellation.cancel();
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2, "new pull failed independently");
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("failure")
+        );
+        assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: A periodic report fills its channel with the attempt counter before duration can be sent.
+    /// Guarantees: Deferred duration survives until capacity is available, without repeating accepted counters.
+    #[test]
+    fn pull_reporting_retains_deferred_deltas() {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = ReceiverPullMetrics::register(&pipeline);
+        metrics.processing().success();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        metrics.report(&mut reporter).expect("counter accepted");
+        let counter = receiver.try_recv().expect("attempt count");
+        assert_eq!(counter.descriptor().name, "receiver.pulled");
+        metrics.report(&mut reporter).expect("duration accepted");
+        let duration = receiver.try_recv().expect("deferred duration");
+        assert_eq!(duration.descriptor().name, "receiver.processing");
+        let MetricValue::Distribution(value) = &duration.get_metrics()[0] else {
+            panic!("processing duration");
+        };
+        assert_eq!(value.summary().0, 1);
+        metrics.report(&mut reporter).expect("empty report");
+        assert!(receiver.is_empty(), "accepted deltas must not repeat");
+    }
+
+    /// Scenario: The metrics channel closes before a completed attempt is reported.
+    /// Guarantees: Reporting returns an explicit error and retains both deltas for terminal handoff.
+    #[test]
+    fn pull_reporting_preserves_deltas_on_closed_channel() {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = ReceiverPullMetrics::register(&pipeline);
+        metrics.processing().success();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        drop(receiver);
+        assert!(matches!(
+            metrics.report(&mut reporter),
+            Err(TelemetryError::MetricsChannelClosed)
+        ));
+        assert_eq!(metrics.terminal_snapshots().len(), 2);
+    }
 
     /// Scenario: Collection attempts terminate with different outcomes before any signal is known.
     /// Guarantees: Reporting preserves disjoint outcome counts without a signal dimension and drains each bucket once.
