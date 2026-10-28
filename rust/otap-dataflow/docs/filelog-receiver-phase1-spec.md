@@ -1118,37 +1118,35 @@ that bounded window before the associated delta can become emit-ready. This
 allows an advance shorter than 64 bytes to combine newly read bytes with the
 required pre-resume bytes without rereading mutable path content after Ack.
 
-Recovery validates the guard from the reopened handle before seeking past the
-guarded frontier. A digest mismatch, or EOF before the complete required window
-can be read, is exact-locator identity-evidence mismatch and follows
-`identity.on_recovery_mismatch` without inheriting progress. A successful partial
-read is not itself a mismatch: continue the bounded read until the window is
-complete, EOF is reached, cancellation occurs, or a read error is returned.
+Recovery must validate the guard from the reopened handle before resuming at the
+saved offset. Apply these rules:
 
-A source I/O error while reading either the fingerprint prefix or frontier
-window, such as `EIO` or `EAGAIN`/`WouldBlock`, is not evidence of replacement.
-Preserve the saved record, including its file ID, epoch, offset, prefix and
-frontier guard, and return the original source error. Retry or termination
-follows the operation-specific classification in
-[Failure containment](#failure-containment); an error does not automatically mean
-a temporary failure. Environmental retries use bounded backoff and rate-limited
-health reporting, including when the file remains unreadable. Do not
-reset, supersede or quarantine the record solely because of that error,
-regardless of `identity.on_recovery_mismatch`. Repeated errors do not change this
-classification. Until a later attempt validates continuity, do not resume reads
-from the saved offset or advance progress. Persistent failure may leave the file
-unavailable while retaining its tracked slot; this is preferable to discarding
-valid recovery state without evidence of a mismatch.
+| Read result | Required handling |
+| --- | --- |
+| Complete window with a different digest | Apply `identity.on_recovery_mismatch`; do not inherit the old progress. |
+| EOF before the required window is complete | Apply `identity.on_recovery_mismatch`; do not inherit the old progress. |
+| Successful partial read | Continue the bounded read until the window is complete, EOF is reached, a read error occurs, or cancellation is requested. |
 
-Retry `Interrupted` reads only within a finite per-operation budget, checking
-cancellation between attempts. Exhaustion returns a source error for the same
-environmental handling. Cancellation preserves saved state and does not authorize
-admission. These source-read rules do not relax the terminal handling of failed
-checkpoint file or directory synchronization.
+An I/O error while reading the prefix or frontier window is not mismatch
+evidence. Preserve the entire saved record, including file ID, epoch, offset,
+prefix and frontier guard, and return the original source error. Regardless of
+`identity.on_recovery_mismatch`, do not reset, supersede or quarantine the record
+solely because of that error. Repeated errors do not change this rule.
 
-The guard materially reduces same-locator reuse and
-in-place replacement ambiguity but cannot distinguish a replacement that
-reproduces the checked locator, prefix, size bound, and frontier window while
+Retry or termination must follow [Failure containment](#failure-containment).
+Do not assume every source error is temporary. Environmental retries require
+bounded backoff and rate-limited health reporting, including for persistent
+unreadability. Keep the record's tracked slot. Do not resume from its saved
+offset or advance its progress until continuity validates.
+
+Retry `Interrupted` only within a finite per-operation budget, checking
+cancellation between attempts. On exhaustion, return the source error for the
+same failure handling. Cancellation preserves saved state and does not permit
+admission. Failed checkpoint file or directory syncs remain terminal.
+
+The guard materially reduces same-locator reuse and in-place replacement
+ambiguity but cannot distinguish a replacement that reproduces the checked
+locator, prefix, size bound, and frontier window while
 changing unchecked bytes between the sampled regions. Phase 1 states that residual
 ambiguity rather than claiming that native locators or hashes are permanent
 identity.
